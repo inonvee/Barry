@@ -1,6 +1,7 @@
 import { MockReasoner } from "./mock-reasoner";
 import { OpenAIReasoner } from "./openai-reasoner";
 import type { Reasoner } from "./types";
+import { BarryConfigurationError, isProductionRuntime } from "@/lib/env";
 
 export * from "./types";
 export * from "./ir";
@@ -11,17 +12,28 @@ let singleton: Reasoner | undefined;
 
 /**
  * Reasoner selection point. Set BARRY_REASONER=openai (with OPENAI_API_KEY)
- * to use the LLM-backed reasoner; anything else — including no env vars at
- * all, which is what tests and local dev without a key get — falls back to
- * the deterministic mock. Nothing else in the codebase needs to know which
- * one is active.
+ * to use the LLM-backed reasoner; in local dev / tests, anything else —
+ * including no env vars at all — falls back to the deterministic mock.
+ *
+ * In a real deployment (NODE_ENV=production, which every Vercel
+ * environment sets), that fallback is disabled: BARRY must never silently
+ * run a customer conversation on MockReasoner because a key was missing.
+ * Misconfiguration throws loudly instead.
  */
 export function getReasoner(): Reasoner {
-  if (!singleton) {
-    singleton =
-      process.env.BARRY_REASONER === "openai" && process.env.OPENAI_API_KEY
-        ? new OpenAIReasoner()
-        : new MockReasoner();
+  if (singleton) return singleton;
+
+  const configuredForOpenAI = process.env.BARRY_REASONER === "openai";
+
+  if (isProductionRuntime()) {
+    if (!configuredForOpenAI || !process.env.OPENAI_API_KEY) {
+      throw new BarryConfigurationError(
+        "OPENAI_API_KEY and BARRY_REASONER=openai are required in production. " +
+          "Refusing to silently run customer conversations on MockReasoner."
+      );
+    }
   }
+
+  singleton = configuredForOpenAI && process.env.OPENAI_API_KEY ? new OpenAIReasoner() : new MockReasoner();
   return singleton;
 }
