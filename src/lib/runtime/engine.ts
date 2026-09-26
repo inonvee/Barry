@@ -1,19 +1,23 @@
 import type { BusinessGraph } from "@/lib/business-graph";
+import { knowledgeSearch } from "@/lib/business-graph";
 import { decide, type PolicyDecision } from "@/lib/policy";
-import { getReasoner, SCRATCH_KEYS } from "@/lib/reasoner";
-import type { PlanResult } from "@/lib/reasoner";
+import { getReasoner } from "@/lib/reasoner";
 import { callTool } from "@/lib/tools";
 import type { ToolCallResult, ToolContext } from "@/lib/tools";
 import { getConversationStore } from "@/lib/state";
 import type { ConversationState, TurnLog } from "@/lib/state";
 import { getBackend } from "@/lib/store";
+import { compile, SCRATCH_KEYS, type CompileOutcome } from "./compiler";
 
 /**
- * The BARRY runtime: Observe -> Understand -> Retrieve -> Plan -> Authorize
- * -> Act -> Verify -> Update.
+ * The BARRY runtime: Observe -> Understand -> Retrieve -> Compile ->
+ * Authorize -> Act -> Verify -> Update.
  *
- * This module is the ONLY place allowed to call the Policy Engine and the
- * tool registry together — no other layer executes an action without going
+ * A Reasoner (mock or LLM) only ever produces BARRY IR (Understand). The
+ * deterministic Action Compiler turns that into at most one proposed tool
+ * call, already validated against the tool's own schema (Compile). This
+ * module is the ONLY place allowed to call the Policy Engine and the tool
+ * registry together — no other layer executes an action without going
  * through here, so policy can never be bypassed.
  */
 
@@ -51,7 +55,7 @@ function patchStateAfterTool(state: ConversationState, toolName: string, output:
     }
     case "checkInventory": {
       const { quantityAvailable } = output as { quantityAvailable: number };
-      if (quantityAvailable > 0) state.knownFields.__inventoryChecked = "1";
+      if (quantityAvailable > 0) state.knownFields[SCRATCH_KEYS.inventoryChecked] = "1";
       break;
     }
     case "createLead": {
@@ -82,20 +86,19 @@ export async function handleCustomerMessage(
   const reasoner = getReasoner();
   const ctx: ToolContext = { graph, conversationId, customerId };
 
-  const plan: PlanResult = await reasoner.plan({ graph, state, customerMessage: message });
+  const ir = await reasoner.understand({ graph, state, customerMessage: message });
+  const outcome = compile(graph, state, ir);
 
-  state.stage = plan.stage;
-  if (plan.selectedOfferId) state.selectedOfferId = plan.selectedOfferId;
-  state.detectedIntent = plan.intent;
-  Object.assign(state.knownFields, plan.knownFieldsUpdate);
-  state.missingFields = plan.missingFields;
+  state.detectedIntent = ir.intent;
+  state.stage = outcome.stage;
+  state.missingFields = outcome.kind === "needs_info" ? outcome.missingFields : [];
 
   let policyDecision: PolicyDecision | undefined;
   let toolResult: ToolCallResult | null = null;
   let response: string;
 
-  if (plan.action) {
-    policyDecision = decide(graph, { action: plan.action.name, params: plan.action.input });
+  if (outcome.kind === "action") {
+    policyDecision = decide(graph, { action: outcome.action.name, params: outcome.action.input });
 
     if (policyDecision.status === "denied") {
       response = `I'm not able to do that: ${policyDecision.reason}`;
@@ -103,48 +106,47 @@ export async function handleCustomerMessage(
       const approvalCall = await callTool(
         "requestApproval",
         {
-          requestedAction: plan.action.name,
-          requestedInput: plan.action.input,
+          requestedAction: outcome.action.name,
+          requestedInput: outcome.action.input,
           reason: policyDecision.reason,
           policyId: policyDecision.policyId ?? "unknown",
-          proposedValue: plan.action.input,
+          proposedValue: outcome.action.input,
         },
         ctx
       );
       if (approvalCall.ok) {
         const { approvalId } = approvalCall.output as { approvalId: string };
         state.pendingApprovalId = approvalId;
-        state.pendingAction = plan.action;
+        state.pendingAction = outcome.action;
         state.stage = "escalated";
       }
-      response = await reasoner.composeResponse({ graph, state, customerMessage: message }, {
-        plan,
-        toolResult: null,
-        policyReason: policyDecision.reason,
-      });
+      response = await reasoner.composeResponse(
+        { graph, state, customerMessage: message },
+        { outcome, toolResult: null, policyReason: policyDecision.reason }
+      );
     } else {
-      const input = policyDecision.adjustedParams ?? plan.action.input;
-      toolResult = await callTool(plan.action.name, input, ctx);
-      if (toolResult.ok) patchStateAfterTool(state, plan.action.name, toolResult.output);
-      response = await reasoner.composeResponse({ graph, state, customerMessage: message }, {
-        plan,
-        toolResult,
-      });
+      const input = policyDecision.adjustedParams ?? outcome.action.input;
+      toolResult = await callTool(outcome.action.name, input, ctx);
+      if (toolResult.ok) patchStateAfterTool(state, outcome.action.name, toolResult.output);
+      response = await reasoner.composeResponse({ graph, state, customerMessage: message }, { outcome, toolResult });
     }
   } else {
-    response = plan.directResponse ?? "Got it.";
+    response = await reasoner.composeResponse({ graph, state, customerMessage: message }, { outcome });
   }
 
   state.messages.push({ role: "barry", content: response, at: new Date().toISOString() });
+
+  const knowledgeIds = knowledgeSearch(graph, message).map((k) => k.id);
+  const offerIds = ir.selectedOfferId ? [ir.selectedOfferId] : ir.offerCandidateIds ?? [];
 
   const turn: TurnLog = {
     id: turnId(),
     at: new Date().toISOString(),
     customerMessage: message,
-    understood: { intent: plan.intent, entities: plan.entities },
-    retrieved: { offerIds: plan.retrievedOfferIds, knowledgeIds: plan.retrievedKnowledgeIds },
-    goal: plan.goal,
-    selectedAction: plan.action,
+    understood: { intent: ir.intent, entities: ir.entities },
+    retrieved: { offerIds, knowledgeIds },
+    goal: outcome.kind === "action" ? outcome.goal : ir.goal,
+    selectedAction: outcome.kind === "action" ? outcome.action : null,
     policyDecision,
     toolResult: toolResult
       ? { ok: toolResult.ok, output: toolResult.ok ? toolResult.output : undefined, error: toolResult.ok ? undefined : toolResult.error }
@@ -225,24 +227,19 @@ export async function resumeAfterApproval(
   if (decision === "declined") {
     response = `Thanks for waiting — unfortunately the owner wasn't able to approve that. Is there anything else I can help with?`;
   } else {
-    const input = alternateValue ?? approval.requestedInput;
+    const input = (alternateValue ?? approval.requestedInput) as Record<string, unknown>;
     toolResult = await callTool(approval.requestedAction, input, ctx);
     if (toolResult.ok) patchStateAfterTool(state, approval.requestedAction, toolResult.output);
 
-    const syntheticPlan: PlanResult = {
-      intent: "approval_resumed",
-      entities: {},
+    const syntheticOutcome: CompileOutcome = {
+      kind: "action",
+      action: { name: approval.requestedAction, input },
       stage: state.stage,
-      knownFieldsUpdate: {},
-      missingFields: [],
-      retrievedOfferIds: [],
-      retrievedKnowledgeIds: [],
-      action: { name: approval.requestedAction, input: input as Record<string, unknown> },
     };
-    response = await reasoner.composeResponse({ graph, state, customerMessage: "(approval resumed)" }, {
-      plan: syntheticPlan,
-      toolResult,
-    });
+    response = await reasoner.composeResponse(
+      { graph, state, customerMessage: "(approval resumed)" },
+      { outcome: syntheticOutcome, toolResult }
+    );
   }
 
   state.pendingApprovalId = null;

@@ -1,0 +1,79 @@
+import type { ComposeResponseInput } from "./types";
+
+/**
+ * Canned, deterministic phrasing for every CompileOutcome. This is
+ * MockReasoner's entire composeResponse() — and also what OpenAIReasoner
+ * falls back to if the LLM call for phrasing a reply fails, so a natural-
+ * language provider outage degrades to "correct but plain" instead of
+ * losing the conversation.
+ */
+export function composeDeterministic(input: ComposeResponseInput): string {
+  const { outcome, toolResult, policyReason } = input;
+
+  if (policyReason) {
+    return `Thanks! That needs a quick sign-off from the owner — ${policyReason} I've sent it over and will follow up as soon as it's approved.`;
+  }
+
+  switch (outcome.kind) {
+    case "ask_general":
+      return `Happy to help! Could you tell me a bit more about what you're looking for? We offer: ${outcome.offerNames.join(", ")}.`;
+    case "clarify_offer":
+      return `Sure — is that for ${outcome.offerNames.join(" or ")}?`;
+    case "needs_info":
+      return `Great choice — ${outcome.offerName}. Could you share your ${outcome.missingFields[0]}?`;
+    case "ask_datetime":
+      return `When would you like to come in for your ${outcome.offerName}?`;
+    case "ask_slot_confirm":
+      return `Does ${new Date(outcome.offeredStart).toLocaleString()} work for you?`;
+    case "waiting_payment":
+      return `Just waiting on your payment to confirm this.`;
+    case "price_fact":
+      return `${outcome.offerName} is ${outcome.price} ${outcome.currency}.`;
+    case "generic_confirm":
+      return `Let me get that finalized for you.`;
+    case "compiler_error":
+      return `Sorry — I need a little more information before I can do that. Could you tell me more?`;
+    case "action": {
+      if (!toolResult) return "Got it.";
+      if (!toolResult.ok) {
+        return `Sorry — I ran into an issue (${toolResult.error}). Could we try a different option?`;
+      }
+      switch (outcome.action.name) {
+        case "checkAvailability": {
+          const output = toolResult.output as { slots: { resourceId: string; start: string; end: string }[] };
+          if (output.slots.length === 0) {
+            return `I don't see any open slots in that window — want to try another day or time?`;
+          }
+          return `${new Date(output.slots[0].start).toLocaleString()} is available — does that work for you?`;
+        }
+        case "checkInventory": {
+          const output = toolResult.output as { quantityAvailable: number };
+          return output.quantityAvailable > 0
+            ? `Good news — that's in stock. Ready to go ahead with payment?`
+            : `That item is out of stock right now — want me to notify you when it's back, or pick something else?`;
+        }
+        case "createPaymentRequest": {
+          const output = toolResult.output as { paymentRequestId: string };
+          return `Here's your payment request (${output.paymentRequestId}) — once it's paid I'll confirm everything.`;
+        }
+        case "createBooking": {
+          const output = toolResult.output as { bookingId: string };
+          return `You're all set! Booking confirmed (${output.bookingId}). See you then.`;
+        }
+        case "fulfillOrder": {
+          const output = toolResult.output as { orderId: string };
+          return `Your order (${output.orderId}) is confirmed — thanks for shopping with us!`;
+        }
+        case "createLead":
+          return `Thanks for the details — I've passed this along and we'll follow up with a quote shortly.`;
+        case "createFollowUp":
+          return `No problem, I'll follow up with you soon.`;
+        default:
+          return "Done!";
+      }
+    }
+    default:
+      return "Got it.";
+  }
+}
+

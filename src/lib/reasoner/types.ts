@@ -1,5 +1,8 @@
-import type { BusinessGraph, Goal } from "@/lib/business-graph";
+import type { BusinessGraph } from "@/lib/business-graph";
 import type { ConversationState } from "@/lib/state";
+import type { BarryIR, CompileOutcome } from "./ir";
+
+export type { BarryIR, BarryIRConstraints, RequestedCapability, CompileOutcome, CompiledToolCall } from "./ir";
 
 export type ReasonerContext = {
   graph: BusinessGraph;
@@ -7,40 +10,29 @@ export type ReasonerContext = {
   customerMessage: string;
 };
 
-export type PlannedAction = {
-  name: string;
-  input: Record<string, unknown>;
-} | null;
-
-export type PlanResult = {
-  intent: string;
-  entities: Record<string, unknown>;
-  goal?: Goal;
-  stage: ConversationState["stage"];
-  selectedOfferId?: string;
-  knownFieldsUpdate: Record<string, string>;
-  missingFields: string[];
-  retrievedOfferIds: string[];
-  retrievedKnowledgeIds: string[];
-  action: PlannedAction;
-  /** Response to use directly when no action is planned. */
-  directResponse?: string;
-};
-
+/**
+ * Everything a Reasoner needs to phrase the customer-facing reply for a
+ * turn. `outcome` is what the deterministic Action Compiler decided (see
+ * `src/lib/runtime/compiler.ts`) — a Reasoner never decides WHAT happened
+ * or WHAT to ask, only HOW to say it. `toolResult` is only present when
+ * `outcome.kind === "action"` and the Policy Engine allowed it to run.
+ */
 export type ComposeResponseInput = {
-  plan: PlanResult;
-  toolResult: { ok: boolean; output?: unknown; error?: string } | null;
+  outcome: CompileOutcome;
+  toolResult?: { ok: boolean; output?: unknown; error?: string } | null;
   policyReason?: string;
 };
 
 /**
  * Provider-agnostic reasoning interface. The runtime never talks to OpenAI
- * (or any provider) directly — it only depends on this. Swap providers by
- * changing what `getReasoner()` returns.
+ * (or any provider) directly — it only depends on this. A Reasoner
+ * UNDERSTANDS free text into BARRY IR; it never constructs a tool call or
+ * touches the Policy Engine. Swap providers by changing what
+ * `getReasoner()` returns.
  */
 export interface Reasoner {
   /** Surfaced in the simulator Inspector and persisted on every TurnLog. */
   readonly name: "mock" | "llm";
-  plan(ctx: ReasonerContext): Promise<PlanResult>;
+  understand(ctx: ReasonerContext): Promise<BarryIR>;
   composeResponse(ctx: ReasonerContext, input: ComposeResponseInput): Promise<string>;
 }

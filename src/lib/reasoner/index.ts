@@ -3,7 +3,8 @@ import { OpenAIReasoner } from "./openai-reasoner";
 import type { Reasoner } from "./types";
 
 export * from "./types";
-export { MockReasoner, SCRATCH_KEYS } from "./mock-reasoner";
+export * from "./ir";
+export { MockReasoner } from "./mock-reasoner";
 export { OpenAIReasoner } from "./openai-reasoner";
 
 let singleton: Reasoner | undefined;

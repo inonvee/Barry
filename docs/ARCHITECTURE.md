@@ -23,8 +23,8 @@ src/
     tools/             Tool registry: schemas + simulated execution adapters
     policy/            Policy Engine: decide() -> allowed/limited/approval/denied
     state/             ConversationState types + in-memory persistence
-    reasoner/          Reasoner interface + MockReasoner (deterministic, no LLM key needed)
-    runtime/           The Observe->Update loop that ties everything together
+    reasoner/          Reasoner interface (understand -> BARRY IR) + MockReasoner + OpenAIReasoner
+    runtime/           The Observe->Update loop + the deterministic Action Compiler
     store/             BarryBackend: simulated bookings/inventory/payments/approvals
   app/
     simulator/         Mobile-first engineering cockpit (chat + inspector + approvals)
@@ -39,18 +39,24 @@ __tests__/             Vitest: policy, tools, and full scenario tests per busine
 Implemented in `src/lib/runtime/engine.ts`, function `handleCustomerMessage`:
 
 1. **Observe** — append the incoming customer message to `ConversationState`.
-2. **Understand** — `Reasoner.plan()` extracts intent/entities from the
-   message using only the Business Graph (offers, required info) as context.
-3. **Retrieve** — the same `plan()` call surfaces which offers and knowledge
-   items were relevant, for explainability.
-4. **Plan** — the reasoner decides the next `stage` and, if applicable, the
-   next tool call (`action: { name, input }`).
-5. **Authorize** — `decide()` in the Policy Engine evaluates the action
-   against the Business Graph's policies. This is the **only** gate an
-   action passes through; nothing in the runtime calls a tool without it.
+2. **Understand** — `Reasoner.understand()` turns the message into
+   **BARRY IR** (`src/lib/reasoner/ir.ts`): intent, entities, constraints
+   (a day/time, party size, discount %...), known-field updates, and at
+   most a *candidate* offer. A Reasoner never decides what tool to call —
+   see `docs/BARRY_RUNTIME.md` for why that split exists.
+3. **Retrieve** — relevant offers/knowledge are surfaced for the Inspector.
+4. **Compile** — the deterministic Action Compiler
+   (`src/lib/runtime/compiler.ts`) takes that IR plus accumulated
+   `ConversationState` plus the Business Graph and decides what happens
+   next: either a fully-assembled, schema-validated tool call, or exactly
+   what's still missing to ask for.
+5. **Authorize** — `decide()` in the Policy Engine evaluates the compiled
+   action against the Business Graph's policies. This is the **only** gate
+   an action passes through; nothing in the runtime calls a tool without it.
 6. **Act** — if allowed, `callTool()` validates input/output against Zod
-   schemas and executes the simulated adapter. If approval is required,
-   `requestApproval` is called instead and the action is parked.
+   schemas (again — defense in depth) and executes the simulated adapter.
+   If approval is required, `requestApproval` is called instead and the
+   action is parked.
 7. **Verify** — the tool's output is validated against its output schema;
    failures are surfaced back to the customer as a graceful failure, not a
    crash.
@@ -73,21 +79,24 @@ implementation of the `Reasoner` interface (`src/lib/reasoner/types.ts`).
 It reasons purely over Business Graph data — offer keyword matching,
 required-info tracking, date/discount extraction — and needs no API key.
 This is what lets the simulator, CI, and the test suite run identically
-with or without network access to an LLM provider, and it forces the state
-machine to be explicit rather than "whatever the last prompt produced."
+with or without network access to an LLM provider.
 
-A real `OpenAIReasoner` can implement the same interface later
-(`plan()` + `composeResponse()`) and be swapped in via
-`getReasoner()` (`src/lib/reasoner/index.ts`) without touching the runtime,
-policy engine, or tools.
+`OpenAIReasoner` (`src/lib/reasoner/openai-reasoner.ts`) implements the
+same interface and can be swapped in via `getReasoner()`
+(`src/lib/reasoner/index.ts`, env-driven) without touching the runtime,
+compiler, policy engine, or tools.
 
-## Why the LLM never touches the database directly
+## Why the LLM never touches the database — or constructs a tool call
 
-The reasoner's `plan()` output is a typed `PlanResult` (Zod-validatable
-shape, even though the mock reasoner produces it directly). The runtime is
-the only code that turns that plan into a policy check and a tool call.
-An LLM-backed reasoner would produce the same shape — it cannot invoke a
-tool, mutate state, or bypass the policy engine on its own.
+A Reasoner's `understand()` output is BARRY IR: intent, entities,
+constraints, candidate offers. There is no field for a tool name or tool
+input anywhere in that shape — an LLM literally cannot express "call this
+tool with this input," even if it tried. The deterministic Action
+Compiler (`docs/BARRY_RUNTIME.md`) is the only code that ever turns IR
+into a `ToolCall`, and it validates that call against the tool's real Zod
+schema before the runtime acts on it. This is a structural guarantee, not
+a filter applied after the fact — see `docs/BARRY_RUNTIME.md` for the
+real bug this was built to make impossible.
 
 ## Persistence strategy for Phase 1
 
@@ -113,17 +122,23 @@ had in place — no runtime/policy/tool code changed to support either:
   so `npm test` and local dev without those vars are unaffected. See
   `docs/DEPLOYMENT.md` for the schema and env vars.
 - **`OpenAIReasoner`** (`src/lib/reasoner/openai-reasoner.ts`) implements
-  the same `Reasoner` interface as `MockReasoner`. It asks an LLM for a
-  structured plan (Zod-validated against `LlmPlanSchema`), then
-  **re-validates it against the real Business Graph** before the runtime
-  ever sees it: an offer id that doesn't exist is dropped, an action name
-  not in `graph.availableActions` (intersected with the tool registry) is
-  dropped. The Policy Engine would deny an unlisted action anyway — this
-  is failing safe one layer earlier. `getReasoner()` picks it when
-  `BARRY_REASONER=openai` and `OPENAI_API_KEY` are both set.
+  the same `Reasoner` interface as `MockReasoner`. `getReasoner()` picks it
+  when `BARRY_REASONER=openai` and `OPENAI_API_KEY` are both set.
 
-Every `TurnLog` now records which reasoner produced it (`"mock" | "llm"`),
+Every `TurnLog` records which reasoner produced it (`"mock" | "llm"`),
 surfaced in the simulator's Inspector tab.
+
+## Phase 1.5.1: BARRY IR and the Action Compiler
+
+A real failure surfaced testing `OpenAIReasoner` against the live
+deployment: the model proposed `checkAvailability` with an incomplete
+input (missing the required `earliest`), and it reached `callTool()`
+before being rejected — a broken turn instead of a clarifying question.
+See `docs/BARRY_RUNTIME.md` ("Why understanding and deciding are
+separate") for the full fix: Reasoners now produce BARRY IR only, and a
+new deterministic Action Compiler (`src/lib/runtime/compiler.ts`) is the
+sole author of any tool call, validated against the tool's real schema
+before it can exist as an `"action"` outcome at all.
 
 ## Explainability
 
