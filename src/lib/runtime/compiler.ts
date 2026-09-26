@@ -99,7 +99,19 @@ export function compile(graph: BusinessGraph, state: ConversationState, ir: Barr
   if (ir.constraints.slotAccepted) {
     scratchUpdate[SCRATCH_KEYS.slotAccepted] = "1";
   }
-  Object.assign(state.knownFields, scratchUpdate, ir.knownFieldsUpdate);
+  // `knownFieldsUpdate` is a free-form key/value bag (customer-info answers
+  // like name/email/phone) — a reasoner controls the KEY NAMES, not just
+  // the values. `__`-prefixed keys are the compiler's own scratch
+  // namespace (booking slots, payment/approval state, discount %, ...);
+  // never let untrusted IR set one directly, or a hallucinating/adversarial
+  // model could fabricate e.g. `{ key: "__paid", value: "1" }` and have it
+  // treated as a verified payment confirmation without the payment tool
+  // ever having run. Only the runtime (patchStateAfterTool, webhook
+  // handlers) may ever write a scratch key.
+  const safeKnownFieldsUpdate = Object.fromEntries(
+    Object.entries(ir.knownFieldsUpdate).filter(([key]) => !key.startsWith("__"))
+  );
+  Object.assign(state.knownFields, scratchUpdate, safeKnownFieldsUpdate);
   const known = state.knownFields;
 
   let selectedOfferId = resolveOfferId(graph, state, ir);
