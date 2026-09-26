@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import type { BusinessGraph } from "@/lib/business-graph";
 import { findOffer } from "@/lib/business-graph";
-import { LlmIRSchema, type LlmIR } from "./schemas";
+import { LlmIRSchema, irJsonSchema, type LlmIR, type KeyValuePair } from "./schemas";
 import { composeDeterministic } from "./deterministic-compose";
 import { logReasonerFailure } from "./diagnostics";
 import type { BarryIR, ComposeResponseInput, Reasoner, ReasonerContext } from "./types";
@@ -58,78 +58,76 @@ constraints, known-field updates). You do NOT decide what BARRY does next —
 a separate deterministic system does that from the Business Graph. You have
 no tools and cannot execute anything.
 
+Every field in the schema is always present in your response. Use null for
+"not applicable" and an empty array for "none" — never omit a field.
+"entities" and "knownFieldsUpdate" are arrays of { key, value } pairs, not
+objects, because the schema can't express an open-ended dictionary.
+
 Rules you must never break:
 - Never invent prices, availability, inventory, policies, business hours, or payment status — you don't decide those; you only extract what the customer said.
-- "constraints.schedulingWindow.earliest" must be a real ISO datetime you computed from what the customer said (a day/time), or omit it entirely — never a placeholder.
+- "constraints.schedulingWindow.earliest" must be a real ISO datetime you computed from what the customer said (a day/time), or null if none was mentioned this turn — never a placeholder.
 - Accumulate information across turns: a day/time/party-size/service mentioned earlier (visible in knownFields/recentMessages) is still true unless the customer changed it — repeat it in constraints/knownFieldsUpdate so it isn't lost.
 - If multiple offers plausibly match, list them in offerCandidateIds and leave selectedOfferId null — do not guess.
-- requestedCapability is advisory only (e.g. "ask_price" when they ask how much something costs). Leave it null if unsure.
+- requestedCapability is advisory only (e.g. "ask_price" when they ask how much something costs). Use null if unsure.
 - Output strict JSON matching the provided schema. No explanation outside the JSON.`;
 
-function irJsonSchema() {
-  return {
-    name: "barry_ir",
-    strict: false,
-    schema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        intent: { type: "string" },
-        selectedOfferId: { type: ["string", "null"] },
-        offerCandidateIds: { type: ["array", "null"], items: { type: "string" } },
-        entities: { type: "object" },
-        constraints: {
-          type: "object",
-          properties: {
-            schedulingWindow: {
-              type: ["object", "null"],
-              properties: {
-                earliest: { type: "string" },
-                latest: { type: ["string", "null"] },
-              },
-              required: ["earliest"],
-            },
-            partySize: { type: ["number", "null"] },
-            discountPct: { type: ["number", "null"] },
-            slotAccepted: { type: ["boolean", "null"] },
-          },
-        },
-        knownFieldsUpdate: { type: "object" },
-        requestedCapability: { type: ["string", "null"] },
-        goal: {
-          type: ["string", "null"],
-          enum: ["completePurchase", "bookAppointment", "collectDeposit", "qualifyLead", "requestQuote", null],
-        },
-      },
-      required: ["intent", "selectedOfferId", "offerCandidateIds", "knownFieldsUpdate", "requestedCapability", "goal"],
-    },
-  };
+function kvArrayToRecord(pairs: KeyValuePair[]): Record<string, string> {
+  return Object.fromEntries(pairs.map((p) => [p.key, p.value]));
 }
 
 /** Never trust the model's offer id/candidates without checking they exist on this business. */
-function sanitizeIR(graph: BusinessGraph, raw: LlmIR): BarryIR {
+export function sanitizeIR(graph: BusinessGraph, raw: LlmIR): BarryIR {
   const selectedOfferId =
     raw.selectedOfferId && findOffer(graph, raw.selectedOfferId) ? raw.selectedOfferId : undefined;
 
-  const offerCandidateIds = (raw.offerCandidateIds ?? []).filter((id) => findOffer(graph, id));
+  const offerCandidateIds = raw.offerCandidateIds.filter((id) => findOffer(graph, id));
 
   return {
     intent: raw.intent,
     selectedOfferId,
     offerCandidateIds: offerCandidateIds.length > 0 ? offerCandidateIds : undefined,
-    entities: raw.entities,
+    entities: kvArrayToRecord(raw.entities),
     constraints: {
-      schedulingWindow: raw.constraints.schedulingWindow
-        ? { earliest: raw.constraints.schedulingWindow.earliest, latest: raw.constraints.schedulingWindow.latest ?? undefined }
-        : undefined,
+      schedulingWindow:
+        raw.constraints.schedulingWindow?.earliest
+          ? { earliest: raw.constraints.schedulingWindow.earliest, latest: raw.constraints.schedulingWindow.latest ?? undefined }
+          : undefined,
       partySize: raw.constraints.partySize ?? undefined,
       discountPct: raw.constraints.discountPct ?? undefined,
       slotAccepted: raw.constraints.slotAccepted ?? undefined,
     },
-    knownFieldsUpdate: raw.knownFieldsUpdate,
+    knownFieldsUpdate: kvArrayToRecord(raw.knownFieldsUpdate),
     requestedCapability: raw.requestedCapability ?? undefined,
     goal: raw.goal ?? undefined,
   };
+}
+
+export type ParseIRResult = { ok: true; ir: BarryIR } | { ok: false; kind: "json_parse_error" | "schema_validation_error"; detail: string };
+
+/**
+ * Pure parse+validate+sanitize pipeline for a raw completion string, with
+ * no network I/O — this is what makes the failure modes unit-testable
+ * without mocking the OpenAI client. `understand()` below is a thin
+ * network wrapper around this.
+ */
+export function parseIRResponse(graph: BusinessGraph, raw: string): ParseIRResult {
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return { ok: false, kind: "json_parse_error", detail: raw.slice(0, 200) };
+  }
+
+  const parsed = LlmIRSchema.safeParse(json);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      kind: "schema_validation_error",
+      detail: parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.code}`).join("; "),
+    };
+  }
+
+  return { ok: true, ir: sanitizeIR(graph, parsed.data) };
 }
 
 function emptyIR(intent: string): BarryIR {
@@ -175,23 +173,12 @@ export class OpenAIReasoner implements Reasoner {
         return null;
       }
 
-      let json: unknown;
-      try {
-        json = JSON.parse(raw);
-      } catch {
-        logReasonerFailure("json_parse_error", { rawPreview: raw.slice(0, 200) });
+      const result = parseIRResponse(ctx.graph, raw);
+      if (!result.ok) {
+        logReasonerFailure(result.kind, { detail: result.detail });
         return null;
       }
-
-      const parsed = LlmIRSchema.safeParse(json);
-      if (!parsed.success) {
-        logReasonerFailure("schema_validation_error", {
-          issues: parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.code}`),
-        });
-        return null;
-      }
-
-      return sanitizeIR(ctx.graph, parsed.data);
+      return result.ir;
     };
 
     const first = await attempt();
