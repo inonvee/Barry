@@ -6,7 +6,7 @@ import { callTool } from "@/lib/tools";
 import type { ToolCallResult, ToolContext } from "@/lib/tools";
 import { getConversationStore } from "@/lib/state";
 import type { ConversationState, TurnLog } from "@/lib/state";
-import { getBackend } from "@/lib/store/memory-backend";
+import { getBackend } from "@/lib/store";
 
 /**
  * The BARRY runtime: Observe -> Understand -> Retrieve -> Plan -> Authorize
@@ -75,7 +75,7 @@ export async function handleCustomerMessage(
   message: string
 ): Promise<TurnOutcome> {
   const store = getConversationStore();
-  const state = store.getOrCreate(conversationId, graph.business.id, customerId);
+  const state = await store.getOrCreate(conversationId, graph.business.id, customerId);
   const now = new Date().toISOString();
   state.messages.push({ role: "customer", content: message, at: now });
 
@@ -151,10 +151,11 @@ export async function handleCustomerMessage(
       : undefined,
     response,
     stateAfter: { stage: state.stage, selectedOfferId: state.selectedOfferId, outcome: state.outcome },
+    reasoner: reasoner.name,
   };
   state.turns.push(turn);
 
-  store.save(state);
+  await store.save(state);
   return { state, turn, response };
 }
 
@@ -172,14 +173,14 @@ export async function handlePaymentOutcome(
   await backend.simulatePaymentOutcome(paymentRequestId, outcome);
 
   const store = getConversationStore();
-  const state = store.get(conversationId);
+  const state = await store.get(conversationId);
   if (!state) throw new Error(`Conversation ${conversationId} not found`);
 
   if (outcome === "failed") {
     const response = `Your payment didn't go through. Want to try again or use a different method?`;
     state.messages.push({ role: "system", content: `Payment ${paymentRequestId} failed`, at: new Date().toISOString() });
     state.messages.push({ role: "barry", content: response, at: new Date().toISOString() });
-    store.save(state);
+    await store.save(state);
     return {
       state,
       turn: {
@@ -190,6 +191,7 @@ export async function handlePaymentOutcome(
         retrieved: { offerIds: [], knowledgeIds: [] },
         response,
         stateAfter: { stage: state.stage },
+        reasoner: getReasoner().name,
       },
       response,
     };
@@ -211,7 +213,7 @@ export async function resumeAfterApproval(
   const approval = await backend.resolveApproval(approvalId, decision, decidedBy, alternateValue);
 
   const store = getConversationStore();
-  const state = store.get(approval.conversationId);
+  const state = await store.get(approval.conversationId);
   if (!state) throw new Error(`Conversation ${approval.conversationId} not found`);
 
   const ctx: ToolContext = { graph, conversationId: approval.conversationId, customerId: approval.customerId };
@@ -259,9 +261,10 @@ export async function resumeAfterApproval(
       : undefined,
     response,
     stateAfter: { stage: state.stage, outcome: state.outcome },
+    reasoner: reasoner.name,
   };
   state.turns.push(turn);
 
-  store.save(state);
+  await store.save(state);
   return { state, turn, response };
 }

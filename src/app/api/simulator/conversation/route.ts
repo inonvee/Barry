@@ -6,6 +6,6 @@ export async function GET(req: NextRequest) {
   if (!conversationId) {
     return NextResponse.json({ error: "conversationId is required" }, { status: 400 });
   }
-  const state = getConversationStore().get(conversationId);
+  const state = await getConversationStore().get(conversationId);
   return NextResponse.json({ state: state ?? null });
 }

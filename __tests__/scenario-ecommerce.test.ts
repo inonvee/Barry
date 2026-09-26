@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { handleCustomerMessage, handlePaymentOutcome, resumeAfterApproval } from "@/lib/runtime";
 import { buildEcommerceBagsGraph } from "@/lib/fixtures/ecommerce-bags";
-import { getBackend } from "@/lib/store/memory-backend";
+import { getBackend } from "@/lib/store";
 
 describe("scenario: ecommerce bag store", () => {
   it("completes a purchase end-to-end with no human intervention", async () => {

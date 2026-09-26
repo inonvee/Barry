@@ -28,10 +28,24 @@ function missingCustomerInfo(offer: Offer, known: Record<string, string>): strin
 }
 
 export class MockReasoner implements Reasoner {
+  readonly name = "mock" as const;
+
   async plan(ctx: ReasonerContext): Promise<PlanResult> {
     const { graph, state, customerMessage } = ctx;
     const entities = extractEntities(customerMessage);
     const known = state.knownFields;
+
+    // Persist anything the customer mentioned this turn — regardless of
+    // whether an offer is identified yet — so nothing is lost while BARRY
+    // is still narrowing down which offer they mean.
+    const knownFieldsUpdate: Record<string, string> = {};
+    if (entities.earliest) knownFieldsUpdate.__mentionedEarliest = entities.earliest;
+    if (entities.latest) knownFieldsUpdate.__mentionedLatest = entities.latest;
+    if (entities.partySize > 1) knownFieldsUpdate.__mentionedPartySize = String(entities.partySize);
+    if (entities.discountPct) knownFieldsUpdate[K.discountPct] = String(entities.discountPct);
+    if (entities.accepted) knownFieldsUpdate.__slotAccepted = "1";
+
+    const mergedKnownPreOffer = { ...known, ...knownFieldsUpdate };
 
     let selectedOfferId = state.selectedOfferId;
     let retrievedOfferIds: string[] = [];
@@ -39,7 +53,29 @@ export class MockReasoner implements Reasoner {
     if (!selectedOfferId) {
       const candidates = findOfferCandidates(graph, customerMessage);
       retrievedOfferIds = candidates.map((o) => o.id);
-      if (candidates.length >= 1) selectedOfferId = candidates[0].id;
+      if (candidates.length === 1) {
+        selectedOfferId = candidates[0].id;
+      } else if (candidates.length === 0 && mergedKnownPreOffer.__mentionedEarliest) {
+        // No offer named yet, but scheduling intent is clear (a day/time was
+        // mentioned). Narrow by which offers actually require scheduling
+        // instead of asking a generic "what are you looking for?" again.
+        const schedulable = graph.offers.filter((o) => o.active && o.requiresScheduling);
+        if (schedulable.length === 1) {
+          selectedOfferId = schedulable[0].id;
+        } else if (schedulable.length > 1) {
+          return {
+            intent: "discovery",
+            entities: entities as Record<string, unknown>,
+            retrievedOfferIds: schedulable.map((o) => o.id),
+            retrievedKnowledgeIds: [],
+            knownFieldsUpdate,
+            missingFields: [],
+            action: null,
+            stage: "discovery",
+            directResponse: `Sure — is that for ${schedulable.map((o) => o.name).join(" or ")}?`,
+          };
+        }
+      }
     }
 
     const retrievedKnowledgeIds = knowledgeSearch(graph, customerMessage).map((k) => k.id);
@@ -49,7 +85,7 @@ export class MockReasoner implements Reasoner {
       entities: entities as Record<string, unknown>,
       retrievedOfferIds,
       retrievedKnowledgeIds,
-      knownFieldsUpdate: {} as Record<string, string>,
+      knownFieldsUpdate,
       missingFields: [] as string[],
       action: null,
     };
@@ -73,15 +109,13 @@ export class MockReasoner implements Reasoner {
     const offer = findOffer(graph, selectedOfferId)!;
 
     // Merge simple field extraction (email/phone) into known fields for any offer that needs them.
-    const knownFieldsUpdate: Record<string, string> = {};
-    if (entities.earliest) knownFieldsUpdate.__mentionedEarliest = entities.earliest;
-    if (entities.latest) knownFieldsUpdate.__mentionedLatest = entities.latest;
-    if (entities.partySize > 1) knownFieldsUpdate.__mentionedPartySize = String(entities.partySize);
-    if (entities.discountPct) knownFieldsUpdate[K.discountPct] = String(entities.discountPct);
-    if (entities.accepted) knownFieldsUpdate.__slotAccepted = "1";
     if (entities.email && offer.requiredCustomerInfo.includes("email")) knownFieldsUpdate.email = entities.email;
     if (entities.phone && offer.requiredCustomerInfo.includes("phone")) knownFieldsUpdate.phone = entities.phone;
     if (
+      // Only treat the raw message as "the name" when BARRY's previous turn
+      // was actually asking for it — otherwise short messages like "Couples"
+      // or "Sunday" get misread as a name.
+      state.missingFields[0] === "name" &&
       offer.requiredCustomerInfo.includes("name") &&
       !known.name &&
       !knownFieldsUpdate.email &&

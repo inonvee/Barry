@@ -35,6 +35,8 @@ export type TurnLog = {
   toolResult?: { ok: boolean; output?: unknown; error?: string };
   response: string;
   stateAfter: Partial<ConversationState>;
+  /** Which Reasoner implementation produced this turn — surfaced in the Inspector. */
+  reasoner: "mock" | "llm";
 };
 
 export type ConversationState = {
@@ -55,6 +57,18 @@ export type ConversationState = {
   createdAt: string;
   updatedAt: string;
 };
+
+/**
+ * Persistence interface for conversation state. `memory-store.ts` and
+ * `supabase-store.ts` both implement this; the runtime only ever depends
+ * on this interface via `getConversationStore()`.
+ */
+export interface ConversationStore {
+  get(id: string): Promise<ConversationState | undefined>;
+  getOrCreate(id: string, businessId: string, customerId: string): Promise<ConversationState>;
+  save(state: ConversationState): Promise<void>;
+  listByBusiness(businessId: string): Promise<ConversationState[]>;
+}
 
 export function createInitialConversationState(
   id: string,

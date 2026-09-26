@@ -84,6 +84,27 @@ changing `definitions.ts` only.
   BARRY message to the conversation — the customer sees a natural
   continuation, not a dead end.
 
+## LLM reasoner: what it can and can't do
+
+`OpenAIReasoner.plan()` sends a deliberately small context (business
+tone, active offers' user-facing fields, known/missing fields, the
+current stage, the last ~8 messages, and the list of action names this
+business actually allows) — never the full Business Graph, and never raw
+policy values or tool schemas. It asks for JSON matching `LlmPlanSchema`
+and validates the response twice: once structurally (Zod), once
+semantically (does `selectedOfferId` refer to a real offer? is
+`action.name` actually allowed for this business?). Anything that fails
+either check is dropped rather than passed through, and after one retry a
+generic safe clarification is returned instead of ever letting an invented
+fact or action reach the runtime.
+
+The LLM never calls a tool, never touches the database, and never
+influences a policy decision directly — it only ever proposes `{ name,
+input }`, exactly like `MockReasoner` does. `composeResponse()` is a
+second, separate call that only phrases the customer-facing message from
+a tool result the runtime already obtained; it's given the actual tool
+output/error and told explicitly not to describe anything beyond it.
+
 ## Asynchronous events
 
 `handlePaymentOutcome(graph, conversationId, paymentRequestId, outcome)`

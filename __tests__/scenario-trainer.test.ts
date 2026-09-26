@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { handleCustomerMessage, resumeAfterApproval } from "@/lib/runtime";
 import { buildPersonalTrainerGraph } from "@/lib/fixtures/personal-trainer";
-import { getBackend } from "@/lib/store/memory-backend";
+import { getBackend } from "@/lib/store";
 
 describe("scenario: personal trainer", () => {
   it("books a free consultation entirely on its own at 4am (24/7 principle)", async () => {

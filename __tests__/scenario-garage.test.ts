@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { handleCustomerMessage, handlePaymentOutcome, resumeAfterApproval } from "@/lib/runtime";
 import { buildGarageGraph } from "@/lib/fixtures/garage";
-import { getBackend } from "@/lib/store/memory-backend";
+import { getBackend } from "@/lib/store";
 
 describe("scenario: garage / automotive service", () => {
   it("books a free brake inspection with zero human involvement (no payment required)", async () => {

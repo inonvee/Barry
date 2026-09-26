@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineTool } from "./types";
 import { findOffer, resourcesByType, inventoryFor } from "@/lib/business-graph";
-import { getBackend } from "@/lib/store/memory-backend";
+import { getBackend } from "@/lib/store";
 
 /**
  * Simulated tool adapters. Each mirrors what a real integration (Google

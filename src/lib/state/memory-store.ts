@@ -1,18 +1,18 @@
-import { createInitialConversationState, type ConversationState } from "./types";
+import { createInitialConversationState, type ConversationState, type ConversationStore } from "./types";
 
 /**
- * Conversation state persistence. In-memory for Phase 1; the interface
- * shape (get/save/list by business) is what a Supabase-backed table-per-row
- * implementation would expose too.
+ * In-memory implementation of ConversationStore. Process-scoped — good for
+ * unit tests and local dev, not durable across serverless cold starts.
+ * See supabase-store.ts for the persistent implementation.
  */
-class ConversationStore {
+export class MemoryConversationStore implements ConversationStore {
   private conversations = new Map<string, ConversationState>();
 
-  get(id: string): ConversationState | undefined {
+  async get(id: string): Promise<ConversationState | undefined> {
     return this.conversations.get(id);
   }
 
-  getOrCreate(id: string, businessId: string, customerId: string): ConversationState {
+  async getOrCreate(id: string, businessId: string, customerId: string): Promise<ConversationState> {
     const existing = this.conversations.get(id);
     if (existing) return existing;
     const fresh = createInitialConversationState(id, businessId, customerId);
@@ -20,12 +20,12 @@ class ConversationStore {
     return fresh;
   }
 
-  save(state: ConversationState): void {
+  async save(state: ConversationState): Promise<void> {
     state.updatedAt = new Date().toISOString();
     this.conversations.set(state.id, state);
   }
 
-  listByBusiness(businessId: string): ConversationState[] {
+  async listByBusiness(businessId: string): Promise<ConversationState[]> {
     return [...this.conversations.values()].filter((c) => c.businessId === businessId);
   }
 
@@ -34,9 +34,9 @@ class ConversationStore {
   }
 }
 
-let singleton: ConversationStore | undefined;
+let singleton: MemoryConversationStore | undefined;
 
-export function getConversationStore(): ConversationStore {
-  if (!singleton) singleton = new ConversationStore();
+export function getMemoryConversationStore(): MemoryConversationStore {
+  if (!singleton) singleton = new MemoryConversationStore();
   return singleton;
 }

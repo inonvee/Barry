@@ -99,6 +99,32 @@ deliberate Phase 1 simplification: Vercel serverless functions do not
 guarantee a warm process between requests, so state may reset between
 cold starts. See `docs/DEPLOYMENT.md`.
 
+## Phase 1.5: persistence and the LLM reasoner
+
+Two things changed in Phase 1.5, both behind the interfaces Phase 1 already
+had in place — no runtime/policy/tool code changed to support either:
+
+- **Supabase persistence.** `SupabaseConversationStore`
+  (`src/lib/state/supabase-store.ts`) and `SupabaseBackend`
+  (`src/lib/store/supabase-backend.ts`) implement the same
+  `ConversationStore` / `BarryBackend` interfaces the in-memory versions
+  do. `getConversationStore()` / `getBackend()` pick Supabase when
+  `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` are set, otherwise memory —
+  so `npm test` and local dev without those vars are unaffected. See
+  `docs/DEPLOYMENT.md` for the schema and env vars.
+- **`OpenAIReasoner`** (`src/lib/reasoner/openai-reasoner.ts`) implements
+  the same `Reasoner` interface as `MockReasoner`. It asks an LLM for a
+  structured plan (Zod-validated against `LlmPlanSchema`), then
+  **re-validates it against the real Business Graph** before the runtime
+  ever sees it: an offer id that doesn't exist is dropped, an action name
+  not in `graph.availableActions` (intersected with the tool registry) is
+  dropped. The Policy Engine would deny an unlisted action anyway — this
+  is failing safe one layer earlier. `getReasoner()` picks it when
+  `BARRY_REASONER=openai` and `OPENAI_API_KEY` are both set.
+
+Every `TurnLog` now records which reasoner produced it (`"mock" | "llm"`),
+surfaced in the simulator's Inspector tab.
+
 ## Explainability
 
 Every turn is logged as a `TurnLog` (`src/lib/state/types.ts`) capturing

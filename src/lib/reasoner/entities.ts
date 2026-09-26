@@ -22,6 +22,11 @@ const TIME_WORDS: Record<string, string> = {
   morning: "09:00",
   afternoon: "14:00",
   evening: "18:00",
+  "after lunch": "14:00",
+};
+const NUMBER_WORDS: Record<string, number> = {
+  one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7,
+  eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
 };
 
 export type ExtractedEntities = {
@@ -44,21 +49,49 @@ function nextWeekday(now: Date, weekday: number): Date {
 }
 
 function parseTimeToken(text: string): { hour: number; minute: number } | undefined {
-  const explicit = text.match(/(\d{1,2})(:(\d{2}))?\s*(am|pm)/i);
-  if (explicit) {
-    let hour = parseInt(explicit[1], 10);
-    const minute = explicit[3] ? parseInt(explicit[3], 10) : 0;
-    const meridiem = explicit[4].toLowerCase();
+  // "3pm", "3:30 pm"
+  const withMeridiem = text.match(/(\d{1,2})(:(\d{2}))?\s*(am|pm)/i);
+  if (withMeridiem) {
+    let hour = parseInt(withMeridiem[1], 10);
+    const minute = withMeridiem[3] ? parseInt(withMeridiem[3], 10) : 0;
+    const meridiem = withMeridiem[4].toLowerCase();
     if (meridiem === "pm" && hour < 12) hour += 12;
     if (meridiem === "am" && hour === 12) hour = 0;
     return { hour, minute };
   }
+
+  // 24-hour "13:00" / "9:30"
+  const twentyFourHour = text.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
+  if (twentyFourHour) {
+    return { hour: parseInt(twentyFourHour[1], 10), minute: parseInt(twentyFourHour[2], 10) };
+  }
+
   for (const [word, time] of Object.entries(TIME_WORDS)) {
     if (text.includes(word)) {
       const [h, m] = time.split(":").map(Number);
       return { hour: h, minute: m };
     }
   }
+
+  // Bare number: "around 1", "at 3" — assume afternoon for small hours,
+  // since that's the common case for a same-day/near-term booking request.
+  const bareNumber = text.match(/\b(?:at|around|for)\s+(\d{1,2})\b/);
+  if (bareNumber) {
+    let hour = parseInt(bareNumber[1], 10);
+    if (hour >= 1 && hour <= 7) hour += 12;
+    return { hour, minute: 0 };
+  }
+
+  // Word numbers: "around one", "at three"
+  const wordNumberMatch = text.match(
+    /\b(?:at|around|for)\s+(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b/
+  );
+  if (wordNumberMatch) {
+    let hour = NUMBER_WORDS[wordNumberMatch[1]];
+    if (hour >= 1 && hour <= 7) hour += 12;
+    return { hour, minute: 0 };
+  }
+
   return undefined;
 }
 

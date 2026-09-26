@@ -39,6 +39,8 @@ export type ComposeResponseInput = {
  * changing what `getReasoner()` returns.
  */
 export interface Reasoner {
+  /** Surfaced in the simulator Inspector and persisted on every TurnLog. */
+  readonly name: "mock" | "llm";
   plan(ctx: ReasonerContext): Promise<PlanResult>;
   composeResponse(ctx: ReasonerContext, input: ComposeResponseInput): Promise<string>;
 }

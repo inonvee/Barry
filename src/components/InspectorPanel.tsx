@@ -43,6 +43,20 @@ export function InspectorPanel({ state }: { state: ConversationState | null }) {
 
   return (
     <div className="space-y-3 p-3 overflow-y-auto h-full">
+      {lastTurn && (
+        <div className="flex items-center gap-2">
+          <span
+            className={`text-xs font-semibold px-2 py-1 rounded-full ${
+              lastTurn.reasoner === "llm"
+                ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-200"
+                : "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300"
+            }`}
+          >
+            Reasoner: {lastTurn.reasoner === "llm" ? "LLM" : "Mock"}
+          </span>
+        </div>
+      )}
+
       <Section title="Conversation state">
         <Kv k="Stage" v={state.stage} />
         <Kv k="Intent" v={state.detectedIntent ?? "—"} />
