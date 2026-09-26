@@ -1,0 +1,85 @@
+import { BusinessGraphSchema, type BusinessGraph } from "@/lib/business-graph";
+
+export function buildFurnitureStoreGraph(): BusinessGraph {
+  return BusinessGraphSchema.parse({
+    business: {
+      id: "furniture-store",
+      name: "Oakhaven Furniture",
+      description: "Furniture showroom selling sofas, tables, and custom pieces.",
+      locale: "en-US",
+      timezone: "America/New_York",
+      tone: { voice: "professional", formality: "neutral", emojiOk: false },
+      operatingHours: [
+        { day: "mon", open: "10:00", close: "19:00" },
+        { day: "tue", open: "10:00", close: "19:00" },
+        { day: "wed", open: "10:00", close: "19:00" },
+        { day: "thu", open: "10:00", close: "19:00" },
+        { day: "fri", open: "10:00", close: "19:00" },
+        { day: "sat", open: "10:00", close: "17:00" },
+      ],
+    },
+    capabilities: { requiresInventory: true, requiresPayment: true, requiresApproval: true },
+    offers: [
+      {
+        id: "offer-sofa",
+        kind: "product",
+        name: "Harlow 3-Seat Sofa",
+        description: "Performance-fabric sofa, sold in-stock.",
+        price: 1299,
+        currency: "USD",
+        requiresInventory: true,
+        sku: "SKU-SOFA-HARLOW",
+        requiredCustomerInfo: ["name", "email"],
+        requiresPayment: true,
+        depositAmount: 200,
+      },
+      {
+        id: "offer-dining-table",
+        kind: "product",
+        name: "Birchwood Dining Table",
+        description: "Solid birch dining table, seats 6.",
+        price: 899,
+        currency: "USD",
+        requiresInventory: true,
+        sku: "SKU-TABLE-BIRCH",
+        requiredCustomerInfo: ["name", "email"],
+        requiresPayment: true,
+      },
+      {
+        id: "offer-custom-order",
+        kind: "quote",
+        name: "Custom Furniture Order",
+        description: "Custom-built furniture to your specifications.",
+        price: null,
+        currency: "USD",
+        requiredCustomerInfo: ["name", "email"],
+        requiresPayment: false,
+      },
+    ],
+    resources: [],
+    availability: [],
+    inventory: [
+      { sku: "SKU-SOFA-HARLOW", quantityOnHand: 3 },
+      { sku: "SKU-TABLE-BIRCH", quantityOnHand: 5 },
+    ],
+    knowledge: [
+      { id: "know-delivery", topic: "delivery", content: "White-glove delivery within 2 weeks for in-stock items.", kind: "faq" },
+      { id: "know-custom-lead-time", topic: "custom lead time", content: "Custom orders take 8-10 weeks and require a signed quote.", kind: "product_info" },
+    ],
+    policies: [
+      { id: "pol-discount", description: "Max automatic discount", rule: { type: "max_auto_discount_pct", value: 5 } },
+      { id: "pol-refund", description: "Refunds need approval", rule: { type: "refund_requires_approval", value: true } },
+      { id: "pol-custom-price", description: "Custom pricing needs approval", rule: { type: "custom_pricing_requires_approval", value: true } },
+      { id: "pol-max-payment", description: "Max automatic payment amount", rule: { type: "max_auto_payment_amount", value: 2000 } },
+    ],
+    availableActions: [
+      { name: "checkInventory" },
+      { name: "createPaymentRequest" },
+      { name: "requestApproval" },
+      { name: "createFollowUp" },
+      { name: "fulfillOrder" },
+      { name: "createLead" },
+    ],
+    goals: ["completePurchase", "requestQuote", "qualifyLead"],
+  });
+}
