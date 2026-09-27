@@ -8,10 +8,17 @@ const STOPWORDS = new Set([
   "book", "booking", "chance", "some", "your", "our", "off", "get",
 ]);
 
+/**
+ * Unicode-aware: keeps any letter/digit in any script (Hebrew included),
+ * not just a-z0-9. Losing non-ASCII characters here was the root cause of
+ * a live bug where Hebrew offer references ("זוגי") never matched
+ * anything — every Hebrew letter was silently stripped before the
+ * token-overlap comparison ever ran.
+ */
 function tokenize(text: string): string[] {
   return text
     .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .split(/\s+/)
     .filter((w) => w.length > 2 && !STOPWORDS.has(w));
 }
@@ -43,6 +50,129 @@ const NUMBER_WORDS: Record<string, number> = {
   one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7,
   eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
 };
+
+/**
+ * Hebrew weekday forms — the full "יום X" phrase (safest: unambiguous)
+ * plus the bare compact form (ראשון/שני/... — same words also used as
+ * ordinals ("first"/"second"/...) in unrelated contexts, a real but
+ * accepted ambiguity, mirroring the same short-form tradeoff the English
+ * table above already makes for "sun"/"mon"/etc). No "next"-equivalent
+ * qualifier support yet — not requested, and Hebrew expresses it as a
+ * suffix ("הבא") rather than a prefix, which the matcher below doesn't
+ * attempt to parse.
+ */
+const HEBREW_WEEKDAY_TOKENS: { weekday: number; forms: string[] }[] = [
+  { weekday: 0, forms: ["יום ראשון", "ראשון"] },
+  { weekday: 1, forms: ["יום שני", "שני"] },
+  { weekday: 2, forms: ["יום שלישי", "שלישי"] },
+  { weekday: 3, forms: ["יום רביעי", "רביעי"] },
+  { weekday: 4, forms: ["יום חמישי", "חמישי"] },
+  { weekday: 5, forms: ["יום שישי", "שישי"] },
+  { weekday: 6, forms: ["יום שבת", "שבת"] },
+];
+
+const HEBREW_LETTER_RANGE = /[א-ת]/;
+// Standard single-letter Hebrew prepositions/conjunctions that attach
+// directly to the following word with no space ("ב"+"יום" = "ביום", "on
+// the day") — sometimes stacked two deep ("ו"+"ב" = "וב", "and on").
+const HEBREW_PREFIX_LETTERS = new Set(["ב", "ה", "ו", "כ", "ל", "מ", "ש"]);
+
+function isHebrewLetter(ch: string | undefined): boolean {
+  return ch !== undefined && HEBREW_LETTER_RANGE.test(ch);
+}
+
+/**
+ * Whole-token match for a Hebrew form, tolerant of up to two stacked
+ * single-letter prefixes glued directly onto the front (as Hebrew
+ * grammar requires — "ביום חמישי", not "יום חמישי", is how "on Thursday"
+ * is actually written). Still rejects the form being embedded inside an
+ * unrelated longer word: an ASCII `\b`-style boundary check, generalized
+ * to the Hebrew alphabet since `\b` itself only recognizes `[A-Za-z0-9_]`
+ * and never fires correctly around Hebrew letters.
+ */
+function matchHebrewToken(text: string, form: string): number | undefined {
+  let searchFrom = 0;
+  while (true) {
+    const idx = text.indexOf(form, searchFrom);
+    if (idx === -1) return undefined;
+    searchFrom = idx + 1;
+
+    if (isHebrewLetter(text[idx + form.length])) continue; // extends into a longer word
+
+    const before1 = idx > 0 ? text[idx - 1] : undefined;
+    if (!isHebrewLetter(before1)) return idx; // clean word start
+    if (!HEBREW_PREFIX_LETTERS.has(before1!)) continue; // embedded in an unrelated word
+
+    const before2 = idx > 1 ? text[idx - 2] : undefined;
+    if (!isHebrewLetter(before2)) return idx; // exactly one glued prefix letter
+    if (HEBREW_PREFIX_LETTERS.has(before2!)) {
+      const before3 = idx > 2 ? text[idx - 3] : undefined;
+      if (!isHebrewLetter(before3)) return idx; // two stacked prefix letters
+    }
+  }
+}
+
+function findExplicitWeekdayHebrew(text: string): { weekday: number; qualifier?: "next"; index: number } | undefined {
+  let best: { weekday: number; index: number } | undefined;
+  for (const { weekday, forms } of HEBREW_WEEKDAY_TOKENS) {
+    for (const form of forms) {
+      const idx = matchHebrewToken(text, form);
+      if (idx !== undefined && (best === undefined || idx < best.index)) {
+        best = { weekday, index: idx };
+      }
+    }
+  }
+  return best ? { ...best, qualifier: undefined } : undefined;
+}
+
+const HEBREW_NUMBER_WORDS: Record<string, number> = {
+  "אחת": 1, "שתיים": 2, "שניים": 2, "שלוש": 3, "ארבע": 4, "חמש": 5,
+  "שש": 6, "שבע": 7, "שמונה": 8, "תשע": 9, "עשר": 10,
+  "אחת עשרה": 11, "שתים עשרה": 12,
+};
+
+/**
+ * Hebrew explicit time forms: "ב3"/"ב-3" (glued), "בשעה 3"/"בשעה שלוש"
+ * ("at hour 3"/"at hour three"), "3 בצהריים"/"שלוש בצהריים" ("3/three in
+ * the afternoon" — an explicit PM marker, unlike the other two forms).
+ * Bare small hours (1-7) without an explicit AM/PM marker default to
+ * afternoon, the same booking-context convention English's
+ * `parseTimeToken` already uses for "at 3"/"around three".
+ */
+function parseHebrewTimeToken(text: string): { hour: number; minute: number } | undefined {
+  const explicitAfternoonDigit = text.match(/(\d{1,2})\s*בצהריים/);
+  if (explicitAfternoonDigit) {
+    let hour = parseInt(explicitAfternoonDigit[1], 10);
+    if (hour >= 1 && hour <= 11) hour += 12;
+    return { hour, minute: 0 };
+  }
+  for (const [word, num] of Object.entries(HEBREW_NUMBER_WORDS)) {
+    if (matchHebrewToken(text, `${word} בצהריים`) !== undefined) {
+      return { hour: num >= 1 && num <= 11 ? num + 12 : num, minute: 0 };
+    }
+  }
+
+  const hourWordDigit = text.match(/בשעה\s+(\d{1,2})\b/);
+  if (hourWordDigit) {
+    let hour = parseInt(hourWordDigit[1], 10);
+    if (hour >= 1 && hour <= 7) hour += 12;
+    return { hour, minute: 0 };
+  }
+  for (const [word, num] of Object.entries(HEBREW_NUMBER_WORDS)) {
+    if (matchHebrewToken(text, `בשעה ${word}`) !== undefined) {
+      return { hour: num >= 1 && num <= 7 ? num + 12 : num, minute: 0 };
+    }
+  }
+
+  const gluedDigit = text.match(/ב-?(\d{1,2})\b/);
+  if (gluedDigit) {
+    let hour = parseInt(gluedDigit[1], 10);
+    if (hour >= 1 && hour <= 7) hour += 12;
+    return { hour, minute: 0 };
+  }
+
+  return undefined;
+}
 
 export type ExtractedEntities = {
   partySize: number;
@@ -160,12 +290,12 @@ function parseTimeToken(text: string): { hour: number; minute: number } | undefi
 }
 
 /**
- * Whole-word, case-insensitive weekday match with a STRUCTURAL "next"
- * qualifier (captured, not inferred from nearby characters) — never a
- * substring match. Picks the earliest weekday token in the text if more
- * than one is present.
+ * Whole-word, case-insensitive English weekday match with a STRUCTURAL
+ * "next" qualifier (captured, not inferred from nearby characters) —
+ * never a substring match. Picks the earliest weekday token in the text
+ * if more than one is present.
  */
-function findExplicitWeekday(text: string): { weekday: number; qualifier?: "next" } | undefined {
+function findExplicitWeekdayEnglish(text: string): { weekday: number; qualifier?: "next"; index: number } | undefined {
   let best: { weekday: number; qualifier?: "next"; index: number } | undefined;
   for (const { weekday, alt } of WEEKDAY_TOKENS) {
     const match = new RegExp(`\\b(next\\s+)?(?:${alt})\\b`, "i").exec(text);
@@ -173,37 +303,60 @@ function findExplicitWeekday(text: string): { weekday: number; qualifier?: "next
       best = { weekday, qualifier: match[1] ? "next" : undefined, index: match.index };
     }
   }
+  return best;
+}
+
+/**
+ * Language-independent dispatch: tries every locale's weekday matcher
+ * and keeps whichever explicit token appears earliest in the text (there
+ * is normally only one, but a mixed-language message could in principle
+ * contain both). Adding a new locale means adding a new matcher here,
+ * never branching the rest of the pipeline on locale.
+ */
+function findExplicitWeekday(text: string): { weekday: number; qualifier?: "next" } | undefined {
+  const en = findExplicitWeekdayEnglish(text);
+  const he = findExplicitWeekdayHebrew(text);
+  const best = !en ? he : !he ? en : en.index <= he.index ? en : he;
   return best ? { weekday: best.weekday, qualifier: best.qualifier } : undefined;
 }
 
 /**
  * Extract a scheduling constraint ONLY from directly-verifiable explicit
- * tokens in the raw text — a weekday word (Sunday..Saturday, optionally
- * qualified by "next") or a relative-day word ("today"/"tomorrow"). This
- * is deliberately narrower than general fuzzy scheduling understanding:
- * it exists so BARRY can cross-check whatever a Reasoner (LLM or mock)
- * proposed against ground truth actually present in the customer's own
- * words, per `verifyIR()` in `verify.ts`. Returns undefined when the raw
- * text contains none of these explicit tokens — that's not "no
- * scheduling intent," just "nothing here to verify against."
+ * tokens in the raw text — a weekday word (Sunday..Saturday / יום ראשון..
+ * יום שבת, optionally qualified by "next") or a relative-day word
+ * ("today"/"tomorrow" / "היום"/"מחר"/"מחרתיים"). This is deliberately
+ * narrower than general fuzzy scheduling understanding: it exists so
+ * BARRY can cross-check whatever a Reasoner (LLM or mock) proposed
+ * against ground truth actually present in the customer's own words, per
+ * `verifyIR()` in `verify.ts`. Returns undefined when the raw text
+ * contains none of these explicit tokens — that's not "no scheduling
+ * intent," just "nothing here to verify against."
  */
 export function extractExplicitSchedulingConstraint(message: string): SchedulingConstraint | undefined {
   const text = message.toLowerCase();
 
   const weekdayMatch = findExplicitWeekday(text);
   if (weekdayMatch) {
-    const time = parseTimeToken(text);
+    const time = parseTimeToken(text) ?? parseHebrewTimeToken(text);
     return {
       date: { kind: "weekday", weekday: weekdayMatch.weekday, qualifier: weekdayMatch.qualifier },
       time: time ? { kind: "explicitTime", ...time } : undefined,
     };
   }
-  if (/\btomorrow\b/.test(text)) {
-    const time = parseTimeToken(text);
+  // Check "מחרתיים" (day after tomorrow) before "מחר" (tomorrow) even
+  // though matchHebrewToken's own trailing-boundary check already
+  // prevents "מחר" from matching as a prefix of "מחרתיים" — this ordering
+  // is just belt-and-suspenders clarity, not a correctness requirement.
+  if (matchHebrewToken(text, "מחרתיים") !== undefined) {
+    const time = parseTimeToken(text) ?? parseHebrewTimeToken(text);
+    return { date: { kind: "relativeDay", days: 2 }, time: time ? { kind: "explicitTime", ...time } : undefined };
+  }
+  if (/\btomorrow\b/.test(text) || matchHebrewToken(text, "מחר") !== undefined) {
+    const time = parseTimeToken(text) ?? parseHebrewTimeToken(text);
     return { date: { kind: "relativeDay", days: 1 }, time: time ? { kind: "explicitTime", ...time } : undefined };
   }
-  if (/\btoday\b/.test(text)) {
-    const time = parseTimeToken(text);
+  if (/\btoday\b/.test(text) || matchHebrewToken(text, "היום") !== undefined) {
+    const time = parseTimeToken(text) ?? parseHebrewTimeToken(text);
     return { date: { kind: "relativeDay", days: 0 }, time: time ? { kind: "explicitTime", ...time } : undefined };
   }
   return undefined;
@@ -266,17 +419,22 @@ function rankOffersByTokenOverlap(graph: BusinessGraph, message: string, offerTo
 
 /** Broad discovery matching (name + description) — for free-form "I want something relaxing for two" style requests, where MockReasoner picks an initial offer. */
 export function findOfferCandidates(graph: BusinessGraph, message: string): Offer[] {
-  return rankOffersByTokenOverlap(graph, message, (offer) => tokenize(`${offer.name} ${offer.description}`));
+  return rankOffersByTokenOverlap(graph, message, (offer) =>
+    tokenize([offer.name, offer.description, ...offer.aliases].join(" "))
+  );
 }
 
 /**
- * Strict, high-confidence matching on the offer's OWN NAME ONLY (never
- * its description) — used for deterministic verification of an explicit
- * offer reference (`verifyIR()` in `verify.ts`), where matching against
- * description words too could produce a false-positive override on
- * incidental overlap (e.g. "two" appearing in an unrelated sentence
- * matching a description that happens to mention "for two").
+ * Strict, high-confidence matching on the offer's OWN NAME/ALIASES ONLY
+ * (never its description) — used for deterministic verification of an
+ * explicit offer reference (`verifyIR()` in `verify.ts`), where matching
+ * against description words too could produce a false-positive override
+ * on incidental overlap (e.g. "two" appearing in an unrelated sentence
+ * matching a description that happens to mention "for two"). `aliases`
+ * is generic reference data any offer can declare (other-language names,
+ * colloquial short forms, ...) — never business-type-specific logic in
+ * the matcher itself.
  */
 export function findOffersByExplicitNameReference(graph: BusinessGraph, message: string): Offer[] {
-  return rankOffersByTokenOverlap(graph, message, (offer) => tokenize(offer.name));
+  return rankOffersByTokenOverlap(graph, message, (offer) => tokenize([offer.name, ...offer.aliases].join(" ")));
 }

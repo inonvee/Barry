@@ -66,6 +66,16 @@ export const OfferSchema = z.object({
   kind: OfferKindSchema,
   name: z.string(),
   description: z.string(),
+  /**
+   * Alternate normalized names/short forms a customer might use to refer
+   * to this offer explicitly — e.g. other-language names, colloquial
+   * short forms ("זוגי" for a couples massage), or common misspellings.
+   * Never business-type logic: this is generic reference data any
+   * offer can declare, consumed by the SAME deterministic offer-reference
+   * verifier that already matches on `name` (see
+   * `findOffersByExplicitNameReference` in `src/lib/reasoner/entities.ts`).
+   */
+  aliases: z.array(z.string()).default([]),
   price: z.number().nonnegative().nullable(), // null = requires quote
   currency: z.string().default("USD"),
   variants: z.array(OfferVariantSchema).default([]),
