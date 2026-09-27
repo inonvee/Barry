@@ -105,6 +105,10 @@ export class SupabaseBackend implements BarryBackend {
       conversation_id: record.conversationId,
       party_size: record.partySize,
       status: "confirmed" as const,
+      provider: record.provider,
+      provider_event_id: record.providerEventId,
+      idempotency_key: record.idempotencyKey,
+      verified_at: record.verifiedAt,
     };
     const { data, error } = await client.from("bookings").insert(row).select("*").single();
     if (error) {
@@ -114,6 +118,9 @@ export class SupabaseBackend implements BarryBackend {
       // here instead, as the same "slot no longer available" outcome the
       // app-level check-then-insert in tools/definitions.ts already
       // produces for the non-racing case.
+      if (error.code === "23505" && error.message.includes("bookings_idempotency_key_confirmed_uidx")) {
+        throw new Error("Booking already exists for this request");
+      }
       if (error.code === "23505") throw new Error("Slot no longer available");
       throw new Error(`Failed to create booking: ${error.message}`);
     }

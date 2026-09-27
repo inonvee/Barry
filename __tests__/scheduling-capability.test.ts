@@ -5,7 +5,7 @@ import { compile } from "@/lib/runtime/compiler";
 import { callTool } from "@/lib/tools";
 import { MemoryBackend } from "@/lib/store/memory-backend";
 import { MemorySchedulingAdapter } from "@/lib/scheduling/adapters/memory";
-import { GoogleCalendarAdapter } from "@/lib/scheduling/adapters/google-calendar";
+import { GoogleCalendarAdapter, googleCalendarEventIdForSlotLock } from "@/lib/scheduling/adapters/google-calendar";
 
 const iso = (s: string | number) => new Date(s).toISOString();
 
@@ -85,6 +85,18 @@ describe("MemorySchedulingAdapter", () => {
 });
 
 describe("GoogleCalendarAdapter", () => {
+  it("generates deterministic provider event IDs using only Google Calendar's allowed base32hex characters", () => {
+    const id = googleCalendarEventIdForSlotLock("spa:therapist-1:2026-06-15T13:00:00.000Z:2026-06-15T14:00:00.000Z");
+    const same = googleCalendarEventIdForSlotLock("spa:therapist-1:2026-06-15T13:00:00.000Z:2026-06-15T14:00:00.000Z");
+    const other = googleCalendarEventIdForSlotLock("spa:therapist-2:2026-06-15T13:00:00.000Z:2026-06-15T14:00:00.000Z");
+
+    expect(id).toBe(same);
+    expect(id).not.toBe(other);
+    expect(id).toMatch(/^[a-v0-9]+$/);
+    expect(id.length).toBeGreaterThanOrEqual(5);
+    expect(id.length).toBeLessThanOrEqual(1024);
+  });
+
   it("filters Google busy blocks out of graph candidate availability", async () => {
     const graph = buildSpaGraph();
     const exact = graph.availability.find((s) => s.resourceId === "therapist-1")!;

@@ -22,8 +22,8 @@ type GoogleEvent = {
 
 const GOOGLE_CALENDAR_BASE_URL = "https://www.googleapis.com/calendar/v3";
 
-function hashId(value: string): string {
-  return `barry${crypto.createHash("sha256").update(value).digest("hex").slice(0, 48)}`;
+export function googleCalendarEventIdForSlotLock(value: string): string {
+  return `barr${crypto.createHash("sha256").update(value).digest("hex").slice(0, 48)}`;
 }
 
 function slotLockKey(input: CreateBookingInput): string {
@@ -163,7 +163,7 @@ export class GoogleCalendarAdapter implements SchedulingAdapter {
     const persistedExisting = await this.findPersistedBooking(input);
     if (persistedExisting) return persistedExisting;
 
-    const eventId = hashId(slotLockKey(input));
+    const eventId = googleCalendarEventIdForSlotLock(slotLockKey(input));
     const existing = (await this.getBooking(eventId, input)) as SchedulingBooking | undefined;
     if (existing) {
       if (existing.idempotencyKey === input.idempotencyKey) return existing;
