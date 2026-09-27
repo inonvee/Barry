@@ -102,6 +102,69 @@ describe("Regression 2: the exact OpenAIReasoner IR shape, with customerInfo lef
   });
 });
 
+describe("Regression 2b: identity evidence gate rejects impossible LLM-only customer names", () => {
+  it('LLM proposes "זה" but raw Hebrew self-identification says the name is ינון — verified value wins', () => {
+    const graph = buildSpaGraph();
+    const { verified, verification } = verifyIR(
+      graph,
+      "השם שלי זה ינון",
+      emptyIR({ customerInfo: { name: "זה" } })
+    );
+
+    expect(verification.customerInfoOverridden).toBe(true);
+    expect(verified.customerInfo.name).toBe("ינון");
+  });
+
+  const invalidHebrewNames = ["אשתי", "אישתי", "בעלי", "בן הזוג", "בת הזוג"];
+
+  for (const invalidName of invalidHebrewNames) {
+    it(`rejects LLM-proposed relationship value "${invalidName}" when raw text has no customer-identity evidence`, () => {
+      const graph = buildSpaGraph();
+      const { verified, verification } = verifyIR(
+        graph,
+        "אני רוצה לבוא עם אשתי",
+        emptyIR({ customerInfo: { name: invalidName } })
+      );
+
+      expect(verification.customerInfoOverridden).toBe(true);
+      expect(verified.customerInfo.name).toBeUndefined();
+    });
+  }
+
+  it("rejects an LLM-proposed English relationship value without customer-identity evidence", () => {
+    const graph = buildSpaGraph();
+    const { verified } = verifyIR(
+      graph,
+      "My wife is coming with me",
+      emptyIR({ customerInfo: { name: "wife" } })
+    );
+
+    expect(verified.customerInfo.name).toBeUndefined();
+  });
+
+  it("\"My wife's name is Sarah\" does not persist Sarah as the customer's own name merely because the LLM proposed it", () => {
+    const graph = buildSpaGraph();
+    const { verified } = verifyIR(
+      graph,
+      "My wife's name is Sarah",
+      emptyIR({ customerInfo: { name: "Sarah" } })
+    );
+
+    expect(verified.customerInfo.name).toBeUndefined();
+  });
+
+  it("preserves a contextual bare-name reply when BARRY just asked for the customer's name", async () => {
+    const graph = buildSpaGraph();
+    const conv = "cis-contextual-he-name";
+    const customer = "cust-cis-contextual-he-name";
+
+    await handleCustomerMessage(graph, conv, customer, "זוגי בחמישי בשעה אחת");
+    const t = await handleCustomerMessage(graph, conv, customer, "ינון");
+
+    expect(t.state.knownFields.name).toBe("ינון");
+  });
+});
+
 describe("Regression 5: a later corrected phone (deterministically, regardless of what any reasoner reports)", () => {
   it('"Actually my number is 0501234567" replaces the previously stored phone', async () => {
     const graph = buildSpaGraph();

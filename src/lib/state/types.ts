@@ -1,6 +1,7 @@
 import type { PolicyDecision } from "@/lib/policy";
-import type { SchedulingConstraint, LocalDisplay } from "@/lib/scheduling/resolver";
+import type { SchedulingConstraint } from "@/lib/scheduling/resolver";
 import type { CompileDebugInfo } from "@/lib/reasoner/ir";
+import type { CustomerFacingLocalDisplay } from "@/lib/reasoner/types";
 import type { IRVerification } from "@/lib/reasoner/verify";
 
 export type ConversationStage =
@@ -45,7 +46,7 @@ export type TurnLog = {
   policyDecision?: PolicyDecision;
   toolResult?: { ok: boolean; output?: unknown; error?: string };
   /** Business-timezone-local display facts used to phrase `response` — never the raw UTC instants above. */
-  responseFacts?: { timezone: string; offeredSlot?: LocalDisplay; availableSlots?: LocalDisplay[] };
+  responseFacts?: { timezone: string; offeredSlot?: CustomerFacingLocalDisplay; availableSlots?: CustomerFacingLocalDisplay[] };
   response: string;
   stateAfter: Partial<ConversationState>;
   /** Which Reasoner implementation produced this turn — surfaced in the Inspector. */

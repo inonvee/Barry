@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { composeDeterministic } from "@/lib/reasoner/deterministic-compose";
-import { COMPOSE_SYSTEM_PROMPT } from "@/lib/reasoner/openai-reasoner";
+import { COMPOSE_SYSTEM_PROMPT, buildComposeSummary } from "@/lib/reasoner/openai-reasoner";
 import { formatLocalDateTime } from "@/lib/scheduling/resolver";
 import type { ComposeResponseInput } from "@/lib/reasoner/types";
 
@@ -93,5 +93,55 @@ describe("Response grounding: no UTC-as-local leaks, no future-tense claims afte
     expect(COMPOSE_SYSTEM_PROMPT).toMatch(/localDate/);
     expect(COMPOSE_SYSTEM_PROMPT).toMatch(/localTime/);
     expect(COMPOSE_SYSTEM_PROMPT).toMatch(/never compute|never.*convert/i);
+  });
+
+  it("Hebrew compose input exposes only 24-hour customer-facing display facts, never both 12-hour and 24-hour time fields", () => {
+    const input: ComposeResponseInput = {
+      outcome: {
+        kind: "action",
+        action: { name: "checkAvailability", input: {} },
+        stage: "scheduling",
+      },
+      toolResult: { ok: true, output: { slots: [] } },
+      scheduling: {
+        availableSlots: [
+          { iso: "2026-06-15T13:00:00.000Z", localDate: "June 15, 2026", localTime: "09:00", timeZone: "America/New_York" },
+          { iso: "2026-06-15T14:00:00.000Z", localDate: "June 15, 2026", localTime: "10:00", timeZone: "America/New_York" },
+        ],
+      },
+    };
+
+    const summary = buildComposeSummary(
+      { businessTone: "warm", lastCustomerMessage: "יש שעות פנויות?" },
+      input
+    );
+
+    expect(summary.scheduling).toEqual(input.scheduling);
+    expect(JSON.stringify(summary.scheduling)).toContain("09:00");
+    expect(JSON.stringify(summary.scheduling)).not.toMatch(/AM|PM|localTime24/);
+  });
+
+  it("English compose input still exposes normal 12-hour customer-facing display facts", () => {
+    const input: ComposeResponseInput = {
+      outcome: {
+        kind: "action",
+        action: { name: "checkAvailability", input: {} },
+        stage: "scheduling",
+      },
+      toolResult: { ok: true, output: { slots: [] } },
+      scheduling: {
+        availableSlots: [
+          { iso: "2026-06-15T13:00:00.000Z", localDate: "June 15, 2026", localTime: "9:00 AM", timeZone: "America/New_York" },
+        ],
+      },
+    };
+
+    const summary = buildComposeSummary(
+      { businessTone: "warm", lastCustomerMessage: "Any times available?" },
+      input
+    );
+
+    expect(JSON.stringify(summary.scheduling)).toContain("9:00 AM");
+    expect(JSON.stringify(summary.scheduling)).not.toContain("localTime24");
   });
 });

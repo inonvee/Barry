@@ -209,4 +209,30 @@ describe("Response grounding: Hebrew time display prefers 24-hour format", () =>
     expect(display.localTime).toMatch(/^9:00\s*AM$/i);
     expect(display.localTime24).toBe("09:00");
   });
+
+  it("Hebrew availability response facts expose 24-hour display times only", async () => {
+    const { turns } = await runScenario({
+      name: "grounding-hebrew-24h-compose-facts",
+      graph: buildSpaGraph,
+      turns: [{ customer: "זוגי ביום חמישי בשעה אחד השם שלי ינון 0558832177" }],
+    });
+
+    const slots = turns[0].responseFacts?.availableSlots ?? [];
+    expect(slots.length).toBeGreaterThan(0);
+    expect(slots[0].localTime).toMatch(/^\d{2}:\d{2}$/);
+    expect(JSON.stringify(turns[0].responseFacts)).not.toMatch(/AM|PM|localTime24/);
+  });
+
+  it("English availability response facts keep 12-hour display times", async () => {
+    const { turns } = await runScenario({
+      name: "grounding-english-12h-compose-facts",
+      graph: buildSpaGraph,
+      turns: [{ customer: "Couples massage Thursday at 1. My name is Inon and my phone number is 0558832177" }],
+    });
+
+    const slots = turns[0].responseFacts?.availableSlots ?? [];
+    expect(slots.length).toBeGreaterThan(0);
+    expect(slots[0].localTime).toMatch(/\b(AM|PM)\b/);
+    expect(JSON.stringify(turns[0].responseFacts)).not.toContain("localTime24");
+  });
 });

@@ -1,11 +1,13 @@
 import type { BusinessGraph } from "@/lib/business-graph";
-import type { DateSpec, SchedulingConstraint } from "@/lib/scheduling/resolver";
+import type { DateSpec, SchedulingConstraint, TimeSpec } from "@/lib/scheduling/resolver";
 import {
   findOffersByExplicitNameReference,
   extractExplicitSchedulingConstraint,
   extractAnnouncedName,
   extractExplicitPhone,
   extractExplicitEmail,
+  hasThirdPartyNameEvidence,
+  isInvalidCustomerNameCandidate,
 } from "./entities";
 import type { BarryIR } from "./ir";
 
@@ -45,6 +47,16 @@ function dateSpecsMatch(a: DateSpec | undefined, b: DateSpec): boolean {
       return a.kind === "relativeDay" && a.days === b.days;
     case "explicitDate":
       return a.kind === "explicitDate" && a.isoDate === b.isoDate;
+  }
+}
+
+function timesMatch(a: TimeSpec | undefined, b: TimeSpec): boolean {
+  if (!a || a.kind !== b.kind) return false;
+  switch (b.kind) {
+    case "explicitTime":
+      return a.kind === "explicitTime" && a.hour === b.hour && a.minute === b.minute;
+    case "partOfDay":
+      return a.kind === "partOfDay" && a.part === b.part;
   }
 }
 
@@ -96,6 +108,10 @@ export function verifyIR(graph: BusinessGraph, customerMessage: string, ir: Barr
     verification.schedulingOverridden = true;
     schedulingWindow = { date: explicitWindow.date, time: schedulingWindow?.time ?? explicitWindow.time };
   }
+  if (explicitWindow?.time && !timesMatch(schedulingWindow?.time, explicitWindow.time)) {
+    verification.schedulingOverridden = true;
+    schedulingWindow = { ...schedulingWindow, time: explicitWindow.time };
+  }
 
   // --- Customer identity verification ---
   // The live bug this guards against: a Reasoner (LLM) correctly
@@ -117,6 +133,11 @@ export function verifyIR(graph: BusinessGraph, customerMessage: string, ir: Barr
   const explicitName = extractAnnouncedName(customerMessage);
   if (explicitName && customerInfo.name !== explicitName) {
     customerInfo = { ...customerInfo, name: explicitName };
+    verification.customerInfoOverridden = true;
+  } else if (!explicitName && customerInfo.name && (isInvalidCustomerNameCandidate(customerInfo.name) || hasThirdPartyNameEvidence(customerMessage))) {
+    const rest = { ...customerInfo };
+    delete rest.name;
+    customerInfo = rest;
     verification.customerInfoOverridden = true;
   }
 

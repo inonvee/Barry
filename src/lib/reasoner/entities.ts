@@ -141,7 +141,7 @@ function findExplicitWeekdayHebrew(text: string): { weekday: number; qualifier?:
 }
 
 const HEBREW_NUMBER_WORDS: Record<string, number> = {
-  "אחת": 1, "שתיים": 2, "שניים": 2, "שלוש": 3, "ארבע": 4, "חמש": 5,
+  "אחת": 1, "אחד": 1, "שתיים": 2, "שניים": 2, "שלוש": 3, "ארבע": 4, "חמש": 5,
   "שש": 6, "שבע": 7, "שמונה": 8, "תשע": 9, "עשר": 10,
   "אחת עשרה": 11, "שתים עשרה": 12,
 };
@@ -184,6 +184,12 @@ function parseHebrewTimeToken(text: string): { hour: number; minute: number } | 
     let hour = parseInt(gluedDigit[1], 10);
     if (hour >= 1 && hour <= 7) hour += 12;
     return { hour, minute: 0 };
+  }
+
+  for (const [word, num] of Object.entries(HEBREW_NUMBER_WORDS)) {
+    if (matchHebrewToken(text, `ב${word}`) !== undefined) {
+      return { hour: num >= 1 && num <= 7 ? num + 12 : num, minute: 0 };
+    }
   }
 
   return undefined;
@@ -264,9 +270,11 @@ function extractAnnouncedNameEnglish(message: string): string | undefined {
 }
 
 // "קוראים לי X" ("[they] call me X") and "השם שלי X" ("my name [is] X")
-// are structurally unambiguous — nobody says either phrase without a
-// name following it, so no blocklist is needed for these two.
+// are structurally unambiguous, with one Hebrew-specific wrinkle:
+// colloquial messages often insert a copula/filler ("זה"/"הוא"/"היא")
+// before the actual name.
 const HEBREW_NAME_MARKERS = ["קוראים לי", "השם שלי"];
+const HEBREW_NAME_COPULAS = new Set(["זה", "הוא", "היא"]);
 // The bare "אני X" ("I [am] X") pattern is far riskier: "אני" alone
 // starts countless Hebrew sentences that are NOT a self-identification
 // ("אני רוצה" = "I want", "אני בא עם אשתי" = "I'm coming with my
@@ -282,6 +290,7 @@ const HEBREW_NAME_BLOCK_AFTER_ANI = new Set([
   "מעוניינת", "אשמח", "חושב", "חושבת", "חוזר", "חוזרת", "מתעניין",
   "מתעניינת", "לא", "כן", "הולך", "הולכת", "נמצא", "נמצאת", "פנוי",
   "פנויה", "זמין", "זמינה",
+  ...HEBREW_NAME_COPULAS,
   ...HEBREW_PARTNER_WORDS,
 ]);
 
@@ -292,11 +301,22 @@ function wordAfter(message: string, markerIndex: number, markerLength: number): 
   return word && word.length > 0 ? word : undefined;
 }
 
+function firstNameWordAfterHebrewMarker(message: string, markerIndex: number, markerLength: number): string | undefined {
+  const rest = message.slice(markerIndex + markerLength).trim();
+  for (const rawWord of rest.split(/\s+/).slice(0, 4)) {
+    const word = rawWord.replace(/[^\p{L}'"-]+$/gu, "").replace(/^[^\p{L}]+/gu, "");
+    if (!word) continue;
+    if (HEBREW_NAME_COPULAS.has(word)) continue;
+    return word;
+  }
+  return undefined;
+}
+
 function extractAnnouncedNameHebrew(message: string): string | undefined {
   for (const marker of HEBREW_NAME_MARKERS) {
     const idx = matchHebrewToken(message, marker);
     if (idx === undefined) continue;
-    const word = wordAfter(message, idx, marker.length);
+    const word = firstNameWordAfterHebrewMarker(message, idx, marker.length);
     if (word) return word;
   }
 
@@ -326,6 +346,23 @@ export function extractExplicitPhone(message: string): string | undefined {
 /** Extract an explicit email address — unambiguous by construction (requires an "@" and a domain). */
 export function extractExplicitEmail(message: string): string | undefined {
   return message.match(/[\w.+-]+@[\w-]+\.[\w.-]+/)?.[0];
+}
+
+const IMPOSSIBLE_CUSTOMER_NAME_VALUES = new Set([
+  "זה", "הוא", "היא",
+  "אשתי", "אישתי", "בעלי", "בן הזוג", "בת הזוג",
+  "wife", "husband", "partner", "spouse", "girlfriend", "boyfriend",
+  "my wife", "my husband", "my partner",
+  "tomorrow", "today", "tonight", "later",
+]);
+
+export function isInvalidCustomerNameCandidate(value: string | undefined): boolean {
+  const normalized = value?.trim().replace(/\s+/g, " ").toLowerCase();
+  return !normalized || IMPOSSIBLE_CUSTOMER_NAME_VALUES.has(normalized);
+}
+
+export function hasThirdPartyNameEvidence(message: string): boolean {
+  return /\b(my|our)\s+(wife|husband|partner|spouse|girlfriend|boyfriend|friend)'?s\s+name\s+is\b/i.test(message);
 }
 
 function parseTimeToken(text: string): { hour: number; minute: number } | undefined {

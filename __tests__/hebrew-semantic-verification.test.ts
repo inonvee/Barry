@@ -97,6 +97,54 @@ describe("Hebrew weekdays and time (extractExplicitSchedulingConstraint)", () =>
     expect(result?.time).toEqual({ kind: "explicitTime", hour: 15, minute: 0 });
   });
 
+  it('"בחמישי בשעה אחד" resolves Thursday + 13:00 using the existing small-hour booking convention', () => {
+    const result = extractExplicitSchedulingConstraint("אני רוצה לבוא עם אשתי בחמישי בשעה אחד");
+    expect(result?.date).toEqual({ kind: "weekday", weekday: 4, qualifier: undefined });
+    expect(result?.time).toEqual({ kind: "explicitTime", hour: 13, minute: 0 });
+  });
+
+  it('"בחמישי בשעה אחת" resolves Thursday + 13:00', () => {
+    const result = extractExplicitSchedulingConstraint("אני רוצה לבוא עם אשתי בחמישי בשעה אחת");
+    expect(result?.date).toEqual({ kind: "weekday", weekday: 4, qualifier: undefined });
+    expect(result?.time).toEqual({ kind: "explicitTime", hour: 13, minute: 0 });
+  });
+
+  it('supports common Hebrew one-o-clock forms: "באחת", "ב-1", "ב1", and "13:00"', () => {
+    expect(extractExplicitSchedulingConstraint("בחמישי באחת")?.time).toEqual({
+      kind: "explicitTime",
+      hour: 13,
+      minute: 0,
+    });
+    expect(extractExplicitSchedulingConstraint("בחמישי ב-1")?.time).toEqual({
+      kind: "explicitTime",
+      hour: 13,
+      minute: 0,
+    });
+    expect(extractExplicitSchedulingConstraint("בחמישי ב1")?.time).toEqual({
+      kind: "explicitTime",
+      hour: 13,
+      minute: 0,
+    });
+    expect(extractExplicitSchedulingConstraint("בחמישי 13:00")?.time).toEqual({
+      kind: "explicitTime",
+      hour: 13,
+      minute: 0,
+    });
+  });
+
+  it("verifyIR overrides a weekday-only LLM read with the deterministic colloquial Hebrew time when the raw text supplies it", () => {
+    const graph = buildSpaGraph();
+    const { verified, verification } = verifyIR(
+      graph,
+      "אני רוצה לבוא עם אשתי בחמישי בשעה אחד",
+      emptyIR({ constraints: { schedulingWindow: { date: { kind: "weekday", weekday: 4 } } } })
+    );
+
+    expect(verification.schedulingOverridden).toBe(true);
+    expect(verified.constraints.schedulingWindow?.date).toEqual({ kind: "weekday", weekday: 4, qualifier: undefined });
+    expect(verified.constraints.schedulingWindow?.time).toEqual({ kind: "explicitTime", hour: 13, minute: 0 });
+  });
+
   it('"3 בצהריים" and "שלוש בצהריים" both resolve to 15:00 (explicit afternoon marker)', () => {
     expect(extractExplicitSchedulingConstraint("ביום שני 3 בצהריים")?.time).toEqual({
       kind: "explicitTime",

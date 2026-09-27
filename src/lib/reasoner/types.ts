@@ -1,6 +1,5 @@
 import type { BusinessGraph } from "@/lib/business-graph";
 import type { ConversationState } from "@/lib/state";
-import type { LocalDisplay } from "@/lib/scheduling/resolver";
 import type { BarryIR, CompileOutcome } from "./ir";
 
 export type { BarryIR, BarryIRConstraints, RequestedCapability, CompileOutcome, CompiledToolCall, OfferFact } from "./ir";
@@ -19,9 +18,17 @@ export type ReasonerContext = {
  * but must never reinterpret a raw ISO timestamp itself (that silently
  * defaults to the server's runtime timezone, not the business's).
  */
+export type CustomerFacingLocalDisplay = {
+  iso: string;
+  localDate: string;
+  /** The only customer-facing time representation compose may use for this reply. */
+  localTime: string;
+  timeZone: string;
+};
+
 export type SchedulingDisplayFacts = {
-  offeredSlot?: LocalDisplay;
-  availableSlots?: LocalDisplay[];
+  offeredSlot?: CustomerFacingLocalDisplay;
+  availableSlots?: CustomerFacingLocalDisplay[];
 };
 
 /**

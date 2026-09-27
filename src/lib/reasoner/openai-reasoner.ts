@@ -15,7 +15,7 @@ import type { CompileOutcome } from "@/lib/reasoner/ir";
  * ISO instant) and, for an "action" outcome, `action.input` (which for
  * checkAvailability/createBooking carries raw UTC `earliest`/`latest`
  * strings the model has no reason to read, since `scheduling`'s
- * localDate/localTime/localTime24 are already the one source of truth
+ * localDate/localTime are already the one source of truth
  * for any date/time phrasing). No composer template anywhere reads
  * either of these — this closes the gap between "the prompt SAYS not
  * to use them" and "the raw data isn't even present to misuse," the
@@ -30,7 +30,7 @@ export function sanitizeOutcomeForCompose(outcome: CompileOutcome): unknown {
   }
   if (rest.kind === "ask_slot_confirm") {
     // offeredStart is also a raw UTC ISO instant — scheduling.offeredSlot
-    // (localDate/localTime/localTime24) is the one source of truth here.
+    // (localDate/localTime) is the one source of truth here.
     return { ...rest, offeredStart: "" };
   }
   return rest;
@@ -160,10 +160,9 @@ export const COMPOSE_SYSTEM_PROMPT =
   "already answers — phrases like \"I'll check\" or \"I'll get back to you shortly\" are " +
   "forbidden whenever a tool already ran this turn. " +
   "If `scheduling` is present, any date/time you mention MUST use its localDate string " +
-  "verbatim, plus EITHER localTime (12-hour, e.g. \"2:00 PM\") or localTime24 (24-hour, " +
-  "e.g. \"14:00\") — pick whichever matches the LANGUAGE you are replying in: localTime24 " +
-  "for Hebrew (and other locales that conventionally use 24-hour time), localTime for " +
-  "English. Never compute, convert, or reinterpret a time yourself from any raw ISO " +
+  "verbatim plus its localTime string verbatim. That localTime value has already been " +
+  "formatted for the reply language (24-hour for Hebrew, 12-hour for English). Never " +
+  "choose another time format, and never compute, convert, or reinterpret a time yourself from any raw ISO " +
   "timestamp elsewhere in this JSON (that is always UTC, not the customer's local time). " +
   "When outcome.kind is \"needs_info\", ask for EXACTLY the fields listed in " +
   "outcome.missingFields — one per field (\"your name\", \"your phone number\"), never more, " +
@@ -230,6 +229,28 @@ export function sanitizeIR(graph: BusinessGraph, raw: LlmIR): BarryIR {
 }
 
 export type ParseIRResult = { ok: true; ir: BarryIR } | { ok: false; kind: "json_parse_error" | "schema_validation_error"; detail: string };
+
+export type ComposeSummaryContext = {
+  businessTone: unknown;
+  lastCustomerMessage: string;
+};
+
+export function buildComposeSummary(context: ComposeSummaryContext, input: ComposeResponseInput) {
+  return {
+    businessTone: context.businessTone,
+    lastCustomerMessage: context.lastCustomerMessage,
+    outcome: sanitizeOutcomeForCompose(input.outcome),
+    policyReason: input.policyReason ?? null,
+    toolSucceeded: input.toolResult?.ok ?? null,
+    toolOutput: input.toolResult?.ok ? input.toolResult.output : undefined,
+    toolError: input.toolResult && !input.toolResult.ok ? input.toolResult.error : undefined,
+    // Pre-computed, business-timezone-local display facts for any
+    // scheduling instant this turn — the ONLY source of truth for
+    // "what time is that for the customer." Never present when there's
+    // nothing scheduling-related to phrase.
+    scheduling: input.scheduling ?? null,
+  };
+}
 
 /**
  * Pure parse+validate+sanitize pipeline for a raw completion string, with
@@ -325,20 +346,7 @@ export class OpenAIReasoner implements Reasoner {
   async composeResponse(ctx: ReasonerContext, input: ComposeResponseInput): Promise<string> {
     const lastCustomerMessage = ctx.state.messages.filter((m) => m.role === "customer").at(-1)?.content ?? "";
 
-    const summary = {
-      businessTone: ctx.graph.business.tone,
-      lastCustomerMessage,
-      outcome: sanitizeOutcomeForCompose(input.outcome),
-      policyReason: input.policyReason ?? null,
-      toolSucceeded: input.toolResult?.ok ?? null,
-      toolOutput: input.toolResult?.ok ? input.toolResult.output : undefined,
-      toolError: input.toolResult && !input.toolResult.ok ? input.toolResult.error : undefined,
-      // Pre-computed, business-timezone-local display facts for any
-      // scheduling instant this turn — the ONLY source of truth for
-      // "what time is that for the customer." Never present when there's
-      // nothing scheduling-related to phrase.
-      scheduling: input.scheduling ?? null,
-    };
+    const summary = buildComposeSummary({ businessTone: ctx.graph.business.tone, lastCustomerMessage }, input);
 
     try {
       const completion = await this.client.chat.completions.create({

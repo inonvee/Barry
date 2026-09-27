@@ -8,7 +8,7 @@ import { getConversationStore } from "@/lib/state";
 import type { ConversationState, TurnLog } from "@/lib/state";
 import { getBackend } from "@/lib/store";
 import { formatLocalDateTime } from "@/lib/scheduling/resolver";
-import type { SchedulingDisplayFacts } from "@/lib/reasoner/types";
+import type { CustomerFacingLocalDisplay, SchedulingDisplayFacts } from "@/lib/reasoner/types";
 import { verifyIR } from "@/lib/reasoner/verify";
 import { compile, SCRATCH_KEYS, type CompileOutcome } from "./compiler";
 
@@ -75,6 +75,26 @@ export type TurnOutcome = {
   response: string;
 };
 
+const HEBREW_LETTERS = /[\u0590-\u05ff]/;
+
+function prefersTwentyFourHourDisplay(customerMessage: string, businessLocale: string): boolean {
+  return HEBREW_LETTERS.test(customerMessage) || /^he(?:-|$)/i.test(businessLocale);
+}
+
+function customerFacingDisplay(
+  iso: string,
+  timeZone: string,
+  useTwentyFourHour: boolean
+): CustomerFacingLocalDisplay {
+  const display = formatLocalDateTime(iso, timeZone);
+  return {
+    iso: display.iso,
+    localDate: display.localDate,
+    localTime: useTwentyFourHour ? display.localTime24 : display.localTime,
+    timeZone: display.timeZone,
+  };
+}
+
 /**
  * Deterministically computes business-timezone-local display facts for
  * whatever scheduling instant this turn's outcome/toolResult involves —
@@ -86,17 +106,19 @@ export type TurnOutcome = {
 function buildSchedulingDisplay(
   graph: BusinessGraph,
   outcome: CompileOutcome,
-  toolResult: ToolCallResult | null
+  toolResult: ToolCallResult | null,
+  customerMessage: string
 ): SchedulingDisplayFacts | undefined {
   const timeZone = graph.business.timezone;
+  const useTwentyFourHour = prefersTwentyFourHourDisplay(customerMessage, graph.business.locale);
 
   if (outcome.kind === "ask_slot_confirm") {
-    return { offeredSlot: formatLocalDateTime(outcome.offeredStart, timeZone) };
+    return { offeredSlot: customerFacingDisplay(outcome.offeredStart, timeZone, useTwentyFourHour) };
   }
 
   if (outcome.kind === "action" && outcome.action.name === "checkAvailability" && toolResult?.ok) {
     const { slots } = toolResult.output as { slots: { start: string }[] };
-    return { availableSlots: slots.map((s) => formatLocalDateTime(s.start, timeZone)) };
+    return { availableSlots: slots.map((s) => customerFacingDisplay(s.start, timeZone, useTwentyFourHour)) };
   }
 
   return undefined;
@@ -164,11 +186,11 @@ export async function handleCustomerMessage(
     } else {
       toolResult = await callTool(outcome.action.name, outcome.action.input, ctx);
       if (toolResult.ok) patchStateAfterTool(state, outcome.action.name, toolResult.output);
-      const scheduling = buildSchedulingDisplay(graph, outcome, toolResult);
+      const scheduling = buildSchedulingDisplay(graph, outcome, toolResult, message);
       response = await reasoner.composeResponse({ graph, state, customerMessage: message }, { outcome, toolResult, scheduling });
     }
   } else {
-    const scheduling = buildSchedulingDisplay(graph, outcome, toolResult);
+    const scheduling = buildSchedulingDisplay(graph, outcome, toolResult, message);
     response = await reasoner.composeResponse({ graph, state, customerMessage: message }, { outcome, scheduling });
   }
 
@@ -179,7 +201,7 @@ export async function handleCustomerMessage(
   // Recomputed (not reused from above) since it's cheap, pure, and the two
   // call sites above are in different branches — this is the single
   // source of truth for what the Inspector's "Response facts" show.
-  const schedulingDisplay = buildSchedulingDisplay(graph, outcome, toolResult);
+  const schedulingDisplay = buildSchedulingDisplay(graph, outcome, toolResult, message);
 
   const turn: TurnLog = {
     id: turnId(),
@@ -340,7 +362,7 @@ export async function resumeAfterApproval(
       action: { name: approval.requestedAction, input },
       stage: state.stage,
     };
-    const scheduling = buildSchedulingDisplay(graph, syntheticOutcome, toolResult);
+    const scheduling = buildSchedulingDisplay(graph, syntheticOutcome, toolResult, "(approval resumed)");
     response = await reasoner.composeResponse(
       { graph, state, customerMessage: "(approval resumed)" },
       { outcome: syntheticOutcome, toolResult, scheduling }

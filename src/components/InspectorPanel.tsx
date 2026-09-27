@@ -81,9 +81,7 @@ export function InspectorPanel({ state }: { state: ConversationState | null }) {
             )}
             {lastTurn.understood.customerInfo && Object.keys(lastTurn.understood.customerInfo).length > 0 && (
               <>
-                <p className="text-xs text-neutral-500 mt-2 mb-1">
-                  customerInfo proposed by Reasoner (the ONE authoritative channel — never `entities` above)
-                </p>
+                <p className="text-xs text-neutral-500 mt-2 mb-1">BARRY verified IR customerInfo</p>
                 <pre className="text-xs bg-neutral-50 dark:bg-neutral-900 rounded-lg p-2 overflow-x-auto">
                   {JSON.stringify(lastTurn.understood.customerInfo, null, 2)}
                 </pre>
@@ -122,14 +120,11 @@ export function InspectorPanel({ state }: { state: ConversationState | null }) {
                 )}
                 {lastTurn.verification.customerInfoOverridden && (
                   <>
-                    <p className="text-xs text-neutral-500 mt-2 mb-1">LLM-proposed customerInfo</p>
+                    <p className="text-xs text-neutral-500 mt-2 mb-1">Reasoner proposal customerInfo (raw, pre-verification)</p>
                     <pre className="text-xs bg-neutral-50 dark:bg-neutral-900 rounded-lg p-2 overflow-x-auto">
                       {JSON.stringify(lastTurn.verification.llmCustomerInfo ?? {}, null, 2)}
                     </pre>
-                    <p className="text-xs text-neutral-500 mt-2 mb-1">
-                      BARRY-verified customerInfo (trusted — deterministic identity extraction may have added/corrected a
-                      field the LLM missed)
-                    </p>
+                    <p className="text-xs text-neutral-500 mt-2 mb-1">BARRY verified IR customerInfo (post-verification)</p>
                     <pre className="text-xs bg-neutral-50 dark:bg-neutral-900 rounded-lg p-2 overflow-x-auto">
                       {JSON.stringify(lastTurn.understood.customerInfo ?? {}, null, 2)}
                     </pre>
@@ -148,7 +143,7 @@ export function InspectorPanel({ state }: { state: ConversationState | null }) {
                   </pre>
                 </>
               )}
-              <p className="text-xs text-neutral-500 mt-2 mb-1">customerInfo actually applied to state (after sentinel-filtering)</p>
+              <p className="text-xs text-neutral-500 mt-2 mb-1">CustomerInfo actually applied to persistent state</p>
               <pre className="text-xs bg-neutral-50 dark:bg-neutral-900 rounded-lg p-2 overflow-x-auto">
                 {JSON.stringify(lastTurn.compiled.appliedCustomerInfo, null, 2)}
               </pre>

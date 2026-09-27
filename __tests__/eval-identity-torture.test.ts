@@ -46,6 +46,11 @@ describe("Identity: positive explicit self-identification (Hebrew)", () => {
   const cases: [string, string][] = [
     ["קוראים לי ינון", "ינון"],
     ["השם שלי ינון", "ינון"],
+    ["השם שלי זה ינון", "ינון"],
+    ["השם שלי הוא ינון", "ינון"],
+    ["השם שלי היא דנה", "דנה"],
+    ["השם שלי זה Inon", "Inon"],
+    ["קוראים לי Inon", "Inon"],
     ["אני ינון", "ינון"],
   ];
   for (const [msg, expected] of cases) {
@@ -161,7 +166,15 @@ describe("Identity: NEGATIVE cases — a relationship/role word must never becom
     });
   }
 
-  const hebrewNegatives = ["אני בא עם אשתי", "אני עם בעלי", "אני עם בן הזוג", "אני עם חברה שלי", "אני רוצה זוגי"];
+  const hebrewNegatives = [
+    "אני בא עם אשתי",
+    "אני עם אישתי",
+    "אני עם בעלי",
+    "אני עם בן הזוג",
+    "אני עם בת הזוג",
+    "אני עם חברה שלי",
+    "אני רוצה זוגי",
+  ];
 
   for (const msg of hebrewNegatives) {
     it(`"${msg}" never sets a customer name (relationship word, not self-identification)`, () => {
