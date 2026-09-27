@@ -66,7 +66,12 @@ export function composeDeterministic(input: ComposeResponseInput): string {
             : `No deposit is required for ${outcome.offerName}.`;
       }
     case "generic_confirm":
-      return `Let me get that finalized for you.`;
+      // stage "closed" means this is a duplicate-webhook/replayed-message
+      // guard (compileCore already completed this transaction earlier) —
+      // never claim to be "finalizing" something that's already done.
+      return outcome.stage === "closed"
+        ? `You're all set — this is already confirmed! Let me know if there's anything else.`
+        : `Let me get that finalized for you.`;
     case "compiler_error":
       return `Sorry — I need a little more information before I can do that. Could you tell me more?`;
     case "action": {

@@ -222,12 +222,26 @@ export async function handlePaymentOutcome(
   paymentRequestId: string,
   outcome: "paid" | "failed"
 ): Promise<TurnOutcome> {
-  const backend = getBackend();
-  await backend.simulatePaymentOutcome(paymentRequestId, outcome);
-
   const store = getConversationStore();
   const state = await store.get(conversationId);
   if (!state) throw new Error(`Conversation ${conversationId} not found`);
+
+  // The webhook must name THIS conversation's own outstanding payment
+  // request — never trust the caller-supplied conversationId/
+  // paymentRequestId pairing on its own. Without this check, a webhook
+  // that named the wrong (but real) paymentRequestId for this
+  // conversationId — a misrouted call, or an adversarial one — would
+  // mark this conversation paid off a payment that was never actually
+  // requested for it, satisfying `!known[SCRATCH_KEYS.paid]` downstream
+  // and letting the transaction complete without genuine payment.
+  if (state.knownFields[SCRATCH_KEYS.paymentRequestId] !== paymentRequestId) {
+    throw new Error(
+      `Payment request ${paymentRequestId} does not belong to conversation ${conversationId}`
+    );
+  }
+
+  const backend = getBackend();
+  await backend.simulatePaymentOutcome(paymentRequestId, outcome);
 
   if (outcome === "failed") {
     const response = `Your payment didn't go through. Want to try again or use a different method?`;

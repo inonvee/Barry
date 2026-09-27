@@ -284,6 +284,20 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
     return { kind: "needs_info", offerName: offer.name, missingFields: missing, stage: "info_gathering" };
   }
 
+  // This conversation's transaction already completed (booking created,
+  // order fulfilled, or lead filed) — never re-issue createBooking/
+  // fulfillOrder/createLead a second time. Without this guard, a
+  // DUPLICATE payment webhook (the same paymentRequestId reported "paid"
+  // twice — a real, expected occurrence with any real payment provider,
+  // not just a test artifact) re-entered this exact code path and
+  // attempted a second createBooking for the identical resource/start,
+  // which the tool's own conflict check correctly rejected — but as a
+  // customer-facing ERROR ("Slot no longer available... try a different
+  // option?") on a booking that had, in fact, already succeeded.
+  if (state.stage === "closed") {
+    return { kind: "generic_confirm", stage: "closed" };
+  }
+
   // Quote / lead-only offers: no scheduling, no inventory, no fixed price.
   if (!offer.requiresScheduling && !offer.requiresInventory && offer.price === null) {
     return finalizeAction(
