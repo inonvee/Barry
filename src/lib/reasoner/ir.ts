@@ -30,6 +30,8 @@ export type BarryIRConstraints = {
   discountPct?: number;
   /** Customer confirmed the previously offered slot works for them. */
   slotAccepted?: boolean;
+  /** Customer explicitly declined the previously offered slot ("no"/"לא") — never inferred from anything else. */
+  slotDeclined?: boolean;
 };
 
 /**

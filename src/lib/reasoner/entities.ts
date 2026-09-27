@@ -68,6 +68,14 @@ const NUMBER_WORDS: Record<string, number> = {
 // spelling variant (אשתי/אישתי, both mean "my wife").
 const HEBREW_PARTNER_WORDS = ["אשתי", "אישתי", "בעלי", "בן הזוג", "בת הזוג"];
 
+// Short-reply accept/decline vocabulary — the Hebrew equivalents of the
+// English "yes"/"yeah"/"sure" and "no"/"nope" whole-word checks above.
+// "סבבה" and "יאללה" are casual affirmatives extremely common in
+// everyday Hebrew texting, not formal registers a naive translation
+// would guess.
+const HEBREW_ACCEPT_WORDS = ["כן", "סבבה", "יאללה", "בסדר", "מעולה"];
+const HEBREW_DECLINE_WORDS = ["לא"];
+
 const HEBREW_WEEKDAY_TOKENS: { weekday: number; forms: string[] }[] = [
   { weekday: 0, forms: ["יום ראשון", "ראשון"] },
   { weekday: 1, forms: ["יום שני", "שני"] },
@@ -191,6 +199,8 @@ export type ExtractedEntities = {
    */
   schedulingConstraint?: SchedulingConstraint;
   accepted: boolean;
+  /** An explicit decline of whatever was just offered (e.g. an offered slot) — "no"/"nope"/"לא". Context-free by construction, same as `accepted`: the compiler only acts on it when there's actually something on file to decline. */
+  declined: boolean;
   paidConfirmed: boolean;
   discountPct?: number;
   email?: string;
@@ -476,9 +486,14 @@ export function extractEntities(message: string): ExtractedEntities {
 
   const schedulingConstraint = extractExplicitSchedulingConstraint(message);
 
-  const accepted = /\b(yes|yep|sounds good|perfect|that works|confirm|book it|let's do it|sure)\b/.test(
-    text
-  );
+  const accepted =
+    /\b(yes|yep|yeah|yea|yup|sounds good|perfect|that works|confirm|book it|let's do it|sure)\b/.test(text) ||
+    HEBREW_ACCEPT_WORDS.some((w) => matchHebrewToken(text, w) !== undefined);
+  // Context-free by construction, same as `accepted` above — the compiler
+  // is the one place that decides whether there's actually anything to
+  // decline (an offered slot on file), never this extractor.
+  const declined =
+    /\b(no|nope|nah)\b/.test(text) || HEBREW_DECLINE_WORDS.some((w) => matchHebrewToken(text, w) !== undefined);
   const paidConfirmed = /\b(paid|payment (is )?done|i('| ha)ve paid|sent the payment)\b/.test(text);
 
   const discountMatch = text.match(/(\d+)\s*%.*(off|discount)|discount.*?(\d+)\s*%/);
@@ -490,6 +505,7 @@ export function extractEntities(message: string): ExtractedEntities {
     partySize,
     schedulingConstraint,
     accepted,
+    declined,
     paidConfirmed,
     discountPct,
     email: extractExplicitEmail(message),

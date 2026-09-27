@@ -48,6 +48,7 @@ export class MockReasoner implements Reasoner {
     if (entities.partySize > 1) constraints.partySize = entities.partySize;
     if (entities.discountPct) constraints.discountPct = entities.discountPct;
     if (entities.accepted) constraints.slotAccepted = true;
+    if (entities.declined) constraints.slotDeclined = true;
 
     const customerInfo: Record<string, string> = {};
     if (entities.email) customerInfo.email = entities.email;

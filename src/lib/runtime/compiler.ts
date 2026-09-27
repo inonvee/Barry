@@ -189,6 +189,21 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
   Object.assign(state.knownFields, scratchUpdate, appliedCustomerInfo);
   const known = state.knownFields;
 
+  // An explicit decline of a previously offered slot ("no"/"לא") only
+  // means anything when there's actually a slot on file to decline —
+  // otherwise it's a no-op, never a spurious state change. Clears the
+  // offer so the compiler falls through to `ask_datetime` again on this
+  // same turn, prompting for an alternative instead of silently
+  // re-asking about the same rejected slot forever.
+  if (ir.constraints.slotDeclined && known[SCRATCH_KEYS.offeredStart]) {
+    delete known[SCRATCH_KEYS.offeredStart];
+    delete known[SCRATCH_KEYS.offeredEnd];
+    delete known[SCRATCH_KEYS.offeredResource];
+    delete known[SCRATCH_KEYS.slotAccepted];
+    delete known[SCRATCH_KEYS.mentionedEarliest];
+    delete known[SCRATCH_KEYS.mentionedLatest];
+  }
+
   // Explicit change-of-mind ("actually, solo instead") is the ONE way the
   // sticky offer selection can be replaced mid-conversation. Ordinary
   // selectedOfferId/offerCandidateIds guesses from later turns never
