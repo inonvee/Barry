@@ -26,6 +26,7 @@ export const SCRATCH_KEYS = {
   mentionedPartySize: "__mentionedPartySize",
   slotAccepted: "__slotAccepted",
   inventoryChecked: "__inventoryChecked",
+  lastSchedulingDate: "__lastSchedulingDate",
 };
 
 function round2(n: number): number {
@@ -128,11 +129,25 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
   // never the server's or a hardcoded one. Neither Reasoner is ever asked
   // to compute this itself.
   if (ir.constraints.schedulingWindow) {
-    const resolved = resolveSchedulingWindow(ir.constraints.schedulingWindow, graph.business.timezone);
+    let window = ir.constraints.schedulingWindow;
+    // A TIME-ONLY constraint (e.g. "actually 5pm instead" — a correction
+    // that never re-states the day) must not silently reset the day to
+    // today when a day was already established earlier in this same
+    // conversation. Carry the last EXPLICIT date forward only when this
+    // turn's constraint supplied none itself; a turn that does name a
+    // date always wins outright and becomes the new carryover value.
+    if (!window.date && state.knownFields[SCRATCH_KEYS.lastSchedulingDate]) {
+      const lastDate = JSON.parse(state.knownFields[SCRATCH_KEYS.lastSchedulingDate]);
+      window = { ...window, date: lastDate };
+    }
+    const resolved = resolveSchedulingWindow(window, graph.business.timezone);
     if (resolved) {
       scratchUpdate[SCRATCH_KEYS.mentionedEarliest] = resolved.earliest;
       scratchUpdate[SCRATCH_KEYS.mentionedLatest] = resolved.latest;
       debug.resolvedSchedulingWindow = resolved;
+    }
+    if (window.date) {
+      scratchUpdate[SCRATCH_KEYS.lastSchedulingDate] = JSON.stringify(window.date);
     }
   }
   if (ir.constraints.partySize && ir.constraints.partySize > 1) {

@@ -118,7 +118,7 @@ export type OfferFact =
  */
 export type CompileDebugInfo = {
   appliedCustomerInfo: Record<string, string>;
-  resolvedSchedulingWindow?: { earliest: string; latest: string };
+  resolvedSchedulingWindow?: { earliest: string; latest: string; anomaly?: "nonexistent" | "ambiguous" };
 };
 
 export type CompileOutcome = { stage: ConversationStage; debug?: CompileDebugInfo } & (

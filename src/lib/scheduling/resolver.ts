@@ -61,21 +61,8 @@ function addCalendarDays(date: LocalDateParts, days: number): { year: number; mo
   return { year: asUtc.getUTCFullYear(), month: asUtc.getUTCMonth() + 1, day: asUtc.getUTCDate() };
 }
 
-/**
- * Convert a wall-clock local time in `timeZone` to the corresponding UTC
- * instant. Standard round-trip technique: guess the instant as if the wall
- * clock were UTC, see what that instant actually displays as in
- * `timeZone`, and correct by the difference.
- */
-function zonedTimeToUtc(
-  year: number,
-  month: number,
-  day: number,
-  hour: number,
-  minute: number,
-  timeZone: string
-): Date {
-  const guess = Date.UTC(year, month - 1, day, hour, minute, 0);
+/** The UTC offset (ms) in effect in `timeZone` AT a given instant — instant->local is always well-defined, so this is never ambiguous, unlike the reverse direction `zonedTimeToUtc` has to solve. */
+function offsetAtInstant(instant: number, timeZone: string): number {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone,
     year: "numeric",
@@ -85,7 +72,7 @@ function zonedTimeToUtc(
     minute: "2-digit",
     second: "2-digit",
     hourCycle: "h23",
-  }).formatToParts(new Date(guess));
+  }).formatToParts(new Date(instant));
   const map = Object.fromEntries(parts.map((p) => [p.type, p.value]));
   const displayedAsUtc = Date.UTC(
     Number(map.year),
@@ -95,8 +82,116 @@ function zonedTimeToUtc(
     Number(map.minute),
     Number(map.second)
   );
-  const offset = guess - displayedAsUtc;
-  return new Date(guess + offset);
+  return instant - displayedAsUtc;
+}
+
+/** Does `instant`, displayed in `timeZone`, read back as exactly the requested wall-clock Y/M/D H:M? */
+function displaysAsRequested(
+  instant: number,
+  timeZone: string,
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number
+): boolean {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(instant));
+  const map = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  return (
+    Number(map.year) === year &&
+    Number(map.month) === month &&
+    Number(map.day) === day &&
+    Number(map.hour) === hour &&
+    Number(map.minute) === minute
+  );
+}
+
+export type ZonedTimeResult = {
+  instant: Date;
+  /**
+   * Set when the requested local wall-clock time falls inside a DST
+   * transition — this is BARRY's own documented, deterministic policy
+   * for the two cases a naive UTC offset lookup can't otherwise resolve;
+   * it never silently guesses without recording that a decision was
+   * made:
+   *
+   * - "nonexistent": a spring-forward gap skipped the requested wall
+   *   clock entirely (e.g. 2:30 AM on the day clocks jump from 2:00 AM
+   *   straight to 3:00 AM). Policy: round forward to the first valid
+   *   instant after the gap (the POST-transition offset applied to the
+   *   requested digits).
+   * - "ambiguous": a fall-back means the requested wall clock occurs
+   *   TWICE (e.g. 1:30 AM happens once before and once after clocks
+   *   fall back). Policy: prefer the EARLIER of the two real instants
+   *   (the first occurrence, still in the pre-transition offset).
+   */
+  anomaly?: "nonexistent" | "ambiguous";
+};
+
+/**
+ * Convert a wall-clock local time in `timeZone` to the corresponding UTC
+ * instant. Standard round-trip technique: guess the instant as if the wall
+ * clock were UTC, see what that instant actually displays as in
+ * `timeZone`, and correct by the difference — correct for an ordinary
+ * (non-transition) time. Near a DST transition, that single guess-and-
+ * correct pass isn't enough (the "true" offset could be either side of
+ * the transition), so this probes BOTH sides explicitly and applies the
+ * documented policy above instead of silently returning whichever one
+ * the naive technique happened to land on.
+ */
+/**
+ * How far before/after the naive guess to probe for the surrounding UTC
+ * offset. Must exceed the largest realistic IANA UTC offset magnitude
+ * (up to ~14h) plus the DST gap/overlap itself (1-2h): the naive guess
+ * treats the requested LOCAL digits as if they were UTC, so for a zone
+ * like America/New_York (UTC-5) the guess can sit hours away from the
+ * real transition instant — a 3-hour probe window entirely missed it. 25
+ * hours safely brackets any single transition without risking a second
+ * one inside the window (transitions are always months apart).
+ */
+const DST_PROBE_MS = 25 * 3600_000;
+
+function zonedTimeToUtc(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  timeZone: string
+): ZonedTimeResult {
+  const guess = Date.UTC(year, month - 1, day, hour, minute, 0);
+
+  const offsetBefore = offsetAtInstant(guess - DST_PROBE_MS, timeZone);
+  const offsetAfter = offsetAtInstant(guess + DST_PROBE_MS, timeZone);
+
+  if (offsetBefore === offsetAfter) {
+    // No DST transition anywhere near this instant — the ordinary case.
+    return { instant: new Date(guess + offsetBefore) };
+  }
+
+  const candidateBefore = guess + offsetBefore;
+  const candidateAfter = guess + offsetAfter;
+  const beforeMatches = displaysAsRequested(candidateBefore, timeZone, year, month, day, hour, minute);
+  const afterMatches = displaysAsRequested(candidateAfter, timeZone, year, month, day, hour, minute);
+
+  if (beforeMatches && afterMatches) {
+    return { instant: new Date(Math.min(candidateBefore, candidateAfter)), anomaly: "ambiguous" };
+  }
+  if (beforeMatches) return { instant: new Date(candidateBefore) };
+  if (afterMatches) return { instant: new Date(candidateAfter) };
+
+  // Neither reformatted candidate matches the requested wall clock at
+  // all — it was skipped by a spring-forward gap. Round forward to the
+  // first valid instant after the gap.
+  return { instant: new Date(Math.max(candidateBefore, candidateAfter)), anomaly: "nonexistent" };
 }
 
 function resolveDate(
@@ -127,8 +222,8 @@ function resolveDate(
         if (spec.qualifier === "next") {
           days = 7;
         } else {
-          const candidateInstant = zonedTimeToUtc(today.year, today.month, today.day, time.hour, time.minute, timeZone);
-          days = candidateInstant.getTime() >= now.getTime() ? 0 : 7;
+          const candidate = zonedTimeToUtc(today.year, today.month, today.day, time.hour, time.minute, timeZone);
+          days = candidate.instant.getTime() >= now.getTime() ? 0 : 7;
         }
       } else {
         // "next Monday" skips past the immediate upcoming Monday to the
@@ -149,23 +244,31 @@ function resolveTime(spec: TimeSpec | undefined): { hour: number; minute: number
 /**
  * Resolve a semantic scheduling constraint to an absolute UTC window,
  * using the business's own timezone. Returns undefined if there's nothing
- * to resolve (no date and no time mentioned at all).
+ * to resolve (no date and no time mentioned at all). `anomaly` is set
+ * when the requested local time fell inside a DST transition — see
+ * `ZonedTimeResult`'s docstring for the exact policy applied; this is
+ * never a silent guess, it's always observable here for the compiler/
+ * Inspector to surface if useful.
  */
 export function resolveSchedulingWindow(
   constraint: SchedulingConstraint,
   timeZone: string,
   now: Date = new Date()
-): { earliest: string; latest: string } | undefined {
+): { earliest: string; latest: string; anomaly?: "nonexistent" | "ambiguous" } | undefined {
   if (!constraint.date && !constraint.time) return undefined;
 
   const { hour, minute } = resolveTime(constraint.time);
   const { year, month, day } = resolveDate(constraint.date, timeZone, now, { hour, minute });
 
   const earliest = zonedTimeToUtc(year, month, day, hour, minute, timeZone);
-  const latest = zonedTimeToUtc(year, month, day, hour, minute, timeZone);
-  latest.setUTCHours(latest.getUTCHours() + 3);
+  const latestInstant = new Date(earliest.instant);
+  latestInstant.setUTCHours(latestInstant.getUTCHours() + 3);
 
-  return { earliest: earliest.toISOString(), latest: latest.toISOString() };
+  return {
+    earliest: earliest.instant.toISOString(),
+    latest: latestInstant.toISOString(),
+    anomaly: earliest.anomaly,
+  };
 }
 
 /**

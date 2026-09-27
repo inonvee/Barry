@@ -438,6 +438,20 @@ export function extractExplicitSchedulingConstraint(message: string): Scheduling
     const time = parseTimeToken(text) ?? parseHebrewTimeToken(text);
     return { date: { kind: "relativeDay", days: 0 }, time: time ? { kind: "explicitTime", ...time } : undefined };
   }
+  // No date token at all, but a bare time is still real, verifiable
+  // scheduling information — most commonly a time-only correction
+  // ("actually 5pm instead"). Returning undefined here was a live bug:
+  // with no `date` key, this looked identical to "no scheduling intent
+  // whatsoever" to callers, so a time-only correction fell all the way
+  // through to being misread as a customer NAME by the mock reasoner's
+  // name-fallback heuristic. The compiler (`resolveDate`) already
+  // defaults a missing date to "today" for a first-time mention; a
+  // correction's date carryover from the prior turn is the compiler's
+  // job, not this extractor's.
+  const bareTime = parseTimeToken(text) ?? parseHebrewTimeToken(text);
+  if (bareTime) {
+    return { time: { kind: "explicitTime", ...bareTime } };
+  }
   return undefined;
 }
 
