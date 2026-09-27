@@ -29,15 +29,50 @@ start — see below). Without `OPENAI_API_KEY` + `BARRY_REASONER=openai`,
 BARRY keeps using MockReasoner (deterministic, English-only, no natural
 free-form conversation).
 
+**This fallback only applies to local dev (`next dev`) and `vitest`.** In
+any real deployment (Vercel sets `NODE_ENV=production` for both Preview
+and Production environments), all four of these env vars are mandatory —
+`getReasoner()` / `getConversationStore()` / `getBackend()` throw a
+`BarryConfigurationError` instead of silently falling back, so a missing
+credential is a loud startup/request failure, never a quietly-degraded
+conversation. **Vercel scopes env vars per environment** — if any of the
+four were only ever added under "Production" in the dashboard, the
+Preview deployment will fail every request. Set all four for both
+Preview and Production.
+
 ## The Supabase project
 
 Project **Barry** (`ynnmlsnmybbaxeyolydj`, `eu-central-1`/Frankfurt), org
-`hkopatkurnfadlzojjkr`. Migration `supabase/migrations/0001_barry_core.sql`
-is already applied: `conversations`, `messages`, `turn_logs`, `bookings`,
-`payment_requests`, `approvals`, `follow_ups`, `inventory_adjustments`.
+`hkopatkurnfadlzojjkr`. **Do not touch any other Supabase project.**
+
+- `supabase/migrations/0001_barry_core.sql` — `conversations`, `messages`,
+  `turn_logs`, `bookings`, `payment_requests`, `approvals`, `follow_ups`,
+  `inventory_adjustments`.
+- `supabase/migrations/0002_idempotency.sql` — concurrency/idempotency
+  constraints (see below).
+
 Every table has RLS enabled with **no policies** — only the service-role
 key (server-side) can read or write; there is no anon/authenticated
 browser access to this data at all.
+
+### Concurrency / idempotency (migration 0002)
+
+Verified live against the database (unique-violation and atomic-increment
+behavior confirmed via direct SQL, then covered by
+`__tests__/supabase-idempotency.test.ts`):
+
+- **`bookings_resource_slot_confirmed_uidx`** — a unique index on
+  `(resource_id, start_at) WHERE status = 'confirmed'`. Two concurrent
+  `createBooking` calls for the same slot can no longer both succeed; the
+  second gets a clean "Slot no longer available" error instead of a raw
+  Postgres error.
+- **`payment_requests_one_pending_per_conversation_uidx`** — a unique
+  index on `conversation_id WHERE status = 'pending'`. A retried request
+  can't create a second pending payment request for the same conversation.
+- **`increment_inventory_consumed(business_id, sku, quantity)`** — a
+  Postgres function doing the inventory read-modify-write as one atomic
+  statement, replacing a select-then-upsert from JS that had a race
+  window under concurrent `fulfillOrder` calls.
 
 ## One-time Vercel setup (if starting fresh)
 
@@ -78,11 +113,12 @@ useful for a quick check, but not what proves Phase 1.5's actual goal.
 - **MockReasoner is English-only and rule-based**: it's the offline/test
   fallback, not a second "language mode" — real natural multi-turn
   understanding (any language) comes from `OpenAIReasoner`.
-- **`inventory_adjustments` increments are not atomic** (`select` then
-  `upsert`, not a single SQL statement) — fine for demo-scale concurrent
-  usage, not for real production race conditions.
 - No real Stripe/calendar/WhatsApp integration yet (by design — see the
-  project brief's "Do NOT add these yet" list).
+  project brief's "Do NOT add these yet" list). Duplicate-request
+  idempotency at the API layer (e.g. an `Idempotency-Key` header) is not
+  implemented yet — the DB constraints above prevent the specific races
+  that matter today (double-booking, duplicate pending payments,
+  inventory drift), but a full idempotency-key design is Phase 2 work.
 
 ## Local development
 

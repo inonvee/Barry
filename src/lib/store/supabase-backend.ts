@@ -103,7 +103,16 @@ export class SupabaseBackend implements BarryBackend {
       status: "confirmed" as const,
     };
     const { data, error } = await client.from("bookings").insert(row).select("*").single();
-    if (error) throw new Error(`Failed to create booking: ${error.message}`);
+    if (error) {
+      // 23505 = unique_violation. bookings_resource_slot_confirmed_uidx
+      // (migration 0002) means a second concurrent createBooking for the
+      // same resource+time can never silently double-book — it lands
+      // here instead, as the same "slot no longer available" outcome the
+      // app-level check-then-insert in tools/definitions.ts already
+      // produces for the non-racing case.
+      if (error.code === "23505") throw new Error("Slot no longer available");
+      throw new Error(`Failed to create booking: ${error.message}`);
+    }
     return bookingFromRow(data);
   }
 
@@ -122,19 +131,15 @@ export class SupabaseBackend implements BarryBackend {
 
   async decrementInventory(businessId: string, sku: string, quantity: number): Promise<void> {
     const client = getSupabaseClient();
-    const { data, error: selectError } = await client
-      .from("inventory_adjustments")
-      .select("consumed_quantity")
-      .eq("business_id", businessId)
-      .eq("sku", sku)
-      .maybeSingle();
-    if (selectError) throw new Error(`Failed to read inventory for ${sku}: ${selectError.message}`);
-
-    const nextConsumed = (data?.consumed_quantity ?? 0) + quantity;
-    const { error: upsertError } = await client
-      .from("inventory_adjustments")
-      .upsert({ business_id: businessId, sku, consumed_quantity: nextConsumed });
-    if (upsertError) throw new Error(`Failed to decrement inventory for ${sku}: ${upsertError.message}`);
+    // A single atomic upsert (migration 0002's increment_inventory_consumed
+    // function) instead of select-then-upsert from JS, which had a race
+    // window under concurrent fulfillOrder calls for the same SKU.
+    const { error } = await client.rpc("increment_inventory_consumed", {
+      p_business_id: businessId,
+      p_sku: sku,
+      p_quantity: quantity,
+    });
+    if (error) throw new Error(`Failed to decrement inventory for ${sku}: ${error.message}`);
   }
 
   async createPaymentRequest(
@@ -152,7 +157,13 @@ export class SupabaseBackend implements BarryBackend {
       status: "pending" as const,
     };
     const { data, error } = await client.from("payment_requests").insert(row).select("*").single();
-    if (error) throw new Error(`Failed to create payment request: ${error.message}`);
+    if (error) {
+      // payment_requests_one_pending_per_conversation_uidx (migration 0002)
+      // means a retried request can never create a second pending payment
+      // request for the same conversation.
+      if (error.code === "23505") throw new Error("A payment request is already pending for this conversation");
+      throw new Error(`Failed to create payment request: ${error.message}`);
+    }
     return paymentFromRow(data);
   }
 
