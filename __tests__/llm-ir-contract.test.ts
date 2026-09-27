@@ -34,6 +34,7 @@ function validRawIR(overrides: Record<string, unknown> = {}) {
     intent: "discovery",
     selectedOfferId: null,
     offerCandidateIds: [],
+    offerChangeRequested: null,
     entities: [],
     constraints: { schedulingWindow: NULL_SCHEDULING_WINDOW, partySize: null, discountPct: null, slotAccepted: null },
     knownFieldsUpdate: [],
@@ -120,6 +121,14 @@ describe("LLM IR contract: parseIRResponse", () => {
     const result = parseIRResponse(graph, JSON.stringify(raw));
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.ir.selectedOfferId).toBeUndefined();
+  });
+
+  it("drops an invalid/unknown offerChangeRequested id instead of trusting it", () => {
+    const graph = buildSpaGraph();
+    const raw = validRawIR({ offerChangeRequested: "offer-does-not-exist" });
+    const result = parseIRResponse(graph, JSON.stringify(raw));
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.ir.offerChangeRequested).toBeUndefined();
   });
 
   it("filters unknown candidate offer ids out of offerCandidateIds", () => {

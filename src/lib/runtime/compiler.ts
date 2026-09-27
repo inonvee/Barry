@@ -120,6 +120,31 @@ export function compile(graph: BusinessGraph, state: ConversationState, ir: Barr
   Object.assign(state.knownFields, scratchUpdate, safeKnownFieldsUpdate);
   const known = state.knownFields;
 
+  // Explicit change-of-mind ("actually, solo instead") is the ONE way the
+  // sticky offer selection can be replaced mid-conversation. Ordinary
+  // selectedOfferId/offerCandidateIds guesses from later turns never
+  // override it (see resolveOfferId) — only this dedicated signal can,
+  // and only when it actually names a different, real offer.
+  if (
+    ir.offerChangeRequested &&
+    findOffer(graph, ir.offerChangeRequested) &&
+    ir.offerChangeRequested !== state.selectedOfferId
+  ) {
+    state.selectedOfferId = ir.offerChangeRequested;
+    // The old offer's booking/payment progress doesn't apply to the new
+    // one — clear it so the new offer starts its own flow from scratch.
+    // Customer identity (name/email/phone) and scheduling PREFERENCES
+    // (day/time/party size the customer already stated) are kept; they're
+    // not specific to which service was chosen.
+    delete known[SCRATCH_KEYS.offeredStart];
+    delete known[SCRATCH_KEYS.offeredEnd];
+    delete known[SCRATCH_KEYS.offeredResource];
+    delete known[SCRATCH_KEYS.slotAccepted];
+    delete known[SCRATCH_KEYS.paymentRequestId];
+    delete known[SCRATCH_KEYS.paid];
+    delete known[SCRATCH_KEYS.inventoryChecked];
+  }
+
   let selectedOfferId = resolveOfferId(graph, state, ir);
 
   if (!selectedOfferId && ir.offerCandidateIds && ir.offerCandidateIds.length > 0) {

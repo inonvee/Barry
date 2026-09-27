@@ -11,6 +11,7 @@ import type { BarryIR, BarryIRConstraints, ComposeResponseInput, Reasoner, Reaso
  */
 
 const PRICE_QUESTION = /\b(how much|what('s| is) the price|cost|pricing)\b/i;
+const CHANGE_OF_MIND_SIGNAL = /\b(actually|instead|change (it |that )?to|switch (it |that )?to|rather have|no,? (i want|make it|let'?s do))\b/i;
 
 export class MockReasoner implements Reasoner {
   readonly name = "mock" as const;
@@ -45,16 +46,27 @@ export class MockReasoner implements Reasoner {
 
     let selectedOfferId: string | undefined;
     let offerCandidateIds: string[] | undefined;
+    let offerChangeRequested: string | undefined;
     if (!state.selectedOfferId) {
       const candidates = findOfferCandidates(graph, customerMessage);
       if (candidates.length === 1) selectedOfferId = candidates[0].id;
       else if (candidates.length > 1) offerCandidateIds = candidates.map((o) => o.id);
+    } else if (CHANGE_OF_MIND_SIGNAL.test(customerMessage)) {
+      // An offer is already chosen for this conversation — only an
+      // explicit change-of-mind phrase plus a single, confident, DIFFERENT
+      // offer match can replace it. An unrelated later message never
+      // silently switches the offer (see resolveOfferId in compiler.ts).
+      const candidates = findOfferCandidates(graph, customerMessage);
+      if (candidates.length === 1 && candidates[0].id !== state.selectedOfferId) {
+        offerChangeRequested = candidates[0].id;
+      }
     }
 
     return {
       intent: selectedOfferId || state.selectedOfferId ? "offer_interest" : "discovery",
       selectedOfferId,
       offerCandidateIds,
+      offerChangeRequested,
       entities: entities as Record<string, unknown>,
       constraints,
       knownFieldsUpdate,

@@ -54,6 +54,8 @@ export const LlmIRSchema = z.object({
   intent: z.string(),
   selectedOfferId: z.string().nullable(),
   offerCandidateIds: z.array(z.string()),
+  /** ONLY for an explicit "actually, X instead" — never for the initial selection. */
+  offerChangeRequested: z.string().nullable(),
   entities: z.array(KeyValuePairSchema),
   constraints: z.object({
     schedulingWindow: LlmSchedulingWindowSchema.nullable(),
@@ -95,6 +97,7 @@ export function irJsonSchema() {
         intent: { type: "string" },
         selectedOfferId: { type: ["string", "null"] },
         offerCandidateIds: { type: "array", items: { type: "string" } },
+        offerChangeRequested: { type: ["string", "null"] },
         entities: { type: "array", items: kvSchema() },
         constraints: {
           type: "object",
@@ -143,6 +146,7 @@ export function irJsonSchema() {
         "intent",
         "selectedOfferId",
         "offerCandidateIds",
+        "offerChangeRequested",
         "entities",
         "constraints",
         "knownFieldsUpdate",

@@ -96,6 +96,7 @@ Rules you must never break:
 - Never invent prices, availability, inventory, policies, business hours, or payment status — you don't decide those; you only extract what the customer said.
 - Accumulate information across turns: a day/time/party-size/service mentioned earlier (visible in knownFields/recentMessages) is still true unless the customer changed it — repeat it in constraints/knownFieldsUpdate so it isn't lost.
 - If multiple offers plausibly match, list them in offerCandidateIds and leave selectedOfferId null — do not guess.
+- selectedOfferId/offerCandidateIds are ONLY for the initial choice of offer. If "selectedOfferId" (given to you in context) is already set and the customer's message is an EXPLICIT change of mind ("actually, X instead", "change it to X", "switch to X") naming a different, real offer, put that offer's id in offerChangeRequested instead — never in selectedOfferId. Leave offerChangeRequested null for anything that isn't an explicit, confident change request; an unrelated message must never change the offer.
 - requestedCapability is advisory only (e.g. "ask_price" when they ask how much something costs). Use null if unsure.
 - Output strict JSON matching the provided schema. No explanation outside the JSON.`;
 
@@ -133,11 +134,14 @@ export function sanitizeIR(graph: BusinessGraph, raw: LlmIR): BarryIR {
     raw.selectedOfferId && findOffer(graph, raw.selectedOfferId) ? raw.selectedOfferId : undefined;
 
   const offerCandidateIds = raw.offerCandidateIds.filter((id) => findOffer(graph, id));
+  const offerChangeRequested =
+    raw.offerChangeRequested && findOffer(graph, raw.offerChangeRequested) ? raw.offerChangeRequested : undefined;
 
   return {
     intent: raw.intent,
     selectedOfferId,
     offerCandidateIds: offerCandidateIds.length > 0 ? offerCandidateIds : undefined,
+    offerChangeRequested,
     entities: kvArrayToRecord(raw.entities),
     constraints: {
       schedulingWindow: unflattenSchedulingWindow(raw.constraints.schedulingWindow),

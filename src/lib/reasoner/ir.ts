@@ -46,6 +46,16 @@ export type BarryIR = {
   selectedOfferId?: string;
   /** Multiple plausible offers — the compiler asks which one instead of guessing. */
   offerCandidateIds?: string[];
+  /**
+   * An EXPLICIT request to replace the already-selected offer with a
+   * different one (e.g. "actually, solo instead"). Distinct from
+   * `selectedOfferId`/`offerCandidateIds`, which only ever apply to the
+   * *initial* selection — once an offer is chosen for a conversation, it's
+   * sticky against everything except this explicit signal. This is what
+   * lets a deliberate change-of-mind through without random model drift
+   * silently reinterpreting an unrelated later message as a new choice.
+   */
+  offerChangeRequested?: string;
   entities: Record<string, unknown>;
   constraints: BarryIRConstraints;
   /** Customer-info fields (name/email/phone/...) extracted this turn. */
