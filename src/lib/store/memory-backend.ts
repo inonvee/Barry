@@ -43,9 +43,12 @@ export class MemoryBackend implements BarryBackend {
     return Math.max(0, baseQuantity - consumed);
   }
 
-  async decrementInventory(businessId: string, sku: string, quantity: number) {
+  async decrementInventory(businessId: string, sku: string, quantity: number, baseQuantity: number) {
     const key = `${businessId}:${sku}`;
-    this.inventoryDeltas.set(key, (this.inventoryDeltas.get(key) ?? 0) + quantity);
+    const consumed = this.inventoryDeltas.get(key) ?? 0;
+    if (consumed + quantity > baseQuantity) return false;
+    this.inventoryDeltas.set(key, consumed + quantity);
+    return true;
   }
 
   async createPaymentRequest(record: Omit<PaymentRequestRecord, "id" | "createdAt" | "status">) {

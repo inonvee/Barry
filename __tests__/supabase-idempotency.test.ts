@@ -4,7 +4,8 @@ import { SupabaseBackend } from "@/lib/store/supabase-backend";
 
 /**
  * DB-level concurrency/idempotency guards added in
- * supabase/migrations/0002_idempotency.sql. These auto-skip unless
+ * supabase/migrations/0002_idempotency.sql and (the oversell guard)
+ * 0004_inventory_oversell_guard.sql. These auto-skip unless
  * SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY are set for this test run (see
  * supabase-persistence.test.ts) — verified directly against the live
  * database via the Supabase MCP tools as part of this change; this test
@@ -90,10 +91,29 @@ describe.skipIf(!isSupabaseConfigured())("Supabase idempotency constraints", () 
     const sku = `vitest-idem-sku-${Date.now()}`;
 
     try {
-      await backend.decrementInventory(businessId, sku, 2);
-      await backend.decrementInventory(businessId, sku, 3);
+      const first = await backend.decrementInventory(businessId, sku, 2, 10);
+      const second = await backend.decrementInventory(businessId, sku, 3, 10);
+      expect(first).toBe(true);
+      expect(second).toBe(true);
       const remaining = await backend.getInventory(businessId, sku, 10);
       expect(remaining).toBe(5); // 10 - (2 + 3)
+    } finally {
+      await getSupabaseClient().from("inventory_adjustments").delete().eq("sku", sku);
+    }
+  });
+
+  it("decrementInventory (reserve_inventory, migration 0004) refuses a reservation that would oversell", async () => {
+    const backend = new SupabaseBackend();
+    const businessId = "spa";
+    const sku = `vitest-idem-oversell-${Date.now()}`;
+
+    try {
+      const first = await backend.decrementInventory(businessId, sku, 1, 1); // uses the only unit
+      expect(first).toBe(true);
+      const second = await backend.decrementInventory(businessId, sku, 1, 1); // no units left
+      expect(second).toBe(false);
+      const remaining = await backend.getInventory(businessId, sku, 1);
+      expect(remaining).toBe(0); // never went negative / never double-reserved
     } finally {
       await getSupabaseClient().from("inventory_adjustments").delete().eq("sku", sku);
     }

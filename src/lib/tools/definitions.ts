@@ -184,9 +184,20 @@ export const fulfillOrder = defineTool({
   outputSchema: z.object({ orderId: z.string(), status: z.literal("fulfilled") }),
   async execute(input, ctx) {
     const offer = findOffer(ctx.graph, input.offerId);
-    const backend = getBackend();
     if (offer?.sku) {
-      await backend.decrementInventory(ctx.graph.business.id, offer.sku, 1);
+      const backend = getBackend();
+      // Stock was last confirmed at checkInventory time, potentially many
+      // turns (and a full payment flow) ago — another customer's order
+      // could have consumed the same last unit in between. Re-validate
+      // and reserve atomically HERE, at the moment of actual fulfillment,
+      // never trust the earlier check alone. A customer has already
+      // PAID by this point, so "sold out" here is a genuine failure to
+      // report, never something to paper over by fulfilling anyway.
+      const baseQuantity = inventoryFor(ctx.graph, offer.sku);
+      const reserved = await backend.decrementInventory(ctx.graph.business.id, offer.sku, 1, baseQuantity);
+      if (!reserved) {
+        throw new Error("Item sold out before this order could be fulfilled");
+      }
     }
     return { orderId: `order_${Math.random().toString(36).slice(2, 10)}`, status: "fulfilled" as const };
   },

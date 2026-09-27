@@ -113,6 +113,7 @@ describe("Payment attacks: real payment outcomes only via handlePaymentOutcome",
     r = await handleCustomerMessage(graph, conv, cust, "Let's try again");
     const secondPaymentId = r.state.knownFields.__paymentRequestId;
     expect(secondPaymentId).toBeTruthy();
+    expect(secondPaymentId).not.toBe(firstPaymentId);
 
     const result = await handlePaymentOutcome(graph, conv, secondPaymentId, "paid");
     expect(result.state.outcome).toBe("won");

@@ -129,17 +129,21 @@ export class SupabaseBackend implements BarryBackend {
     return Math.max(0, baseQuantity - consumed);
   }
 
-  async decrementInventory(businessId: string, sku: string, quantity: number): Promise<void> {
+  async decrementInventory(businessId: string, sku: string, quantity: number, baseQuantity: number): Promise<boolean> {
     const client = getSupabaseClient();
-    // A single atomic upsert (migration 0002's increment_inventory_consumed
-    // function) instead of select-then-upsert from JS, which had a race
-    // window under concurrent fulfillOrder calls for the same SKU.
-    const { error } = await client.rpc("increment_inventory_consumed", {
+    // A single atomic UPDATE (migration 0004's reserve_inventory function)
+    // guarded by baseQuantity — never a select-then-upsert from JS, which
+    // both races under concurrent fulfillOrder calls for the same SKU AND
+    // (migration 0002's now-superseded increment_inventory_consumed) had
+    // no oversell guard at all, letting consumed exceed baseQuantity.
+    const { data, error } = await client.rpc("reserve_inventory", {
       p_business_id: businessId,
       p_sku: sku,
       p_quantity: quantity,
+      p_base_quantity: baseQuantity,
     });
     if (error) throw new Error(`Failed to decrement inventory for ${sku}: ${error.message}`);
+    return data === true;
   }
 
   async createPaymentRequest(

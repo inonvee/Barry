@@ -243,6 +243,14 @@ export async function handlePaymentOutcome(
   await backend.simulatePaymentOutcome(paymentRequestId, outcome);
 
   if (outcome === "failed") {
+    // Clear the dead payment request — without this, `known[SCRATCH_KEYS.
+    // paymentRequestId]` stays set to the FAILED id forever, and the
+    // compiler's `!known[SCRATCH_KEYS.paymentRequestId]` guard (the one
+    // condition that creates a NEW payment request) can never fire again.
+    // A customer who says "let's try again" got stuck in a permanent
+    // "just waiting on your payment" loop referencing a payment that had
+    // already failed, with no way to actually retry.
+    delete state.knownFields[SCRATCH_KEYS.paymentRequestId];
     const response = `Your payment didn't go through. Want to try again or use a different method?`;
     state.messages.push({ role: "system", content: `Payment ${paymentRequestId} failed`, at: new Date().toISOString() });
     state.messages.push({ role: "barry", content: response, at: new Date().toISOString() });

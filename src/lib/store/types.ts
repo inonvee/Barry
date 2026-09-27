@@ -72,7 +72,14 @@ export interface BarryBackend {
 
   // Inventory
   getInventory(businessId: string, sku: string, baseQuantity: number): Promise<number>;
-  decrementInventory(businessId: string, sku: string, quantity: number): Promise<void>;
+  /**
+   * Atomically reserve `quantity` units against `baseQuantity` of stock —
+   * returns false (and reserves NOTHING) if doing so would oversell.
+   * `baseQuantity` must be supplied on every call (never cached from an
+   * earlier checkInventory) since availability can change between when a
+   * customer's stock was checked and when their order actually fulfills.
+   */
+  decrementInventory(businessId: string, sku: string, quantity: number, baseQuantity: number): Promise<boolean>;
 
   // Payments
   createPaymentRequest(
