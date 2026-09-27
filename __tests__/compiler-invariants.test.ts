@@ -52,6 +52,34 @@ describe("Compiler invariants", () => {
     expect(state.knownFields.__offeredSlotResource).toBe("therapist-1");
   });
 
+  it("offerChangeRequested naming a non-existent offer id is ignored — sticky offer selection is untouched", () => {
+    const graph = buildSpaGraph();
+    const state = createInitialConversationState("inv4", graph.business.id, "cust4");
+    state.selectedOfferId = "offer-couples-massage";
+    state.knownFields.name = "Jordan Lee";
+    state.knownFields.phone = "555-111-2222";
+    state.knownFields.__offeredSlotStart = "2026-10-04T14:00:00.000Z";
+    state.knownFields.__offeredSlotResource = "therapist-1";
+
+    compile(graph, state, emptyIR({ offerChangeRequested: "offer-does-not-exist" }));
+
+    expect(state.selectedOfferId).toBe("offer-couples-massage");
+    expect(state.knownFields.__offeredSlotStart).toBe("2026-10-04T14:00:00.000Z");
+  });
+
+  it("an offer_fact outcome never mutates booking/payment scratch state and never reaches the tool/policy layer", () => {
+    const graph = buildSpaGraph();
+    const state = createInitialConversationState("inv5", graph.business.id, "cust5");
+    state.selectedOfferId = "offer-couples-massage";
+
+    const before = JSON.stringify(state.knownFields);
+    const outcome = compile(graph, state, emptyIR({ requestedCapability: "ask_price" }));
+
+    expect(outcome.kind).toBe("offer_fact");
+    // A read-only fact lookup must never write booking/payment scratch keys.
+    expect(JSON.stringify(state.knownFields)).toBe(before);
+  });
+
   it("a globally registered action that is disabled on this Business Graph must never execute", async () => {
     const graph = buildSpaGraph();
     graph.availableActions = graph.availableActions.map((a) =>
