@@ -1,10 +1,11 @@
 import OpenAI from "openai";
 import type { BusinessGraph } from "@/lib/business-graph";
 import { findOffer } from "@/lib/business-graph";
-import { LlmIRSchema, irJsonSchema, type LlmIR, type KeyValuePair } from "./schemas";
+import { LlmIRSchema, irJsonSchema, type LlmIR, type LlmSchedulingWindow, type KeyValuePair } from "./schemas";
 import { composeDeterministic } from "./deterministic-compose";
 import { logReasonerFailure } from "./diagnostics";
 import type { BarryIR, ComposeResponseInput, Reasoner, ReasonerContext } from "./types";
+import type { SchedulingConstraint } from "@/lib/scheduling/resolver";
 
 /**
  * LLM-backed Reasoner. It UNDERSTANDS free text into BARRY IR and nothing
@@ -41,8 +42,22 @@ function buildUnderstandingContext(ctx: ReasonerContext) {
       requiredCustomerInfo: o.requiredCustomerInfo,
     }));
 
+  // The model only ever needs to know today's date in the business's own
+  // timezone to disambiguate an absolute calendar-date mention (e.g. "the
+  // 5th" -> which month/year) — it never computes the final timestamp
+  // itself; the Action Compiler's scheduling resolver does that.
+  const currentDateInBusinessTimezone = new Intl.DateTimeFormat("en-CA", {
+    timeZone: graph.business.timezone,
+  }).format(new Date());
+
   return {
-    business: { name: graph.business.name, tone: graph.business.tone, locale: graph.business.locale },
+    business: {
+      name: graph.business.name,
+      tone: graph.business.tone,
+      locale: graph.business.locale,
+      timezone: graph.business.timezone,
+      currentDate: currentDateInBusinessTimezone,
+    },
     offers,
     knownFields: state.knownFields,
     previousMissingFields: state.missingFields,
@@ -63,9 +78,22 @@ Every field in the schema is always present in your response. Use null for
 "entities" and "knownFieldsUpdate" are arrays of { key, value } pairs, not
 objects, because the schema can't express an open-ended dictionary.
 
+SCHEDULING — read carefully: you describe what the customer said, you
+never compute a timestamp. "constraints.schedulingWindow" only has these
+fields: dateKind ("explicitDate" | "relativeDay" | "weekday" | null),
+isoDate (only for explicitDate, "YYYY-MM-DD" — use business.currentDate to
+resolve an ambiguous bare day/month), relativeDays (only for relativeDay:
+0=today, 1=tomorrow, 2=day after...), weekday (only for weekday: 0=Sun..
+6=Sat), weekdayQualifier ("this" | "next" | null — "next Monday" is
+"next", bare "Monday" is null/"this"), timeKind ("explicitTime" |
+"partOfDay" | null), hour/minute (only for explicitTime, 24-hour, exactly
+as the customer said it in their own local sense of time — never convert
+it yourself, never add a timezone offset), partOfDay (only for
+partOfDay). Leave every field you're not using as null — never invent an
+ISO datetime string anywhere.
+
 Rules you must never break:
 - Never invent prices, availability, inventory, policies, business hours, or payment status — you don't decide those; you only extract what the customer said.
-- "constraints.schedulingWindow.earliest" must be a real ISO datetime you computed from what the customer said (a day/time), or null if none was mentioned this turn — never a placeholder.
 - Accumulate information across turns: a day/time/party-size/service mentioned earlier (visible in knownFields/recentMessages) is still true unless the customer changed it — repeat it in constraints/knownFieldsUpdate so it isn't lost.
 - If multiple offers plausibly match, list them in offerCandidateIds and leave selectedOfferId null — do not guess.
 - requestedCapability is advisory only (e.g. "ask_price" when they ask how much something costs). Use null if unsure.
@@ -73,6 +101,30 @@ Rules you must never break:
 
 function kvArrayToRecord(pairs: KeyValuePair[]): Record<string, string> {
   return Object.fromEntries(pairs.map((p) => [p.key, p.value]));
+}
+
+/** Reconstruct the real DateSpec|TimeSpec union from the flattened, strict-mode-compatible wire shape. */
+function unflattenSchedulingWindow(raw: LlmSchedulingWindow | null): SchedulingConstraint | undefined {
+  if (!raw || (!raw.dateKind && !raw.timeKind)) return undefined;
+
+  let date: SchedulingConstraint["date"];
+  if (raw.dateKind === "explicitDate" && raw.isoDate) {
+    date = { kind: "explicitDate", isoDate: raw.isoDate };
+  } else if (raw.dateKind === "relativeDay" && raw.relativeDays !== null) {
+    date = { kind: "relativeDay", days: raw.relativeDays };
+  } else if (raw.dateKind === "weekday" && raw.weekday !== null) {
+    date = { kind: "weekday", weekday: raw.weekday, qualifier: raw.weekdayQualifier ?? undefined };
+  }
+
+  let time: SchedulingConstraint["time"];
+  if (raw.timeKind === "explicitTime" && raw.hour !== null && raw.minute !== null) {
+    time = { kind: "explicitTime", hour: raw.hour, minute: raw.minute };
+  } else if (raw.timeKind === "partOfDay" && raw.partOfDay) {
+    time = { kind: "partOfDay", part: raw.partOfDay };
+  }
+
+  if (!date && !time) return undefined;
+  return { date, time };
 }
 
 /** Never trust the model's offer id/candidates without checking they exist on this business. */
@@ -88,10 +140,7 @@ export function sanitizeIR(graph: BusinessGraph, raw: LlmIR): BarryIR {
     offerCandidateIds: offerCandidateIds.length > 0 ? offerCandidateIds : undefined,
     entities: kvArrayToRecord(raw.entities),
     constraints: {
-      schedulingWindow:
-        raw.constraints.schedulingWindow?.earliest
-          ? { earliest: raw.constraints.schedulingWindow.earliest, latest: raw.constraints.schedulingWindow.latest ?? undefined }
-          : undefined,
+      schedulingWindow: unflattenSchedulingWindow(raw.constraints.schedulingWindow),
       partySize: raw.constraints.partySize ?? undefined,
       discountPct: raw.constraints.discountPct ?? undefined,
       slotAccepted: raw.constraints.slotAccepted ?? undefined,

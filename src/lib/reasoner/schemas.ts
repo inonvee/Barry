@@ -27,18 +27,36 @@ import { z } from "zod";
 export const KeyValuePairSchema = z.object({ key: z.string(), value: z.string() });
 export type KeyValuePair = z.infer<typeof KeyValuePairSchema>;
 
+/**
+ * Flattened, strict-mode-compatible representation of a semantic
+ * scheduling constraint. The model describes WHAT the customer said
+ * ("Sunday", "at 2pm") — never a resolved timestamp; a tagged union
+ * (DateSpec | TimeSpec, see src/lib/scheduling/resolver.ts) isn't directly
+ * expressible in strict mode, so every possible field is flattened here
+ * and reconstructed into the real union in `sanitizeIR`. `dateKind`/
+ * `timeKind` say which of the other fields are meaningful; the rest are
+ * null when not applicable.
+ */
+export const LlmSchedulingWindowSchema = z.object({
+  dateKind: z.enum(["explicitDate", "relativeDay", "weekday"]).nullable(),
+  isoDate: z.string().nullable(), // for explicitDate: "YYYY-MM-DD"
+  relativeDays: z.number().nullable(), // for relativeDay: 0=today, 1=tomorrow, ...
+  weekday: z.number().nullable(), // for weekday: 0=Sun..6=Sat
+  weekdayQualifier: z.enum(["this", "next"]).nullable(),
+  timeKind: z.enum(["explicitTime", "partOfDay"]).nullable(),
+  hour: z.number().nullable(), // for explicitTime: 24h, local to the business
+  minute: z.number().nullable(),
+  partOfDay: z.enum(["morning", "afternoon", "evening"]).nullable(),
+});
+export type LlmSchedulingWindow = z.infer<typeof LlmSchedulingWindowSchema>;
+
 export const LlmIRSchema = z.object({
   intent: z.string(),
   selectedOfferId: z.string().nullable(),
   offerCandidateIds: z.array(z.string()),
   entities: z.array(KeyValuePairSchema),
   constraints: z.object({
-    schedulingWindow: z
-      .object({
-        earliest: z.string().nullable(),
-        latest: z.string().nullable(),
-      })
-      .nullable(),
+    schedulingWindow: LlmSchedulingWindowSchema.nullable(),
     partySize: z.number().nullable(),
     discountPct: z.number().nullable(),
     slotAccepted: z.boolean().nullable(),
@@ -86,10 +104,27 @@ export function irJsonSchema() {
               type: ["object", "null"],
               additionalProperties: false,
               properties: {
-                earliest: { type: ["string", "null"] },
-                latest: { type: ["string", "null"] },
+                dateKind: { type: ["string", "null"], enum: ["explicitDate", "relativeDay", "weekday", null] },
+                isoDate: { type: ["string", "null"] },
+                relativeDays: { type: ["number", "null"] },
+                weekday: { type: ["number", "null"] },
+                weekdayQualifier: { type: ["string", "null"], enum: ["this", "next", null] },
+                timeKind: { type: ["string", "null"], enum: ["explicitTime", "partOfDay", null] },
+                hour: { type: ["number", "null"] },
+                minute: { type: ["number", "null"] },
+                partOfDay: { type: ["string", "null"], enum: ["morning", "afternoon", "evening", null] },
               },
-              required: ["earliest", "latest"],
+              required: [
+                "dateKind",
+                "isoDate",
+                "relativeDays",
+                "weekday",
+                "weekdayQualifier",
+                "timeKind",
+                "hour",
+                "minute",
+                "partOfDay",
+              ],
             },
             partySize: { type: ["number", "null"] },
             discountPct: { type: ["number", "null"] },

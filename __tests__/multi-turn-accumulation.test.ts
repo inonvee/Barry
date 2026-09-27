@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { handleCustomerMessage } from "@/lib/runtime";
+import { resolveSchedulingWindow } from "@/lib/scheduling/resolver";
 import { buildSpaGraph } from "@/lib/fixtures/spa";
 
 describe("multi-turn entity accumulation (regression)", () => {
@@ -43,7 +44,13 @@ describe("multi-turn entity accumulation (regression)", () => {
     );
     expect(t.state.selectedOfferId).toBe("offer-couples-massage");
     expect(t.state.knownFields.__mentionedEarliest).toBeTruthy();
-    expect(new Date(t.state.knownFields.__mentionedEarliest).getUTCHours()).toBe(13);
+    // "one" -> 13:00 local to the spa's own business.timezone (America/New_York),
+    // resolved through the same resolver — never the server's local time.
+    const expected = resolveSchedulingWindow(
+      { date: { kind: "weekday", weekday: 0 }, time: { kind: "explicitTime", hour: 13, minute: 0 } },
+      "America/New_York"
+    );
+    expect(t.state.knownFields.__mentionedEarliest).toBe(expected?.earliest);
   });
 
   it("understands party size and time-of-day phrased conversationally, then resolves once the service is named", async () => {

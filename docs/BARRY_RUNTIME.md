@@ -101,6 +101,31 @@ deterministic, keyword/regex-based, and needs no API key. Its
 `CompileOutcome` kind, which is also what `OpenAIReasoner` falls back to
 if a phrasing call fails.
 
+## Timezone-correct scheduling
+
+Neither Reasoner ever computes a timestamp. `BarryIRConstraints.schedulingWindow`
+carries a `SchedulingConstraint` (`src/lib/scheduling/resolver.ts`) — a
+purely semantic description: a date (`explicitDate` / `relativeDay` /
+`weekday`, with an optional `this`/`next` qualifier) and a time
+(`explicitTime` or `partOfDay`). `MockReasoner`'s regex extractor and
+`OpenAIReasoner`'s prompt both only ever produce this semantic shape; the
+LLM-facing JSON schema has no timestamp field to fill in at all.
+
+`resolveSchedulingWindow()` is the one place a semantic constraint becomes
+an absolute UTC instant — called only from `compile()`, using
+`graph.business.timezone` (never the server's local time or a hardcoded
+zone). It uses `Intl.DateTimeFormat` with the business's IANA timezone to
+get "today" as a calendar day in that zone, then a standard round-trip
+technique to convert the resulting local wall-clock time to UTC, which
+correctly handles DST because `Intl` always reflects the true offset for
+a given instant. No date-library dependency.
+
+The test fixtures' availability slots (`src/lib/fixtures/helpers.ts`)
+are generated through this same resolver, anchored to each fixture's own
+`business.timezone` — this mattered in practice: before this fix, slots
+were generated in the server's local time and a correctly timezone-aware
+booking request could miss them entirely.
+
 ## Conversation state machine
 
 `ConversationState.stage` moves through:

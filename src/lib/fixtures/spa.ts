@@ -55,8 +55,8 @@ export function buildSpaGraph(): BusinessGraph {
       { id: "therapist-2", type: "therapist", name: "Bruno" },
     ],
     availability: [
-      ...generateDailySlots("therapist-1", 7, [9, 10, 11, 12, 13, 14, 15], 60),
-      ...generateDailySlots("therapist-2", 7, [10, 11, 12, 13, 14, 15, 16], 60),
+      ...generateDailySlots("therapist-1", 7, [9, 10, 11, 12, 13, 14, 15], 60, "America/New_York"),
+      ...generateDailySlots("therapist-2", 7, [10, 11, 12, 13, 14, 15, 16], 60, "America/New_York"),
     ],
     inventory: [],
     knowledge: [

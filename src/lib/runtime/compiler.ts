@@ -3,6 +3,7 @@ import { findOffer } from "@/lib/business-graph";
 import { getTool } from "@/lib/tools";
 import type { BarryIR, CompileOutcome } from "@/lib/reasoner/ir";
 import type { ConversationStage, ConversationState } from "@/lib/state";
+import { resolveSchedulingWindow } from "@/lib/scheduling/resolver";
 
 export type { CompileOutcome } from "@/lib/reasoner/ir";
 
@@ -84,11 +85,16 @@ function resolveOfferId(graph: BusinessGraph, state: ConversationState, ir: Barr
  */
 export function compile(graph: BusinessGraph, state: ConversationState, ir: BarryIR): CompileOutcome {
   const scratchUpdate: Record<string, string> = {};
-  if (ir.constraints.schedulingWindow?.earliest) {
-    scratchUpdate[SCRATCH_KEYS.mentionedEarliest] = ir.constraints.schedulingWindow.earliest;
-  }
-  if (ir.constraints.schedulingWindow?.latest) {
-    scratchUpdate[SCRATCH_KEYS.mentionedLatest] = ir.constraints.schedulingWindow.latest;
+  // The ONLY place a semantic scheduling constraint ("Sunday", "at 2pm")
+  // becomes an absolute timestamp — using the business's own timezone,
+  // never the server's or a hardcoded one. Neither Reasoner is ever asked
+  // to compute this itself.
+  if (ir.constraints.schedulingWindow) {
+    const resolved = resolveSchedulingWindow(ir.constraints.schedulingWindow, graph.business.timezone);
+    if (resolved) {
+      scratchUpdate[SCRATCH_KEYS.mentionedEarliest] = resolved.earliest;
+      scratchUpdate[SCRATCH_KEYS.mentionedLatest] = resolved.latest;
+    }
   }
   if (ir.constraints.partySize && ir.constraints.partySize > 1) {
     scratchUpdate[SCRATCH_KEYS.mentionedPartySize] = String(ir.constraints.partySize);

@@ -3,8 +3,17 @@ import { compile } from "@/lib/runtime/compiler";
 import { handleCustomerMessage } from "@/lib/runtime";
 import { createInitialConversationState } from "@/lib/state";
 import type { BarryIR } from "@/lib/reasoner/ir";
+import { resolveSchedulingWindow } from "@/lib/scheduling/resolver";
 import { buildSpaGraph } from "@/lib/fixtures/spa";
 import { buildPersonalTrainerGraph } from "@/lib/fixtures/personal-trainer";
+
+// Spa fixture's business.timezone. Tests compute their own expected value
+// through the same resolver rather than hardcoding a UTC string, so they
+// stay correct if the resolver's conversion details ever change.
+const SPA_TZ = "America/New_York";
+function explicitAt(isoDate: string, hour: number, minute = 0) {
+  return { date: { kind: "explicitDate" as const, isoDate }, time: { kind: "explicitTime" as const, hour, minute } };
+}
 
 function emptyIR(overrides: Partial<BarryIR> = {}): BarryIR {
   return { intent: "test", entities: {}, constraints: {}, knownFieldsUpdate: {}, ...overrides };
@@ -32,17 +41,14 @@ describe("Action Compiler: never call a tool with incomplete input", () => {
     state.knownFields.phone = "555-111-2222";
     state.selectedOfferId = "offer-couples-massage";
 
-    const earliest = "2026-10-04T14:00:00.000Z"; // a Sunday, 2pm
-    const outcome = compile(
-      graph,
-      state,
-      emptyIR({ constraints: { schedulingWindow: { earliest }, partySize: 2 } })
-    );
+    const schedulingWindow = explicitAt("2026-10-04", 14); // a Sunday, 2pm
+    const expected = resolveSchedulingWindow(schedulingWindow, SPA_TZ)!;
+    const outcome = compile(graph, state, emptyIR({ constraints: { schedulingWindow, partySize: 2 } }));
 
     expect(outcome.kind).toBe("action");
     if (outcome.kind === "action") {
       expect(outcome.action.name).toBe("checkAvailability");
-      expect(outcome.action.input.earliest).toBe(earliest);
+      expect(outcome.action.input.earliest).toBe(expected.earliest);
       expect(outcome.action.input.partySize).toBe(2);
     }
   });
@@ -56,10 +62,11 @@ describe("Action Compiler: never call a tool with incomplete input", () => {
     const turn1 = compile(graph, state, emptyIR({ selectedOfferId: "offer-couples-massage" }));
     expect(turn1.kind).toBe("ask_datetime");
 
-    const earliest = "2026-10-04T14:00:00.000Z";
-    const turn2 = compile(graph, state, emptyIR({ constraints: { schedulingWindow: { earliest } } }));
+    const schedulingWindow = explicitAt("2026-10-04", 14);
+    const expected = resolveSchedulingWindow(schedulingWindow, SPA_TZ)!;
+    const turn2 = compile(graph, state, emptyIR({ constraints: { schedulingWindow } }));
     expect(turn2.kind).toBe("action");
-    if (turn2.kind === "action") expect(turn2.action.input.earliest).toBe(earliest);
+    if (turn2.kind === "action") expect(turn2.action.input.earliest).toBe(expected.earliest);
   });
 
   it("replaces the scheduling constraint entirely when the customer changes their mind (Sunday -> Monday)", () => {
@@ -69,16 +76,18 @@ describe("Action Compiler: never call a tool with incomplete input", () => {
     state.knownFields.phone = "555-111-2222";
     state.selectedOfferId = "offer-couples-massage";
 
-    const sunday = "2026-10-04T14:00:00.000Z";
-    const monday = "2026-10-05T14:00:00.000Z";
+    const sundayWindow = explicitAt("2026-10-04", 14);
+    const mondayWindow = explicitAt("2026-10-05", 14);
+    const expectedSunday = resolveSchedulingWindow(sundayWindow, SPA_TZ)!;
+    const expectedMonday = resolveSchedulingWindow(mondayWindow, SPA_TZ)!;
 
-    const first = compile(graph, state, emptyIR({ constraints: { schedulingWindow: { earliest: sunday } } }));
+    const first = compile(graph, state, emptyIR({ constraints: { schedulingWindow: sundayWindow } }));
     expect(first.kind).toBe("action");
-    if (first.kind === "action") expect(first.action.input.earliest).toBe(sunday);
+    if (first.kind === "action") expect(first.action.input.earliest).toBe(expectedSunday.earliest);
 
-    const second = compile(graph, state, emptyIR({ constraints: { schedulingWindow: { earliest: monday } } }));
+    const second = compile(graph, state, emptyIR({ constraints: { schedulingWindow: mondayWindow } }));
     expect(second.kind).toBe("action");
-    if (second.kind === "action") expect(second.action.input.earliest).toBe(monday);
+    if (second.kind === "action") expect(second.action.input.earliest).toBe(expectedMonday.earliest);
   });
 
   it("never lets an incomplete tool call through, even from a corrupted/partial ConversationState", () => {

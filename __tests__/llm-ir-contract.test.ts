@@ -17,13 +17,25 @@ import { buildSpaGraph } from "@/lib/fixtures/spa";
  * exact failure modes are testable without a network call.
  */
 
+const NULL_SCHEDULING_WINDOW = {
+  dateKind: null,
+  isoDate: null,
+  relativeDays: null,
+  weekday: null,
+  weekdayQualifier: null,
+  timeKind: null,
+  hour: null,
+  minute: null,
+  partOfDay: null,
+};
+
 function validRawIR(overrides: Record<string, unknown> = {}) {
   return {
     intent: "discovery",
     selectedOfferId: null,
     offerCandidateIds: [],
     entities: [],
-    constraints: { schedulingWindow: null, partySize: null, discountPct: null, slotAccepted: null },
+    constraints: { schedulingWindow: NULL_SCHEDULING_WINDOW, partySize: null, discountPct: null, slotAccepted: null },
     knownFieldsUpdate: [],
     requestedCapability: null,
     goal: null,
@@ -40,7 +52,14 @@ describe("LLM IR contract: parseIRResponse", () => {
         selectedOfferId: "offer-couples-massage",
         entities: [{ key: "service", value: "couples massage" }],
         constraints: {
-          schedulingWindow: { earliest: "2026-10-04T14:00:00.000Z", latest: null },
+          schedulingWindow: {
+            ...NULL_SCHEDULING_WINDOW,
+            dateKind: "weekday",
+            weekday: 0,
+            timeKind: "explicitTime",
+            hour: 14,
+            minute: 0,
+          },
           partySize: 2,
           discountPct: null,
           slotAccepted: null,
@@ -53,7 +72,8 @@ describe("LLM IR contract: parseIRResponse", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.ir.selectedOfferId).toBe("offer-couples-massage");
-      expect(result.ir.constraints.schedulingWindow?.earliest).toBe("2026-10-04T14:00:00.000Z");
+      expect(result.ir.constraints.schedulingWindow?.date).toEqual({ kind: "weekday", weekday: 0, qualifier: undefined });
+      expect(result.ir.constraints.schedulingWindow?.time).toEqual({ kind: "explicitTime", hour: 14, minute: 0 });
       expect(result.ir.constraints.partySize).toBe(2);
       expect(result.ir.knownFieldsUpdate.name).toBe("Jordan Lee");
       expect(result.ir.entities.service).toBe("couples massage");
@@ -87,7 +107,7 @@ describe("LLM IR contract: parseIRResponse", () => {
   it("rejects a wrong constraint type (partySize as a string instead of a number)", () => {
     const graph = buildSpaGraph();
     const raw = validRawIR({
-      constraints: { schedulingWindow: null, partySize: "two", discountPct: null, slotAccepted: null },
+      constraints: { schedulingWindow: NULL_SCHEDULING_WINDOW, partySize: "two", discountPct: null, slotAccepted: null },
     });
     const result = parseIRResponse(graph, JSON.stringify(raw));
     expect(result.ok).toBe(false);
@@ -117,10 +137,24 @@ describe("LLM IR contract: parseIRResponse", () => {
     expect(result.ok).toBe(true);
   });
 
-  it("treats a scheduling window with a null earliest as no window at all", () => {
+  it("treats a scheduling window with both dateKind and timeKind null as no window at all", () => {
+    const graph = buildSpaGraph();
+    const parsed = LlmIRSchema.parse(validRawIR());
+    const ir = sanitizeIR(graph, parsed);
+    expect(ir.constraints.schedulingWindow).toBeUndefined();
+  });
+
+  it("ignores a dateKind without the data it needs (e.g. explicitDate with isoDate null)", () => {
     const graph = buildSpaGraph();
     const parsed = LlmIRSchema.parse(
-      validRawIR({ constraints: { schedulingWindow: { earliest: null, latest: null }, partySize: null, discountPct: null, slotAccepted: null } })
+      validRawIR({
+        constraints: {
+          schedulingWindow: { ...NULL_SCHEDULING_WINDOW, dateKind: "explicitDate", isoDate: null },
+          partySize: null,
+          discountPct: null,
+          slotAccepted: null,
+        },
+      })
     );
     const ir = sanitizeIR(graph, parsed);
     expect(ir.constraints.schedulingWindow).toBeUndefined();

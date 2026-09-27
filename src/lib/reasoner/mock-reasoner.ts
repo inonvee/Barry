@@ -20,7 +20,7 @@ export class MockReasoner implements Reasoner {
     const entities = extractEntities(customerMessage);
 
     const constraints: BarryIRConstraints = {};
-    if (entities.earliest) constraints.schedulingWindow = { earliest: entities.earliest, latest: entities.latest };
+    if (entities.schedulingConstraint) constraints.schedulingWindow = entities.schedulingConstraint;
     if (entities.partySize > 1) constraints.partySize = entities.partySize;
     if (entities.discountPct) constraints.discountPct = entities.discountPct;
     if (entities.accepted) constraints.slotAccepted = true;
@@ -37,7 +37,7 @@ export class MockReasoner implements Reasoner {
       !knownFieldsUpdate.email &&
       !knownFieldsUpdate.phone &&
       !entities.accepted &&
-      !entities.earliest &&
+      !entities.schedulingConstraint &&
       customerMessage.trim().split(/\s+/).length <= 4
     ) {
       knownFieldsUpdate.name = customerMessage.trim();

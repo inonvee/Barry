@@ -1,4 +1,5 @@
 import type { BusinessGraph, Offer } from "@/lib/business-graph";
+import type { SchedulingConstraint } from "@/lib/scheduling/resolver";
 
 const STOPWORDS = new Set([
   "the", "and", "for", "any", "are", "can", "you", "that", "this", "with",
@@ -31,22 +32,19 @@ const NUMBER_WORDS: Record<string, number> = {
 
 export type ExtractedEntities = {
   partySize: number;
-  earliest?: string; // ISO
-  latest?: string; // ISO
+  /**
+   * SEMANTIC scheduling info only ("Sunday", "at 2pm") — never a resolved
+   * timestamp. Converting this to an absolute instant, using the
+   * business's own timezone, is `src/lib/scheduling/resolver.ts`'s job,
+   * called only from the Action Compiler.
+   */
+  schedulingConstraint?: SchedulingConstraint;
   accepted: boolean;
   paidConfirmed: boolean;
   discountPct?: number;
   email?: string;
   phone?: string;
 };
-
-/** Find the next date (from `now`) that falls on `weekday` (0=Sun..6=Sat). */
-function nextWeekday(now: Date, weekday: number): Date {
-  const result = new Date(now);
-  const diff = (weekday - now.getDay() + 7) % 7 || 7;
-  result.setDate(now.getDate() + diff);
-  return result;
-}
 
 function parseTimeToken(text: string): { hour: number; minute: number } | undefined {
   // "3pm", "3:30 pm"
@@ -95,7 +93,7 @@ function parseTimeToken(text: string): { hour: number; minute: number } | undefi
   return undefined;
 }
 
-export function extractEntities(message: string, now: Date = new Date()): ExtractedEntities {
+export function extractEntities(message: string): ExtractedEntities {
   const text = message.toLowerCase();
 
   let partySize = 1;
@@ -106,29 +104,25 @@ export function extractEntities(message: string, now: Date = new Date()): Extrac
     partySize = 2;
   }
 
-  let earliest: string | undefined;
-  let latest: string | undefined;
+  let schedulingConstraint: SchedulingConstraint | undefined;
   for (let i = 0; i < WEEKDAYS.length; i++) {
-    if (text.includes(WEEKDAYS[i])) {
-      const date = nextWeekday(now, i);
-      const time = parseTimeToken(text) ?? { hour: 9, minute: 0 };
-      date.setHours(time.hour, time.minute, 0, 0);
-      earliest = date.toISOString();
-      const latestDate = new Date(date);
-      latestDate.setHours(latestDate.getHours() + 3);
-      latest = latestDate.toISOString();
+    const idx = text.indexOf(WEEKDAYS[i]);
+    if (idx !== -1) {
+      const qualifier = text.slice(Math.max(0, idx - 6), idx).includes("next") ? "next" : undefined;
+      const time = parseTimeToken(text);
+      schedulingConstraint = {
+        date: { kind: "weekday", weekday: i, qualifier },
+        time: time ? { kind: "explicitTime", ...time } : undefined,
+      };
       break;
     }
   }
-  if (!earliest && /\btomorrow\b/.test(text)) {
-    const date = new Date(now);
-    date.setDate(date.getDate() + 1);
-    const time = parseTimeToken(text) ?? { hour: 9, minute: 0 };
-    date.setHours(time.hour, time.minute, 0, 0);
-    earliest = date.toISOString();
-    const latestDate = new Date(date);
-    latestDate.setHours(latestDate.getHours() + 3);
-    latest = latestDate.toISOString();
+  if (!schedulingConstraint && /\btomorrow\b/.test(text)) {
+    const time = parseTimeToken(text);
+    schedulingConstraint = {
+      date: { kind: "relativeDay", days: 1 },
+      time: time ? { kind: "explicitTime", ...time } : undefined,
+    };
   }
 
   const accepted = /\b(yes|yep|sounds good|perfect|that works|confirm|book it|let's do it|sure)\b/.test(
@@ -146,8 +140,7 @@ export function extractEntities(message: string, now: Date = new Date()): Extrac
 
   return {
     partySize,
-    earliest,
-    latest,
+    schedulingConstraint,
     accepted,
     paidConfirmed,
     discountPct,

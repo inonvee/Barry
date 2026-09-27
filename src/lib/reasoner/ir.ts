@@ -1,5 +1,8 @@
 import type { Goal } from "@/lib/business-graph";
 import type { ConversationStage } from "@/lib/state";
+import type { SchedulingConstraint } from "@/lib/scheduling/resolver";
+
+export type { SchedulingConstraint, DateSpec, TimeSpec } from "@/lib/scheduling/resolver";
 
 /**
  * BARRY IR v0.1 — the ONLY thing a Reasoner (mock or LLM) is allowed to
@@ -15,7 +18,14 @@ import type { ConversationStage } from "@/lib/state";
  * Inspector/debugging — the compiler never reads it.
  */
 export type BarryIRConstraints = {
-  schedulingWindow?: { earliest: string; latest?: string };
+  /**
+   * SEMANTIC scheduling info only ("Sunday", "at 2pm") — never a resolved
+   * timestamp. A Reasoner (LLM or regex-based) must never compute a UTC
+   * instant itself; `src/lib/scheduling/resolver.ts` is the one place
+   * that turns this into an absolute instant, using the business's own
+   * timezone (`business.timezone`), and only the Action Compiler calls it.
+   */
+  schedulingWindow?: SchedulingConstraint;
   partySize?: number;
   discountPct?: number;
   /** Customer confirmed the previously offered slot works for them. */
