@@ -1,15 +1,31 @@
 import type { BusinessGraph } from "@/lib/business-graph";
 import { getPolicy, isActionAvailable } from "@/lib/business-graph";
 
-export type PolicyStatus = "allowed" | "allowed_within_limits" | "requires_approval" | "denied";
+export type PolicyStatus = "allowed" | "requires_approval" | "denied";
 
 export type PolicyDecision = {
   status: PolicyStatus;
   reason: string;
   policyId?: string;
-  /** When status is allowed_within_limits, the params BARRY should actually use. */
-  adjustedParams?: Record<string, unknown>;
 };
+
+/**
+ * MEGA RELIABILITY MISSION Part 14 audit note: an earlier version of
+ * this type carried an unused `"allowed_within_limits"` status and an
+ * `adjustedParams` field ("the params BARRY should actually use"
+ * instead of what was requested) — but no policy branch below ever
+ * produced either one. Removed rather than implemented: every existing
+ * over-limit case (discount over cap, custom pricing, payment amount
+ * over cap) already has a clear, tested, correct policy — escalate to
+ * `requires_approval` and let a human decide — and a silent auto-cap
+ * would be a WORSE design, not a missing feature: quietly substituting
+ * a different discount/amount than what the customer was told, without
+ * their awareness or explicit owner sign-off, is exactly the kind of
+ * unverified state change this whole architecture exists to prevent.
+ * If a genuine "auto-adjust within a band" policy is ever needed, it
+ * should be a new, explicit, fully-tested PolicyStatus variant added
+ * deliberately — not a silently-resurrected unused field.
+ */
 
 export type ActionRequest =
   | { action: "createBooking"; params: { offerId: string } }

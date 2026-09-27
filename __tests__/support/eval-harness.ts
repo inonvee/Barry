@@ -106,7 +106,7 @@ export function checkGlobalInvariants(graph: BusinessGraph, turn: TurnLog, state
   // the outside-in proof.
   if (turn.toolResult) {
     expect(turn.policyDecision, "a toolResult implies a policy decision was made").toBeDefined();
-    expect(["allowed", "allowed_within_limits"]).toContain(turn.policyDecision?.status);
+    expect(turn.policyDecision?.status).toBe("allowed");
   }
 
   // Invariant: a failed tool call never flips the conversation to "won" —

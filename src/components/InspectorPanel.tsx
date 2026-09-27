@@ -23,7 +23,6 @@ function Kv({ k, v }: { k: string; v: React.ReactNode }) {
 function statusColor(status?: string) {
   switch (status) {
     case "allowed":
-    case "allowed_within_limits":
       return "text-green-600 dark:text-green-400";
     case "requires_approval":
       return "text-amber-600 dark:text-amber-400";

@@ -162,8 +162,7 @@ export async function handleCustomerMessage(
         { outcome, toolResult: null, policyReason: policyDecision.reason }
       );
     } else {
-      const input = policyDecision.adjustedParams ?? outcome.action.input;
-      toolResult = await callTool(outcome.action.name, input, ctx);
+      toolResult = await callTool(outcome.action.name, outcome.action.input, ctx);
       if (toolResult.ok) patchStateAfterTool(state, outcome.action.name, toolResult.output);
       const scheduling = buildSchedulingDisplay(graph, outcome, toolResult);
       response = await reasoner.composeResponse({ graph, state, customerMessage: message }, { outcome, toolResult, scheduling });
@@ -277,6 +276,38 @@ export async function resumeAfterApproval(
   alternateValue?: unknown
 ): Promise<TurnOutcome> {
   const backend = getBackend();
+
+  // Idempotency guard: resolving the SAME approval twice (a double-click
+  // in the owner UI, a retried request) must never execute the
+  // requested action twice. Without this check, a second "approved"
+  // resolution re-ran callTool() unconditionally — for a
+  // createPaymentRequest approval, that meant a SECOND, independent
+  // payment request created for the same transaction. Checked BEFORE
+  // resolveApproval() mutates the record, so an already-resolved
+  // approval never reaches the tool call at all.
+  const existing = await backend.getApproval(approvalId);
+  if (!existing) throw new Error(`Approval ${approvalId} not found`);
+  if (existing.status !== "pending") {
+    const store = getConversationStore();
+    const state = await store.get(existing.conversationId);
+    if (!state) throw new Error(`Conversation ${existing.conversationId} not found`);
+    const response = `This request was already ${existing.status} — nothing more to do here.`;
+    return {
+      state,
+      turn: {
+        id: turnId(),
+        at: new Date().toISOString(),
+        customerMessage: "(duplicate owner approval resolution)",
+        understood: { intent: "approval_already_resolved", entities: { decision: existing.status } },
+        retrieved: { offerIds: [], knowledgeIds: [] },
+        response,
+        stateAfter: { stage: state.stage },
+        reasoner: getReasoner().name,
+      },
+      response,
+    };
+  }
+
   const approval = await backend.resolveApproval(approvalId, decision, decidedBy, alternateValue);
 
   const store = getConversationStore();
