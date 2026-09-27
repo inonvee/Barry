@@ -9,13 +9,15 @@ import { GraphPanel } from "@/components/GraphPanel";
 import type { ConversationState } from "@/lib/state";
 import type { BusinessGraph } from "@/lib/business-graph";
 import type { ApprovalRecord } from "@/lib/store/types";
+import {
+  createConversationId,
+  getOrCreateCustomerId,
+  getStoredConversationId,
+  setStoredConversationId,
+} from "@/lib/simulator-session";
 
 type BusinessSummary = { id: string; name: string; description: string };
 type Tab = "chat" | "inspector" | "approvals" | "graph";
-
-function newId(prefix: string) {
-  return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
-}
 
 export default function SimulatorPage() {
   const [businesses, setBusinesses] = useState<BusinessSummary[]>([]);
@@ -23,8 +25,11 @@ export default function SimulatorPage() {
   const [graph, setGraph] = useState<BusinessGraph | null>(null);
   const [state, setState] = useState<ConversationState | null>(null);
   const [approvals, setApprovals] = useState<ApprovalRecord[]>([]);
-  const [conversationId, setConversationId] = useState(() => newId("conv"));
-  const [customerId] = useState(() => newId("cust"));
+  // null until the per-business restore effect below resolves them — every
+  // action that needs these already gates on businessId/graph being ready,
+  // so a brief null window here causes no bad requests.
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [customerId, setCustomerId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("chat");
   const [sending, setSending] = useState(false);
   const [busyApprovalId, setBusyApprovalId] = useState<string | null>(null);
@@ -44,6 +49,42 @@ export default function SimulatorPage() {
       .then((d) => setApprovals(d.approvals));
   }, []);
 
+  // Restore (or create) this business's conversation identity from
+  // localStorage whenever the active business changes — this is what
+  // makes a page refresh, or leaving and reopening the simulator, resume
+  // the same conversation instead of silently starting a new one the
+  // server has never heard of. This is a legitimate synchronization with
+  // an external system (browser storage), which is exactly what effects
+  // are for; there is no render-time-safe way to read localStorage (it
+  // doesn't exist during server rendering), so the usual "derive during
+  // render" alternative to this lint rule isn't available here.
+  useEffect(() => {
+    if (!businessId) return;
+    const resolvedCustomerId = getOrCreateCustomerId(businessId);
+    const existing = getStoredConversationId(businessId);
+    const resolvedConversationId = existing ?? createConversationId();
+    if (!existing) setStoredConversationId(businessId, resolvedConversationId);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setCustomerId(resolvedCustomerId);
+    setConversationId(resolvedConversationId);
+  }, [businessId]);
+
+  // Once we know which conversation this business/browser was already in
+  // the middle of, load its actual history from the server (a no-op,
+  // empty-history conversation if it's brand new).
+  useEffect(() => {
+    if (!conversationId) return;
+    let cancelled = false;
+    fetch(`/api/simulator/conversation?conversationId=${conversationId}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (!cancelled) setState(d.state ?? null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId]);
+
   useEffect(() => {
     if (!businessId) return;
     fetch(`/api/simulator/graph?businessId=${businessId}`)
@@ -53,19 +94,22 @@ export default function SimulatorPage() {
   }, [businessId, refreshApprovals]);
 
   function switchBusiness(id: string) {
-    setBusinessId(id);
     setState(null);
-    setConversationId(newId("conv"));
+    setConversationId(null);
+    setBusinessId(id);
     setTab("chat");
   }
 
   function startNewConversation() {
+    if (!businessId) return;
+    const fresh = createConversationId();
+    setStoredConversationId(businessId, fresh);
     setState(null);
-    setConversationId(newId("conv"));
+    setConversationId(fresh);
   }
 
   async function sendMessage(message: string) {
-    if (!businessId) return;
+    if (!businessId || !conversationId || !customerId) return;
     setSending(true);
     setState((prev) =>
       prev
@@ -89,7 +133,7 @@ export default function SimulatorPage() {
   }
 
   async function simulatePayment(outcome: "paid" | "failed") {
-    if (!businessId || !paymentPrompt) return;
+    if (!businessId || !conversationId || !paymentPrompt) return;
     const res = await fetch("/api/simulator/payment", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
