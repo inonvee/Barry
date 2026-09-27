@@ -201,27 +201,34 @@ export type ExtractedEntities = {
 // Deliberately does NOT include a bare "this is" marker — "this is
 // regarding my appointment" would capture "regarding" as a name. Every
 // marker here is specific enough that what follows is almost always
-// actually a name.
-const NAME_ANNOUNCEMENT_MARKERS = [/\bmy name is\b/i, /\bmy name'?s\b/i, /\bcall me\b/i];
+// actually a name. "I'm"/"I am" is riskier ("I'm looking for a
+// massage") but is protected the same way "call me" is: the captured
+// word must start with a capital letter, which rejects the common
+// "I'm <verb/adjective>" case in properly-cased English.
+const NAME_ANNOUNCEMENT_MARKERS = [/\bmy name is\b/i, /\bmy name'?s\b/i, /\bcall me\b/i, /\bi'?m\b/i, /\bi am\b/i];
 // Words that end a captured name — stops "my name is Inon AND my phone
 // number is..." from swallowing the rest of the sentence into the name,
-// and stops non-name replies to "call me" ("call me back", "call me at
-// 5pm") from being captured at all.
+// and stops non-name replies to "call me"/"I'm" ("call me back", "I'm
+// good thanks") from being captured at all.
 const NAME_STOP_WORDS = new Set([
   "and", "my", "phone", "email", "number", "is", "here", "back", "now",
   "later", "tomorrow", "today", "tonight", "soon", "when", "then",
-  "please", "at", "on", "in", "up", "over", "asap",
+  "please", "at", "on", "in", "up", "over", "asap", "good", "fine",
+  "great", "ok", "okay", "sure", "not", "just", "still", "also", "coming",
+  "looking", "interested", "trying", "hoping", "wondering", "free",
+  "instead", "actually", "rather",
 ]);
 
 /**
- * Extract a self-announced name ("my name is Inon", "call me Jordan
- * Lee") straight from the ORIGINAL (not lowercased) message, so
- * capitalization survives — and is REQUIRED: a real name is written
- * capitalized, so this also rejects a stray lowercase word ("call me
- * tomorrow" already stops at the NAME_STOP_WORDS check, but this catches
- * anything that slips past it, like "call me anytime").
+ * Extract a self-announced name from English markers ("my name is
+ * Inon", "call me Jordan Lee", "I'm Inon") straight from the ORIGINAL
+ * (not lowercased) message, so capitalization survives — and is
+ * REQUIRED: a real name is written capitalized, so this also rejects a
+ * stray lowercase word ("call me tomorrow" already stops at the
+ * NAME_STOP_WORDS check, but this catches anything that slips past it,
+ * like "call me anytime").
  */
-export function extractAnnouncedName(message: string): string | undefined {
+function extractAnnouncedNameEnglish(message: string): string | undefined {
   for (const marker of NAME_ANNOUNCEMENT_MARKERS) {
     const match = message.match(marker);
     if (!match || match.index === undefined) continue;
@@ -237,6 +244,56 @@ export function extractAnnouncedName(message: string): string | undefined {
     if (words.length > 0 && /^[A-Z]/.test(words[0])) return words.join(" ");
   }
   return undefined;
+}
+
+// "קוראים לי X" ("[they] call me X") and "השם שלי X" ("my name [is] X")
+// are structurally unambiguous — nobody says either phrase without a
+// name following it, so no blocklist is needed for these two.
+const HEBREW_NAME_MARKERS = ["קוראים לי", "השם שלי"];
+// The bare "אני X" ("I [am] X") pattern is far riskier: "אני" alone
+// starts countless Hebrew sentences that are NOT a self-identification
+// ("אני רוצה" = "I want", "אני בא עם אשתי" = "I'm coming with my
+// wife", "אני עם בעלי" = "I'm with my husband"). Hebrew has no letter
+// casing to lean on the way English's capitalization check does, so
+// this is guarded by an explicit blocklist of common words/relationship
+// terms that follow "אני" without being a name — this is exactly the
+// live bug class Part 8 exists to prevent (a relationship word like
+// "אישתי" must never become the customer's name).
+const HEBREW_NAME_BLOCK_AFTER_ANI = new Set([
+  "רוצה", "צריך", "צריכה", "בא", "באה", "מגיע", "מגיעה", "עם",
+  "גם", "כבר", "פה", "כאן", "יכול", "יכולה", "אוהב", "אוהבת", "מעוניין",
+  "מעוניינת", "אשמח", "חושב", "חושבת", "חוזר", "חוזרת", "מתעניין",
+  "מתעניינת", "לא", "כן", "הולך", "הולכת", "נמצא", "נמצאת", "פנוי",
+  "פנויה", "זמין", "זמינה",
+  ...HEBREW_PARTNER_WORDS,
+]);
+
+function hebrewWordAfter(message: string, markerIndex: number, markerLength: number): string | undefined {
+  const rest = message.slice(markerIndex + markerLength).trim();
+  const word = rest.split(/\s+/)[0]?.replace(/[^א-ת'"-]+$/g, "").replace(/^[^א-ת]+/g, "");
+  return word && word.length > 0 ? word : undefined;
+}
+
+function extractAnnouncedNameHebrew(message: string): string | undefined {
+  for (const marker of HEBREW_NAME_MARKERS) {
+    const idx = matchHebrewToken(message, marker);
+    if (idx === undefined) continue;
+    const word = hebrewWordAfter(message, idx, marker.length);
+    if (word) return word;
+  }
+
+  const idx = matchHebrewToken(message, "אני");
+  if (idx !== undefined) {
+    const word = hebrewWordAfter(message, idx, "אני".length);
+    if (word && word.length >= 2 && !HEBREW_NAME_BLOCK_AFTER_ANI.has(word)) return word;
+  }
+
+  return undefined;
+}
+
+/** Language-independent dispatch: an explicit self-announcement in either language, whichever the raw text actually contains. */
+export function extractAnnouncedName(message: string): string | undefined {
+  return extractAnnouncedNameEnglish(message) ?? extractAnnouncedNameHebrew(message);
 }
 
 /** Extract an explicit phone number — a mostly-digit token at least 8 characters long. Unambiguous by construction: the regex only matches contiguous digit/space/hyphen runs, so it can't accidentally span unrelated words. */
