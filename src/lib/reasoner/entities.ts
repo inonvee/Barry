@@ -221,12 +221,15 @@ const NAME_STOP_WORDS = new Set([
 
 /**
  * Extract a self-announced name from English markers ("my name is
- * Inon", "call me Jordan Lee", "I'm Inon") straight from the ORIGINAL
- * (not lowercased) message, so capitalization survives — and is
- * REQUIRED: a real name is written capitalized, so this also rejects a
- * stray lowercase word ("call me tomorrow" already stops at the
- * NAME_STOP_WORDS check, but this catches anything that slips past it,
- * like "call me anytime").
+ * Inon", "call me Jordan Lee", "I'm Inon" — or, in a mixed-language
+ * message, "My name is ינון") straight from the ORIGINAL (not
+ * lowercased) message, so capitalization survives — and, for a
+ * LATIN-script candidate, is REQUIRED: a real English name is written
+ * capitalized, so this rejects a stray lowercase word ("call me
+ * tomorrow" already stops at the NAME_STOP_WORDS check, but this
+ * catches anything that slips past it, like "call me anytime"). A
+ * non-Latin-script candidate (e.g. Hebrew) has no case to check, so it
+ * only needs to survive the stop-word list.
  */
 function extractAnnouncedNameEnglish(message: string): string | undefined {
   for (const marker of NAME_ANNOUNCEMENT_MARKERS) {
@@ -236,12 +239,16 @@ function extractAnnouncedNameEnglish(message: string): string | undefined {
     const rest = message.slice(match.index + match[0].length);
     const words: string[] = [];
     for (const rawWord of rest.trim().split(/\s+/)) {
-      const cleaned = rawWord.replace(/^[^A-Za-z]+|[^A-Za-z'-]+$/g, "");
+      const cleaned = rawWord.replace(/^[^\p{L}]+|[^\p{L}'-]+$/gu, "");
       if (!cleaned || NAME_STOP_WORDS.has(cleaned.toLowerCase())) break;
       words.push(cleaned);
       if (words.length === 3) break;
     }
-    if (words.length > 0 && /^[A-Z]/.test(words[0])) return words.join(" ");
+    // Reject only a stray LOWERCASE Latin word (the actual false-positive
+    // class: "looking", "back", ...) — a non-Latin script (e.g. Hebrew)
+    // has no case to check, so it's accepted once it survives the
+    // stop-word list above.
+    if (words.length > 0 && !/^[a-z]/.test(words[0])) return words.join(" ");
   }
   return undefined;
 }
@@ -268,9 +275,10 @@ const HEBREW_NAME_BLOCK_AFTER_ANI = new Set([
   ...HEBREW_PARTNER_WORDS,
 ]);
 
-function hebrewWordAfter(message: string, markerIndex: number, markerLength: number): string | undefined {
+/** The word immediately after a Hebrew marker, in ANY script — a mixed-language message ("קוראים לי Inon") must still work. Unicode-letter-aware, mirroring extractAnnouncedNameEnglish's own cleaning. */
+function wordAfter(message: string, markerIndex: number, markerLength: number): string | undefined {
   const rest = message.slice(markerIndex + markerLength).trim();
-  const word = rest.split(/\s+/)[0]?.replace(/[^א-ת'"-]+$/g, "").replace(/^[^א-ת]+/g, "");
+  const word = rest.split(/\s+/)[0]?.replace(/[^\p{L}'"-]+$/gu, "").replace(/^[^\p{L}]+/gu, "");
   return word && word.length > 0 ? word : undefined;
 }
 
@@ -278,14 +286,18 @@ function extractAnnouncedNameHebrew(message: string): string | undefined {
   for (const marker of HEBREW_NAME_MARKERS) {
     const idx = matchHebrewToken(message, marker);
     if (idx === undefined) continue;
-    const word = hebrewWordAfter(message, idx, marker.length);
+    const word = wordAfter(message, idx, marker.length);
     if (word) return word;
   }
 
+  // The bare "אני X" form is deliberately kept Hebrew-script-only here —
+  // HEBREW_NAME_BLOCK_AFTER_ANI (the safety net for this risky pattern)
+  // is a table of Hebrew words; a Latin continuation would be entirely
+  // unguarded by it, so it's left to the Reasoner instead.
   const idx = matchHebrewToken(message, "אני");
   if (idx !== undefined) {
-    const word = hebrewWordAfter(message, idx, "אני".length);
-    if (word && word.length >= 2 && !HEBREW_NAME_BLOCK_AFTER_ANI.has(word)) return word;
+    const word = wordAfter(message, idx, "אני".length);
+    if (word && word.length >= 2 && isHebrewLetter(word[0]) && !HEBREW_NAME_BLOCK_AFTER_ANI.has(word)) return word;
   }
 
   return undefined;
