@@ -76,6 +76,30 @@ describe("multi-turn entity accumulation (regression)", () => {
     expect(t2.state.knownFields.__mentionedPartySize).toBe("2");
   });
 
+  it('a short fact QUESTION ("How much is it?") is never misread as a self-announced name, even while name is the only missing field', async () => {
+    const graph = buildSpaGraph();
+    const conv = "mt-5";
+    const customer = "cust-mt-5";
+
+    await handleCustomerMessage(graph, conv, customer, "Couples massage please");
+    const t = await handleCustomerMessage(graph, conv, customer, "How much is it?");
+
+    expect(t.state.knownFields.name).toBeUndefined();
+    expect(t.response).toMatch(/220/);
+  });
+
+  it('an explicit self-announced name ("My name is X and my phone number is Y") is captured correctly even when phone is in the same message', async () => {
+    const graph = buildSpaGraph();
+    const conv = "mt-6";
+    const customer = "cust-mt-6";
+
+    await handleCustomerMessage(graph, conv, customer, "Couples massage please");
+    const t = await handleCustomerMessage(graph, conv, customer, "My name is Inon and my phone number is 0558832177");
+
+    expect(t.state.knownFields.name).toBe("Inon");
+    expect(t.state.knownFields.phone).toBe("0558832177");
+  });
+
   it("lets the customer change their mind about the day", async () => {
     const graph = buildSpaGraph();
     const conv = "mt-4";

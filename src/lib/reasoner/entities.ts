@@ -44,7 +44,32 @@ export type ExtractedEntities = {
   discountPct?: number;
   email?: string;
   phone?: string;
+  name?: string;
 };
+
+const NAME_ANNOUNCEMENT_MARKERS = [/\bmy name is\b/i, /\bmy name'?s\b/i, /\bcall me\b/i, /\bthis is\b/i];
+// Words that end a captured name — stops "my name is Inon AND my phone
+// number is..." from swallowing the rest of the sentence into the name.
+const NAME_STOP_WORDS = new Set(["and", "my", "phone", "email", "number", "is", "here"]);
+
+/** Extract a self-announced name ("my name is Inon", "call me Jordan Lee") straight from the ORIGINAL (not lowercased) message, so capitalization/punctuation survive. */
+function extractAnnouncedName(message: string): string | undefined {
+  for (const marker of NAME_ANNOUNCEMENT_MARKERS) {
+    const match = message.match(marker);
+    if (!match || match.index === undefined) continue;
+
+    const rest = message.slice(match.index + match[0].length);
+    const words: string[] = [];
+    for (const rawWord of rest.trim().split(/\s+/)) {
+      const cleaned = rawWord.replace(/^[^A-Za-z]+|[^A-Za-z'-]+$/g, "");
+      if (!cleaned || NAME_STOP_WORDS.has(cleaned.toLowerCase())) break;
+      words.push(cleaned);
+      if (words.length === 3) break;
+    }
+    if (words.length > 0) return words.join(" ");
+  }
+  return undefined;
+}
 
 function parseTimeToken(text: string): { hour: number; minute: number } | undefined {
   // "3pm", "3:30 pm"
@@ -137,6 +162,7 @@ export function extractEntities(message: string): ExtractedEntities {
 
   const emailMatch = message.match(/[\w.+-]+@[\w-]+\.[\w.-]+/);
   const phoneMatch = message.match(/\+?\d[\d\s-]{6,}\d/);
+  const name = extractAnnouncedName(message);
 
   return {
     partySize,
@@ -146,6 +172,7 @@ export function extractEntities(message: string): ExtractedEntities {
     discountPct,
     email: emailMatch?.[0],
     phone: phoneMatch?.[0],
+    name,
   };
 }
 

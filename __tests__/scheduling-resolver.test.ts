@@ -101,4 +101,73 @@ describe("scheduling resolver", () => {
     );
     expect(result?.earliest.slice(11, 16)).toBe("14:00"); // 09:00 EST -> 14:00 UTC
   });
+
+  /**
+   * Live bug: "I wanna come with my wife Sunday at 1pm", said on a
+   * business-local Sunday, compiled to a UTC window that was neither
+   * today NOR next Sunday — some unrelated weekday. Root cause (see
+   * git history / mission report): a bare weekday always resolved to
+   * "the next occurrence, 7+ days out," even when today already IS that
+   * weekday and the requested time hasn't passed. Semantic decision,
+   * documented here as the source of truth for this behavior: bare/"this"
+   * weekday == today if that local time hasn't passed yet, else next
+   * week; "next X" always skips today entirely.
+   */
+  describe("weekday-equals-today semantics", () => {
+    // Sunday 2026-09-27, 09:00 America/New_York (13:00 UTC, EDT is UTC-4).
+    const sundayMorningNY = new Date("2026-09-27T13:00:00.000Z");
+    // Same Sunday, but 15:00 America/New_York (19:00 UTC) — after 1pm.
+    const sundayAfternoonNY = new Date("2026-09-27T19:00:00.000Z");
+    // Monday 2026-09-28, 09:00 America/New_York.
+    const mondayNY = new Date("2026-09-28T13:00:00.000Z");
+
+    it("Sunday morning + \"Sunday at 1pm\" resolves to the SAME Sunday, not a different weekday", () => {
+      const result = resolveSchedulingWindow(
+        { date: { kind: "weekday", weekday: 0 }, time: { kind: "explicitTime", hour: 13, minute: 0 } },
+        "America/New_York",
+        sundayMorningNY
+      );
+      // 2026-09-27 is the Sunday in question; 1pm EDT = 17:00 UTC.
+      expect(result?.earliest).toBe("2026-09-27T17:00:00.000Z");
+    });
+
+    it("Sunday afternoon (after 1pm already passed) + \"Sunday at 1pm\" rolls to NEXT Sunday", () => {
+      const result = resolveSchedulingWindow(
+        { date: { kind: "weekday", weekday: 0 }, time: { kind: "explicitTime", hour: 13, minute: 0 } },
+        "America/New_York",
+        sundayAfternoonNY
+      );
+      // Next Sunday is 2026-10-04; 1pm EDT = 17:00 UTC.
+      expect(result?.earliest).toBe("2026-10-04T17:00:00.000Z");
+    });
+
+    it("Monday + \"Sunday at 1pm\" resolves to the upcoming Sunday (6 days later), never a mid-week day", () => {
+      const result = resolveSchedulingWindow(
+        { date: { kind: "weekday", weekday: 0 }, time: { kind: "explicitTime", hour: 13, minute: 0 } },
+        "America/New_York",
+        mondayNY
+      );
+      expect(result?.earliest).toBe("2026-10-04T17:00:00.000Z");
+    });
+
+    it('"next Sunday" said ON a Sunday still skips to the following Sunday, never today', () => {
+      const result = resolveSchedulingWindow(
+        { date: { kind: "weekday", weekday: 0, qualifier: "next" }, time: { kind: "explicitTime", hour: 13, minute: 0 } },
+        "America/New_York",
+        sundayMorningNY
+      );
+      expect(result?.earliest).toBe("2026-10-04T17:00:00.000Z");
+    });
+
+    it("DST sanity check: the same Sunday-at-1pm logic during EST (winter) still lands on the correct Sunday", () => {
+      // Sunday 2026-02-01, 09:00 America/New_York (14:00 UTC, EST is UTC-5).
+      const winterSundayMorning = new Date("2026-02-01T14:00:00.000Z");
+      const result = resolveSchedulingWindow(
+        { date: { kind: "weekday", weekday: 0 }, time: { kind: "explicitTime", hour: 13, minute: 0 } },
+        "America/New_York",
+        winterSundayMorning
+      );
+      expect(result?.earliest).toBe("2026-02-01T18:00:00.000Z"); // 1pm EST = 18:00 UTC
+    });
+  });
 });

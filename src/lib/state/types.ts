@@ -1,4 +1,6 @@
 import type { PolicyDecision } from "@/lib/policy";
+import type { SchedulingConstraint, LocalDisplay } from "@/lib/scheduling/resolver";
+import type { CompileDebugInfo } from "@/lib/reasoner/ir";
 
 export type ConversationStage =
   | "discovery"
@@ -24,15 +26,23 @@ export type TurnLog = {
   understood: {
     intent: string;
     entities: Record<string, unknown>;
+    /** Raw customer-info key/value pairs the Reasoner proposed THIS turn, before sentinel-filtering — see `compiled.appliedKnownFieldsUpdate` for what actually got merged. */
+    knownFieldsUpdate?: Record<string, string>;
+    /** The SEMANTIC scheduling constraint the Reasoner described ("Sunday", "at 2pm") — never a resolved timestamp. */
+    schedulingWindow?: SchedulingConstraint;
   };
   retrieved: {
     offerIds: string[];
     knowledgeIds: string[];
   };
+  /** What the deterministic Action Compiler actually resolved this turn — ground truth for debugging IR/compiler mismatches. */
+  compiled?: CompileDebugInfo;
   goal?: string;
   selectedAction?: { name: string; input: unknown } | null;
   policyDecision?: PolicyDecision;
   toolResult?: { ok: boolean; output?: unknown; error?: string };
+  /** Business-timezone-local display facts used to phrase `response` — never the raw UTC instants above. */
+  responseFacts?: { timezone: string; offeredSlot?: LocalDisplay; availableSlots?: LocalDisplay[] };
   response: string;
   stateAfter: Partial<ConversationState>;
   /** Which Reasoner implementation produced this turn — surfaced in the Inspector. */

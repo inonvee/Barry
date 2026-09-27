@@ -94,11 +94,36 @@ ISO datetime string anywhere.
 
 Rules you must never break:
 - Never invent prices, availability, inventory, policies, business hours, or payment status — you don't decide those; you only extract what the customer said.
+- knownFieldsUpdate must contain ONLY fields the customer's message actually gave a real value for THIS turn. If they didn't mention a field, LEAVE IT OUT of the array entirely — never include a pair like {key:"name", value:"null"} (or "undefined"/"none"/"N/A"/empty string) as a placeholder for "nothing to report." An omitted key means no update; it does NOT mean "clear the existing value."
 - Accumulate information across turns: a day/time/party-size/service mentioned earlier (visible in knownFields/recentMessages) is still true unless the customer changed it — repeat it in constraints/knownFieldsUpdate so it isn't lost.
 - If multiple offers plausibly match, list them in offerCandidateIds and leave selectedOfferId null — do not guess.
 - selectedOfferId/offerCandidateIds are ONLY for the initial choice of offer. If "selectedOfferId" (given to you in context) is already set and the customer's message is an EXPLICIT change of mind ("actually, X instead", "change it to X", "switch to X") naming a different, real offer, put that offer's id in offerChangeRequested instead — never in selectedOfferId. Leave offerChangeRequested null for anything that isn't an explicit, confident change request; an unrelated message must never change the offer.
 - requestedCapability is advisory only: "ask_price" when they ask how much something costs, "ask_duration" when they ask how long it takes, "ask_deposit" when they ask about a deposit or upfront payment requirement. Use null if unsure.
 - Output strict JSON matching the provided schema. No explanation outside the JSON.`;
+
+/**
+ * Live bug fixed by this prompt: after checkAvailability had ALREADY
+ * returned slots, BARRY told the customer "I'll check availability and
+ * get back to you shortly" — a future-tense claim about something that
+ * had already happened, because the model was free to phrase the JSON
+ * summary however it liked. `toolSucceeded`/`toolOutput` being present
+ * means the action is DONE; the model only ever describes the result.
+ */
+export const COMPOSE_SYSTEM_PROMPT =
+  "You are BARRY, a helpful employee of this business, replying to a customer. " +
+  "Use the business's tone. Reply in the same language as their last message. " +
+  "The JSON summary below is the ONLY source of truth for what happened — " +
+  "describe exactly that, never inventing a price, availability, or outcome beyond it. " +
+  "If policyReason is set, explain briefly and warmly that you're checking with the owner. " +
+  "If toolSucceeded is true or false, the action has ALREADY RUN — describe its result " +
+  "(toolOutput on success, a brief apology and alternative on failure). NEVER say you will " +
+  "check, look up, confirm, or get back to them later for something toolOutput/toolError " +
+  "already answers — phrases like \"I'll check\" or \"I'll get back to you shortly\" are " +
+  "forbidden whenever a tool already ran this turn. " +
+  "If `scheduling` is present, any date/time you mention MUST use its localDate/localTime " +
+  "strings verbatim — never compute, convert, or reinterpret a time yourself from any raw " +
+  "ISO timestamp elsewhere in this JSON (that is always UTC, not the customer's local time). " +
+  "Keep it to 1-3 sentences, no headers, no JSON.";
 
 function kvArrayToRecord(pairs: KeyValuePair[]): Record<string, string> {
   return Object.fromEntries(pairs.map((p) => [p.key, p.value]));
@@ -259,22 +284,18 @@ export class OpenAIReasoner implements Reasoner {
       toolSucceeded: input.toolResult?.ok ?? null,
       toolOutput: input.toolResult?.ok ? input.toolResult.output : undefined,
       toolError: input.toolResult && !input.toolResult.ok ? input.toolResult.error : undefined,
+      // Pre-computed, business-timezone-local display facts for any
+      // scheduling instant this turn — the ONLY source of truth for
+      // "what time is that for the customer." Never present when there's
+      // nothing scheduling-related to phrase.
+      scheduling: input.scheduling ?? null,
     };
 
     try {
       const completion = await this.client.chat.completions.create({
         model: this.model,
         messages: [
-          {
-            role: "system",
-            content:
-              "You are BARRY, a helpful employee of this business, replying to a customer. " +
-              "Use the business's tone. Reply in the same language as their last message. " +
-              "The JSON summary below is the ONLY source of truth for what happened — " +
-              "describe exactly that, never inventing a price, availability, or outcome beyond it. " +
-              "If policyReason is set, explain briefly and warmly that you're checking with the owner. " +
-              "Keep it to 1-3 sentences, no headers, no JSON.",
-          },
+          { role: "system", content: COMPOSE_SYSTEM_PROMPT },
           { role: "user", content: JSON.stringify(summary) },
         ],
         temperature: 0.4,

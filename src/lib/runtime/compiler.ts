@@ -1,11 +1,12 @@
 import type { BusinessGraph, Goal, Offer } from "@/lib/business-graph";
 import { findOffer } from "@/lib/business-graph";
 import { getTool } from "@/lib/tools";
-import type { BarryIR, CompileOutcome, OfferFact } from "@/lib/reasoner/ir";
+import type { BarryIR, CompileDebugInfo, CompileOutcome, OfferFact } from "@/lib/reasoner/ir";
+import { normalizeCustomerFieldValue } from "@/lib/reasoner/customer-fields";
 import type { ConversationStage, ConversationState } from "@/lib/state";
 import { resolveSchedulingWindow } from "@/lib/scheduling/resolver";
 
-export type { CompileOutcome } from "@/lib/reasoner/ir";
+export type { CompileOutcome, CompileDebugInfo } from "@/lib/reasoner/ir";
 
 /**
  * Internal scratch keys BARRY threads through ConversationState.knownFields
@@ -108,8 +109,19 @@ function resolveOfferId(graph: BusinessGraph, state: ConversationState, ir: Barr
  * ConversationState plus the Business Graph, and decides what BARRY does
  * next. Never performs I/O. Never trusts IR enough to skip validating a
  * compiled tool input against the tool's own schema.
+ *
+ * Thin wrapper so every return point inside `compileCore` stays a plain
+ * `CompileOutcome` (existing tests destructure `outcome.kind` etc. and
+ * must keep working) while still attaching debug/observability info
+ * uniformly at the one exit point, instead of touching every return.
  */
 export function compile(graph: BusinessGraph, state: ConversationState, ir: BarryIR): CompileOutcome {
+  const debug: CompileDebugInfo = { appliedKnownFieldsUpdate: {} };
+  const outcome = compileCore(graph, state, ir, debug);
+  return { ...outcome, debug };
+}
+
+function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR, debug: CompileDebugInfo): CompileOutcome {
   const scratchUpdate: Record<string, string> = {};
   // The ONLY place a semantic scheduling constraint ("Sunday", "at 2pm")
   // becomes an absolute timestamp — using the business's own timezone,
@@ -120,6 +132,7 @@ export function compile(graph: BusinessGraph, state: ConversationState, ir: Barr
     if (resolved) {
       scratchUpdate[SCRATCH_KEYS.mentionedEarliest] = resolved.earliest;
       scratchUpdate[SCRATCH_KEYS.mentionedLatest] = resolved.latest;
+      debug.resolvedSchedulingWindow = resolved;
     }
   }
   if (ir.constraints.partySize && ir.constraints.partySize > 1) {
@@ -140,9 +153,21 @@ export function compile(graph: BusinessGraph, state: ConversationState, ir: Barr
   // treated as a verified payment confirmation without the payment tool
   // ever having run. Only the runtime (patchStateAfterTool, webhook
   // handlers) may ever write a scratch key.
-  const safeKnownFieldsUpdate = Object.fromEntries(
-    Object.entries(ir.knownFieldsUpdate).filter(([key]) => !key.startsWith("__"))
-  );
+  //
+  // Live bug: a strict-JSON-schema Reasoner sometimes literalizes a
+  // sentinel string ("null", "undefined", ...) in place of actually
+  // omitting a key/value pair it has nothing new to report for.
+  // normalizeCustomerFieldValue() rejects those (and empty/whitespace
+  // values) BEFORE they ever reach persistent state — an empty/sentinel
+  // value must never overwrite a real one already on file. This is the
+  // ONE place ANY reasoner's customer-info values are trusted from.
+  const safeKnownFieldsUpdate: Record<string, string> = {};
+  for (const [key, rawValue] of Object.entries(ir.knownFieldsUpdate)) {
+    if (key.startsWith("__")) continue;
+    const value = normalizeCustomerFieldValue(rawValue);
+    if (value !== undefined) safeKnownFieldsUpdate[key] = value;
+  }
+  debug.appliedKnownFieldsUpdate = safeKnownFieldsUpdate;
   Object.assign(state.knownFields, scratchUpdate, safeKnownFieldsUpdate);
   const known = state.knownFields;
 

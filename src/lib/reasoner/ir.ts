@@ -87,7 +87,22 @@ export type OfferFact =
   | { type: "duration"; minutes: number }
   | { type: "deposit"; required: boolean; amount?: number; currency?: string };
 
-export type CompileOutcome = { stage: ConversationStage } & (
+/**
+ * Observability for the exact class of live bugs a raw IR/compile() call
+ * can't otherwise prove happened after the fact: what the compiler
+ * actually resolved a semantic scheduling constraint to (an absolute UTC
+ * window), and what it actually merged into persistent customer-info
+ * fields this turn, after sentinel-value filtering
+ * (`normalizeCustomerFieldValue`). Attached to every CompileOutcome so
+ * the Inspector can show ground truth instead of requiring log
+ * spelunking.
+ */
+export type CompileDebugInfo = {
+  appliedKnownFieldsUpdate: Record<string, string>;
+  resolvedSchedulingWindow?: { earliest: string; latest: string };
+};
+
+export type CompileOutcome = { stage: ConversationStage; debug?: CompileDebugInfo } & (
   | { kind: "action"; action: CompiledToolCall; goal?: Goal }
   | { kind: "ask_general"; offerNames: string[] }
   | { kind: "clarify_offer"; offerNames: string[] }

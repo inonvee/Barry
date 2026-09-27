@@ -7,6 +7,8 @@ import type { ToolCallResult, ToolContext } from "@/lib/tools";
 import { getConversationStore } from "@/lib/state";
 import type { ConversationState, TurnLog } from "@/lib/state";
 import { getBackend } from "@/lib/store";
+import { formatLocalDateTime } from "@/lib/scheduling/resolver";
+import type { SchedulingDisplayFacts } from "@/lib/reasoner/types";
 import { compile, SCRATCH_KEYS, type CompileOutcome } from "./compiler";
 
 /**
@@ -72,6 +74,33 @@ export type TurnOutcome = {
   response: string;
 };
 
+/**
+ * Deterministically computes business-timezone-local display facts for
+ * whatever scheduling instant this turn's outcome/toolResult involves —
+ * the ONE place a raw UTC ISO string is ever converted for a
+ * customer-facing reply. Never let a Reasoner (LLM or deterministic)
+ * interpret `offeredStart`/`slots[].start` itself; that silently defaults
+ * to the server's runtime timezone, not the business's.
+ */
+function buildSchedulingDisplay(
+  graph: BusinessGraph,
+  outcome: CompileOutcome,
+  toolResult: ToolCallResult | null
+): SchedulingDisplayFacts | undefined {
+  const timeZone = graph.business.timezone;
+
+  if (outcome.kind === "ask_slot_confirm") {
+    return { offeredSlot: formatLocalDateTime(outcome.offeredStart, timeZone) };
+  }
+
+  if (outcome.kind === "action" && outcome.action.name === "checkAvailability" && toolResult?.ok) {
+    const { slots } = toolResult.output as { slots: { start: string }[] };
+    return { availableSlots: slots.map((s) => formatLocalDateTime(s.start, timeZone)) };
+  }
+
+  return undefined;
+}
+
 export async function handleCustomerMessage(
   graph: BusinessGraph,
   conversationId: string,
@@ -128,29 +157,42 @@ export async function handleCustomerMessage(
       const input = policyDecision.adjustedParams ?? outcome.action.input;
       toolResult = await callTool(outcome.action.name, input, ctx);
       if (toolResult.ok) patchStateAfterTool(state, outcome.action.name, toolResult.output);
-      response = await reasoner.composeResponse({ graph, state, customerMessage: message }, { outcome, toolResult });
+      const scheduling = buildSchedulingDisplay(graph, outcome, toolResult);
+      response = await reasoner.composeResponse({ graph, state, customerMessage: message }, { outcome, toolResult, scheduling });
     }
   } else {
-    response = await reasoner.composeResponse({ graph, state, customerMessage: message }, { outcome });
+    const scheduling = buildSchedulingDisplay(graph, outcome, toolResult);
+    response = await reasoner.composeResponse({ graph, state, customerMessage: message }, { outcome, scheduling });
   }
 
   state.messages.push({ role: "barry", content: response, at: new Date().toISOString() });
 
   const knowledgeIds = knowledgeSearch(graph, message).map((k) => k.id);
   const offerIds = ir.selectedOfferId ? [ir.selectedOfferId] : ir.offerCandidateIds ?? [];
+  // Recomputed (not reused from above) since it's cheap, pure, and the two
+  // call sites above are in different branches — this is the single
+  // source of truth for what the Inspector's "Response facts" show.
+  const schedulingDisplay = buildSchedulingDisplay(graph, outcome, toolResult);
 
   const turn: TurnLog = {
     id: turnId(),
     at: new Date().toISOString(),
     customerMessage: message,
-    understood: { intent: ir.intent, entities: ir.entities },
+    understood: {
+      intent: ir.intent,
+      entities: ir.entities,
+      knownFieldsUpdate: ir.knownFieldsUpdate,
+      schedulingWindow: ir.constraints.schedulingWindow,
+    },
     retrieved: { offerIds, knowledgeIds },
+    compiled: outcome.debug,
     goal: outcome.kind === "action" ? outcome.goal : ir.goal,
     selectedAction: outcome.kind === "action" ? outcome.action : null,
     policyDecision,
     toolResult: toolResult
       ? { ok: toolResult.ok, output: toolResult.ok ? toolResult.output : undefined, error: toolResult.ok ? undefined : toolResult.error }
       : undefined,
+    responseFacts: schedulingDisplay ? { timezone: graph.business.timezone, ...schedulingDisplay } : undefined,
     response,
     stateAfter: { stage: state.stage, selectedOfferId: state.selectedOfferId, outcome: state.outcome },
     reasoner: reasoner.name,
@@ -236,9 +278,10 @@ export async function resumeAfterApproval(
       action: { name: approval.requestedAction, input },
       stage: state.stage,
     };
+    const scheduling = buildSchedulingDisplay(graph, syntheticOutcome, toolResult);
     response = await reasoner.composeResponse(
       { graph, state, customerMessage: "(approval resumed)" },
-      { outcome: syntheticOutcome, toolResult }
+      { outcome: syntheticOutcome, toolResult, scheduling }
     );
   }
 

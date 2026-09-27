@@ -8,7 +8,7 @@ import type { ComposeResponseInput } from "./types";
  * losing the conversation.
  */
 export function composeDeterministic(input: ComposeResponseInput): string {
-  const { outcome, toolResult, policyReason } = input;
+  const { outcome, toolResult, policyReason, scheduling } = input;
 
   if (policyReason) {
     return `Thanks! That needs a quick sign-off from the owner — ${policyReason} I've sent it over and will follow up as soon as it's approved.`;
@@ -24,7 +24,13 @@ export function composeDeterministic(input: ComposeResponseInput): string {
     case "ask_datetime":
       return `When would you like to come in for your ${outcome.offerName}?`;
     case "ask_slot_confirm":
-      return `Does ${new Date(outcome.offeredStart).toLocaleString()} work for you?`;
+      // Never interpret outcome.offeredStart (a raw UTC ISO string)
+      // directly — it must always be rendered in the business's own
+      // local timezone, via the display facts the runtime computed
+      // deterministically before calling composeResponse.
+      return scheduling?.offeredSlot
+        ? `Does ${scheduling.offeredSlot.localDate} at ${scheduling.offeredSlot.localTime} work for you?`
+        : `Does that time work for you?`;
     case "waiting_payment":
       return `Just waiting on your payment to confirm this.`;
     case "offer_fact":
@@ -53,7 +59,12 @@ export function composeDeterministic(input: ComposeResponseInput): string {
           if (output.slots.length === 0) {
             return `I don't see any open slots in that window — want to try another day or time?`;
           }
-          return `${new Date(output.slots[0].start).toLocaleString()} is available — does that work for you?`;
+          // Never interpret a raw UTC ISO string directly — always the
+          // business-local display fact the runtime already computed.
+          const slot = scheduling?.availableSlots?.[0];
+          return slot
+            ? `${slot.localDate} at ${slot.localTime} is available — does that work for you?`
+            : `I found an available time — does that work for you?`;
         }
         case "checkInventory": {
           const output = toolResult.output as { quantityAvailable: number };

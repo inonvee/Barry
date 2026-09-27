@@ -22,6 +22,14 @@ export class MockReasoner implements Reasoner {
     const { graph, state, customerMessage } = ctx;
     const entities = extractEntities(customerMessage);
 
+    const requestedCapability = PRICE_QUESTION.test(customerMessage)
+      ? "ask_price"
+      : DURATION_QUESTION.test(customerMessage)
+        ? "ask_duration"
+        : DEPOSIT_QUESTION.test(customerMessage)
+          ? "ask_deposit"
+          : undefined;
+
     const constraints: BarryIRConstraints = {};
     if (entities.schedulingConstraint) constraints.schedulingWindow = entities.schedulingConstraint;
     if (entities.partySize > 1) constraints.partySize = entities.partySize;
@@ -31,16 +39,24 @@ export class MockReasoner implements Reasoner {
     const knownFieldsUpdate: Record<string, string> = {};
     if (entities.email) knownFieldsUpdate.email = entities.email;
     if (entities.phone) knownFieldsUpdate.phone = entities.phone;
-    if (
-      // Only treat the raw message as "the name" when BARRY's previous turn
-      // was actually asking for it — otherwise short messages like "Couples"
-      // or "Sunday" get misread as a name.
+    if (entities.name) {
+      // An explicit self-announcement ("my name is X", "call me X") is
+      // unambiguous — capture it regardless of what else is in the same
+      // message (e.g. "My name is Inon and my phone number is ...").
+      knownFieldsUpdate.name = entities.name;
+    } else if (
+      // Otherwise, only treat the raw message as "the name" when BARRY's
+      // previous turn was actually asking for it — otherwise short
+      // messages like "Couples" or "Sunday" (or a short fact QUESTION like
+      // "How much is it?") get misread as a name.
       state.missingFields[0] === "name" &&
       !state.knownFields.name &&
       !knownFieldsUpdate.email &&
       !knownFieldsUpdate.phone &&
       !entities.accepted &&
       !entities.schedulingConstraint &&
+      !requestedCapability &&
+      !customerMessage.includes("?") &&
       customerMessage.trim().split(/\s+/).length <= 4
     ) {
       knownFieldsUpdate.name = customerMessage.trim();
@@ -72,13 +88,7 @@ export class MockReasoner implements Reasoner {
       entities: entities as Record<string, unknown>,
       constraints,
       knownFieldsUpdate,
-      requestedCapability: PRICE_QUESTION.test(customerMessage)
-        ? "ask_price"
-        : DURATION_QUESTION.test(customerMessage)
-          ? "ask_duration"
-          : DEPOSIT_QUESTION.test(customerMessage)
-            ? "ask_deposit"
-            : undefined,
+      requestedCapability,
     };
   }
 

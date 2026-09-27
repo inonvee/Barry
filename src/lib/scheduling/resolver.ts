@@ -99,7 +99,12 @@ function zonedTimeToUtc(
   return new Date(guess + offset);
 }
 
-function resolveDate(spec: DateSpec | undefined, timeZone: string, now: Date): { year: number; month: number; day: number } {
+function resolveDate(
+  spec: DateSpec | undefined,
+  timeZone: string,
+  now: Date,
+  time: { hour: number; minute: number }
+): { year: number; month: number; day: number } {
   const today = currentLocalDate(timeZone, now);
   if (!spec) return today;
 
@@ -111,14 +116,25 @@ function resolveDate(spec: DateSpec | undefined, timeZone: string, now: Date): {
     case "relativeDay":
       return addCalendarDays(today, spec.days);
     case "weekday": {
-      // A bare weekday ("Sunday") always means the next upcoming
-      // occurrence — never literally today, even if today is that weekday
-      // ("today" is its own DateSpec for when the customer means that).
       const diff = (spec.weekday - today.weekday + 7) % 7;
-      const nextOccurrence = diff === 0 ? 7 : diff;
-      // "next Monday" skips past the immediate upcoming Monday to the one
-      // after — distinct from bare "Monday", which is the coming one.
-      const days = spec.qualifier === "next" ? nextOccurrence + 7 : nextOccurrence;
+      let days: number;
+      if (diff === 0) {
+        // Today IS the requested weekday. "next Sunday" always skips
+        // today, even when today is Sunday. Bare/"this" Sunday means
+        // TODAY if the requested time hasn't passed yet in the
+        // business's own local time — otherwise it rolls to next week
+        // (never silently jumps to some other, unrelated weekday).
+        if (spec.qualifier === "next") {
+          days = 7;
+        } else {
+          const candidateInstant = zonedTimeToUtc(today.year, today.month, today.day, time.hour, time.minute, timeZone);
+          days = candidateInstant.getTime() >= now.getTime() ? 0 : 7;
+        }
+      } else {
+        // "next Monday" skips past the immediate upcoming Monday to the
+        // one after — distinct from bare "Monday", which is the coming one.
+        days = spec.qualifier === "next" ? diff + 7 : diff;
+      }
       return addCalendarDays(today, days);
     }
   }
@@ -142,12 +158,39 @@ export function resolveSchedulingWindow(
 ): { earliest: string; latest: string } | undefined {
   if (!constraint.date && !constraint.time) return undefined;
 
-  const { year, month, day } = resolveDate(constraint.date, timeZone, now);
   const { hour, minute } = resolveTime(constraint.time);
+  const { year, month, day } = resolveDate(constraint.date, timeZone, now, { hour, minute });
 
   const earliest = zonedTimeToUtc(year, month, day, hour, minute, timeZone);
   const latest = zonedTimeToUtc(year, month, day, hour, minute, timeZone);
   latest.setUTCHours(latest.getUTCHours() + 3);
 
   return { earliest: earliest.toISOString(), latest: latest.toISOString() };
+}
+
+/**
+ * Format a UTC instant for a CUSTOMER-FACING reply, always in the
+ * business's own local timezone — never the server's. This is the ONE
+ * place any reasoner's display copy for a scheduling instant should come
+ * from; no reasoner (LLM or deterministic) is trusted to interpret a raw
+ * ISO string itself, because that silently defaults to the server's
+ * runtime timezone (often UTC) and shows the wrong hour to the customer.
+ */
+export type LocalDisplay = { iso: string; localDate: string; localTime: string; timeZone: string };
+
+export function formatLocalDateTime(iso: string, timeZone: string): LocalDisplay {
+  const date = new Date(iso);
+  const localDate = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  }).format(date);
+  const localTime = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(date);
+  return { iso, localDate, localTime, timeZone };
 }

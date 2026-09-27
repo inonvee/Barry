@@ -72,7 +72,40 @@ export function InspectorPanel({ state }: { state: ConversationState | null }) {
             <pre className="mt-1 text-xs bg-neutral-50 dark:bg-neutral-900 rounded-lg p-2 overflow-x-auto">
               {JSON.stringify(lastTurn.understood.entities, null, 2)}
             </pre>
+            {lastTurn.understood.schedulingWindow && (
+              <>
+                <p className="text-xs text-neutral-500 mt-2 mb-1">Semantic scheduling IR (as understood, before resolution)</p>
+                <pre className="text-xs bg-neutral-50 dark:bg-neutral-900 rounded-lg p-2 overflow-x-auto">
+                  {JSON.stringify(lastTurn.understood.schedulingWindow, null, 2)}
+                </pre>
+              </>
+            )}
+            {lastTurn.understood.knownFieldsUpdate && Object.keys(lastTurn.understood.knownFieldsUpdate).length > 0 && (
+              <>
+                <p className="text-xs text-neutral-500 mt-2 mb-1">Proposed customer-info updates (raw, before sentinel-filtering)</p>
+                <pre className="text-xs bg-neutral-50 dark:bg-neutral-900 rounded-lg p-2 overflow-x-auto">
+                  {JSON.stringify(lastTurn.understood.knownFieldsUpdate, null, 2)}
+                </pre>
+              </>
+            )}
           </Section>
+
+          {lastTurn.compiled && (
+            <Section title="Compiler">
+              {lastTurn.compiled.resolvedSchedulingWindow && (
+                <>
+                  <p className="text-xs text-neutral-500 mb-1">Resolved scheduling window (absolute UTC)</p>
+                  <pre className="text-xs bg-neutral-50 dark:bg-neutral-900 rounded-lg p-2 overflow-x-auto">
+                    {JSON.stringify(lastTurn.compiled.resolvedSchedulingWindow, null, 2)}
+                  </pre>
+                </>
+              )}
+              <p className="text-xs text-neutral-500 mt-2 mb-1">Actually applied customer-info updates (after sentinel-filtering)</p>
+              <pre className="text-xs bg-neutral-50 dark:bg-neutral-900 rounded-lg p-2 overflow-x-auto">
+                {JSON.stringify(lastTurn.compiled.appliedKnownFieldsUpdate, null, 2)}
+              </pre>
+            </Section>
+          )}
 
           <Section title="Retrieved from Business Graph">
             <Kv k="Offers" v={lastTurn.retrieved.offerIds.join(", ") || "—"} />
@@ -110,6 +143,24 @@ export function InspectorPanel({ state }: { state: ConversationState | null }) {
               <pre className="mt-1 text-xs bg-neutral-50 dark:bg-neutral-900 rounded-lg p-2 overflow-x-auto">
                 {JSON.stringify(lastTurn.toolResult.output ?? lastTurn.toolResult.error, null, 2)}
               </pre>
+            </Section>
+          )}
+
+          {lastTurn.responseFacts && (
+            <Section title="Response facts (ground truth for the reply's phrasing)">
+              <Kv k="Display timezone" v={lastTurn.responseFacts.timezone} />
+              {lastTurn.responseFacts.offeredSlot && (
+                <Kv
+                  k="Offered slot (local)"
+                  v={`${lastTurn.responseFacts.offeredSlot.localDate} ${lastTurn.responseFacts.offeredSlot.localTime}`}
+                />
+              )}
+              {lastTurn.responseFacts.availableSlots && lastTurn.responseFacts.availableSlots.length > 0 && (
+                <Kv
+                  k="Available slots (local)"
+                  v={lastTurn.responseFacts.availableSlots.map((s) => `${s.localDate} ${s.localTime}`).join("; ")}
+                />
+              )}
             </Section>
           )}
 
