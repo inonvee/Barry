@@ -279,7 +279,20 @@ export function resolveSchedulingWindow(
  * ISO string itself, because that silently defaults to the server's
  * runtime timezone (often UTC) and shows the wrong hour to the customer.
  */
-export type LocalDisplay = { iso: string; localDate: string; localTime: string; timeZone: string };
+/**
+ * `localTime` is 12-hour ("2:00 PM") and `localTime24` is 24-hour
+ * ("14:00") — the SAME instant, two renderings. Neither is "the"
+ * correct one: English replies conventionally use 12-hour, Hebrew ones
+ * conventionally use 24-hour (embedding an English "2:00 PM" inside a
+ * Hebrew sentence reads as foreign/awkward). Which one a reply should
+ * use depends on what LANGUAGE that reply is in — not on the business's
+ * own fixed locale, since a Hebrew-speaking customer can message an
+ * English-locale business and vice versa (see the mixed-language eval
+ * suite). BARRY only ever computes both ground-truth strings; a
+ * reasoner picks between them based on the language it's already
+ * replying in, never computing or converting either one itself.
+ */
+export type LocalDisplay = { iso: string; localDate: string; localTime: string; localTime24: string; timeZone: string };
 
 export function formatLocalDateTime(iso: string, timeZone: string): LocalDisplay {
   const date = new Date(iso);
@@ -295,5 +308,11 @@ export function formatLocalDateTime(iso: string, timeZone: string): LocalDisplay
     minute: "2-digit",
     hour12: true,
   }).format(date);
-  return { iso, localDate, localTime, timeZone };
+  const localTime24 = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(date);
+  return { iso, localDate, localTime, localTime24, timeZone };
 }

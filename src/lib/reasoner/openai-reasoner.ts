@@ -6,6 +6,35 @@ import { composeDeterministic } from "./deterministic-compose";
 import { logReasonerFailure } from "./diagnostics";
 import type { BarryIR, ComposeResponseInput, Reasoner, ReasonerContext } from "./types";
 import type { SchedulingConstraint } from "@/lib/scheduling/resolver";
+import type { CompileOutcome } from "@/lib/reasoner/ir";
+
+/**
+ * Strips everything from a CompileOutcome that the composer has no
+ * legitimate reason to see before handing it to the LLM as JSON —
+ * `.debug` (Inspector-only: `resolvedSchedulingWindow` is a raw UTC
+ * ISO instant) and, for an "action" outcome, `action.input` (which for
+ * checkAvailability/createBooking carries raw UTC `earliest`/`latest`
+ * strings the model has no reason to read, since `scheduling`'s
+ * localDate/localTime/localTime24 are already the one source of truth
+ * for any date/time phrasing). No composer template anywhere reads
+ * either of these — this closes the gap between "the prompt SAYS not
+ * to use them" and "the raw data isn't even present to misuse," the
+ * same never-trust-a-raw-timestamp principle the rest of this
+ * architecture already applies everywhere else.
+ */
+export function sanitizeOutcomeForCompose(outcome: CompileOutcome): unknown {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to exclude it from `rest`
+  const { debug, ...rest } = outcome;
+  if (rest.kind === "action") {
+    return { ...rest, action: { name: rest.action.name, input: {} } };
+  }
+  if (rest.kind === "ask_slot_confirm") {
+    // offeredStart is also a raw UTC ISO instant — scheduling.offeredSlot
+    // (localDate/localTime/localTime24) is the one source of truth here.
+    return { ...rest, offeredStart: "" };
+  }
+  return rest;
+}
 
 /**
  * LLM-backed Reasoner. It UNDERSTANDS free text into BARRY IR and nothing
@@ -130,9 +159,12 @@ export const COMPOSE_SYSTEM_PROMPT =
   "check, look up, confirm, or get back to them later for something toolOutput/toolError " +
   "already answers — phrases like \"I'll check\" or \"I'll get back to you shortly\" are " +
   "forbidden whenever a tool already ran this turn. " +
-  "If `scheduling` is present, any date/time you mention MUST use its localDate/localTime " +
-  "strings verbatim — never compute, convert, or reinterpret a time yourself from any raw " +
-  "ISO timestamp elsewhere in this JSON (that is always UTC, not the customer's local time). " +
+  "If `scheduling` is present, any date/time you mention MUST use its localDate string " +
+  "verbatim, plus EITHER localTime (12-hour, e.g. \"2:00 PM\") or localTime24 (24-hour, " +
+  "e.g. \"14:00\") — pick whichever matches the LANGUAGE you are replying in: localTime24 " +
+  "for Hebrew (and other locales that conventionally use 24-hour time), localTime for " +
+  "English. Never compute, convert, or reinterpret a time yourself from any raw ISO " +
+  "timestamp elsewhere in this JSON (that is always UTC, not the customer's local time). " +
   "When outcome.kind is \"needs_info\", ask for EXACTLY the fields listed in " +
   "outcome.missingFields — one per field (\"your name\", \"your phone number\"), never more, " +
   "never pluralized or duplicated because of partySize or any other constraint. Only ask " +
@@ -296,7 +328,7 @@ export class OpenAIReasoner implements Reasoner {
     const summary = {
       businessTone: ctx.graph.business.tone,
       lastCustomerMessage,
-      outcome: input.outcome,
+      outcome: sanitizeOutcomeForCompose(input.outcome),
       policyReason: input.policyReason ?? null,
       toolSucceeded: input.toolResult?.ok ?? null,
       toolOutput: input.toolResult?.ok ? input.toolResult.output : undefined,
