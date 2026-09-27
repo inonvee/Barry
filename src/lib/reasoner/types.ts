@@ -2,7 +2,7 @@ import type { BusinessGraph } from "@/lib/business-graph";
 import type { ConversationState } from "@/lib/state";
 import type { BarryIR, CompileOutcome } from "./ir";
 
-export type { BarryIR, BarryIRConstraints, RequestedCapability, CompileOutcome, CompiledToolCall } from "./ir";
+export type { BarryIR, BarryIRConstraints, RequestedCapability, CompileOutcome, CompiledToolCall, OfferFact } from "./ir";
 
 export type ReasonerContext = {
   graph: BusinessGraph;

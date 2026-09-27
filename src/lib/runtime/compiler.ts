@@ -1,7 +1,7 @@
 import type { BusinessGraph, Goal, Offer } from "@/lib/business-graph";
 import { findOffer } from "@/lib/business-graph";
 import { getTool } from "@/lib/tools";
-import type { BarryIR, CompileOutcome } from "@/lib/reasoner/ir";
+import type { BarryIR, CompileOutcome, OfferFact } from "@/lib/reasoner/ir";
 import type { ConversationStage, ConversationState } from "@/lib/state";
 import { resolveSchedulingWindow } from "@/lib/scheduling/resolver";
 
@@ -60,6 +60,32 @@ function finalizeAction(
 
 function missingCustomerInfo(offer: Offer, known: Record<string, string>): string[] {
   return offer.requiredCustomerInfo.filter((field) => !known[field]);
+}
+
+/**
+ * Answers a small, recognized set of fact questions straight from the
+ * resolved Offer — never invented, never requiring any transaction-gate
+ * field first. `requestedCapability` is advisory (a reasoner's best guess
+ * at intent); an unrecognized value or a fact the offer doesn't have
+ * (e.g. price on a quote-only offer) simply returns nothing, and the
+ * normal flow continues.
+ */
+function resolveOfferFact(requestedCapability: string | undefined, offer: Offer): OfferFact | undefined {
+  switch (requestedCapability) {
+    case "ask_price":
+      return offer.price !== null ? { type: "price", price: offer.price, currency: offer.currency } : undefined;
+    case "ask_duration":
+      return offer.durationMinutes !== undefined ? { type: "duration", minutes: offer.durationMinutes } : undefined;
+    case "ask_deposit":
+      return {
+        type: "deposit",
+        required: offer.requiresPayment,
+        amount: offer.depositAmount,
+        currency: offer.currency,
+      };
+    default:
+      return undefined;
+  }
 }
 
 function resolveOfferId(graph: BusinessGraph, state: ConversationState, ir: BarryIR): string | undefined {
@@ -186,13 +212,18 @@ export function compile(graph: BusinessGraph, state: ConversationState, ir: Barr
 
   const offer = findOffer(graph, selectedOfferId)!;
 
+  // Safe Business Graph facts are answerable BEFORE any transaction-gate
+  // field is collected: requiredCustomerInfo means "needed to fulfill a
+  // booking/purchase," not "needed before BARRY may state a price." A
+  // "How much is it?" must never be blocked on a phone number.
+  const fact = resolveOfferFact(ir.requestedCapability, offer);
+  if (fact) {
+    return { kind: "offer_fact", offerName: offer.name, fact, stage: state.stage };
+  }
+
   const missing = missingCustomerInfo(offer, known);
   if (missing.length > 0) {
     return { kind: "needs_info", offerName: offer.name, missingFields: missing, stage: "info_gathering" };
-  }
-
-  if (ir.requestedCapability === "ask_price" && offer.price !== null) {
-    return { kind: "price_fact", offerName: offer.name, price: offer.price, currency: offer.currency, stage: state.stage };
   }
 
   // Quote / lead-only offers: no scheduling, no inventory, no fixed price.

@@ -36,9 +36,10 @@ export type BarryIRConstraints = {
  * Advisory-only hint about what the customer wants next. The compiler
  * decides what BARRY actually does from Business Graph capabilities and
  * accumulated state — it is free to ignore this. Only a small recognized
- * vocabulary affects compiler behavior at all (currently: "ask_price").
+ * vocabulary affects compiler behavior at all (currently: "ask_price",
+ * "ask_duration", "ask_deposit").
  */
-export type RequestedCapability = "ask_price" | string;
+export type RequestedCapability = "ask_price" | "ask_duration" | "ask_deposit" | string;
 
 export type BarryIR = {
   intent: string;
@@ -74,6 +75,18 @@ export type CompiledToolCall = { name: string; input: Record<string, unknown> };
  * to ask carried as data. A Reasoner's `composeResponse()` phrases these
  * into natural language; it never invents which one applies.
  */
+/**
+ * A safe Business Graph fact, answerable without any transaction-required
+ * customer info: `requiredCustomerInfo` means "required to FULFILL a
+ * transaction," never "required before BARRY may state a fact that's
+ * already sitting in the Business Graph." Never fabricated — every
+ * variant here is read directly off the resolved `Offer`.
+ */
+export type OfferFact =
+  | { type: "price"; price: number; currency: string }
+  | { type: "duration"; minutes: number }
+  | { type: "deposit"; required: boolean; amount?: number; currency?: string };
+
 export type CompileOutcome = { stage: ConversationStage } & (
   | { kind: "action"; action: CompiledToolCall; goal?: Goal }
   | { kind: "ask_general"; offerNames: string[] }
@@ -82,7 +95,7 @@ export type CompileOutcome = { stage: ConversationStage } & (
   | { kind: "ask_datetime"; offerName: string }
   | { kind: "ask_slot_confirm"; offeredStart: string }
   | { kind: "waiting_payment" }
-  | { kind: "price_fact"; offerName: string; price: number; currency: string }
+  | { kind: "offer_fact"; offerName: string; fact: OfferFact }
   | { kind: "generic_confirm" }
   /** Assembled input failed the tool's own schema — a compiler bug, not a customer data problem. Never reaches callTool(). */
   | { kind: "compiler_error"; reason: string }

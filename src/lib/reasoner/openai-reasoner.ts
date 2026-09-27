@@ -97,7 +97,7 @@ Rules you must never break:
 - Accumulate information across turns: a day/time/party-size/service mentioned earlier (visible in knownFields/recentMessages) is still true unless the customer changed it — repeat it in constraints/knownFieldsUpdate so it isn't lost.
 - If multiple offers plausibly match, list them in offerCandidateIds and leave selectedOfferId null — do not guess.
 - selectedOfferId/offerCandidateIds are ONLY for the initial choice of offer. If "selectedOfferId" (given to you in context) is already set and the customer's message is an EXPLICIT change of mind ("actually, X instead", "change it to X", "switch to X") naming a different, real offer, put that offer's id in offerChangeRequested instead — never in selectedOfferId. Leave offerChangeRequested null for anything that isn't an explicit, confident change request; an unrelated message must never change the offer.
-- requestedCapability is advisory only (e.g. "ask_price" when they ask how much something costs). Use null if unsure.
+- requestedCapability is advisory only: "ask_price" when they ask how much something costs, "ask_duration" when they ask how long it takes, "ask_deposit" when they ask about a deposit or upfront payment requirement. Use null if unsure.
 - Output strict JSON matching the provided schema. No explanation outside the JSON.`;
 
 function kvArrayToRecord(pairs: KeyValuePair[]): Record<string, string> {

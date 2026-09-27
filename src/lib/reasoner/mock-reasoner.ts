@@ -11,6 +11,8 @@ import type { BarryIR, BarryIRConstraints, ComposeResponseInput, Reasoner, Reaso
  */
 
 const PRICE_QUESTION = /\b(how much|what('s| is) the price|cost|pricing)\b/i;
+const DURATION_QUESTION = /\b(how long|how much time|what('s| is) the duration)\b/i;
+const DEPOSIT_QUESTION = /\b(deposit|do (you|i) (need|require)|require(d)? (a )?(deposit|payment)( upfront)?)\b/i;
 const CHANGE_OF_MIND_SIGNAL = /\b(actually|instead|change (it |that )?to|switch (it |that )?to|rather have|no,? (i want|make it|let'?s do))\b/i;
 
 export class MockReasoner implements Reasoner {
@@ -70,7 +72,13 @@ export class MockReasoner implements Reasoner {
       entities: entities as Record<string, unknown>,
       constraints,
       knownFieldsUpdate,
-      requestedCapability: PRICE_QUESTION.test(customerMessage) ? "ask_price" : undefined,
+      requestedCapability: PRICE_QUESTION.test(customerMessage)
+        ? "ask_price"
+        : DURATION_QUESTION.test(customerMessage)
+          ? "ask_duration"
+          : DEPOSIT_QUESTION.test(customerMessage)
+            ? "ask_deposit"
+            : undefined,
     };
   }
 

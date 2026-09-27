@@ -27,8 +27,17 @@ export function composeDeterministic(input: ComposeResponseInput): string {
       return `Does ${new Date(outcome.offeredStart).toLocaleString()} work for you?`;
     case "waiting_payment":
       return `Just waiting on your payment to confirm this.`;
-    case "price_fact":
-      return `${outcome.offerName} is ${outcome.price} ${outcome.currency}.`;
+    case "offer_fact":
+      switch (outcome.fact.type) {
+        case "price":
+          return `${outcome.offerName} is ${outcome.fact.price} ${outcome.fact.currency}.`;
+        case "duration":
+          return `${outcome.offerName} takes about ${outcome.fact.minutes} minutes.`;
+        case "deposit":
+          return outcome.fact.required
+            ? `Yes, ${outcome.offerName} requires a deposit${outcome.fact.amount ? ` of ${outcome.fact.amount} ${outcome.fact.currency}` : ""}.`
+            : `No deposit is required for ${outcome.offerName}.`;
+      }
     case "generic_confirm":
       return `Let me get that finalized for you.`;
     case "compiler_error":
