@@ -16,7 +16,21 @@ function tokenize(text: string): string[] {
     .filter((w) => w.length > 2 && !STOPWORDS.has(w));
 }
 
-const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+// Whole-word alternations, never bare substrings — "fri" alone would
+// match inside "friend", "mon" inside "money", "wed" inside "wedding",
+// "sun" inside "sunflower", "sat" inside "satisfied". Each pattern's
+// trailing \b (applied where it's used) only clears when either the
+// short form ends the word exactly, or the full canonical suffix is
+// present, so a continuing word never matches.
+const WEEKDAY_TOKENS: { weekday: number; alt: string }[] = [
+  { weekday: 0, alt: "sun(?:day)?" },
+  { weekday: 1, alt: "mon(?:day)?" },
+  { weekday: 2, alt: "tues?(?:day)?" },
+  { weekday: 3, alt: "wed(?:nesday)?" },
+  { weekday: 4, alt: "thu(?:rs)?(?:day)?" },
+  { weekday: 5, alt: "fri(?:day)?" },
+  { weekday: 6, alt: "sat(?:urday)?" },
+];
 const TIME_WORDS: Record<string, string> = {
   noon: "12:00",
   midday: "12:00",
@@ -119,6 +133,23 @@ function parseTimeToken(text: string): { hour: number; minute: number } | undefi
 }
 
 /**
+ * Whole-word, case-insensitive weekday match with a STRUCTURAL "next"
+ * qualifier (captured, not inferred from nearby characters) — never a
+ * substring match. Picks the earliest weekday token in the text if more
+ * than one is present.
+ */
+function findExplicitWeekday(text: string): { weekday: number; qualifier?: "next" } | undefined {
+  let best: { weekday: number; qualifier?: "next"; index: number } | undefined;
+  for (const { weekday, alt } of WEEKDAY_TOKENS) {
+    const match = new RegExp(`\\b(next\\s+)?(?:${alt})\\b`, "i").exec(text);
+    if (match && (best === undefined || match.index < best.index)) {
+      best = { weekday, qualifier: match[1] ? "next" : undefined, index: match.index };
+    }
+  }
+  return best ? { weekday: best.weekday, qualifier: best.qualifier } : undefined;
+}
+
+/**
  * Extract a scheduling constraint ONLY from directly-verifiable explicit
  * tokens in the raw text — a weekday word (Sunday..Saturday, optionally
  * qualified by "next") or a relative-day word ("today"/"tomorrow"). This
@@ -132,16 +163,13 @@ function parseTimeToken(text: string): { hour: number; minute: number } | undefi
 export function extractExplicitSchedulingConstraint(message: string): SchedulingConstraint | undefined {
   const text = message.toLowerCase();
 
-  for (let i = 0; i < WEEKDAYS.length; i++) {
-    const idx = text.indexOf(WEEKDAYS[i]);
-    if (idx !== -1) {
-      const qualifier = text.slice(Math.max(0, idx - 6), idx).includes("next") ? "next" : undefined;
-      const time = parseTimeToken(text);
-      return {
-        date: { kind: "weekday", weekday: i, qualifier },
-        time: time ? { kind: "explicitTime", ...time } : undefined,
-      };
-    }
+  const weekdayMatch = findExplicitWeekday(text);
+  if (weekdayMatch) {
+    const time = parseTimeToken(text);
+    return {
+      date: { kind: "weekday", weekday: weekdayMatch.weekday, qualifier: weekdayMatch.qualifier },
+      time: time ? { kind: "explicitTime", ...time } : undefined,
+    };
   }
   if (/\btomorrow\b/.test(text)) {
     const time = parseTimeToken(text);
