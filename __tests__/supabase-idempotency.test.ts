@@ -9,6 +9,14 @@ import { SupabaseBackend } from "@/lib/store/supabase-backend";
  * supabase-persistence.test.ts) — verified directly against the live
  * database via the Supabase MCP tools as part of this change; this test
  * exists so the app-level code path (not just raw SQL) has coverage too.
+ *
+ * supabase/migrations/0003_function_search_path.sql pins
+ * increment_inventory_consumed's search_path (a Supabase security-advisor
+ * WARN: an unpinned search_path lets the CALLER's search_path at call time
+ * decide which `inventory_adjustments` the function's unqualified
+ * reference resolves to). No PostgREST-exposed way to assert this from
+ * the app-level client, so it's verified live via the Supabase MCP
+ * `get_advisors` tool instead of a test here.
  */
 describe.skipIf(!isSupabaseConfigured())("Supabase idempotency constraints", () => {
   it("a second createBooking for the same resource+slot fails with a clean error, not a raw Postgres one", async () => {
