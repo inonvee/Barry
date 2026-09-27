@@ -9,6 +9,7 @@ import type { ConversationState, TurnLog } from "@/lib/state";
 import { getBackend } from "@/lib/store";
 import { formatLocalDateTime } from "@/lib/scheduling/resolver";
 import type { CustomerFacingLocalDisplay, SchedulingDisplayFacts } from "@/lib/reasoner/types";
+import { sanitizeComposeInput } from "@/lib/reasoner/compose-sanitization";
 import { verifyIR } from "@/lib/reasoner/verify";
 import { compile, SCRATCH_KEYS, type CompileOutcome } from "./compiler";
 
@@ -88,7 +89,6 @@ function customerFacingDisplay(
 ): CustomerFacingLocalDisplay {
   const display = formatLocalDateTime(iso, timeZone);
   return {
-    iso: display.iso,
     localDate: display.localDate,
     localTime: useTwentyFourHour ? display.localTime24 : display.localTime,
     timeZone: display.timeZone,
@@ -187,11 +187,17 @@ export async function handleCustomerMessage(
       toolResult = await callTool(outcome.action.name, outcome.action.input, ctx);
       if (toolResult.ok) patchStateAfterTool(state, outcome.action.name, toolResult.output);
       const scheduling = buildSchedulingDisplay(graph, outcome, toolResult, message);
-      response = await reasoner.composeResponse({ graph, state, customerMessage: message }, { outcome, toolResult, scheduling });
+      response = await reasoner.composeResponse(
+        { graph, state, customerMessage: message },
+        sanitizeComposeInput({ outcome, toolResult, scheduling })
+      );
     }
   } else {
     const scheduling = buildSchedulingDisplay(graph, outcome, toolResult, message);
-    response = await reasoner.composeResponse({ graph, state, customerMessage: message }, { outcome, scheduling });
+    response = await reasoner.composeResponse(
+      { graph, state, customerMessage: message },
+      sanitizeComposeInput({ outcome, scheduling })
+    );
   }
 
   state.messages.push({ role: "barry", content: response, at: new Date().toISOString() });
@@ -365,7 +371,7 @@ export async function resumeAfterApproval(
     const scheduling = buildSchedulingDisplay(graph, syntheticOutcome, toolResult, "(approval resumed)");
     response = await reasoner.composeResponse(
       { graph, state, customerMessage: "(approval resumed)" },
-      { outcome: syntheticOutcome, toolResult, scheduling }
+      sanitizeComposeInput({ outcome: syntheticOutcome, toolResult, scheduling })
     );
   }
 

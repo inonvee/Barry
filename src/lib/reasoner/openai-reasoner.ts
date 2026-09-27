@@ -5,6 +5,7 @@ import { LlmIRSchema, irJsonSchema, type LlmIR, type LlmSchedulingWindow, type K
 import { composeDeterministic } from "./deterministic-compose";
 import { logReasonerFailure } from "./diagnostics";
 import type { BarryIR, ComposeResponseInput, Reasoner, ReasonerContext } from "./types";
+import { sanitizeComposeInput } from "./compose-sanitization";
 import type { SchedulingConstraint } from "@/lib/scheduling/resolver";
 import type { CompileOutcome } from "@/lib/reasoner/ir";
 
@@ -236,19 +237,20 @@ export type ComposeSummaryContext = {
 };
 
 export function buildComposeSummary(context: ComposeSummaryContext, input: ComposeResponseInput) {
+  const sanitizedInput = sanitizeComposeInput(input);
   return {
     businessTone: context.businessTone,
     lastCustomerMessage: context.lastCustomerMessage,
-    outcome: sanitizeOutcomeForCompose(input.outcome),
-    policyReason: input.policyReason ?? null,
-    toolSucceeded: input.toolResult?.ok ?? null,
-    toolOutput: input.toolResult?.ok ? input.toolResult.output : undefined,
-    toolError: input.toolResult && !input.toolResult.ok ? input.toolResult.error : undefined,
+    outcome: sanitizeOutcomeForCompose(sanitizedInput.outcome),
+    policyReason: sanitizedInput.policyReason ?? null,
+    toolSucceeded: sanitizedInput.toolResult?.ok ?? null,
+    toolOutput: sanitizedInput.toolResult?.ok ? sanitizedInput.toolResult.output : undefined,
+    toolError: sanitizedInput.toolResult && !sanitizedInput.toolResult.ok ? sanitizedInput.toolResult.error : undefined,
     // Pre-computed, business-timezone-local display facts for any
     // scheduling instant this turn — the ONLY source of truth for
     // "what time is that for the customer." Never present when there's
     // nothing scheduling-related to phrase.
-    scheduling: input.scheduling ?? null,
+    scheduling: sanitizedInput.scheduling ?? null,
   };
 }
 

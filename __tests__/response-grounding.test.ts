@@ -105,8 +105,8 @@ describe("Response grounding: no UTC-as-local leaks, no future-tense claims afte
       toolResult: { ok: true, output: { slots: [] } },
       scheduling: {
         availableSlots: [
-          { iso: "2026-06-15T13:00:00.000Z", localDate: "June 15, 2026", localTime: "09:00", timeZone: "America/New_York" },
-          { iso: "2026-06-15T14:00:00.000Z", localDate: "June 15, 2026", localTime: "10:00", timeZone: "America/New_York" },
+          { localDate: "June 15, 2026", localTime: "09:00", timeZone: "America/New_York" },
+          { localDate: "June 15, 2026", localTime: "10:00", timeZone: "America/New_York" },
         ],
       },
     };
@@ -131,7 +131,7 @@ describe("Response grounding: no UTC-as-local leaks, no future-tense claims afte
       toolResult: { ok: true, output: { slots: [] } },
       scheduling: {
         availableSlots: [
-          { iso: "2026-06-15T13:00:00.000Z", localDate: "June 15, 2026", localTime: "9:00 AM", timeZone: "America/New_York" },
+          { localDate: "June 15, 2026", localTime: "9:00 AM", timeZone: "America/New_York" },
         ],
       },
     };
@@ -143,5 +143,73 @@ describe("Response grounding: no UTC-as-local leaks, no future-tense claims afte
 
     expect(JSON.stringify(summary.scheduling)).toContain("9:00 AM");
     expect(JSON.stringify(summary.scheduling)).not.toContain("localTime24");
+  });
+
+  it("compose summary for availability never contains raw UTC scheduling timestamps", () => {
+    const input: ComposeResponseInput = {
+      outcome: {
+        kind: "action",
+        action: {
+          name: "checkAvailability",
+          input: { earliest: "2026-06-15T13:00:00.000Z", latest: "2026-06-15T16:00:00.000Z" },
+        },
+        stage: "scheduling",
+      },
+      toolResult: {
+        ok: true,
+        output: {
+          slots: [
+            {
+              resourceId: "therapist-1",
+              start: "2026-06-15T13:00:00.000Z",
+              end: "2026-06-15T14:00:00.000Z",
+            },
+          ],
+        },
+      },
+      scheduling: {
+        availableSlots: [
+          { localDate: "June 15, 2026", localTime: "09:00", timeZone: "America/New_York" },
+        ],
+      },
+    };
+
+    const summary = buildComposeSummary(
+      { businessTone: "warm", lastCustomerMessage: "יש שעות פנויות?" },
+      input
+    );
+
+    expect(JSON.stringify(summary)).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
+  });
+
+  it("compose summary for booking never contains raw UTC scheduling timestamps", () => {
+    const input: ComposeResponseInput = {
+      outcome: {
+        kind: "action",
+        action: {
+          name: "createBooking",
+          input: { start: "2026-06-15T13:00:00.000Z", end: "2026-06-15T14:00:00.000Z" },
+        },
+        stage: "confirmation",
+      },
+      toolResult: {
+        ok: true,
+        output: {
+          bookingId: "booking-1",
+          start: "2026-06-15T13:00:00.000Z",
+          end: "2026-06-15T14:00:00.000Z",
+        },
+      },
+      scheduling: {
+        offeredSlot: { localDate: "June 15, 2026", localTime: "9:00 AM", timeZone: "America/New_York" },
+      },
+    };
+
+    const summary = buildComposeSummary(
+      { businessTone: "warm", lastCustomerMessage: "Yes that works" },
+      input
+    );
+
+    expect(JSON.stringify(summary)).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
   });
 });

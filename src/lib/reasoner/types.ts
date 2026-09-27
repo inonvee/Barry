@@ -19,7 +19,6 @@ export type ReasonerContext = {
  * defaults to the server's runtime timezone, not the business's).
  */
 export type CustomerFacingLocalDisplay = {
-  iso: string;
   localDate: string;
   /** The only customer-facing time representation compose may use for this reply. */
   localTime: string;
