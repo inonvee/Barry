@@ -145,7 +145,7 @@ export async function handleCustomerMessage(
   // against the raw customer text and overrides the Reasoner when its
   // IR contradicts something the customer plainly said. Applied
   // uniformly regardless of which Reasoner produced the IR.
-  const { verified: ir, verification } = verifyIR(graph, message, rawIr);
+  const { verified: ir, verification } = verifyIR(graph, message, rawIr, state);
   const outcome = compile(graph, state, ir);
 
   state.detectedIntent = ir.intent;

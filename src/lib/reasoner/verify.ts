@@ -1,4 +1,5 @@
 import type { BusinessGraph } from "@/lib/business-graph";
+import type { ConversationState } from "@/lib/state";
 import type { DateSpec, SchedulingConstraint, TimeSpec } from "@/lib/scheduling/resolver";
 import {
   findOffersByExplicitNameReference,
@@ -10,6 +11,25 @@ import {
   isInvalidCustomerNameCandidate,
 } from "./entities";
 import type { BarryIR } from "./ir";
+
+const OFFERED_SLOT_START_KEY = "__offeredSlotStart";
+const SLOT_ACCEPTED_KEY = "__slotAccepted";
+
+const AFFIRMATIVE_SHORT_REPLIES = new Set([
+  "yes",
+  "yeah",
+  "yep",
+  "sure",
+  "confirm",
+  "confirmed",
+  "כן",
+  "מאשר",
+  "סבבה",
+  "מתאים",
+  "יאללה",
+]);
+
+const DECLINE_SHORT_REPLIES = new Set(["no", "nope", "לא", "לא מתאים"]);
 
 /**
  * Deterministic semantic verification, sitting between ANY Reasoner's
@@ -60,7 +80,24 @@ function timesMatch(a: TimeSpec | undefined, b: TimeSpec): boolean {
   }
 }
 
-export function verifyIR(graph: BusinessGraph, customerMessage: string, ir: BarryIR): { verified: BarryIR; verification: IRVerification } {
+function normalizeShortReply(text: string): string {
+  return text
+    .trim()
+    .toLowerCase()
+    .replace(/^[\s"'`.,!?;:()]+|[\s"'`.,!?;:()]+$/g, "")
+    .replace(/\s+/g, " ");
+}
+
+function awaitingSlotConfirmation(state: ConversationState | undefined): boolean {
+  return Boolean(state?.knownFields[OFFERED_SLOT_START_KEY] && !state.knownFields[SLOT_ACCEPTED_KEY]);
+}
+
+export function verifyIR(
+  graph: BusinessGraph,
+  customerMessage: string,
+  ir: BarryIR,
+  state?: ConversationState
+): { verified: BarryIR; verification: IRVerification } {
   const verification: IRVerification = {
     llmSelectedOfferId: ir.selectedOfferId,
     llmOfferCandidateIds: ir.offerCandidateIds,
@@ -153,11 +190,26 @@ export function verifyIR(graph: BusinessGraph, customerMessage: string, ir: Barr
     verification.customerInfoOverridden = true;
   }
 
+  let slotAccepted = ir.constraints.slotAccepted;
+  let slotDeclined = ir.constraints.slotDeclined;
+  if (awaitingSlotConfirmation(state)) {
+    const shortReply = normalizeShortReply(customerMessage);
+    if (AFFIRMATIVE_SHORT_REPLIES.has(shortReply)) {
+      slotAccepted = true;
+      slotDeclined = undefined;
+      if (!ir.constraints.slotAccepted) verification.schedulingOverridden = true;
+    } else if (DECLINE_SHORT_REPLIES.has(shortReply)) {
+      slotDeclined = true;
+      slotAccepted = undefined;
+      if (!ir.constraints.slotDeclined) verification.schedulingOverridden = true;
+    }
+  }
+
   const verified: BarryIR = {
     ...ir,
     selectedOfferId,
     offerCandidateIds,
-    constraints: { ...ir.constraints, schedulingWindow },
+    constraints: { ...ir.constraints, schedulingWindow, slotAccepted, slotDeclined },
     customerInfo,
   };
 
