@@ -1,4 +1,4 @@
-import { extractEntities, findOfferCandidates } from "./entities";
+import { extractEntities, findOfferCandidates, matchHebrewToken } from "./entities";
 import { composeDeterministic } from "./deterministic-compose";
 import type { BarryIR, BarryIRConstraints, ComposeResponseInput, Reasoner, ReasonerContext } from "./types";
 
@@ -15,6 +15,18 @@ const DURATION_QUESTION = /\b(how long|how much time|what('s| is) the duration)\
 const DEPOSIT_QUESTION = /\b(deposit|do (you|i) (need|require)|require(d)? (a )?(deposit|payment)( upfront)?)\b/i;
 const CHANGE_OF_MIND_SIGNAL = /\b(actually|instead|change (it |that )?to|switch (it |that )?to|rather have|no,? (i want|make it|let'?s do))\b/i;
 
+// Hebrew equivalents — same recognized-vocabulary approach as the
+// English regexes above (a fixed, narrow keyword set, not general
+// language understanding), so a Hebrew fact question deterministically
+// resolves through the exact same `resolveOfferFact` path.
+const HEBREW_PRICE_WORDS = ["מחיר", "עולה"];
+const HEBREW_DURATION_WORDS = ["זמן"]; // "כמה זמן" (how much time) — "זמן" alone is unambiguous enough in this fixed vocabulary
+const HEBREW_DEPOSIT_WORDS = ["פיקדון", "מקדמה"];
+
+function matchesAnyHebrewWord(text: string, words: string[]): boolean {
+  return words.some((w) => matchHebrewToken(text, w) !== undefined);
+}
+
 export class MockReasoner implements Reasoner {
   readonly name = "mock" as const;
 
@@ -22,13 +34,14 @@ export class MockReasoner implements Reasoner {
     const { graph, state, customerMessage } = ctx;
     const entities = extractEntities(customerMessage);
 
-    const requestedCapability = PRICE_QUESTION.test(customerMessage)
-      ? "ask_price"
-      : DURATION_QUESTION.test(customerMessage)
-        ? "ask_duration"
-        : DEPOSIT_QUESTION.test(customerMessage)
-          ? "ask_deposit"
-          : undefined;
+    const requestedCapability =
+      PRICE_QUESTION.test(customerMessage) || matchesAnyHebrewWord(customerMessage, HEBREW_PRICE_WORDS)
+        ? "ask_price"
+        : DURATION_QUESTION.test(customerMessage) || matchesAnyHebrewWord(customerMessage, HEBREW_DURATION_WORDS)
+          ? "ask_duration"
+          : DEPOSIT_QUESTION.test(customerMessage) || matchesAnyHebrewWord(customerMessage, HEBREW_DEPOSIT_WORDS)
+            ? "ask_deposit"
+            : undefined;
 
     const constraints: BarryIRConstraints = {};
     if (entities.schedulingConstraint) constraints.schedulingWindow = entities.schedulingConstraint;

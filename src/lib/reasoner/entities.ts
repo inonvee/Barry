@@ -97,7 +97,7 @@ function isHebrewLetter(ch: string | undefined): boolean {
  * to the Hebrew alphabet since `\b` itself only recognizes `[A-Za-z0-9_]`
  * and never fires correctly around Hebrew letters.
  */
-function matchHebrewToken(text: string, form: string): number | undefined {
+export function matchHebrewToken(text: string, form: string): number | undefined {
   let searchFrom = 0;
   while (true) {
     const idx = text.indexOf(form, searchFrom);
