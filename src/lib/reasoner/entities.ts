@@ -118,6 +118,42 @@ function parseTimeToken(text: string): { hour: number; minute: number } | undefi
   return undefined;
 }
 
+/**
+ * Extract a scheduling constraint ONLY from directly-verifiable explicit
+ * tokens in the raw text — a weekday word (Sunday..Saturday, optionally
+ * qualified by "next") or a relative-day word ("today"/"tomorrow"). This
+ * is deliberately narrower than general fuzzy scheduling understanding:
+ * it exists so BARRY can cross-check whatever a Reasoner (LLM or mock)
+ * proposed against ground truth actually present in the customer's own
+ * words, per `verifyIR()` in `verify.ts`. Returns undefined when the raw
+ * text contains none of these explicit tokens — that's not "no
+ * scheduling intent," just "nothing here to verify against."
+ */
+export function extractExplicitSchedulingConstraint(message: string): SchedulingConstraint | undefined {
+  const text = message.toLowerCase();
+
+  for (let i = 0; i < WEEKDAYS.length; i++) {
+    const idx = text.indexOf(WEEKDAYS[i]);
+    if (idx !== -1) {
+      const qualifier = text.slice(Math.max(0, idx - 6), idx).includes("next") ? "next" : undefined;
+      const time = parseTimeToken(text);
+      return {
+        date: { kind: "weekday", weekday: i, qualifier },
+        time: time ? { kind: "explicitTime", ...time } : undefined,
+      };
+    }
+  }
+  if (/\btomorrow\b/.test(text)) {
+    const time = parseTimeToken(text);
+    return { date: { kind: "relativeDay", days: 1 }, time: time ? { kind: "explicitTime", ...time } : undefined };
+  }
+  if (/\btoday\b/.test(text)) {
+    const time = parseTimeToken(text);
+    return { date: { kind: "relativeDay", days: 0 }, time: time ? { kind: "explicitTime", ...time } : undefined };
+  }
+  return undefined;
+}
+
 export function extractEntities(message: string): ExtractedEntities {
   const text = message.toLowerCase();
 
@@ -129,26 +165,7 @@ export function extractEntities(message: string): ExtractedEntities {
     partySize = 2;
   }
 
-  let schedulingConstraint: SchedulingConstraint | undefined;
-  for (let i = 0; i < WEEKDAYS.length; i++) {
-    const idx = text.indexOf(WEEKDAYS[i]);
-    if (idx !== -1) {
-      const qualifier = text.slice(Math.max(0, idx - 6), idx).includes("next") ? "next" : undefined;
-      const time = parseTimeToken(text);
-      schedulingConstraint = {
-        date: { kind: "weekday", weekday: i, qualifier },
-        time: time ? { kind: "explicitTime", ...time } : undefined,
-      };
-      break;
-    }
-  }
-  if (!schedulingConstraint && /\btomorrow\b/.test(text)) {
-    const time = parseTimeToken(text);
-    schedulingConstraint = {
-      date: { kind: "relativeDay", days: 1 },
-      time: time ? { kind: "explicitTime", ...time } : undefined,
-    };
-  }
+  const schedulingConstraint = extractExplicitSchedulingConstraint(message);
 
   const accepted = /\b(yes|yep|sounds good|perfect|that works|confirm|book it|let's do it|sure)\b/.test(
     text
@@ -176,16 +193,15 @@ export function extractEntities(message: string): ExtractedEntities {
   };
 }
 
-export function findOfferCandidates(graph: BusinessGraph, message: string): Offer[] {
+function rankOffersByTokenOverlap(graph: BusinessGraph, message: string, offerTokens: (offer: Offer) => string[]): Offer[] {
   const words = new Set(tokenize(message));
   if (words.size === 0) return [];
 
   const scores = new Map<string, number>();
   for (const offer of graph.offers) {
     if (!offer.active) continue;
-    const offerWords = tokenize(`${offer.name} ${offer.description}`);
     let score = 0;
-    for (const w of offerWords) if (words.has(w)) score++;
+    for (const w of offerTokens(offer)) if (words.has(w)) score++;
     if (score > 0) scores.set(offer.id, score);
   }
   if (scores.size === 0) return [];
@@ -195,4 +211,21 @@ export function findOfferCandidates(graph: BusinessGraph, message: string): Offe
     .filter(([, score]) => score === top)
     .map(([offerId]) => graph.offers.find((o) => o.id === offerId)!)
     .filter(Boolean);
+}
+
+/** Broad discovery matching (name + description) — for free-form "I want something relaxing for two" style requests, where MockReasoner picks an initial offer. */
+export function findOfferCandidates(graph: BusinessGraph, message: string): Offer[] {
+  return rankOffersByTokenOverlap(graph, message, (offer) => tokenize(`${offer.name} ${offer.description}`));
+}
+
+/**
+ * Strict, high-confidence matching on the offer's OWN NAME ONLY (never
+ * its description) — used for deterministic verification of an explicit
+ * offer reference (`verifyIR()` in `verify.ts`), where matching against
+ * description words too could produce a false-positive override on
+ * incidental overlap (e.g. "two" appearing in an unrelated sentence
+ * matching a description that happens to mention "for two").
+ */
+export function findOffersByExplicitNameReference(graph: BusinessGraph, message: string): Offer[] {
+  return rankOffersByTokenOverlap(graph, message, (offer) => tokenize(offer.name));
 }

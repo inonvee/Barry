@@ -90,6 +90,35 @@ export function InspectorPanel({ state }: { state: ConversationState | null }) {
             )}
           </Section>
 
+          {lastTurn.verification && (lastTurn.verification.offerOverridden || lastTurn.verification.schedulingOverridden) && (
+            <Section title="⚠ Semantic verification overrode the Reasoner">
+              {lastTurn.verification.offerOverridden && (
+                <>
+                  <Kv
+                    k="LLM proposed"
+                    v={
+                      lastTurn.verification.llmSelectedOfferId ??
+                      (lastTurn.verification.llmOfferCandidateIds?.join(", ") || "—")
+                    }
+                  />
+                  <Kv k="BARRY trusted instead" v={state.selectedOfferId ?? "—"} />
+                </>
+              )}
+              {lastTurn.verification.schedulingOverridden && (
+                <>
+                  <p className="text-xs text-neutral-500 mt-2 mb-1">LLM-proposed scheduling IR</p>
+                  <pre className="text-xs bg-neutral-50 dark:bg-neutral-900 rounded-lg p-2 overflow-x-auto">
+                    {JSON.stringify(lastTurn.verification.llmSchedulingWindow ?? null, null, 2)}
+                  </pre>
+                  <p className="text-xs text-neutral-500 mt-2 mb-1">BARRY-verified scheduling IR (trusted)</p>
+                  <pre className="text-xs bg-neutral-50 dark:bg-neutral-900 rounded-lg p-2 overflow-x-auto">
+                    {JSON.stringify(lastTurn.understood.schedulingWindow ?? null, null, 2)}
+                  </pre>
+                </>
+              )}
+            </Section>
+          )}
+
           {lastTurn.compiled && (
             <Section title="Compiler">
               {lastTurn.compiled.resolvedSchedulingWindow && (

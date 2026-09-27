@@ -9,6 +9,7 @@ import type { ConversationState, TurnLog } from "@/lib/state";
 import { getBackend } from "@/lib/store";
 import { formatLocalDateTime } from "@/lib/scheduling/resolver";
 import type { SchedulingDisplayFacts } from "@/lib/reasoner/types";
+import { verifyIR } from "@/lib/reasoner/verify";
 import { compile, SCRATCH_KEYS, type CompileOutcome } from "./compiler";
 
 /**
@@ -115,7 +116,14 @@ export async function handleCustomerMessage(
   const reasoner = getReasoner();
   const ctx: ToolContext = { graph, conversationId, customerId };
 
-  const ir = await reasoner.understand({ graph, state, customerMessage: message });
+  const rawIr = await reasoner.understand({ graph, state, customerMessage: message });
+  // The model understands fuzzy language; verifyIR() is the ONE place
+  // BARRY cross-checks high-confidence, directly-verifiable business
+  // semantics (offer references, explicit weekday/relative-day tokens)
+  // against the raw customer text and overrides the Reasoner when its
+  // IR contradicts something the customer plainly said. Applied
+  // uniformly regardless of which Reasoner produced the IR.
+  const { verified: ir, verification } = verifyIR(graph, message, rawIr);
   const outcome = compile(graph, state, ir);
 
   state.detectedIntent = ir.intent;
@@ -185,6 +193,7 @@ export async function handleCustomerMessage(
       schedulingWindow: ir.constraints.schedulingWindow,
     },
     retrieved: { offerIds, knowledgeIds },
+    verification,
     compiled: outcome.debug,
     goal: outcome.kind === "action" ? outcome.goal : ir.goal,
     selectedAction: outcome.kind === "action" ? outcome.action : null,

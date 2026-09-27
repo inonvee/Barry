@@ -1,6 +1,7 @@
 import type { PolicyDecision } from "@/lib/policy";
 import type { SchedulingConstraint, LocalDisplay } from "@/lib/scheduling/resolver";
 import type { CompileDebugInfo } from "@/lib/reasoner/ir";
+import type { IRVerification } from "@/lib/reasoner/verify";
 
 export type ConversationStage =
   | "discovery"
@@ -35,6 +36,8 @@ export type TurnLog = {
     offerIds: string[];
     knowledgeIds: string[];
   };
+  /** What the Reasoner (LLM or mock) originally proposed vs. what verifyIR() deterministically overrode, if anything — see `understood` above for the post-verification, trusted values. */
+  verification?: IRVerification;
   /** What the deterministic Action Compiler actually resolved this turn — ground truth for debugging IR/compiler mismatches. */
   compiled?: CompileDebugInfo;
   goal?: string;
