@@ -20,6 +20,10 @@ export type BookingRecord = {
   partySize: number;
   status: "confirmed" | "cancelled";
   createdAt: string;
+  provider?: "memory" | "google-calendar";
+  providerEventId?: string;
+  idempotencyKey?: string;
+  verifiedAt?: string;
 };
 
 export type PaymentRequestRecord = {

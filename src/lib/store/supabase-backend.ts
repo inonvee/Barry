@@ -24,6 +24,10 @@ function bookingFromRow(row: Record<string, unknown>): BookingRecord {
     partySize: row.party_size as number,
     status: row.status as BookingRecord["status"],
     createdAt: row.created_at as string,
+    provider: row.provider as BookingRecord["provider"],
+    providerEventId: row.provider_event_id as string | undefined,
+    idempotencyKey: row.idempotency_key as string | undefined,
+    verifiedAt: row.verified_at as string | undefined,
   };
 }
 

@@ -155,7 +155,7 @@ describe("Response grounding: never exposes internal implementation details", ()
     const second = await callTool(
       "createBooking",
       { offerId: "offer-couples-massage", resourceId: "therapist-1", start: "2031-01-01T09:00:00.000Z", end: "2031-01-01T10:00:00.000Z", partySize: 1 },
-      ctx
+      { graph, conversationId: "grounding-ctx-3b", customerId: "grounding-cust-3b" }
     );
     expect(second.ok).toBe(false);
     if (!second.ok) expect(second.error).toBe("Slot no longer available");

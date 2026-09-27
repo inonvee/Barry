@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { defineTool } from "./types";
-import { findOffer, resourcesByType, inventoryFor } from "@/lib/business-graph";
+import { findOffer, inventoryFor } from "@/lib/business-graph";
 import { getBackend } from "@/lib/store";
+import { bookingIdempotencyKey, checkSchedulingAvailability, createSchedulingBooking } from "@/lib/scheduling/capability";
 
 /**
  * Simulated tool adapters. Each mirrors what a real integration (Google
@@ -23,31 +24,7 @@ export const checkAvailability = defineTool({
     slots: z.array(z.object({ resourceId: z.string(), start: z.string(), end: z.string() })),
   }),
   async execute(input, ctx) {
-    const offer = findOffer(ctx.graph, input.offerId);
-    if (!offer) return { slots: [] };
-
-    const resourceIds = new Set(
-      offer.requiredResourceTypes.flatMap((type) =>
-        resourcesByType(ctx.graph, type).map((r) => r.id)
-      )
-    );
-
-    const backend = getBackend();
-    const bookings = await backend.listBookings(ctx.graph.business.id);
-    const bookedKeys = new Set(bookings.map((b) => `${b.resourceId}:${b.start}`));
-
-    const latest = input.latest ? new Date(input.latest) : undefined;
-    const earliest = new Date(input.earliest);
-
-    const slots = ctx.graph.availability.filter((slot) => {
-      if (resourceIds.size > 0 && !resourceIds.has(slot.resourceId)) return false;
-      const start = new Date(slot.start);
-      if (start < earliest) return false;
-      if (latest && start > latest) return false;
-      return !bookedKeys.has(`${slot.resourceId}:${slot.start}`);
-    });
-
-    return { slots: slots.map(({ resourceId, start, end }) => ({ resourceId, start, end })) };
+    return checkSchedulingAvailability({ graph: ctx.graph, ...input });
   },
 });
 
@@ -64,27 +41,30 @@ export const createBooking = defineTool({
   outputSchema: z.object({
     bookingId: z.string(),
     status: z.literal("confirmed"),
+    provider: z.string().optional(),
+    providerEventId: z.string().optional(),
+    verifiedAt: z.string().optional(),
   }),
   async execute(input, ctx) {
-    const backend = getBackend();
-    const bookings = await backend.listBookings(ctx.graph.business.id);
-    const conflict = bookings.some(
-      (b) => b.resourceId === input.resourceId && b.start === input.start
-    );
-    if (conflict) {
-      throw new Error("Slot no longer available");
-    }
-    const booking = await backend.createBooking({
-      businessId: ctx.graph.business.id,
-      offerId: input.offerId,
-      resourceId: input.resourceId,
-      start: input.start,
-      end: input.end,
+    const booking = await createSchedulingBooking({
+      graph: ctx.graph,
+      ...input,
       customerId: ctx.customerId,
       conversationId: ctx.conversationId,
-      partySize: input.partySize,
+      idempotencyKey: bookingIdempotencyKey({
+        businessId: ctx.graph.business.id,
+        ...input,
+        customerId: ctx.customerId,
+        conversationId: ctx.conversationId,
+      }),
     });
-    return { bookingId: booking.id, status: "confirmed" as const };
+    return {
+      bookingId: booking.bookingId,
+      status: booking.status,
+      provider: booking.provider,
+      providerEventId: booking.providerEventId,
+      verifiedAt: booking.verifiedAt,
+    };
   },
 });
 
