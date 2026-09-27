@@ -61,6 +61,13 @@ const NUMBER_WORDS: Record<string, number> = {
  * suffix ("הבא") rather than a prefix, which the matcher below doesn't
  * attempt to parse.
  */
+// Hebrew possessive forms already encode "my" in the word itself (unlike
+// English "wife", which needs an explicit "my"/"our" prefix to be
+// unambiguous) — so these are checked as whole-token matches on their
+// own, no surrounding "my"-equivalent required. Includes a common
+// spelling variant (אשתי/אישתי, both mean "my wife").
+const HEBREW_PARTNER_WORDS = ["אשתי", "אישתי", "בעלי", "בן הזוג", "בת הזוג"];
+
 const HEBREW_WEEKDAY_TOKENS: { weekday: number; forms: string[] }[] = [
   { weekday: 0, forms: ["יום ראשון", "ראשון"] },
   { weekday: 1, forms: ["יום שני", "שני"] },
@@ -269,7 +276,10 @@ function parseTimeToken(text: string): { hour: number; minute: number } | undefi
 
   // Bare number: "around 1", "at 3" — assume afternoon for small hours,
   // since that's the common case for a same-day/near-term booking request.
-  const bareNumber = text.match(/\b(?:at|around|for)\s+(\d{1,2})\b/);
+  // Deliberately excludes "for" as a time preposition — "for 2"/"for two"
+  // overwhelmingly means PARTY SIZE in a booking context ("table for
+  // two"), not a time; see the party-size detection in extractEntities().
+  const bareNumber = text.match(/\b(?:at|around)\s+(\d{1,2})\b/);
   if (bareNumber) {
     let hour = parseInt(bareNumber[1], 10);
     if (hour >= 1 && hour <= 7) hour += 12;
@@ -278,7 +288,7 @@ function parseTimeToken(text: string): { hour: number; minute: number } | undefi
 
   // Word numbers: "around one", "at three"
   const wordNumberMatch = text.match(
-    /\b(?:at|around|for)\s+(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b/
+    /\b(?:at|around)\s+(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b/
   );
   if (wordNumberMatch) {
     let hour = NUMBER_WORDS[wordNumberMatch[1]];
@@ -367,10 +377,18 @@ export function extractEntities(message: string): ExtractedEntities {
 
   let partySize = 1;
   const explicitCount = text.match(/(\d+)\s*(people|person|guests?|pax)/);
+  const forDigit = text.match(/\bfor\s+(\d+)\b/);
+  const forWord = text.match(/\bfor\s+(one|two|three|four|five|six|seven|eight|nine|ten)\b/);
   if (explicitCount) {
     partySize = parseInt(explicitCount[1], 10);
   } else if (/\b(my|our)\s+(girlfriend|boyfriend|wife|husband|partner|friend|spouse)\b/.test(text)) {
     partySize = 2;
+  } else if (HEBREW_PARTNER_WORDS.some((w) => matchHebrewToken(text, w) !== undefined)) {
+    partySize = 2;
+  } else if (forDigit) {
+    partySize = parseInt(forDigit[1], 10);
+  } else if (forWord) {
+    partySize = NUMBER_WORDS[forWord[1]];
   }
 
   const schedulingConstraint = extractExplicitSchedulingConstraint(message);
