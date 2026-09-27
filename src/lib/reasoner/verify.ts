@@ -1,6 +1,12 @@
 import type { BusinessGraph } from "@/lib/business-graph";
 import type { DateSpec, SchedulingConstraint } from "@/lib/scheduling/resolver";
-import { findOffersByExplicitNameReference, extractExplicitSchedulingConstraint } from "./entities";
+import {
+  findOffersByExplicitNameReference,
+  extractExplicitSchedulingConstraint,
+  extractAnnouncedName,
+  extractExplicitPhone,
+  extractExplicitEmail,
+} from "./entities";
 import type { BarryIR } from "./ir";
 
 /**
@@ -24,8 +30,10 @@ export type IRVerification = {
   llmSelectedOfferId?: string;
   llmOfferCandidateIds?: string[];
   llmSchedulingWindow?: SchedulingConstraint;
+  llmCustomerInfo?: Record<string, string>;
   offerOverridden: boolean;
   schedulingOverridden: boolean;
+  customerInfoOverridden: boolean;
 };
 
 function dateSpecsMatch(a: DateSpec | undefined, b: DateSpec): boolean {
@@ -45,8 +53,10 @@ export function verifyIR(graph: BusinessGraph, customerMessage: string, ir: Barr
     llmSelectedOfferId: ir.selectedOfferId,
     llmOfferCandidateIds: ir.offerCandidateIds,
     llmSchedulingWindow: ir.constraints.schedulingWindow,
+    llmCustomerInfo: ir.customerInfo,
     offerOverridden: false,
     schedulingOverridden: false,
+    customerInfoOverridden: false,
   };
 
   // --- Offer reference verification ---
@@ -87,11 +97,47 @@ export function verifyIR(graph: BusinessGraph, customerMessage: string, ir: Barr
     schedulingWindow = { date: explicitWindow.date, time: schedulingWindow?.time ?? explicitWindow.time };
   }
 
+  // --- Customer identity verification ---
+  // The live bug this guards against: a Reasoner (LLM) correctly
+  // understood "My name is Inon and my phone number is 057484848" (it
+  // showed up in `entities`) but never populated `customerInfo` — the
+  // ONLY field the compiler actually merges into persistent state — so
+  // BARRY kept asking for name/phone it had already been given. Rather
+  // than trust the Reasoner to always remember to fill customerInfo,
+  // BARRY independently extracts the same small set of high-confidence,
+  // structurally unambiguous identity signals from the raw text — an
+  // explicit self-announcement ("my name is X", "call me X"), an
+  // explicit phone number, an explicit email address — and injects them
+  // whenever they're absent or disagree with what the Reasoner reported.
+  // Fuzzy/contextual identity inference (a bare "Inon" replying to "what's
+  // your name?") is NOT extracted here — that's still the Reasoner's job;
+  // this only acts on text that is unambiguous on its own.
+  let customerInfo = ir.customerInfo;
+
+  const explicitName = extractAnnouncedName(customerMessage);
+  if (explicitName && customerInfo.name !== explicitName) {
+    customerInfo = { ...customerInfo, name: explicitName };
+    verification.customerInfoOverridden = true;
+  }
+
+  const explicitPhone = extractExplicitPhone(customerMessage);
+  if (explicitPhone && customerInfo.phone !== explicitPhone) {
+    customerInfo = { ...customerInfo, phone: explicitPhone };
+    verification.customerInfoOverridden = true;
+  }
+
+  const explicitEmail = extractExplicitEmail(customerMessage);
+  if (explicitEmail && customerInfo.email !== explicitEmail) {
+    customerInfo = { ...customerInfo, email: explicitEmail };
+    verification.customerInfoOverridden = true;
+  }
+
   const verified: BarryIR = {
     ...ir,
     selectedOfferId,
     offerCandidateIds,
     constraints: { ...ir.constraints, schedulingWindow },
+    customerInfo,
   };
 
   return { verified, verification };

@@ -10,14 +10,14 @@ import { buildSpaGraph } from "@/lib/fixtures/spa";
  * had known_fields = { name: "null", phone: "null" } even though the SAME
  * turn's `understood.entities` correctly held { name: "Inon",
  * phone: "0558832177" }. A strict-JSON-schema Reasoner sometimes has to
- * supply *some* string for a knownFieldsUpdate pair even when it means
+ * supply *some* string for a customerInfo pair even when it means
  * "nothing new here" — the schema can't express omission — and can
  * literalize a sentinel like "null" instead. This is the ONE place that
  * class of value is rejected before it ever reaches persistent state,
  * regardless of which reasoner (or which field name) produced it.
  */
 function emptyIR(overrides: Partial<BarryIR> = {}): BarryIR {
-  return { intent: "test", entities: {}, constraints: {}, knownFieldsUpdate: {}, ...overrides };
+  return { intent: "test", entities: {}, constraints: {}, customerInfo: {}, ...overrides };
 }
 
 describe("normalizeCustomerFieldValue", () => {
@@ -44,12 +44,12 @@ describe("normalizeCustomerFieldValue", () => {
 });
 
 describe("compiler-level: sentinel values never persist, real values always do", () => {
-  it("a real name/phone from knownFieldsUpdate persists exactly", () => {
+  it("a real name/phone from customerInfo persists exactly", () => {
     const graph = buildSpaGraph();
     const state = createInitialConversationState("sent1", graph.business.id, "cust1");
     state.selectedOfferId = "offer-couples-massage";
 
-    compile(graph, state, emptyIR({ knownFieldsUpdate: { name: "Inon", phone: "0558832177" } }));
+    compile(graph, state, emptyIR({ customerInfo: { name: "Inon", phone: "0558832177" } }));
 
     expect(state.knownFields.name).toBe("Inon");
     expect(state.knownFields.phone).toBe("0558832177");
@@ -60,7 +60,7 @@ describe("compiler-level: sentinel values never persist, real values always do",
     const state = createInitialConversationState("sent2", graph.business.id, "cust2");
     state.selectedOfferId = "offer-couples-massage";
 
-    const outcome = compile(graph, state, emptyIR({ knownFieldsUpdate: { name: "null", phone: "null" } }));
+    const outcome = compile(graph, state, emptyIR({ customerInfo: { name: "null", phone: "null" } }));
 
     expect(state.knownFields.name).toBeUndefined();
     expect(state.knownFields.phone).toBeUndefined();
@@ -75,7 +75,7 @@ describe("compiler-level: sentinel values never persist, real values always do",
     state.selectedOfferId = "offer-couples-massage";
     state.knownFields.name = "Jordan Lee";
 
-    compile(graph, state, emptyIR({ knownFieldsUpdate: { name: "" } }));
+    compile(graph, state, emptyIR({ customerInfo: { name: "" } }));
 
     expect(state.knownFields.name).toBe("Jordan Lee");
   });
@@ -86,7 +86,7 @@ describe("compiler-level: sentinel values never persist, real values always do",
     state.selectedOfferId = "offer-couples-massage";
     state.knownFields.phone = "555-111-2222";
 
-    compile(graph, state, emptyIR({ knownFieldsUpdate: { phone: "null" } }));
+    compile(graph, state, emptyIR({ customerInfo: { phone: "null" } }));
 
     expect(state.knownFields.phone).toBe("555-111-2222");
   });
@@ -97,12 +97,12 @@ describe("compiler-level: sentinel values never persist, real values always do",
     state.selectedOfferId = "offer-couples-massage";
     state.knownFields.phone = "555-111-2222";
 
-    compile(graph, state, emptyIR({ knownFieldsUpdate: { phone: "555-999-8888" } }));
+    compile(graph, state, emptyIR({ customerInfo: { phone: "555-999-8888" } }));
 
     expect(state.knownFields.phone).toBe("555-999-8888");
   });
 
-  it("CompileOutcome.debug.appliedKnownFieldsUpdate reflects exactly what was merged, post-filtering", () => {
+  it("CompileOutcome.debug.appliedCustomerInfo reflects exactly what was merged, post-filtering", () => {
     const graph = buildSpaGraph();
     const state = createInitialConversationState("sent6", graph.business.id, "cust6");
     state.selectedOfferId = "offer-couples-massage";
@@ -110,17 +110,17 @@ describe("compiler-level: sentinel values never persist, real values always do",
     const outcome = compile(
       graph,
       state,
-      emptyIR({ knownFieldsUpdate: { name: "Inon", phone: "null", email: "  " } })
+      emptyIR({ customerInfo: { name: "Inon", phone: "null", email: "  " } })
     );
 
-    expect(outcome.debug?.appliedKnownFieldsUpdate).toEqual({ name: "Inon" });
+    expect(outcome.debug?.appliedCustomerInfo).toEqual({ name: "Inon" });
   });
 
   it("arbitrary custom customer-info field names still work (normalization is value-only)", () => {
     const graph = buildSpaGraph();
     const state = createInitialConversationState("sent7", graph.business.id, "cust7");
 
-    compile(graph, state, emptyIR({ knownFieldsUpdate: { preferredTherapist: "Alex", allergyNotes: "none" } }));
+    compile(graph, state, emptyIR({ customerInfo: { preferredTherapist: "Alex", allergyNotes: "none" } }));
 
     expect(state.knownFields.preferredTherapist).toBe("Alex");
     // "none" is a sentinel — rejected even for a made-up field name.

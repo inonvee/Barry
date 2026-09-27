@@ -189,7 +189,7 @@ export async function handleCustomerMessage(
     understood: {
       intent: ir.intent,
       entities: ir.entities,
-      knownFieldsUpdate: ir.knownFieldsUpdate,
+      customerInfo: ir.customerInfo,
       schedulingWindow: ir.constraints.schedulingWindow,
     },
     retrieved: { offerIds, knowledgeIds },

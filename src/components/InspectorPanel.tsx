@@ -80,44 +80,64 @@ export function InspectorPanel({ state }: { state: ConversationState | null }) {
                 </pre>
               </>
             )}
-            {lastTurn.understood.knownFieldsUpdate && Object.keys(lastTurn.understood.knownFieldsUpdate).length > 0 && (
+            {lastTurn.understood.customerInfo && Object.keys(lastTurn.understood.customerInfo).length > 0 && (
               <>
-                <p className="text-xs text-neutral-500 mt-2 mb-1">Proposed customer-info updates (raw, before sentinel-filtering)</p>
+                <p className="text-xs text-neutral-500 mt-2 mb-1">
+                  customerInfo proposed by Reasoner (the ONE authoritative channel — never `entities` above)
+                </p>
                 <pre className="text-xs bg-neutral-50 dark:bg-neutral-900 rounded-lg p-2 overflow-x-auto">
-                  {JSON.stringify(lastTurn.understood.knownFieldsUpdate, null, 2)}
+                  {JSON.stringify(lastTurn.understood.customerInfo, null, 2)}
                 </pre>
               </>
             )}
           </Section>
 
-          {lastTurn.verification && (lastTurn.verification.offerOverridden || lastTurn.verification.schedulingOverridden) && (
-            <Section title="⚠ Semantic verification overrode the Reasoner">
-              {lastTurn.verification.offerOverridden && (
-                <>
-                  <Kv
-                    k="LLM proposed"
-                    v={
-                      lastTurn.verification.llmSelectedOfferId ??
-                      (lastTurn.verification.llmOfferCandidateIds?.join(", ") || "—")
-                    }
-                  />
-                  <Kv k="BARRY trusted instead" v={state.selectedOfferId ?? "—"} />
-                </>
-              )}
-              {lastTurn.verification.schedulingOverridden && (
-                <>
-                  <p className="text-xs text-neutral-500 mt-2 mb-1">LLM-proposed scheduling IR</p>
-                  <pre className="text-xs bg-neutral-50 dark:bg-neutral-900 rounded-lg p-2 overflow-x-auto">
-                    {JSON.stringify(lastTurn.verification.llmSchedulingWindow ?? null, null, 2)}
-                  </pre>
-                  <p className="text-xs text-neutral-500 mt-2 mb-1">BARRY-verified scheduling IR (trusted)</p>
-                  <pre className="text-xs bg-neutral-50 dark:bg-neutral-900 rounded-lg p-2 overflow-x-auto">
-                    {JSON.stringify(lastTurn.understood.schedulingWindow ?? null, null, 2)}
-                  </pre>
-                </>
-              )}
-            </Section>
-          )}
+          {lastTurn.verification &&
+            (lastTurn.verification.offerOverridden ||
+              lastTurn.verification.schedulingOverridden ||
+              lastTurn.verification.customerInfoOverridden) && (
+              <Section title="⚠ Verification overrode the Reasoner">
+                {lastTurn.verification.offerOverridden && (
+                  <>
+                    <Kv
+                      k="LLM proposed offer"
+                      v={
+                        lastTurn.verification.llmSelectedOfferId ??
+                        (lastTurn.verification.llmOfferCandidateIds?.join(", ") || "—")
+                      }
+                    />
+                    <Kv k="BARRY trusted instead" v={state.selectedOfferId ?? "—"} />
+                  </>
+                )}
+                {lastTurn.verification.schedulingOverridden && (
+                  <>
+                    <p className="text-xs text-neutral-500 mt-2 mb-1">LLM-proposed scheduling IR</p>
+                    <pre className="text-xs bg-neutral-50 dark:bg-neutral-900 rounded-lg p-2 overflow-x-auto">
+                      {JSON.stringify(lastTurn.verification.llmSchedulingWindow ?? null, null, 2)}
+                    </pre>
+                    <p className="text-xs text-neutral-500 mt-2 mb-1">BARRY-verified scheduling IR (trusted)</p>
+                    <pre className="text-xs bg-neutral-50 dark:bg-neutral-900 rounded-lg p-2 overflow-x-auto">
+                      {JSON.stringify(lastTurn.understood.schedulingWindow ?? null, null, 2)}
+                    </pre>
+                  </>
+                )}
+                {lastTurn.verification.customerInfoOverridden && (
+                  <>
+                    <p className="text-xs text-neutral-500 mt-2 mb-1">LLM-proposed customerInfo</p>
+                    <pre className="text-xs bg-neutral-50 dark:bg-neutral-900 rounded-lg p-2 overflow-x-auto">
+                      {JSON.stringify(lastTurn.verification.llmCustomerInfo ?? {}, null, 2)}
+                    </pre>
+                    <p className="text-xs text-neutral-500 mt-2 mb-1">
+                      BARRY-verified customerInfo (trusted — deterministic identity extraction may have added/corrected a
+                      field the LLM missed)
+                    </p>
+                    <pre className="text-xs bg-neutral-50 dark:bg-neutral-900 rounded-lg p-2 overflow-x-auto">
+                      {JSON.stringify(lastTurn.understood.customerInfo ?? {}, null, 2)}
+                    </pre>
+                  </>
+                )}
+              </Section>
+            )}
 
           {lastTurn.compiled && (
             <Section title="Compiler">
@@ -129,10 +149,12 @@ export function InspectorPanel({ state }: { state: ConversationState | null }) {
                   </pre>
                 </>
               )}
-              <p className="text-xs text-neutral-500 mt-2 mb-1">Actually applied customer-info updates (after sentinel-filtering)</p>
+              <p className="text-xs text-neutral-500 mt-2 mb-1">customerInfo actually applied to state (after sentinel-filtering)</p>
               <pre className="text-xs bg-neutral-50 dark:bg-neutral-900 rounded-lg p-2 overflow-x-auto">
-                {JSON.stringify(lastTurn.compiled.appliedKnownFieldsUpdate, null, 2)}
+                {JSON.stringify(lastTurn.compiled.appliedCustomerInfo, null, 2)}
               </pre>
+              <p className="text-xs text-neutral-500 mt-2 mb-1">Missing fields (computed AFTER applying customerInfo above)</p>
+              <p className="text-sm">{state.missingFields.length > 0 ? state.missingFields.join(", ") : "none"}</p>
             </Section>
           )}
 

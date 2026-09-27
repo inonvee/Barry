@@ -61,13 +61,30 @@ export type ExtractedEntities = {
   name?: string;
 };
 
-const NAME_ANNOUNCEMENT_MARKERS = [/\bmy name is\b/i, /\bmy name'?s\b/i, /\bcall me\b/i, /\bthis is\b/i];
+// Deliberately does NOT include a bare "this is" marker — "this is
+// regarding my appointment" would capture "regarding" as a name. Every
+// marker here is specific enough that what follows is almost always
+// actually a name.
+const NAME_ANNOUNCEMENT_MARKERS = [/\bmy name is\b/i, /\bmy name'?s\b/i, /\bcall me\b/i];
 // Words that end a captured name — stops "my name is Inon AND my phone
-// number is..." from swallowing the rest of the sentence into the name.
-const NAME_STOP_WORDS = new Set(["and", "my", "phone", "email", "number", "is", "here"]);
+// number is..." from swallowing the rest of the sentence into the name,
+// and stops non-name replies to "call me" ("call me back", "call me at
+// 5pm") from being captured at all.
+const NAME_STOP_WORDS = new Set([
+  "and", "my", "phone", "email", "number", "is", "here", "back", "now",
+  "later", "tomorrow", "today", "tonight", "soon", "when", "then",
+  "please", "at", "on", "in", "up", "over", "asap",
+]);
 
-/** Extract a self-announced name ("my name is Inon", "call me Jordan Lee") straight from the ORIGINAL (not lowercased) message, so capitalization/punctuation survive. */
-function extractAnnouncedName(message: string): string | undefined {
+/**
+ * Extract a self-announced name ("my name is Inon", "call me Jordan
+ * Lee") straight from the ORIGINAL (not lowercased) message, so
+ * capitalization survives — and is REQUIRED: a real name is written
+ * capitalized, so this also rejects a stray lowercase word ("call me
+ * tomorrow" already stops at the NAME_STOP_WORDS check, but this catches
+ * anything that slips past it, like "call me anytime").
+ */
+export function extractAnnouncedName(message: string): string | undefined {
   for (const marker of NAME_ANNOUNCEMENT_MARKERS) {
     const match = message.match(marker);
     if (!match || match.index === undefined) continue;
@@ -80,9 +97,19 @@ function extractAnnouncedName(message: string): string | undefined {
       words.push(cleaned);
       if (words.length === 3) break;
     }
-    if (words.length > 0) return words.join(" ");
+    if (words.length > 0 && /^[A-Z]/.test(words[0])) return words.join(" ");
   }
   return undefined;
+}
+
+/** Extract an explicit phone number — a mostly-digit token at least 8 characters long. Unambiguous by construction: the regex only matches contiguous digit/space/hyphen runs, so it can't accidentally span unrelated words. */
+export function extractExplicitPhone(message: string): string | undefined {
+  return message.match(/\+?\d[\d\s-]{6,}\d/)?.[0];
+}
+
+/** Extract an explicit email address — unambiguous by construction (requires an "@" and a domain). */
+export function extractExplicitEmail(message: string): string | undefined {
+  return message.match(/[\w.+-]+@[\w-]+\.[\w.-]+/)?.[0];
 }
 
 function parseTimeToken(text: string): { hour: number; minute: number } | undefined {
@@ -205,19 +232,15 @@ export function extractEntities(message: string): ExtractedEntities {
     ? parseInt(discountMatch[1] ?? discountMatch[3], 10)
     : undefined;
 
-  const emailMatch = message.match(/[\w.+-]+@[\w-]+\.[\w.-]+/);
-  const phoneMatch = message.match(/\+?\d[\d\s-]{6,}\d/);
-  const name = extractAnnouncedName(message);
-
   return {
     partySize,
     schedulingConstraint,
     accepted,
     paidConfirmed,
     discountPct,
-    email: emailMatch?.[0],
-    phone: phoneMatch?.[0],
-    name,
+    email: extractExplicitEmail(message),
+    phone: extractExplicitPhone(message),
+    name: extractAnnouncedName(message),
   };
 }
 

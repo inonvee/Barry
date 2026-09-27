@@ -75,8 +75,18 @@ no tools and cannot execute anything.
 
 Every field in the schema is always present in your response. Use null for
 "not applicable" and an empty array for "none" — never omit a field.
-"entities" and "knownFieldsUpdate" are arrays of { key, value } pairs, not
+"entities" and "customerInfo" are arrays of { key, value } pairs, not
 objects, because the schema can't express an open-ended dictionary.
+
+"entities" vs "customerInfo" — these are NOT duplicates and must never
+both hold the same fact: "entities" is a free-form, debug-only bag for
+whatever semantic details you noticed (never read by anything that
+changes what BARRY does). "customerInfo" is the ONE AND ONLY channel
+for customer-provided identity/contact fields (name, phone, email, or
+any other field the business needs from the customer) — this is what
+actually gets remembered. If the customer gives you their name or phone
+number, you MUST put it in "customerInfo", not just "entities". Report
+each fact exactly once, in "customerInfo".
 
 SCHEDULING — read carefully: you describe what the customer said, you
 never compute a timestamp. "constraints.schedulingWindow" only has these
@@ -94,8 +104,8 @@ ISO datetime string anywhere.
 
 Rules you must never break:
 - Never invent prices, availability, inventory, policies, business hours, or payment status — you don't decide those; you only extract what the customer said.
-- knownFieldsUpdate must contain ONLY fields the customer's message actually gave a real value for THIS turn. If they didn't mention a field, LEAVE IT OUT of the array entirely — never include a pair like {key:"name", value:"null"} (or "undefined"/"none"/"N/A"/empty string) as a placeholder for "nothing to report." An omitted key means no update; it does NOT mean "clear the existing value."
-- Accumulate information across turns: a day/time/party-size/service mentioned earlier (visible in knownFields/recentMessages) is still true unless the customer changed it — repeat it in constraints/knownFieldsUpdate so it isn't lost.
+- customerInfo must contain ONLY fields the customer's message actually gave a real value for THIS turn. If they didn't mention a field, LEAVE IT OUT of the array entirely — never include a pair like {key:"name", value:"null"} (or "undefined"/"none"/"N/A"/empty string) as a placeholder for "nothing to report." An omitted key means no update; it does NOT mean "clear the existing value."
+- Accumulate information across turns: a day/time/party-size/service mentioned earlier (visible in knownFields/recentMessages) is still true unless the customer changed it — repeat it in constraints so it isn't lost. (customerInfo itself only ever needs a NEW value this turn; already-known customer fields are already in the knownFields context and don't need repeating.)
 - If multiple offers plausibly match, list them in offerCandidateIds and leave selectedOfferId null — do not guess.
 - selectedOfferId/offerCandidateIds are ONLY for the initial choice of offer. If "selectedOfferId" (given to you in context) is already set and the customer's message is an EXPLICIT change of mind ("actually, X instead", "change it to X", "switch to X") naming a different, real offer, put that offer's id in offerChangeRequested instead — never in selectedOfferId. Leave offerChangeRequested null for anything that isn't an explicit, confident change request; an unrelated message must never change the offer.
 - requestedCapability is advisory only: "ask_price" when they ask how much something costs, "ask_duration" when they ask how long it takes, "ask_deposit" when they ask about a deposit or upfront payment requirement. Use null if unsure.
@@ -123,6 +133,13 @@ export const COMPOSE_SYSTEM_PROMPT =
   "If `scheduling` is present, any date/time you mention MUST use its localDate/localTime " +
   "strings verbatim — never compute, convert, or reinterpret a time yourself from any raw " +
   "ISO timestamp elsewhere in this JSON (that is always UTC, not the customer's local time). " +
+  "When outcome.kind is \"needs_info\", ask for EXACTLY the fields listed in " +
+  "outcome.missingFields — one per field (\"your name\", \"your phone number\"), never more, " +
+  "never pluralized or duplicated because of partySize or any other constraint. Only ask " +
+  "for a field the Business Graph actually lists as missing; never invent an additional " +
+  "requirement (e.g. \"names and phone numbers\" when missingFields is just [\"name\", " +
+  "\"phone\"]) — BARRY collects ONE customer's contact info per booking unless the Business " +
+  "Graph's own required fields say otherwise. " +
   "Keep it to 1-3 sentences, no headers, no JSON.";
 
 function kvArrayToRecord(pairs: KeyValuePair[]): Record<string, string> {
@@ -174,7 +191,7 @@ export function sanitizeIR(graph: BusinessGraph, raw: LlmIR): BarryIR {
       discountPct: raw.constraints.discountPct ?? undefined,
       slotAccepted: raw.constraints.slotAccepted ?? undefined,
     },
-    knownFieldsUpdate: kvArrayToRecord(raw.knownFieldsUpdate),
+    customerInfo: kvArrayToRecord(raw.customerInfo),
     requestedCapability: raw.requestedCapability ?? undefined,
     goal: raw.goal ?? undefined,
   };
@@ -209,7 +226,7 @@ export function parseIRResponse(graph: BusinessGraph, raw: string): ParseIRResul
 }
 
 function emptyIR(intent: string): BarryIR {
-  return { intent, entities: {}, constraints: {}, knownFieldsUpdate: {} };
+  return { intent, entities: {}, constraints: {}, customerInfo: {} };
 }
 
 export class OpenAIReasoner implements Reasoner {

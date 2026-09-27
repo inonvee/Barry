@@ -36,14 +36,14 @@ export class MockReasoner implements Reasoner {
     if (entities.discountPct) constraints.discountPct = entities.discountPct;
     if (entities.accepted) constraints.slotAccepted = true;
 
-    const knownFieldsUpdate: Record<string, string> = {};
-    if (entities.email) knownFieldsUpdate.email = entities.email;
-    if (entities.phone) knownFieldsUpdate.phone = entities.phone;
+    const customerInfo: Record<string, string> = {};
+    if (entities.email) customerInfo.email = entities.email;
+    if (entities.phone) customerInfo.phone = entities.phone;
     if (entities.name) {
       // An explicit self-announcement ("my name is X", "call me X") is
       // unambiguous — capture it regardless of what else is in the same
       // message (e.g. "My name is Inon and my phone number is ...").
-      knownFieldsUpdate.name = entities.name;
+      customerInfo.name = entities.name;
     } else if (
       // Otherwise, only treat the raw message as "the name" when BARRY's
       // previous turn was actually asking for it — otherwise short
@@ -51,15 +51,15 @@ export class MockReasoner implements Reasoner {
       // "How much is it?") get misread as a name.
       state.missingFields[0] === "name" &&
       !state.knownFields.name &&
-      !knownFieldsUpdate.email &&
-      !knownFieldsUpdate.phone &&
+      !customerInfo.email &&
+      !customerInfo.phone &&
       !entities.accepted &&
       !entities.schedulingConstraint &&
       !requestedCapability &&
       !customerMessage.includes("?") &&
       customerMessage.trim().split(/\s+/).length <= 4
     ) {
-      knownFieldsUpdate.name = customerMessage.trim();
+      customerInfo.name = customerMessage.trim();
     }
 
     let selectedOfferId: string | undefined;
@@ -87,7 +87,7 @@ export class MockReasoner implements Reasoner {
       offerChangeRequested,
       entities: entities as Record<string, unknown>,
       constraints,
-      knownFieldsUpdate,
+      customerInfo,
       requestedCapability,
     };
   }

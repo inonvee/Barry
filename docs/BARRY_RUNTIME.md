@@ -39,7 +39,7 @@ type BarryIR = {
     discountPct?: number;
     slotAccepted?: boolean;
   };
-  knownFieldsUpdate: Record<string, string>; // name/email/phone-type answers
+  customerInfo: Record<string, string>; // THE one authoritative channel for name/email/phone-type answers
   requestedCapability?: string;   // advisory only, see below
   goal?: Goal;
 };
@@ -57,7 +57,7 @@ question straight from `offer.price` without needing a tool at all.
 function compile(graph: BusinessGraph, state: ConversationState, ir: BarryIR): CompileOutcome
 ```
 
-Pure and synchronous. It merges `ir.constraints` / `knownFieldsUpdate`
+Pure and synchronous. It merges `ir.constraints` / `customerInfo`
 into `state.knownFields` using the same `__mentioned*` scratch-key
 convention Phase 1 already used (no schema change), resolves the offer
 (sticky — once chosen for a conversation, it's never silently swapped),

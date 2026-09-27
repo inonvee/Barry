@@ -57,10 +57,29 @@ export type BarryIR = {
    * silently reinterpreting an unrelated later message as a new choice.
    */
   offerChangeRequested?: string;
+  /**
+   * Free-form, debug-only semantic entities (Inspector display) — NEVER
+   * a channel for persistent customer identity. `customerInfo` below is
+   * the ONE authoritative representation of customer-provided fields
+   * (name/email/phone/...); the compiler never reads `entities` at all.
+   * A Reasoner must not treat these two fields as duplicates of the same
+   * fact — that's exactly the live bug this split guards against: a
+   * Reasoner correctly describing a fact in `entities` while omitting it
+   * from `customerInfo` (the field that actually reaches persistent
+   * state) must never again lose that fact.
+   */
   entities: Record<string, unknown>;
   constraints: BarryIRConstraints;
-  /** Customer-info fields (name/email/phone/...) extracted this turn. */
-  knownFieldsUpdate: Record<string, string>;
+  /**
+   * THE single authoritative representation of customer-provided
+   * identity/contact fields (name, phone, email, or any other field a
+   * Business Graph's `requiredCustomerInfo` names) extracted THIS turn.
+   * This is the only field the compiler merges into persistent
+   * `ConversationState.knownFields` — see `normalizeCustomerFieldValue`
+   * in `customer-fields.ts` for the trust boundary every value passes
+   * through first.
+   */
+  customerInfo: Record<string, string>;
   requestedCapability?: RequestedCapability;
   goal?: Goal;
 };
@@ -98,7 +117,7 @@ export type OfferFact =
  * spelunking.
  */
 export type CompileDebugInfo = {
-  appliedKnownFieldsUpdate: Record<string, string>;
+  appliedCustomerInfo: Record<string, string>;
   resolvedSchedulingWindow?: { earliest: string; latest: string };
 };
 

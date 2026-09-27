@@ -16,7 +16,7 @@ import { z } from "zod";
  *   - free-form dictionaries (`{ type: "object" }` with unknown keys) are
  *     NOT expressible at all
  *
- * That last point is why `entities` and `knownFieldsUpdate` are arrays of
+ * That last point is why `entities` and `customerInfo` are arrays of
  * `{ key, value }` pairs here instead of `Record<string, string>` — a real
  * key-value bag has no fixed shape, so strict mode can't represent it
  * directly. Every field below is therefore always present in the raw
@@ -63,7 +63,14 @@ export const LlmIRSchema = z.object({
     discountPct: z.number().nullable(),
     slotAccepted: z.boolean().nullable(),
   }),
-  knownFieldsUpdate: z.array(KeyValuePairSchema),
+  /**
+   * THE single authoritative channel for customer-provided identity/
+   * contact fields (name, phone, email, ...) this turn — never
+   * duplicated into `entities`, which is debug-only and never reaches
+   * persistent state. See sanitizeIR/verifyIR for how this becomes
+   * `BarryIR.customerInfo`.
+   */
+  customerInfo: z.array(KeyValuePairSchema),
   requestedCapability: z.string().nullable(),
   goal: z
     .enum(["completePurchase", "bookAppointment", "collectDeposit", "qualifyLead", "requestQuote"])
@@ -135,7 +142,7 @@ export function irJsonSchema() {
           },
           required: ["schedulingWindow", "partySize", "discountPct", "slotAccepted"],
         },
-        knownFieldsUpdate: { type: "array", items: kvSchema() },
+        customerInfo: { type: "array", items: kvSchema() },
         requestedCapability: { type: ["string", "null"] },
         goal: {
           type: ["string", "null"],
@@ -149,7 +156,7 @@ export function irJsonSchema() {
         "offerChangeRequested",
         "entities",
         "constraints",
-        "knownFieldsUpdate",
+        "customerInfo",
         "requestedCapability",
         "goal",
       ],

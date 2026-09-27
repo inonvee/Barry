@@ -116,7 +116,7 @@ function resolveOfferId(graph: BusinessGraph, state: ConversationState, ir: Barr
  * uniformly at the one exit point, instead of touching every return.
  */
 export function compile(graph: BusinessGraph, state: ConversationState, ir: BarryIR): CompileOutcome {
-  const debug: CompileDebugInfo = { appliedKnownFieldsUpdate: {} };
+  const debug: CompileDebugInfo = { appliedCustomerInfo: {} };
   const outcome = compileCore(graph, state, ir, debug);
   return { ...outcome, debug };
 }
@@ -144,15 +144,16 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
   if (ir.constraints.slotAccepted) {
     scratchUpdate[SCRATCH_KEYS.slotAccepted] = "1";
   }
-  // `knownFieldsUpdate` is a free-form key/value bag (customer-info answers
-  // like name/email/phone) — a reasoner controls the KEY NAMES, not just
-  // the values. `__`-prefixed keys are the compiler's own scratch
-  // namespace (booking slots, payment/approval state, discount %, ...);
-  // never let untrusted IR set one directly, or a hallucinating/adversarial
-  // model could fabricate e.g. `{ key: "__paid", value: "1" }` and have it
-  // treated as a verified payment confirmation without the payment tool
-  // ever having run. Only the runtime (patchStateAfterTool, webhook
-  // handlers) may ever write a scratch key.
+  // `customerInfo` is THE single authoritative key/value bag for
+  // customer-provided identity fields (name/email/phone/...) — a
+  // reasoner controls the KEY NAMES, not just the values. `__`-prefixed
+  // keys are the compiler's own scratch namespace (booking slots,
+  // payment/approval state, discount %, ...); never let untrusted IR set
+  // one directly, or a hallucinating/adversarial model could fabricate
+  // e.g. `{ key: "__paid", value: "1" }` and have it treated as a
+  // verified payment confirmation without the payment tool ever having
+  // run. Only the runtime (patchStateAfterTool, webhook handlers) may
+  // ever write a scratch key.
   //
   // Live bug: a strict-JSON-schema Reasoner sometimes literalizes a
   // sentinel string ("null", "undefined", ...) in place of actually
@@ -160,15 +161,17 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
   // normalizeCustomerFieldValue() rejects those (and empty/whitespace
   // values) BEFORE they ever reach persistent state — an empty/sentinel
   // value must never overwrite a real one already on file. This is the
-  // ONE place ANY reasoner's customer-info values are trusted from.
-  const safeKnownFieldsUpdate: Record<string, string> = {};
-  for (const [key, rawValue] of Object.entries(ir.knownFieldsUpdate)) {
+  // ONE place ANY reasoner's customer-info values are trusted from, and
+  // it runs BEFORE missingCustomerInfo() below computes what's still
+  // missing — a value supplied this turn must count immediately.
+  const appliedCustomerInfo: Record<string, string> = {};
+  for (const [key, rawValue] of Object.entries(ir.customerInfo)) {
     if (key.startsWith("__")) continue;
     const value = normalizeCustomerFieldValue(rawValue);
-    if (value !== undefined) safeKnownFieldsUpdate[key] = value;
+    if (value !== undefined) appliedCustomerInfo[key] = value;
   }
-  debug.appliedKnownFieldsUpdate = safeKnownFieldsUpdate;
-  Object.assign(state.knownFields, scratchUpdate, safeKnownFieldsUpdate);
+  debug.appliedCustomerInfo = appliedCustomerInfo;
+  Object.assign(state.knownFields, scratchUpdate, appliedCustomerInfo);
   const known = state.knownFields;
 
   // Explicit change-of-mind ("actually, solo instead") is the ONE way the

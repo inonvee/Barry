@@ -16,7 +16,7 @@ function explicitAt(isoDate: string, hour: number, minute = 0) {
 }
 
 function emptyIR(overrides: Partial<BarryIR> = {}): BarryIR {
-  return { intent: "test", entities: {}, constraints: {}, knownFieldsUpdate: {}, ...overrides };
+  return { intent: "test", entities: {}, constraints: {}, customerInfo: {}, ...overrides };
 }
 
 describe("Action Compiler: never call a tool with incomplete input", () => {

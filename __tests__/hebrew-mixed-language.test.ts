@@ -74,7 +74,7 @@ describe("Hebrew / mixed-language smoke tests", () => {
     }
   });
 
-  it("compiler-level: a Hebrew value in knownFieldsUpdate never crashes compile() and is stored verbatim", () => {
+  it("compiler-level: a Hebrew value in customerInfo never crashes compile() and is stored verbatim", () => {
     const graph = buildSpaGraph();
     const state = createInitialConversationState("heb5", graph.business.id, "cust5");
     state.selectedOfferId = "offer-couples-massage";
@@ -82,7 +82,7 @@ describe("Hebrew / mixed-language smoke tests", () => {
       intent: "test",
       entities: {},
       constraints: {},
-      knownFieldsUpdate: { name: "שרה לוי", phone: "050-9876543" },
+      customerInfo: { name: "שרה לוי", phone: "050-9876543" },
     };
 
     const outcome = compile(graph, state, ir);
@@ -99,7 +99,7 @@ describe("Hebrew / mixed-language smoke tests", () => {
       selectedOfferId: "offer-couples-massage",
       entities: {},
       constraints: {},
-      knownFieldsUpdate: {},
+      customerInfo: {},
       requestedCapability: "כמה זה עולה",
     };
 

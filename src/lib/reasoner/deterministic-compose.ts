@@ -1,6 +1,27 @@
 import type { ComposeResponseInput } from "./types";
 
 /**
+ * Friendly singular labels for known customer-info field keys — a
+ * "needs_info" reply must ask for EXACTLY what `missingFields` names,
+ * one per real-world field, never invented or pluralized based on
+ * unrelated context (a live bug: partySize=2 made BARRY ask for "names
+ * and phone numbers" — plural, as if collecting two people's contact
+ * info — when only ONE customer's info was actually missing).
+ */
+const FIELD_LABELS: Record<string, string> = {
+  name: "name",
+  phone: "phone number",
+  email: "email address",
+};
+
+function formatMissingFieldsList(missingFields: string[]): string {
+  const labels = missingFields.map((f) => FIELD_LABELS[f] ?? f);
+  if (labels.length === 1) return labels[0];
+  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
+  return `${labels.slice(0, -1).join(", ")}, and ${labels[labels.length - 1]}`;
+}
+
+/**
  * Canned, deterministic phrasing for every CompileOutcome. This is
  * MockReasoner's entire composeResponse() — and also what OpenAIReasoner
  * falls back to if the LLM call for phrasing a reply fails, so a natural-
@@ -20,7 +41,7 @@ export function composeDeterministic(input: ComposeResponseInput): string {
     case "clarify_offer":
       return `Sure — is that for ${outcome.offerNames.join(" or ")}?`;
     case "needs_info":
-      return `Great choice — ${outcome.offerName}. Could you share your ${outcome.missingFields[0]}?`;
+      return `Great choice — ${outcome.offerName}. Could you share your ${formatMissingFieldsList(outcome.missingFields)}?`;
     case "ask_datetime":
       return `When would you like to come in for your ${outcome.offerName}?`;
     case "ask_slot_confirm":

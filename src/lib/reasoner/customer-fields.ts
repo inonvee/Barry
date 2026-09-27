@@ -1,19 +1,19 @@
 /**
  * Central contract for what counts as a REAL customer-info value in
- * `BarryIR.knownFieldsUpdate`. Live bug: a strict-JSON-schema Reasoner
- * (LLM or otherwise) sometimes has to supply *some* string for a
- * key/value pair even when it has nothing new to report — the schema has
- * no way to express "omit this pair" — and can literalize a sentinel
- * string like "null" instead of actually omitting the key. That sentinel
- * then persisted into ConversationState.knownFields verbatim, even
- * though the SAME turn's `entities` (display-only, never persisted)
- * correctly held the real value.
+ * `BarryIR.customerInfo`. Live bug: a strict-JSON-schema Reasoner (LLM or
+ * otherwise) sometimes has to supply *some* string for a key/value pair
+ * even when it has nothing new to report — the schema has no way to
+ * express "omit this pair" — and can literalize a sentinel string like
+ * "null" instead of actually omitting the key. That sentinel then
+ * persisted into ConversationState.knownFields verbatim, even though the
+ * SAME turn's `entities` (display-only, never persisted) correctly held
+ * the real value.
  *
- * This is the ONE place any reasoner's knownFieldsUpdate value is
- * normalized before it's ever allowed to touch persistent
- * ConversationState — regardless of which reasoner produced it, and
- * regardless of the field name (arbitrary custom customer-info fields
- * stay supported; this only ever inspects the VALUE, never the key).
+ * This is the ONE place any reasoner's customerInfo value is normalized
+ * before it's ever allowed to touch persistent ConversationState —
+ * regardless of which reasoner produced it, and regardless of the field
+ * name (arbitrary custom customer-info fields stay supported; this only
+ * ever inspects the VALUE, never the key).
  */
 const SENTINEL_VALUES = new Set([
   "null",

@@ -16,7 +16,7 @@ import { buildSpaGraph } from "@/lib/fixtures/spa";
  * resolveSchedulingWindow()'s job.
  */
 function emptyIR(overrides: Partial<BarryIR> = {}): BarryIR {
-  return { intent: "test", entities: {}, constraints: {}, knownFieldsUpdate: {}, ...overrides };
+  return { intent: "test", entities: {}, constraints: {}, customerInfo: {}, ...overrides };
 }
 
 describe("verifyIR: offer reference verification", () => {

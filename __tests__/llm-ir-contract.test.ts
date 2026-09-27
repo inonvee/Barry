@@ -37,7 +37,7 @@ function validRawIR(overrides: Record<string, unknown> = {}) {
     offerChangeRequested: null,
     entities: [],
     constraints: { schedulingWindow: NULL_SCHEDULING_WINDOW, partySize: null, discountPct: null, slotAccepted: null },
-    knownFieldsUpdate: [],
+    customerInfo: [],
     requestedCapability: null,
     goal: null,
     ...overrides,
@@ -65,7 +65,7 @@ describe("LLM IR contract: parseIRResponse", () => {
           discountPct: null,
           slotAccepted: null,
         },
-        knownFieldsUpdate: [{ key: "name", value: "Jordan Lee" }],
+        customerInfo: [{ key: "name", value: "Jordan Lee" }],
       })
     );
 
@@ -76,7 +76,7 @@ describe("LLM IR contract: parseIRResponse", () => {
       expect(result.ir.constraints.schedulingWindow?.date).toEqual({ kind: "weekday", weekday: 0, qualifier: undefined });
       expect(result.ir.constraints.schedulingWindow?.time).toEqual({ kind: "explicitTime", hour: 14, minute: 0 });
       expect(result.ir.constraints.partySize).toBe(2);
-      expect(result.ir.knownFieldsUpdate.name).toBe("Jordan Lee");
+      expect(result.ir.customerInfo.name).toBe("Jordan Lee");
       expect(result.ir.entities.service).toBe("couples massage");
     }
   });
@@ -97,10 +97,10 @@ describe("LLM IR contract: parseIRResponse", () => {
     if (!result.ok) expect(result.kind).toBe("schema_validation_error");
   });
 
-  it("rejects a response where entities/knownFieldsUpdate are omitted entirely, not just empty", () => {
+  it("rejects a response where entities/customerInfo are omitted entirely, not just empty", () => {
     const graph = buildSpaGraph();
     const raw = validRawIR();
-    delete (raw as Record<string, unknown>).knownFieldsUpdate;
+    delete (raw as Record<string, unknown>).customerInfo;
     const result = parseIRResponse(graph, JSON.stringify(raw));
     expect(result.ok).toBe(false);
   });
@@ -180,7 +180,7 @@ describe("LLM IR contract: parseIRResponse", () => {
       expect(result.ir.selectedOfferId).toBeUndefined();
       expect(result.ir.constraints).toEqual({});
       expect(result.ir.entities).toEqual({});
-      expect(result.ir.knownFieldsUpdate).toEqual({});
+      expect(result.ir.customerInfo).toEqual({});
     }
   });
 });

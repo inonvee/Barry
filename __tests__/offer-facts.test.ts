@@ -13,7 +13,7 @@ import { buildGarageGraph } from "@/lib/fixtures/garage";
  * fact that's already sitting in the Business Graph."
  */
 function emptyIR(overrides: Partial<BarryIR> = {}): BarryIR {
-  return { intent: "test", entities: {}, constraints: {}, knownFieldsUpdate: {}, ...overrides };
+  return { intent: "test", entities: {}, constraints: {}, customerInfo: {}, ...overrides };
 }
 
 describe("Offer facts answerable before transaction-gate fields", () => {

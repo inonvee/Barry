@@ -27,8 +27,8 @@ export type TurnLog = {
   understood: {
     intent: string;
     entities: Record<string, unknown>;
-    /** Raw customer-info key/value pairs the Reasoner proposed THIS turn, before sentinel-filtering — see `compiled.appliedKnownFieldsUpdate` for what actually got merged. */
-    knownFieldsUpdate?: Record<string, string>;
+    /** THE single authoritative customer-info key/value bag the Reasoner proposed THIS turn (post-verifyIR, pre-sentinel-filtering) — see `compiled.appliedCustomerInfo` for what actually got merged into persistent state. */
+    customerInfo?: Record<string, string>;
     /** The SEMANTIC scheduling constraint the Reasoner described ("Sunday", "at 2pm") — never a resolved timestamp. */
     schedulingWindow?: SchedulingConstraint;
   };
