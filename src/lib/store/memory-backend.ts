@@ -94,7 +94,7 @@ export class MemoryBackend implements BarryBackend {
   async updatePaymentRequestStatus(
     paymentId: string,
     status: PaymentRequestRecord["status"],
-    metadata: { verifiedAt?: string; providerEventId?: string } = {}
+    metadata: { verifiedAt?: string; providerEventId?: string; providerTransactionId?: string } = {}
   ) {
     const pr = this.paymentRequests.get(paymentId);
     if (!pr) throw new Error(`Payment request ${paymentId} not found`);
@@ -102,6 +102,7 @@ export class MemoryBackend implements BarryBackend {
     pr.status = status;
     pr.verifiedAt = metadata.verifiedAt ?? pr.verifiedAt;
     pr.providerEventId = metadata.providerEventId ?? pr.providerEventId;
+    pr.providerTransactionId = metadata.providerTransactionId ?? pr.providerTransactionId;
     this.paymentRequests.set(paymentId, pr);
     return pr;
   }

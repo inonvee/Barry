@@ -21,10 +21,8 @@ describe("InspectorPanel debug-layer labels", () => {
       },
       retrieved: { offerIds: [], knowledgeIds: [] },
       verification: {
-        llmCustomerInfo: { name: "זה" },
-        offerOverridden: false,
-        schedulingOverridden: false,
-        customerInfoOverridden: true,
+        llmCustomerInfo: { name: "ינון" },
+        rejected: [{ claim: "customerInfo.phone", value: "0501234567", reason: "no evidence in the customer's message" }],
       },
       compiled: {
         appliedCustomerInfo: { name: "ינון" },
@@ -41,5 +39,7 @@ describe("InspectorPanel debug-layer labels", () => {
     expect(html).toContain("BARRY verified IR");
     expect(html).toContain("CustomerInfo actually applied to persistent state");
     expect(html).not.toContain("customerInfo proposed by Reasoner");
+    expect(html).toContain("Grounding rejected unsupported claims");
+    expect(html).toContain("customerInfo.phone");
   });
 });

@@ -1,179 +1,106 @@
 import { describe, expect, it } from "vitest";
 import { verifyIR } from "@/lib/reasoner/verify";
+import { MockReasoner } from "@/lib/reasoner/mock-reasoner";
 import { handleCustomerMessage } from "@/lib/runtime";
 import type { BarryIR } from "@/lib/reasoner/ir";
 import { buildSpaGraph } from "@/lib/fixtures/spa";
+import { createInitialConversationState } from "@/lib/state";
 
 /**
- * SEMANTIC IR VERIFICATION MISSION: two new live bugs, both upstream of
- * the compiler/resolver — the LLM produced semantically incorrect BARRY
- * IR. verifyIR() is the deterministic layer between ANY Reasoner's IR
- * and the compiler that cross-checks high-confidence, directly-
- * verifiable business semantics (offer references, explicit
- * weekday/relative-day tokens) against the raw customer text, and
- * overrides the Reasoner when its IR contradicts something the customer
- * plainly said. It never computes a final UTC instant — that stays
- * resolveSchedulingWindow()'s job.
+ * MODEL-FIRST CONTRACT. Understanding is the model's job (MockReasoner is
+ * its offline stand-in). verifyIR() GROUNDS the model's IR — it rejects
+ * unknown ids, out-of-range values and claims without evidence — and it
+ * NEVER replaces the model's semantic reading with a reading of its own.
+ * The previous design let a regex layer overrule the model; that is what
+ * turned "אני אקח את הראשונה" into name="אקח" in a live simulator run.
  */
 function emptyIR(overrides: Partial<BarryIR> = {}): BarryIR {
   return { intent: "test", entities: {}, constraints: {}, customerInfo: {}, ...overrides };
 }
 
-describe("verifyIR: offer reference verification", () => {
+async function standIn(text: string) {
+  const graph = buildSpaGraph();
+  const state = createInitialConversationState(`irv-${Math.random()}`, graph.business.id, "c");
+  return new MockReasoner().understand({ graph, state, customerMessage: text });
+}
+
+describe("Offline stand-in (MockReasoner) resolves explicit offer references", () => {
+  it.each([
+    ["Couples", "offer-couples-massage"],
+    ["Couples Massage", "offer-couples-massage"],
+    ["the couples one", "offer-couples-massage"],
+    ["Solo", "offer-solo-massage"],
+    ["Solo Swedish", "offer-solo-massage"],
+    ["Swedish Massage", "offer-solo-massage"],
+  ])('"%s" -> %s', async (text, offerId) => {
+    const ir = await standIn(text);
+    expect(ir.selectedOfferId).toBe(offerId);
+  });
+
+  it("a genuinely ambiguous phrase yields candidates, never a forced choice", async () => {
+    const ir = await standIn("I want a massage");
+    expect(ir.selectedOfferId).toBeUndefined();
+    expect(ir.offerCandidateIds?.sort()).toEqual(["offer-couples-massage", "offer-solo-massage"]);
+  });
+
+});
+
+describe("verifyIR: grounds the model's offer choice, never overrides it", () => {
   const graph = buildSpaGraph();
 
-  it('"Couples" resolves confidently to the couples offer, even if the LLM was ambiguous', () => {
-    const { verified, verification } = verifyIR(
-      graph,
-      "Couples",
-      emptyIR({ offerCandidateIds: ["offer-couples-massage", "offer-solo-massage"] })
-    );
+  it("keeps the model's valid selection even when the raw text names a different offer (the model owns semantics)", () => {
+    const { verified, verification } = verifyIR(graph, "Solo please", emptyIR({ selectedOfferId: "offer-couples-massage" }));
     expect(verified.selectedOfferId).toBe("offer-couples-massage");
-    expect(verified.offerCandidateIds).toBeUndefined();
-    expect(verification.offerOverridden).toBe(true);
+    expect(verification.rejected).toEqual([]);
   });
 
-  it('"Couples Massage" resolves confidently to the couples offer only', () => {
-    const { verified } = verifyIR(graph, "Couples Massage", emptyIR());
-    expect(verified.selectedOfferId).toBe("offer-couples-massage");
-  });
-
-  it('"the couples one" resolves confidently to the couples offer only', () => {
-    const { verified } = verifyIR(graph, "the couples one", emptyIR());
-    expect(verified.selectedOfferId).toBe("offer-couples-massage");
-  });
-
-  it('"Solo" resolves confidently to the solo offer only', () => {
-    const { verified } = verifyIR(graph, "Solo", emptyIR());
-    expect(verified.selectedOfferId).toBe("offer-solo-massage");
-  });
-
-  it('"Solo Swedish" resolves confidently to the solo offer', () => {
-    const { verified } = verifyIR(graph, "Solo Swedish", emptyIR());
-    expect(verified.selectedOfferId).toBe("offer-solo-massage");
-  });
-
-  it('"Swedish Massage" resolves confidently to the solo offer (not couples, despite "massage" overlap)', () => {
-    const { verified } = verifyIR(graph, "Swedish Massage", emptyIR());
-    expect(verified.selectedOfferId).toBe("offer-solo-massage");
-  });
-
-  it("a genuinely ambiguous phrase (matches both offer names equally) keeps clarification behavior untouched", () => {
-    // Neither offer NAME is confidently singled out by "massage" alone —
-    // both names contain it — so the deterministic verifier must not
-    // force a choice; the Reasoner's own ambiguity handling stands.
-    const { verified, verification } = verifyIR(
-      graph,
-      "I want a massage",
-      emptyIR({ offerCandidateIds: ["offer-couples-massage", "offer-solo-massage"] })
-    );
+  it("keeps model ambiguity as ambiguity — no raw-text tie-breaking", () => {
+    const { verified } = verifyIR(graph, "Couples", emptyIR({ offerCandidateIds: ["offer-couples-massage", "offer-solo-massage"] }));
     expect(verified.selectedOfferId).toBeUndefined();
     expect(verified.offerCandidateIds).toEqual(["offer-couples-massage", "offer-solo-massage"]);
-    expect(verification.offerOverridden).toBe(false);
   });
 
-  it("overrides even a confidently-wrong LLM selection when the raw text unambiguously names a different offer", () => {
-    const { verified, verification } = verifyIR(graph, "Solo please", emptyIR({ selectedOfferId: "offer-couples-massage" }));
-    expect(verified.selectedOfferId).toBe("offer-solo-massage");
-    expect(verification.offerOverridden).toBe(true);
-  });
-
-  it("never overrides when the raw text names no offer at all (trusts the Reasoner's own contextual judgment)", () => {
-    const { verified, verification } = verifyIR(graph, "Yes that works", emptyIR({ selectedOfferId: "offer-couples-massage" }));
-    expect(verified.selectedOfferId).toBe("offer-couples-massage");
-    expect(verification.offerOverridden).toBe(false);
-  });
-
-  it("does not false-positive on an incidental description-word match (a real bug class this design avoids)", () => {
-    // Couples Massage's DESCRIPTION says "for two" — "two" must never, by
-    // itself, make an unrelated sentence resolve to that offer. Only
-    // name-token matches drive this verifier.
-    const { verified, verification } = verifyIR(graph, "I'll bring two friends along", emptyIR());
+  it("rejects an offer id that doesn't exist on this business", () => {
+    const { verified, verification } = verifyIR(graph, "the deluxe", emptyIR({ selectedOfferId: "offer-invented" }));
     expect(verified.selectedOfferId).toBeUndefined();
-    expect(verification.offerOverridden).toBe(false);
+    expect(verification.rejected.map((r) => r.claim)).toContain("selectedOfferId");
+  });
+
+  it("never adds an offer the model didn't propose", () => {
+    const { verified } = verifyIR(graph, "Couples Massage", emptyIR());
+    expect(verified.selectedOfferId).toBeUndefined();
   });
 });
 
-describe("verifyIR: scheduling semantic verification", () => {
+describe("verifyIR: scheduling is structurally validated, never re-read from text", () => {
   const graph = buildSpaGraph();
 
-  it('"Tuesday at 3pm" corrects an LLM explicitDate that names the wrong weekday', () => {
-    const ir = emptyIR({
-      constraints: {
-        schedulingWindow: { date: { kind: "explicitDate", isoDate: "2026-09-27" }, time: { kind: "explicitTime", hour: 15, minute: 0 } },
-      },
-    });
-    const { verified, verification } = verifyIR(graph, "I wanna come with my wife on Tuesday at 3pm", ir);
-
-    expect(verification.schedulingOverridden).toBe(true);
-    expect(verified.constraints.schedulingWindow?.date).toEqual({ kind: "weekday", weekday: 2, qualifier: undefined });
-    // Time the LLM already got right must survive the override.
-    expect(verified.constraints.schedulingWindow?.time).toEqual({ kind: "explicitTime", hour: 15, minute: 0 });
-  });
-
-  it('"next Monday" preserves the "next" qualifier when verifying against an LLM that got it right', () => {
-    const ir = emptyIR({
-      constraints: { schedulingWindow: { date: { kind: "weekday", weekday: 1, qualifier: "next" } } },
-    });
-    const { verified, verification } = verifyIR(graph, "let's do next Monday", ir);
-
-    expect(verification.schedulingOverridden).toBe(false);
-    expect(verified.constraints.schedulingWindow?.date).toEqual({ kind: "weekday", weekday: 1, qualifier: "next" });
-  });
-
-  it('"next Monday" corrects an LLM that dropped the "next" qualifier', () => {
-    const ir = emptyIR({
-      constraints: { schedulingWindow: { date: { kind: "weekday", weekday: 1 } } }, // missing qualifier: "next"
-    });
-    const { verified, verification } = verifyIR(graph, "let's do next Monday", ir);
-
-    expect(verification.schedulingOverridden).toBe(true);
-    expect(verified.constraints.schedulingWindow?.date).toEqual({ kind: "weekday", weekday: 1, qualifier: "next" });
-  });
-
-  it('"tomorrow" corrects an LLM explicitDate mismatch to relativeDay', () => {
-    const ir = emptyIR({
-      constraints: { schedulingWindow: { date: { kind: "explicitDate", isoDate: "2099-01-01" } } },
-    });
-    const { verified, verification } = verifyIR(graph, "can I come tomorrow at 5", ir);
-
-    expect(verification.schedulingOverridden).toBe(true);
-    expect(verified.constraints.schedulingWindow?.date).toEqual({ kind: "relativeDay", days: 1 });
-  });
-
-  it("does not touch scheduling when the LLM already agrees with the explicit raw-text token", () => {
-    const ir = emptyIR({
-      constraints: { schedulingWindow: { date: { kind: "weekday", weekday: 2 }, time: { kind: "explicitTime", hour: 15, minute: 0 } } },
-    });
-    const { verified, verification } = verifyIR(graph, "Tuesday at 3pm works great", ir);
-
-    expect(verification.schedulingOverridden).toBe(false);
+  it("keeps the model's scheduling reading as-is", () => {
+    const ir = emptyIR({ constraints: { schedulingWindow: { date: { kind: "weekday", weekday: 2 }, time: { kind: "explicitTime", hour: 15, minute: 0 } } } });
+    const { verified } = verifyIR(graph, "Thursday at 5", ir);
     expect(verified.constraints.schedulingWindow).toEqual(ir.constraints.schedulingWindow);
   });
 
-  it("does not invent a scheduling override when the raw text has no explicit date token at all", () => {
-    const ir = emptyIR({
-      constraints: { schedulingWindow: { date: { kind: "explicitDate", isoDate: "2026-11-03" } } },
-    });
-    const { verified, verification } = verifyIR(graph, "sometime soon works for me", ir);
-    expect(verification.schedulingOverridden).toBe(false);
-    expect(verified.constraints.schedulingWindow).toEqual(ir.constraints.schedulingWindow);
+  it("rejects out-of-range values instead of guessing", () => {
+    const ir = emptyIR({ constraints: { schedulingWindow: { date: { kind: "weekday", weekday: 9 }, time: { kind: "explicitTime", hour: 26, minute: 0 } } } });
+    const { verified, verification } = verifyIR(graph, "whenever", ir);
+    expect(verified.constraints.schedulingWindow).toBeUndefined();
+    expect(verification.rejected.map((r) => r.claim)).toEqual(["schedulingWindow.date", "schedulingWindow.time"]);
   });
-});
 
-describe("verifyIR: never computes a final UTC instant itself", () => {
-  it("verified IR still carries only a SEMANTIC scheduling constraint, never a resolved timestamp", () => {
-    const graph = buildSpaGraph();
-    const ir = emptyIR({
-      constraints: { schedulingWindow: { date: { kind: "explicitDate", isoDate: "2026-09-27" } } },
-    });
+  it("verified IR only ever carries SEMANTIC scheduling — never a resolved timestamp", () => {
+    const ir = emptyIR({ constraints: { schedulingWindow: { date: { kind: "explicitDate", isoDate: "2026-09-27" } } } });
     const { verified } = verifyIR(graph, "Tuesday please", ir);
-
-    const date = verified.constraints.schedulingWindow?.date;
-    expect(date?.kind).toBe("weekday");
-    // No "earliest"/"latest" absolute timestamp field exists anywhere on
-    // the verified IR — resolution is still the compiler+resolver's job.
     expect(verified.constraints.schedulingWindow).not.toHaveProperty("earliest");
+  });
+
+  it("the stand-in model reads explicit weekday/qualifier/relative-day tokens", async () => {
+    expect((await standIn("I wanna come with my wife on Tuesday at 3pm")).constraints.schedulingWindow).toEqual({
+      date: { kind: "weekday", weekday: 2, qualifier: undefined },
+      time: { kind: "explicitTime", hour: 15, minute: 0 },
+    });
+    expect((await standIn("let's do next Monday")).constraints.schedulingWindow?.date).toEqual({ kind: "weekday", weekday: 1, qualifier: "next" });
+    expect((await standIn("can I come tomorrow at 5")).constraints.schedulingWindow?.date).toEqual({ kind: "relativeDay", days: 1 });
   });
 });
 

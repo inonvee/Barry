@@ -14,6 +14,7 @@ import {
   updateCartLine,
   createCommerceCheckout,
   createCommerceOrder,
+  verifyPayment,
 } from "./definitions";
 
 const ALL_TOOLS: AnyToolDefinition[] = [
@@ -31,6 +32,7 @@ const ALL_TOOLS: AnyToolDefinition[] = [
   updateCartLine,
   createCommerceCheckout,
   createCommerceOrder,
+  verifyPayment,
 ];
 
 const REGISTRY = new Map<string, AnyToolDefinition>(ALL_TOOLS.map((t) => [t.name, t]));
@@ -59,6 +61,8 @@ const CUSTOMER_SAFE_TOOL_ERRORS = new Set<string>([
   "A payment request is already pending for this conversation",
   "Requested variant not available",
   "Cart is empty",
+  "Cart changed after payment",
+  "That item is no longer available",
 ]);
 
 const GENERIC_TOOL_ERROR = "Something went wrong on our end — could we try that again in a moment?";

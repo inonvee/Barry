@@ -3,12 +3,20 @@ import { buildSpaGraph } from "@/lib/fixtures/spa";
 import { buildPersonalTrainerGraph } from "@/lib/fixtures/personal-trainer";
 import { compile } from "@/lib/runtime/compiler";
 import { verifyIR } from "@/lib/reasoner/verify";
+import { MockReasoner } from "@/lib/reasoner/mock-reasoner";
+import type { BusinessGraph } from "@/lib/business-graph";
 import type { BarryIR } from "@/lib/reasoner/ir";
 import { resolveSchedulingWindow } from "@/lib/scheduling/resolver";
 import { createInitialConversationState, type ConversationState } from "@/lib/state";
 
 function emptyIR(overrides: Partial<BarryIR> = {}): BarryIR {
   return { intent: "test", entities: {}, constraints: {}, customerInfo: {}, ...overrides };
+}
+
+/** Short-reply understanding is the model's job; MockReasoner stands in for it offline. verifyIR only grounds it against state. */
+async function understandAndGround(graph: BusinessGraph, text: string, state: ConversationState) {
+  const ir = await new MockReasoner().understand({ graph, state, customerMessage: text });
+  return verifyIR(graph, text, ir, state);
 }
 
 function bookedState(conversationId: string): ConversationState {
@@ -104,33 +112,44 @@ describe("scheduling confirmation state machine", () => {
     expect(outcome.kind === "action" ? outcome.action.name : null).toBe("createPaymentRequest");
   });
 
-  it("sets slotAccepted for contextual Hebrew and English short confirmations only when a slot is awaiting confirmation", () => {
+  it("understood short confirmations become slotAccepted while a slot is awaiting confirmation", async () => {
     const graph = buildSpaGraph();
     for (const reply of ["כן", "מאשר", "yes", "confirm"]) {
       const state = bookedState(`sched-sm-accept-${reply}`);
-      const { verified } = verifyIR(graph, reply, emptyIR(), state);
+      const { verified } = await understandAndGround(graph, reply, state);
       expect(verified.constraints.slotAccepted).toBe(true);
     }
   });
 
-  it("sets slotDeclined for contextual short declines only when a slot is awaiting confirmation", () => {
+  it("understood short declines become slotDeclined while a slot is awaiting confirmation", async () => {
     const graph = buildSpaGraph();
     for (const reply of ["לא", "לא מתאים", "no", "nope"]) {
       const state = bookedState(`sched-sm-decline-${reply}`);
-      const { verified } = verifyIR(graph, reply, emptyIR(), state);
+      const { verified } = await understandAndGround(graph, reply, state);
       expect(verified.constraints.slotDeclined).toBe(true);
+      expect(verified.constraints.slotAccepted).toBeUndefined();
     }
   });
 
-  it("does not treat yes or no as scheduling decisions without offered-slot context", () => {
+  it("grounding drops accept/decline claims when no slot is awaiting confirmation (state, not text, decides)", () => {
     const graph = buildSpaGraph();
     const state = createInitialConversationState("sched-sm-no-context", graph.business.id, "cust-no-context");
 
-    expect(verifyIR(graph, "כן", emptyIR(), state).verified.constraints.slotAccepted).toBeUndefined();
-    expect(verifyIR(graph, "לא", emptyIR(), state).verified.constraints.slotDeclined).toBeUndefined();
+    const accepted = verifyIR(graph, "כן", emptyIR({ constraints: { slotAccepted: true } }), state);
+    const declined = verifyIR(graph, "לא", emptyIR({ constraints: { slotDeclined: true } }), state);
+    expect(accepted.verified.constraints.slotAccepted).toBeUndefined();
+    expect(declined.verified.constraints.slotDeclined).toBeUndefined();
+    expect(accepted.verification.rejected.map((r) => r.claim)).toContain("slotAccepted");
   });
 
-  it("a contextual yes on a no-payment scheduled offer compiles createBooking instead of repeating confirmation", () => {
+  it("verifyIR never turns a bare short reply into a decision the model didn't make", () => {
+    const graph = buildSpaGraph();
+    const state = bookedState("sched-sm-no-inject");
+    expect(verifyIR(graph, "כן", emptyIR(), state).verified.constraints.slotAccepted).toBeUndefined();
+    expect(verifyIR(graph, "no", emptyIR(), state).verified.constraints.slotDeclined).toBeUndefined();
+  });
+
+  it("a contextual yes on a no-payment scheduled offer compiles createBooking instead of repeating confirmation", async () => {
     const graph = buildPersonalTrainerGraph();
     const state = createInitialConversationState("sched-sm-free-consult", graph.business.id, "cust-free-consult");
     state.selectedOfferId = "offer-free-consult";
@@ -140,7 +159,7 @@ describe("scheduling confirmation state machine", () => {
     state.knownFields.__offeredSlotEnd = "2026-10-08T18:30:00.000Z";
     state.knownFields.__offeredSlotResource = "trainer-riley";
 
-    const { verified } = verifyIR(graph, "Yes", emptyIR(), state);
+    const { verified } = await understandAndGround(graph, "Yes", state);
     const outcome = compile(graph, state, verified);
 
     expect(outcome.kind).toBe("action");

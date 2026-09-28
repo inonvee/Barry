@@ -30,14 +30,31 @@ function stripSchedulingTimestampsFromOutput(output: unknown): unknown {
   return sanitized;
 }
 
+/** Links, media and internal fingerprints are rendered/handled by the channel — the text composer never sees them, so it can't paste them. */
+const CHANNEL_ONLY_KEYS = new Set(["url", "media", "checkoutUrl", "imageUrl", "snapshotHash", "idempotencyKey", "providerPaymentId"]);
+
+function stripChannelOnlyFields(output: unknown): unknown {
+  if (!output || typeof output !== "object") return output;
+  if (Array.isArray(output)) return output.map(stripChannelOnlyFields);
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(output)) {
+    if (CHANNEL_ONLY_KEYS.has(key)) continue;
+    sanitized[key] = stripChannelOnlyFields(value);
+  }
+  return sanitized;
+}
+
 export function sanitizeToolResultForCompose(input: ComposeResponseInput): ComposeToolResult {
   const { outcome, toolResult } = input;
   if (!toolResult?.ok || outcome.kind !== "action") return toolResult;
-  if (outcome.action.name !== "checkAvailability" && outcome.action.name !== "createBooking") return toolResult;
+  const withoutChannelFields = stripChannelOnlyFields(toolResult.output);
+  if (outcome.action.name !== "checkAvailability" && outcome.action.name !== "createBooking") {
+    return { ...toolResult, output: withoutChannelFields };
+  }
 
   return {
     ...toolResult,
-    output: stripSchedulingTimestampsFromOutput(toolResult.output),
+    output: stripSchedulingTimestampsFromOutput(withoutChannelFields),
   };
 }
 

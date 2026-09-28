@@ -53,6 +53,8 @@ function paymentFromRow(row: Record<string, unknown>): PaymentRequestRecord {
     idempotencyKey: row.idempotency_key as string | undefined,
     verifiedAt: row.verified_at as string | undefined,
     providerEventId: row.provider_event_id as string | undefined,
+    providerTransactionId: (row.provider_transaction_id as string | null) ?? undefined,
+    binding: (row.binding as PaymentRequestRecord["binding"] | null) ?? undefined,
   };
 }
 
@@ -246,6 +248,7 @@ export class SupabaseBackend implements BarryBackend {
       provider_payment_id: record.providerPaymentId,
       provider_checkout_url: record.providerCheckoutUrl,
       idempotency_key: record.idempotencyKey,
+      binding: record.binding ?? null,
     };
     const { data, error } = await client.from("payment_requests").insert(row).select("*").single();
     if (error) {
@@ -305,7 +308,7 @@ export class SupabaseBackend implements BarryBackend {
   async updatePaymentRequestStatus(
     paymentId: string,
     status: PaymentRequestRecord["status"],
-    metadata: { verifiedAt?: string; providerEventId?: string } = {}
+    metadata: { verifiedAt?: string; providerEventId?: string; providerTransactionId?: string } = {}
   ): Promise<PaymentRequestRecord> {
     const existing = await this.getPaymentRequest(paymentId);
     if (!existing) throw new Error(`Payment request ${paymentId} not found`);
@@ -317,6 +320,7 @@ export class SupabaseBackend implements BarryBackend {
         status,
         verified_at: metadata.verifiedAt ?? existing.verifiedAt ?? null,
         provider_event_id: metadata.providerEventId ?? existing.providerEventId ?? null,
+        provider_transaction_id: metadata.providerTransactionId ?? existing.providerTransactionId ?? null,
       })
       .eq("id", paymentId)
       .select("*")

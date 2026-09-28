@@ -79,6 +79,14 @@ export function InspectorPanel({ state }: { state: ConversationState | null }) {
                 </pre>
               </>
             )}
+            {lastTurn.verification?.llmCustomerInfo && Object.keys(lastTurn.verification.llmCustomerInfo).length > 0 && (
+              <>
+                <p className="text-xs text-neutral-500 mt-2 mb-1">Reasoner proposal customerInfo (raw, before grounding)</p>
+                <pre className="text-xs bg-neutral-50 dark:bg-neutral-900 rounded-lg p-2 overflow-x-auto">
+                  {JSON.stringify(lastTurn.verification.llmCustomerInfo, null, 2)}
+                </pre>
+              </>
+            )}
             {lastTurn.understood.customerInfo && Object.keys(lastTurn.understood.customerInfo).length > 0 && (
               <>
                 <p className="text-xs text-neutral-500 mt-2 mb-1">BARRY verified IR customerInfo</p>
@@ -89,49 +97,16 @@ export function InspectorPanel({ state }: { state: ConversationState | null }) {
             )}
           </Section>
 
-          {lastTurn.verification &&
-            (lastTurn.verification.offerOverridden ||
-              lastTurn.verification.schedulingOverridden ||
-              lastTurn.verification.customerInfoOverridden) && (
-              <Section title="⚠ Verification overrode the Reasoner">
-                {lastTurn.verification.offerOverridden && (
-                  <>
-                    <Kv
-                      k="LLM proposed offer"
-                      v={
-                        lastTurn.verification.llmSelectedOfferId ??
-                        (lastTurn.verification.llmOfferCandidateIds?.join(", ") || "—")
-                      }
-                    />
-                    <Kv k="BARRY trusted instead" v={state.selectedOfferId ?? "—"} />
-                  </>
-                )}
-                {lastTurn.verification.schedulingOverridden && (
-                  <>
-                    <p className="text-xs text-neutral-500 mt-2 mb-1">LLM-proposed scheduling IR</p>
-                    <pre className="text-xs bg-neutral-50 dark:bg-neutral-900 rounded-lg p-2 overflow-x-auto">
-                      {JSON.stringify(lastTurn.verification.llmSchedulingWindow ?? null, null, 2)}
-                    </pre>
-                    <p className="text-xs text-neutral-500 mt-2 mb-1">BARRY-verified scheduling IR (trusted)</p>
-                    <pre className="text-xs bg-neutral-50 dark:bg-neutral-900 rounded-lg p-2 overflow-x-auto">
-                      {JSON.stringify(lastTurn.understood.schedulingWindow ?? null, null, 2)}
-                    </pre>
-                  </>
-                )}
-                {lastTurn.verification.customerInfoOverridden && (
-                  <>
-                    <p className="text-xs text-neutral-500 mt-2 mb-1">Reasoner proposal customerInfo (raw, pre-verification)</p>
-                    <pre className="text-xs bg-neutral-50 dark:bg-neutral-900 rounded-lg p-2 overflow-x-auto">
-                      {JSON.stringify(lastTurn.verification.llmCustomerInfo ?? {}, null, 2)}
-                    </pre>
-                    <p className="text-xs text-neutral-500 mt-2 mb-1">BARRY verified IR customerInfo (post-verification)</p>
-                    <pre className="text-xs bg-neutral-50 dark:bg-neutral-900 rounded-lg p-2 overflow-x-auto">
-                      {JSON.stringify(lastTurn.understood.customerInfo ?? {}, null, 2)}
-                    </pre>
-                  </>
-                )}
-              </Section>
-            )}
+          {lastTurn.verification && lastTurn.verification.rejected.length > 0 && (
+            <Section title="Grounding rejected unsupported claims">
+              <p className="text-xs text-neutral-500 mb-1">
+                BARRY never replaces the model&apos;s understanding — it only rejects claims that aren&apos;t supported by the message or current state.
+              </p>
+              {lastTurn.verification.rejected.map((r, i) => (
+                <Kv key={i} k={r.claim} v={`${r.value === undefined ? "" : `${JSON.stringify(r.value)} — `}${r.reason}`} />
+              ))}
+            </Section>
+          )}
 
           {lastTurn.compiled && (
             <Section title="Compiler">

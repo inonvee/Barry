@@ -1,5 +1,6 @@
 import { BusinessGraphSchema, type BusinessGraph } from "@/lib/business-graph";
 import type { Product } from "@/lib/commerce/types";
+import { registerFixtureCommerceCatalog } from "@/lib/commerce/registry";
 
 export function fashionCatalog(): Product[] {
   return [
@@ -8,7 +9,7 @@ export function fashionCatalog(): Product[] {
       title: "Midnight Wrap Dress",
       description: "Black wrap dress suitable for evening events.",
       category: "dress",
-      attributes: { color: "black", occasion: ["wedding", "event"], material: "crepe" },
+      attributes: { color: "black", occasion: ["wedding", "event"], material: "crepe", keywords: ["שמלה", "שחורה", "ערב", "חתונה", "אירוע", "מעטפת"] },
       media: [{ url: "https://example.com/images/midnight-wrap.jpg", alt: "Midnight Wrap Dress" }],
       url: "https://example.com/products/midnight-wrap-dress",
       variants: [
@@ -22,7 +23,7 @@ export function fashionCatalog(): Product[] {
       title: "Onyx Slip Dress",
       description: "Black midi dress with adjustable straps.",
       category: "dress",
-      attributes: { color: "black", occasion: ["wedding", "cocktail"], material: "satin blend" },
+      attributes: { color: "black", occasion: ["wedding", "cocktail"], material: "satin blend", keywords: ["שמלה", "שחורה", "מידי", "חתונה", "קוקטייל"] },
       media: [{ url: "https://example.com/images/onyx-slip.jpg", alt: "Onyx Slip Dress" }],
       url: "https://example.com/products/onyx-slip-dress",
       variants: [
@@ -35,7 +36,7 @@ export function fashionCatalog(): Product[] {
       title: "Slim Occasion Belt",
       description: "Black belt often paired with event dresses.",
       category: "accessory",
-      attributes: { color: "black", occasion: ["wedding", "event"] },
+      attributes: { color: "black", occasion: ["wedding", "event"], keywords: ["חגורה", "שחורה", "אקססוריז"] },
       media: [{ url: "https://example.com/images/slim-belt.jpg", alt: "Slim Occasion Belt" }],
       url: "https://example.com/products/slim-belt",
       variants: [
@@ -44,6 +45,10 @@ export function fashionCatalog(): Product[] {
     },
   ];
 }
+
+// Simulator/test-only catalog. The registry serves it solely to this
+// fixture business, and never in a production deployment.
+registerFixtureCommerceCatalog("fashion-retailer", fashionCatalog, "fashion-retailer");
 
 export function buildFashionRetailerGraph(): BusinessGraph {
   return BusinessGraphSchema.parse({

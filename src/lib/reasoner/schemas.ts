@@ -50,6 +50,27 @@ export const LlmSchedulingWindowSchema = z.object({
 });
 export type LlmSchedulingWindow = z.infer<typeof LlmSchedulingWindowSchema>;
 
+/**
+ * Flattened commerce semantics (strict mode can't express the optional
+ * nested union directly). `referenceIndex` points into results BARRY
+ * already showed — the model never supplies a product id.
+ */
+export const LlmCommerceSchema = z.object({
+  intent: z.enum(["search", "select", "change_variant", "change_quantity", "remove", "checkout", "negotiate_price"]),
+  queryText: z.string().nullable(),
+  category: z.string().nullable(),
+  attributes: z.array(KeyValuePairSchema),
+  budgetAmount: z.number().nullable(),
+  budgetCurrency: z.string().nullable(),
+  referenceType: z.enum(["previous_result", "cart_line"]).nullable(),
+  referenceIndex: z.number().nullable(),
+  variant: z.array(KeyValuePairSchema),
+  quantity: z.number().nullable(),
+  requestedPriceAmount: z.number().nullable(),
+  requestedPriceCurrency: z.string().nullable(),
+});
+export type LlmCommerce = z.infer<typeof LlmCommerceSchema>;
+
 export const LlmIRSchema = z.object({
   intent: z.string(),
   selectedOfferId: z.string().nullable(),
@@ -62,6 +83,7 @@ export const LlmIRSchema = z.object({
     partySize: z.number().nullable(),
     discountPct: z.number().nullable(),
     slotAccepted: z.boolean().nullable(),
+    slotDeclined: z.boolean().nullable(),
   }),
   /**
    * THE single authoritative channel for customer-provided identity/
@@ -75,6 +97,11 @@ export const LlmIRSchema = z.object({
   goal: z
     .enum(["completePurchase", "bookAppointment", "collectDeposit", "qualifyLead", "requestQuote"])
     .nullable(),
+  commerce: LlmCommerceSchema.nullable(),
+  customerClaimsPaymentCompleted: z.boolean().nullable(),
+  /** Claim path (e.g. "customerInfo.name") -> exact quote from the customer's message supporting it. */
+  evidence: z.array(KeyValuePairSchema),
+  knowledgeTopic: z.string().nullable(),
 });
 export type LlmIR = z.infer<typeof LlmIRSchema>;
 
@@ -139,8 +166,9 @@ export function irJsonSchema() {
             partySize: { type: ["number", "null"] },
             discountPct: { type: ["number", "null"] },
             slotAccepted: { type: ["boolean", "null"] },
+            slotDeclined: { type: ["boolean", "null"] },
           },
-          required: ["schedulingWindow", "partySize", "discountPct", "slotAccepted"],
+          required: ["schedulingWindow", "partySize", "discountPct", "slotAccepted", "slotDeclined"],
         },
         customerInfo: { type: "array", items: kvSchema() },
         requestedCapability: { type: ["string", "null"] },
@@ -148,6 +176,41 @@ export function irJsonSchema() {
           type: ["string", "null"],
           enum: ["completePurchase", "bookAppointment", "collectDeposit", "qualifyLead", "requestQuote", null],
         },
+        commerce: {
+          type: ["object", "null"],
+          additionalProperties: false,
+          properties: {
+            intent: { type: "string", enum: ["search", "select", "change_variant", "change_quantity", "remove", "checkout", "negotiate_price"] },
+            queryText: { type: ["string", "null"] },
+            category: { type: ["string", "null"] },
+            attributes: { type: "array", items: kvSchema() },
+            budgetAmount: { type: ["number", "null"] },
+            budgetCurrency: { type: ["string", "null"] },
+            referenceType: { type: ["string", "null"], enum: ["previous_result", "cart_line", null] },
+            referenceIndex: { type: ["number", "null"] },
+            variant: { type: "array", items: kvSchema() },
+            quantity: { type: ["number", "null"] },
+            requestedPriceAmount: { type: ["number", "null"] },
+            requestedPriceCurrency: { type: ["string", "null"] },
+          },
+          required: [
+            "intent",
+            "queryText",
+            "category",
+            "attributes",
+            "budgetAmount",
+            "budgetCurrency",
+            "referenceType",
+            "referenceIndex",
+            "variant",
+            "quantity",
+            "requestedPriceAmount",
+            "requestedPriceCurrency",
+          ],
+        },
+        customerClaimsPaymentCompleted: { type: ["boolean", "null"] },
+        evidence: { type: "array", items: kvSchema() },
+        knowledgeTopic: { type: ["string", "null"] },
       },
       required: [
         "intent",
@@ -159,6 +222,10 @@ export function irJsonSchema() {
         "customerInfo",
         "requestedCapability",
         "goal",
+        "commerce",
+        "customerClaimsPaymentCompleted",
+        "evidence",
+        "knowledgeTopic",
       ],
     },
   };

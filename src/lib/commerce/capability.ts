@@ -1,10 +1,29 @@
+import crypto from "node:crypto";
 import type { BusinessGraph } from "@/lib/business-graph";
 import { getBackend } from "@/lib/store";
+import type { PaymentRequestRecord } from "@/lib/store";
 import { resolveCommerceAdapterForBusiness } from "./registry";
-import type { Cart, Order, ProductSearchQuery } from "./types";
+import type { Cart, CommerceAdapter, Order, Product, ProductSearchQuery, ProductVariant } from "./types";
+
+/**
+ * Commerce capability. Two rules hold everywhere in this module:
+ *
+ * 1. The PROVIDER's cart is the source of truth. BARRY keeps only a
+ *    pointer (cart id) plus an audit snapshot; every read that matters
+ *    re-fetches from the provider, and every change executes there.
+ * 2. Money is bound to an exact cart snapshot. A payment created at
+ *    checkout carries the snapshot hash it was priced from; an order is
+ *    only created when the provider's cart still hashes to that value
+ *    and the verified payment amount/currency still equal its total.
+ */
+
+type Ctx = { graph: BusinessGraph; customerId: string; conversationId: string };
+
+export class CommerceError extends Error {}
 
 export async function searchCommerceProducts(graph: BusinessGraph, query: ProductSearchQuery) {
-  return resolveCommerceAdapterForBusiness(graph.business.id).then((adapter) => adapter.searchProducts(query));
+  const adapter = await resolveCommerceAdapterForBusiness(graph.business.id);
+  return adapter.searchProducts(query);
 }
 
 export async function getCommerceProduct(graph: BusinessGraph, productId: string) {
@@ -12,73 +31,207 @@ export async function getCommerceProduct(graph: BusinessGraph, productId: string
   return adapter.getProduct(productId);
 }
 
-export async function ensureCommerceCart(input: { graph: BusinessGraph; customerId: string; conversationId: string }): Promise<Cart> {
-  const backend = getBackend();
-  const existing = (await backend.listCommerceCarts(input.graph.business.id)).find((cart) => cart.conversationId === input.conversationId && cart.status !== "ordered");
-  if (existing) return existing.data as Cart;
-  const adapter = await resolveCommerceAdapterForBusiness(input.graph.business.id);
-  const cart = await adapter.createCart({ businessId: input.graph.business.id, customerId: input.customerId, conversationId: input.conversationId });
-  await backend.upsertCommerceCart({ businessId: input.graph.business.id, conversationId: input.conversationId, customerId: input.customerId, cartId: cart.id, status: cart.status, data: cart });
+/** Deterministic fingerprint of exactly what would be charged for. */
+export function cartSnapshotHash(cart: Pick<Cart, "id" | "lines" | "total">): string {
+  const canonical = {
+    cartId: cart.id,
+    lines: [...cart.lines]
+      .map((l) => ({ p: l.productId, v: l.variantId, q: l.quantity, a: l.unitPrice.amount, c: l.unitPrice.currency.toUpperCase() }))
+      .sort((a, b) => (a.v === b.v ? a.q - b.q : a.v < b.v ? -1 : 1)),
+    total: { a: Math.round(cart.total.amount * 100), c: cart.total.currency.toUpperCase() },
+  };
+  return crypto.createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+}
+
+function optionsMatch(variant: ProductVariant, options: Record<string, string> | undefined): boolean {
+  return Object.entries(options ?? {}).every(([key, value]) => {
+    const actualKey = Object.keys(variant.options).find((k) => k.toLowerCase() === key.toLowerCase());
+    return actualKey !== undefined && variant.options[actualKey].toLowerCase() === value.toLowerCase();
+  });
+}
+
+export type VariantResolution =
+  | { ok: true; variant: ProductVariant }
+  | { ok: false; reason: "unavailable" | "needs_variant" | "unknown_option"; availableOptions: Record<string, string>[] };
+
+/**
+ * Resolve the customer's requested options against REAL variants. Never
+ * substitutes a different variant than requested: an unavailable choice
+ * is reported back with the real in-stock alternatives, and the customer
+ * decides.
+ */
+export function resolveVariant(product: Product, options: Record<string, string> | undefined, quantity: number): VariantResolution {
+  const inStock = product.variants.filter((v) => v.inventory.available >= quantity);
+  const availableOptions = inStock.map((v) => v.options);
+  const matching = product.variants.filter((v) => optionsMatch(v, options));
+  if (options && Object.keys(options).length > 0 && matching.length === 0) {
+    return { ok: false, reason: "unknown_option", availableOptions };
+  }
+  const matchingInStock = matching.filter((v) => v.inventory.available >= quantity);
+  if (matchingInStock.length === 0) return { ok: false, reason: "unavailable", availableOptions };
+  if (matchingInStock.length > 1) {
+    const distinct = new Set(matchingInStock.map((v) => JSON.stringify(v.options)));
+    if (distinct.size > 1) return { ok: false, reason: "needs_variant", availableOptions: matchingInStock.map((v) => v.options) };
+  }
+  return { ok: true, variant: matchingInStock[0] };
+}
+
+async function recordCartSnapshot(ctx: Ctx, cart: Cart): Promise<void> {
+  await getBackend().upsertCommerceCart({
+    businessId: ctx.graph.business.id,
+    conversationId: ctx.conversationId,
+    customerId: ctx.customerId,
+    cartId: cart.id,
+    status: cart.status,
+    data: cart,
+  });
+}
+
+/** Fetch the provider's cart and prove it belongs to this business + conversation. */
+async function ownedProviderCart(adapter: CommerceAdapter, ctx: Ctx, cartId: string): Promise<Cart> {
+  const cart = await adapter.getCart(cartId);
+  if (!cart) throw new CommerceError("Cart not found");
+  if (cart.businessId !== ctx.graph.business.id || cart.conversationId !== ctx.conversationId) {
+    throw new CommerceError("Cart does not belong to this conversation");
+  }
   return cart;
 }
 
-export async function addCommerceItem(input: { graph: BusinessGraph; customerId: string; conversationId: string; productId: string; variantId: string; quantity: number }) {
-  const adapter = await resolveCommerceAdapterForBusiness(input.graph.business.id);
-  const cart = await ensureCommerceCart(input);
-  const updated = await adapter.addToCart({ cartId: cart.id, productId: input.productId, variantId: input.variantId, quantity: input.quantity });
-  await getBackend().upsertCommerceCart({ businessId: input.graph.business.id, conversationId: input.conversationId, customerId: input.customerId, cartId: updated.id, status: updated.status, data: updated });
+export async function getOwnedCart(ctx: Ctx, cartId: string): Promise<Cart> {
+  const adapter = await resolveCommerceAdapterForBusiness(ctx.graph.business.id);
+  return ownedProviderCart(adapter, ctx, cartId);
+}
+
+async function ensureProviderCart(adapter: CommerceAdapter, ctx: Ctx): Promise<Cart> {
+  const records = await getBackend().listCommerceCarts(ctx.graph.business.id);
+  const pointer = records.find((r) => r.conversationId === ctx.conversationId && r.status !== "ordered");
+  if (pointer) {
+    const live = await adapter.getCart(pointer.cartId);
+    if (live && live.status !== "ordered") return live;
+  }
+  const cart = await adapter.createCart({ businessId: ctx.graph.business.id, customerId: ctx.customerId, conversationId: ctx.conversationId });
+  await recordCartSnapshot(ctx, cart);
+  return cart;
+}
+
+export async function addCommerceItem(ctx: Ctx & { productId: string; variantId: string; quantity: number }): Promise<Cart> {
+  const adapter = await resolveCommerceAdapterForBusiness(ctx.graph.business.id);
+  const cart = await ensureProviderCart(adapter, ctx);
+  const updated = await adapter.addToCart({ cartId: cart.id, productId: ctx.productId, variantId: ctx.variantId, quantity: ctx.quantity });
+  await recordCartSnapshot(ctx, updated);
   return updated;
 }
 
-export async function updateCommerceLine(input: { graph: BusinessGraph; customerId: string; conversationId: string; lineId: string; quantity: number }) {
-  const adapter = await resolveCommerceAdapterForBusiness(input.graph.business.id);
-  const cart = await ensureCommerceCart(input);
-  const updated = await adapter.updateQuantity({ cartId: cart.id, lineId: input.lineId, quantity: input.quantity });
-  await getBackend().upsertCommerceCart({ businessId: input.graph.business.id, conversationId: input.conversationId, customerId: input.customerId, cartId: updated.id, status: updated.status, data: updated });
+export async function setCommerceLineQuantity(ctx: Ctx & { cartId: string; lineId: string; quantity: number }): Promise<Cart> {
+  const adapter = await resolveCommerceAdapterForBusiness(ctx.graph.business.id);
+  const cart = await ownedProviderCart(adapter, ctx, ctx.cartId);
+  if (!cart.lines.some((l) => l.id === ctx.lineId)) throw new CommerceError("Cart line not found");
+  const updated = await adapter.updateQuantity({ cartId: cart.id, lineId: ctx.lineId, quantity: ctx.quantity });
+  await recordCartSnapshot(ctx, updated);
   return updated;
 }
 
-export async function saveCommerceCart(input: { graph: BusinessGraph; customerId: string; conversationId: string; cart: Cart }) {
-  await getBackend().upsertCommerceCart({
-    businessId: input.graph.business.id,
-    conversationId: input.conversationId,
-    customerId: input.customerId,
-    cartId: input.cart.id,
-    status: input.cart.status,
-    data: input.cart,
-  });
-  return input.cart;
+/**
+ * Swap a line to a different variant ON THE PROVIDER: add the new
+ * variant first, then remove the old line — if the add fails, the
+ * customer's existing line is untouched.
+ */
+export async function replaceCommerceLineVariant(ctx: Ctx & { cartId: string; lineId: string; variantId: string; quantity: number }): Promise<Cart> {
+  const adapter = await resolveCommerceAdapterForBusiness(ctx.graph.business.id);
+  const cart = await ownedProviderCart(adapter, ctx, ctx.cartId);
+  const line = cart.lines.find((l) => l.id === ctx.lineId);
+  if (!line) throw new CommerceError("Cart line not found");
+  if (line.variantId === ctx.variantId) {
+    return line.quantity === ctx.quantity ? cart : setCommerceLineQuantity({ ...ctx, quantity: ctx.quantity });
+  }
+  const withNew = await adapter.addToCart({ cartId: cart.id, productId: line.productId, variantId: ctx.variantId, quantity: ctx.quantity });
+  const updated = await adapter.updateQuantity({ cartId: withNew.id, lineId: line.id, quantity: 0 });
+  await recordCartSnapshot(ctx, updated);
+  return updated;
 }
 
-export async function createCommerceCheckout(input: { graph: BusinessGraph; customerId: string; conversationId: string }) {
-  const adapter = await resolveCommerceAdapterForBusiness(input.graph.business.id);
-  const cart = await ensureCommerceCart(input);
+export type CommerceCheckoutResult = {
+  checkoutId: string;
+  cart: Cart;
+  snapshotHash: string;
+  checkoutUrl?: string;
+};
+
+export async function createCommerceCheckout(ctx: Ctx & { cartId: string }): Promise<CommerceCheckoutResult> {
+  const adapter = await resolveCommerceAdapterForBusiness(ctx.graph.business.id);
+  const cart = await ownedProviderCart(adapter, ctx, ctx.cartId);
+  if (cart.lines.length === 0) throw new CommerceError("Cart is empty");
   const checkout = await adapter.createCheckout({ cartId: cart.id });
-  await getBackend().upsertCommerceCart({ businessId: input.graph.business.id, conversationId: input.conversationId, customerId: input.customerId, cartId: cart.id, status: "checkout", data: { ...cart, status: "checkout" } });
-  return checkout;
+  if (
+    Math.round(checkout.amount.amount * 100) !== Math.round(cart.total.amount * 100) ||
+    checkout.amount.currency.toUpperCase() !== cart.total.currency.toUpperCase()
+  ) {
+    throw new CommerceError("Checkout total does not match cart");
+  }
+  const priced = { ...cart, status: "checkout" as const };
+  await recordCartSnapshot(ctx, priced);
+  return { checkoutId: checkout.id, cart: priced, snapshotHash: cartSnapshotHash(cart), checkoutUrl: checkout.checkoutUrl };
 }
 
-export function commerceOrderIdempotencyKey(input: { businessId: string; conversationId: string; cartId: string }): string {
-  return [input.businessId, input.conversationId, input.cartId, "order"].join(":");
+export function commerceOrderIdempotencyKey(input: { businessId: string; conversationId: string; cartId: string; paymentRequestId: string }): string {
+  return [input.businessId, input.conversationId, input.cartId, input.paymentRequestId, "order"].join(":");
 }
 
-export async function createCommerceOrder(input: { graph: BusinessGraph; customerId: string; conversationId: string; cartId: string; idempotencyKey: string }): Promise<Order> {
-  const existing = (await getBackend().listCommerceOrders(input.graph.business.id)).find((order) => order.idempotencyKey === input.idempotencyKey);
+/**
+ * The ONLY path to an order. Re-verifies, immediately before creating it:
+ * the payment is verified-paid, bound to THIS cart, and the provider's
+ * cart still hashes to the snapshot that payment was priced from, with
+ * the same amount and currency. The provider re-checks inventory.
+ */
+export async function createCommerceOrder(ctx: Ctx & { cartId: string; paymentRequestId: string }): Promise<Order> {
+  const backend = getBackend();
+  const idempotencyKey = commerceOrderIdempotencyKey({
+    businessId: ctx.graph.business.id,
+    conversationId: ctx.conversationId,
+    cartId: ctx.cartId,
+    paymentRequestId: ctx.paymentRequestId,
+  });
+  const existing = (await backend.listCommerceOrders(ctx.graph.business.id)).find((order) => order.idempotencyKey === idempotencyKey);
   if (existing) return existing.data as Order;
-  const adapter = await resolveCommerceAdapterForBusiness(input.graph.business.id);
-  const order = await adapter.createOrder({ cartId: input.cartId, idempotencyKey: input.idempotencyKey });
-  await getBackend().createCommerceOrder({
-    businessId: input.graph.business.id,
-    conversationId: input.conversationId,
-    customerId: input.customerId,
+
+  const payment = await backend.getPaymentRequest(ctx.paymentRequestId);
+  assertPaymentCoversCart(payment, ctx);
+
+  const adapter = await resolveCommerceAdapterForBusiness(ctx.graph.business.id);
+  const cart = await ownedProviderCart(adapter, ctx, ctx.cartId);
+  const binding = payment!.binding!;
+  if (cartSnapshotHash(cart) !== binding.snapshotHash) throw new CommerceError("Cart changed after payment");
+  if (
+    Math.round(cart.total.amount * 100) !== Math.round(payment!.amount * 100) ||
+    cart.total.currency.toUpperCase() !== payment!.currency.toUpperCase()
+  ) {
+    throw new CommerceError("Cart changed after payment");
+  }
+
+  const order = await adapter.createOrder({ cartId: ctx.cartId, idempotencyKey });
+  await backend.createCommerceOrder({
+    businessId: ctx.graph.business.id,
+    conversationId: ctx.conversationId,
+    customerId: ctx.customerId,
     orderId: order.id,
     cartId: order.cartId,
     totalAmount: order.total.amount,
     currency: order.total.currency,
     status: order.status,
-    idempotencyKey: input.idempotencyKey,
+    idempotencyKey,
     verifiedAt: order.verifiedAt,
     data: order,
   });
   return order;
+}
+
+function assertPaymentCoversCart(payment: PaymentRequestRecord | undefined, ctx: Ctx & { cartId: string }): void {
+  if (!payment) throw new CommerceError("Payment not found");
+  if (payment.businessId !== ctx.graph.business.id || payment.conversationId !== ctx.conversationId) {
+    throw new CommerceError("Payment does not belong to this conversation");
+  }
+  if (payment.status !== "paid") throw new CommerceError("Payment is not verified");
+  if (payment.binding?.kind !== "commerce_cart" || payment.binding.cartId !== ctx.cartId) {
+    throw new CommerceError("Payment is not bound to this cart");
+  }
 }

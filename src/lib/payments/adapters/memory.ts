@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import type {
   CreatePaymentLinkInput,
   PaymentAdapter,
+  PaymentStatusRef,
   PaymentWebhookHeaders,
   ProviderPayment,
   VerifiedPaymentWebhook,
@@ -45,8 +46,8 @@ export class MemoryPaymentAdapter implements PaymentAdapter {
     return payment;
   }
 
-  async getPaymentStatus(providerPaymentId: string): Promise<ProviderPayment | undefined> {
-    return this.payments.get(providerPaymentId);
+  async getPaymentStatus(ref: PaymentStatusRef): Promise<ProviderPayment | undefined> {
+    return this.payments.get(ref.providerPaymentId);
   }
 
   async verifyWebhook(rawBody: string, headers: PaymentWebhookHeaders): Promise<VerifiedPaymentWebhook> {

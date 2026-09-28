@@ -9,7 +9,8 @@ import { getConversationStore } from "@/lib/state";
 import type { ConversationState, TurnLog } from "@/lib/state";
 import { getBackend } from "@/lib/store";
 import { formatLocalDateTime } from "@/lib/scheduling/resolver";
-import type { CustomerFacingLocalDisplay, SchedulingDisplayFacts } from "@/lib/reasoner/types";
+import type { CustomerFacingLocalDisplay, GroundedContext, SchedulingDisplayFacts } from "@/lib/reasoner/types";
+import { getCommerceProduct, getOwnedCart } from "@/lib/commerce/capability";
 import { sanitizeComposeInput } from "@/lib/reasoner/compose-sanitization";
 import { verifyIR } from "@/lib/reasoner/verify";
 import {
@@ -19,6 +20,10 @@ import {
   type PaymentWebhookResult,
 } from "@/lib/payments/capability";
 import type { PaymentWebhookHeaders } from "@/lib/payments/adapters/types";
+import { cancelPaymentRequest } from "@/lib/payments/capability";
+import type { NormalizedOutboundMessage } from "@/lib/channels/types";
+import type { Product } from "@/lib/commerce/types";
+import type { BarryIR } from "@/lib/reasoner/ir";
 import { compile, SCRATCH_KEYS, type CompileOutcome } from "./compiler";
 
 /**
@@ -37,54 +42,98 @@ function turnId(): string {
   return `turn_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
 }
 
-/** Apply side effects on ConversationState that follow deterministically from a tool's output. */
-function patchStateAfterTool(state: ConversationState, toolName: string, output: unknown): void {
+/**
+ * Apply side effects on ConversationState that follow deterministically
+ * from a SUCCESSFUL tool's output. Only verified tool/provider results
+ * ever reach here — this is the one place transaction state advances.
+ * `prevStage` is restored when a tool ran but did not do what was asked
+ * (e.g. the requested variant wasn't available): no false transition.
+ */
+async function patchStateAfterTool(state: ConversationState, toolName: string, output: unknown, prevStage: ConversationState["stage"]): Promise<void> {
+  const known = state.knownFields;
   switch (toolName) {
     case "checkAvailability": {
       const { slots } = output as { slots: { resourceId: string; start: string; end: string }[] };
       if (slots.length > 0) {
-        state.knownFields[SCRATCH_KEYS.offeredStart] = slots[0].start;
-        state.knownFields[SCRATCH_KEYS.offeredEnd] = slots[0].end;
-        state.knownFields[SCRATCH_KEYS.offeredResource] = slots[0].resourceId;
+        known[SCRATCH_KEYS.offeredStart] = slots[0].start;
+        known[SCRATCH_KEYS.offeredEnd] = slots[0].end;
+        known[SCRATCH_KEYS.offeredResource] = slots[0].resourceId;
       }
       break;
     }
     case "createPaymentRequest": {
       const { paymentRequestId } = output as { paymentRequestId: string };
-      state.knownFields[SCRATCH_KEYS.paymentRequestId] = paymentRequestId;
+      known[SCRATCH_KEYS.paymentRequestId] = paymentRequestId;
       state.stage = "payment";
       break;
     }
     case "searchProducts": {
       const { products } = output as { products: { id: string }[] };
       if (products.length > 0) {
-        state.knownFields[SCRATCH_KEYS.commerceLastProductIds] = products.map((product) => product.id).join(",");
+        known[SCRATCH_KEYS.commerceLastProductIds] = products.map((product) => product.id).join(",");
+        delete known[SCRATCH_KEYS.commercePendingProductId];
       }
       break;
     }
     case "addToCart":
     case "updateCartLine": {
-      const { cart, lineId } = output as { cart: { id: string }; lineId?: string };
-      state.knownFields[SCRATCH_KEYS.commerceCartId] = cart.id;
-      if (lineId) state.knownFields[SCRATCH_KEYS.commerceCartLineId] = lineId;
-      state.stage = "payment";
+      const result = output as {
+        added: boolean;
+        cart?: { id: string; total: { amount: number; currency: string }; lines: unknown[] };
+        lineId?: string;
+        notAdded?: { productId: string };
+      };
+      if (!result.added) {
+        if (toolName === "addToCart" && result.notAdded) known[SCRATCH_KEYS.commercePendingProductId] = result.notAdded.productId;
+        state.stage = prevStage;
+        break;
+      }
+      delete known[SCRATCH_KEYS.commercePendingProductId];
+      if (result.cart) {
+        known[SCRATCH_KEYS.commerceCartId] = result.cart.id;
+        known[SCRATCH_KEYS.commerceCartTotal] = JSON.stringify(result.cart.total);
+      }
+      if (result.lineId) known[SCRATCH_KEYS.commerceCartLineId] = result.lineId;
+      else delete known[SCRATCH_KEYS.commerceCartLineId];
+      // The cart changed: any checkout/payment priced from the old cart no
+      // longer applies. Cancel it so it can never become this order.
+      if (known[SCRATCH_KEYS.paymentRequestId] && !known[SCRATCH_KEYS.paid]) {
+        await cancelPaymentRequest(known[SCRATCH_KEYS.paymentRequestId]);
+        delete known[SCRATCH_KEYS.paymentRequestId];
+      }
+      delete known[SCRATCH_KEYS.commerceCheckoutId];
+      delete known[SCRATCH_KEYS.commerceCartSnapshot];
+      state.stage = "offer_selection";
       break;
     }
     case "createCommerceCheckout": {
-      const { checkoutId, cartId, paymentRequestId } = output as {
+      const { checkoutId, cartId, paymentRequestId, snapshotHash, amount } = output as {
         checkoutId: string;
         cartId: string;
         paymentRequestId: string;
+        snapshotHash: string;
+        amount: { amount: number; currency: string };
       };
-      state.knownFields[SCRATCH_KEYS.commerceCheckoutId] = checkoutId;
-      state.knownFields[SCRATCH_KEYS.commerceCartId] = cartId;
-      state.knownFields[SCRATCH_KEYS.paymentRequestId] = paymentRequestId;
+      known[SCRATCH_KEYS.commerceCheckoutId] = checkoutId;
+      known[SCRATCH_KEYS.commerceCartId] = cartId;
+      known[SCRATCH_KEYS.commerceCartSnapshot] = snapshotHash;
+      known[SCRATCH_KEYS.commerceCartTotal] = JSON.stringify(amount);
+      known[SCRATCH_KEYS.paymentRequestId] = paymentRequestId;
+      state.stage = "payment";
+      break;
+    }
+    case "verifyPayment": {
+      const { paymentRequestId, status } = output as { paymentRequestId: string; status: string };
+      if (status === "paid" && known[SCRATCH_KEYS.paymentRequestId] === paymentRequestId) known[SCRATCH_KEYS.paid] = "1";
+      if ((status === "failed" || status === "cancelled") && known[SCRATCH_KEYS.paymentRequestId] === paymentRequestId) {
+        delete known[SCRATCH_KEYS.paymentRequestId];
+      }
       state.stage = "payment";
       break;
     }
     case "createCommerceOrder": {
       const { orderId } = output as { orderId: string };
-      state.knownFields[SCRATCH_KEYS.commerceOrderId] = orderId;
+      known[SCRATCH_KEYS.commerceOrderId] = orderId;
       state.outcome = "won";
       state.stage = "closed";
       break;
@@ -101,7 +150,7 @@ function patchStateAfterTool(state: ConversationState, toolName: string, output:
     }
     case "checkInventory": {
       const { quantityAvailable } = output as { quantityAvailable: number };
-      if (quantityAvailable > 0) state.knownFields[SCRATCH_KEYS.inventoryChecked] = "1";
+      if (quantityAvailable > 0) known[SCRATCH_KEYS.inventoryChecked] = "1";
       break;
     }
     case "createLead": {
@@ -112,10 +161,63 @@ function patchStateAfterTool(state: ConversationState, toolName: string, output:
   }
 }
 
+type RichProduct = NonNullable<NonNullable<NormalizedOutboundMessage["rich"]>["products"]>[number];
+
+function optionLabel(options: Record<string, string>): string {
+  return Object.values(options).join(" / ");
+}
+
+/**
+ * Channel-neutral rich payload built ONLY from verified tool output —
+ * product cards and payment links are rendered by the channel, so the
+ * text reply never needs to carry markdown, image syntax or raw URLs.
+ */
+export function buildRichPayload(outcome: CompileOutcome, toolResult: ToolCallResult | null): NormalizedOutboundMessage["rich"] | undefined {
+  if (outcome.kind !== "action" || !toolResult?.ok) return undefined;
+  const output = toolResult.output as Record<string, unknown>;
+  switch (outcome.action.name) {
+    case "searchProducts": {
+      const { products, requestedOptions } = output as {
+        products: Product[];
+        requestedOptions?: Record<string, string>;
+      };
+      if (products.length === 0) return undefined;
+      return {
+        products: products.slice(0, 5).map((product): RichProduct => {
+          const wanted = product.variants.filter((v) =>
+            Object.entries(requestedOptions ?? {}).every(([k, val]) => v.options[k]?.toLowerCase() === val.toLowerCase())
+          );
+          const inStock = wanted.filter((v) => v.inventory.available > 0);
+          const priced = (inStock[0] ?? wanted[0] ?? product.variants[0]);
+          const availability = requestedOptions && Object.keys(requestedOptions).length > 0
+            ? `${optionLabel(requestedOptions)}: ${inStock.length > 0 ? "in stock" : "out of stock"}`
+            : `In stock: ${product.variants.filter((v) => v.inventory.available > 0).map((v) => optionLabel(v.options)).join(", ") || "none"}`;
+          return {
+            title: product.title,
+            imageUrl: product.media[0]?.url,
+            price: priced ? `${priced.price.amount} ${priced.price.currency}` : undefined,
+            url: product.url,
+            availability,
+          };
+        }),
+      };
+    }
+    case "createCommerceCheckout":
+    case "createPaymentRequest": {
+      const url = (output.checkoutUrl as string | undefined) || undefined;
+      return url ? { paymentUrl: url } : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
 export type TurnOutcome = {
   state: ConversationState;
   turn: TurnLog;
   response: string;
+  /** Channel-neutral rich content (product cards, payment link) accompanying `response`. */
+  rich?: NormalizedOutboundMessage["rich"];
 };
 
 const HEBREW_LETTERS = /[\u0590-\u05ff]/;
@@ -180,18 +282,19 @@ export async function handleCustomerMessage(
   const reasoner = getReasoner();
   const ctx: ToolContext = { graph, conversationId, customerId };
 
-  const rawIr = await reasoner.understand({ graph, state, customerMessage: message });
-  // The model understands fuzzy language; verifyIR() is the ONE place
-  // BARRY cross-checks high-confidence, directly-verifiable business
-  // semantics (offer references, explicit weekday/relative-day tokens)
-  // against the raw customer text and overrides the Reasoner when its
-  // IR contradicts something the customer plainly said. Applied
-  // uniformly regardless of which Reasoner produced the IR.
+  const grounded = await buildGroundedContext(graph, state, ctx);
+  const rawIr = await reasoner.understand({ graph, state, customerMessage: message, grounded });
+  // The model owns understanding; verifyIR() only GROUNDS it — evidence
+  // for persisted facts, consistency with current state, structural
+  // ranges. It never adds a semantic value of its own.
   const { verified: ir, verification } = verifyIR(graph, message, rawIr, state);
-  const outcome = compile(graph, state, ir);
+  const prevStage = state.stage;
+  let outcome = compile(graph, state, ir);
 
   state.detectedIntent = ir.intent;
-  state.stage = outcome.stage;
+  // Non-action outcomes describe where the conversation now is. An
+  // action's stage only applies once its tool actually succeeds.
+  if (outcome.kind !== "action") state.stage = outcome.stage;
   state.missingFields = outcome.kind === "needs_info" ? outcome.missingFields : [];
 
   let policyDecision: PolicyDecision | undefined;
@@ -199,35 +302,33 @@ export async function handleCustomerMessage(
   let response: string;
 
   if (outcome.kind === "action") {
-    policyDecision = decide(graph, { action: outcome.action.name, params: outcome.action.input });
+    const executed = await authorizeAndExecute(graph, state, outcome, ctx, prevStage);
+    policyDecision = executed.policyDecision;
+    toolResult = executed.toolResult;
 
-    if (policyDecision.status === "denied") {
-      response = `I'm not able to do that: ${policyDecision.reason}`;
-    } else if (policyDecision.status === "requires_approval") {
-      const approvalCall = await callTool(
-        "requestApproval",
-        {
-          requestedAction: outcome.action.name,
-          requestedInput: outcome.action.input,
-          reason: policyDecision.reason,
-          policyId: policyDecision.policyId ?? "unknown",
-          proposedValue: outcome.action.input,
-        },
-        ctx
-      );
-      if (approvalCall.ok) {
-        const { approvalId } = approvalCall.output as { approvalId: string };
-        state.pendingApprovalId = approvalId;
-        state.pendingAction = outcome.action;
-        state.stage = "escalated";
+    // One bounded continuation: a provider-verified payment may unlock the
+    // next grounded step (e.g. creating the order) in the same turn.
+    if (outcome.action.name === "verifyPayment" && toolResult?.ok && state.knownFields[SCRATCH_KEYS.paid]) {
+      const next = compile(graph, state, CONTINUE_IR);
+      if (next.kind === "action") {
+        const stageBefore = state.stage;
+        const continued = await authorizeAndExecute(graph, state, next, ctx, stageBefore);
+        if (continued.toolResult || continued.policyDecision?.status !== "allowed") {
+          outcome = next;
+          policyDecision = continued.policyDecision;
+          toolResult = continued.toolResult;
+        }
       }
+    }
+
+    if (policyDecision?.status === "denied") {
+      response = `I'm not able to do that: ${policyDecision.reason}`;
+    } else if (policyDecision?.status === "requires_approval") {
       response = await reasoner.composeResponse(
         { graph, state, customerMessage: message },
         { outcome, toolResult: null, policyReason: policyDecision.reason }
       );
     } else {
-      toolResult = await callTool(outcome.action.name, outcome.action.input, ctx);
-      if (toolResult.ok) patchStateAfterTool(state, outcome.action.name, toolResult.output);
       const scheduling = buildSchedulingDisplay(graph, outcome, toolResult, message);
       response = await reasoner.composeResponse(
         { graph, state, customerMessage: message },
@@ -242,7 +343,8 @@ export async function handleCustomerMessage(
     );
   }
 
-  state.messages.push({ role: "barry", content: response, at: new Date().toISOString() });
+  const rich = buildRichPayload(outcome, toolResult);
+  state.messages.push({ role: "barry", content: response, at: new Date().toISOString(), ...(rich ? { rich } : {}) });
 
   const knowledgeIds = knowledgeSearch(graph, message).map((k) => k.id);
   const offerIds = ir.selectedOfferId ? [ir.selectedOfferId] : ir.offerCandidateIds ?? [];
@@ -278,7 +380,89 @@ export async function handleCustomerMessage(
   state.turns.push(turn);
 
   await store.save(state);
-  return { state, turn, response };
+  return { state, turn, response, rich };
+}
+
+/**
+ * What BARRY actually showed / holds, re-read from the real provider —
+ * the model resolves "the first one" against exactly this, and BARRY maps
+ * the position back to the real id. Read-only; failures just omit it.
+ */
+async function buildGroundedContext(graph: BusinessGraph, state: ConversationState, ctx: ToolContext): Promise<GroundedContext | undefined> {
+  const lastIds = state.knownFields[SCRATCH_KEYS.commerceLastProductIds]?.split(",").filter(Boolean) ?? [];
+  const cartId = state.knownFields[SCRATCH_KEYS.commerceCartId];
+  if (lastIds.length === 0 && !cartId) return undefined;
+  const grounded: GroundedContext = {};
+  try {
+    const products = await Promise.all(lastIds.map((id) => getCommerceProduct(graph, id)));
+    grounded.shownResults = products.flatMap((product, index) =>
+      product
+        ? [{
+            index,
+            title: product.title,
+            options: product.variants.map((v) => ({ options: v.options, price: `${v.price.amount} ${v.price.currency}`, inStock: v.inventory.available > 0 })),
+          }]
+        : []
+    );
+    if (cartId) {
+      const cart = await getOwnedCart({ graph, customerId: ctx.customerId, conversationId: ctx.conversationId }, cartId);
+      grounded.cart = cart.lines.map((line, index) => ({ index, title: line.title, options: line.options, quantity: line.quantity }));
+      grounded.cartTotal = `${cart.total.amount} ${cart.total.currency}`;
+    }
+  } catch (err) {
+    console.error("[barry:engine] grounded context unavailable", err instanceof Error ? err.message : err);
+  }
+  return grounded;
+}
+
+const CONTINUE_IR: BarryIR = { intent: "continue", entities: {}, constraints: {}, customerInfo: {} };
+
+/**
+ * Policy -> tool -> state, for one compiled action. The ONLY path by
+ * which an action executes. State advances only on real success.
+ */
+async function authorizeAndExecute(
+  graph: BusinessGraph,
+  state: ConversationState,
+  outcome: Extract<CompileOutcome, { kind: "action" }>,
+  ctx: ToolContext,
+  prevStage: ConversationState["stage"]
+): Promise<{ policyDecision: PolicyDecision; toolResult: ToolCallResult | null }> {
+  const policyDecision = decide(graph, { action: outcome.action.name, params: outcome.action.input });
+  if (policyDecision.status === "denied") {
+    state.stage = prevStage;
+    return { policyDecision, toolResult: null };
+  }
+  if (policyDecision.status === "requires_approval") {
+    const approvalCall = await callTool(
+      "requestApproval",
+      {
+        requestedAction: outcome.action.name,
+        requestedInput: outcome.action.input,
+        reason: policyDecision.reason,
+        policyId: policyDecision.policyId ?? "unknown",
+        proposedValue: outcome.action.input,
+      },
+      ctx
+    );
+    if (approvalCall.ok) {
+      const { approvalId } = approvalCall.output as { approvalId: string };
+      state.pendingApprovalId = approvalId;
+      state.pendingAction = outcome.action;
+      state.stage = "escalated";
+    } else {
+      state.stage = prevStage;
+    }
+    return { policyDecision, toolResult: null };
+  }
+  const toolResult = await callTool(outcome.action.name, outcome.action.input, ctx);
+  if (toolResult.ok) {
+    state.stage = outcome.stage;
+    await patchStateAfterTool(state, outcome.action.name, toolResult.output, prevStage);
+  } else {
+    state.stage = prevStage;
+  }
+  return { policyDecision, toolResult };
 }
 
 /**
@@ -350,7 +534,7 @@ export async function handlePaymentWebhook(
   headers: PaymentWebhookHeaders
 ): Promise<PaymentWebhookResult & { result?: TurnOutcome }> {
   const processed = await processPaymentWebhook(rawBody, headers);
-  if (processed.duplicate || processed.payment?.status !== "paid") return processed;
+  if (processed.duplicate || processed.superseded || processed.payment?.status !== "paid") return processed;
   try {
     const graph = resolveBusinessGraph(processed.payment.businessId);
     const result = await handleCustomerMessage(
@@ -432,7 +616,7 @@ export async function resumeAfterApproval(
   } else {
     const input = (alternateValue ?? approval.requestedInput) as Record<string, unknown>;
     toolResult = await callTool(approval.requestedAction, input, ctx);
-    if (toolResult.ok) patchStateAfterTool(state, approval.requestedAction, toolResult.output);
+    if (toolResult.ok) await patchStateAfterTool(state, approval.requestedAction, toolResult.output, state.stage);
 
     const syntheticOutcome: CompileOutcome = {
       kind: "action",

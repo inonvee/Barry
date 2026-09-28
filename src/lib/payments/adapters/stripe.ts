@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import type {
   CreatePaymentLinkInput,
   PaymentAdapter,
+  PaymentStatusRef,
   PaymentWebhookHeaders,
   ProviderPayment,
   VerifiedPaymentWebhook,
@@ -121,8 +122,8 @@ export class StripePaymentAdapter implements PaymentAdapter {
     return this.sessionToPayment(session, input.idempotencyKey);
   }
 
-  async getPaymentStatus(providerPaymentId: string): Promise<ProviderPayment | undefined> {
-    const session = await this.request(`/checkout/sessions/${encodeURIComponent(providerPaymentId)}`);
+  async getPaymentStatus(ref: PaymentStatusRef): Promise<ProviderPayment | undefined> {
+    const session = await this.request(`/checkout/sessions/${encodeURIComponent(ref.providerPaymentId)}`);
     return this.sessionToPayment(session, String(session.client_reference_id ?? ""));
   }
 

@@ -3,18 +3,18 @@ import { defineTool } from "./types";
 import { findOffer, inventoryFor } from "@/lib/business-graph";
 import { getBackend } from "@/lib/store";
 import { bookingIdempotencyKey, checkSchedulingAvailability, createSchedulingBooking } from "@/lib/scheduling/capability";
-import { createPaymentLink } from "@/lib/payments/capability";
+import { createPaymentLink, verifyPaymentWithProvider } from "@/lib/payments/capability";
 import {
   addCommerceItem,
-  commerceOrderIdempotencyKey,
   createCommerceCheckout as createCommerceCheckoutCapability,
   createCommerceOrder as createCommerceOrderCapability,
-  ensureCommerceCart,
   getCommerceProduct,
-  saveCommerceCart,
+  getOwnedCart,
+  replaceCommerceLineVariant,
+  resolveVariant,
   searchCommerceProducts,
+  setCommerceLineQuantity,
 } from "@/lib/commerce/capability";
-import type { Product } from "@/lib/commerce/types";
 
 /**
  * Simulated tool adapters. Each mirrors what a real integration (Google
@@ -135,11 +135,12 @@ export const createPaymentRequest = defineTool({
 });
 
 const moneySchema = z.object({ amount: z.number(), currency: z.string() });
+const optionsSchema = z.record(z.string(), z.string());
 const variantSchema = z.object({
   id: z.string(),
   sku: z.string(),
   title: z.string(),
-  options: z.record(z.string(), z.string()),
+  options: optionsSchema,
   price: moneySchema,
   inventory: z.object({ available: z.number() }),
 });
@@ -160,7 +161,7 @@ const cartLineSchema = z.object({
   title: z.string(),
   quantity: z.number(),
   unitPrice: moneySchema,
-  options: z.record(z.string(), z.string()),
+  options: optionsSchema,
 });
 const cartSchema = z.object({
   id: z.string(),
@@ -172,172 +173,184 @@ const cartSchema = z.object({
   status: z.enum(["open", "checkout", "ordered"]),
   providerCartId: z.string().optional(),
 });
-
-function variantFor(product: Product, size?: string) {
-  const wanted = size?.toLowerCase();
-  return (
-    product.variants.find((variant) => (!wanted || variant.options.size?.toLowerCase() === wanted) && variant.inventory.available > 0) ??
-    product.variants.find((variant) => variant.inventory.available > 0)
-  );
-}
+/** A selection that could not be executed as asked — reported with REAL alternatives; nothing is substituted. */
+const notAddedSchema = z.object({
+  reason: z.enum(["unavailable", "needs_variant", "unknown_option"]),
+  productId: z.string(),
+  productTitle: z.string(),
+  requested: optionsSchema.optional(),
+  availableOptions: z.array(optionsSchema),
+});
 
 export const searchProducts = defineTool({
   name: "searchProducts",
-  description: "Search grounded catalog products through the commerce capability.",
+  description: "Search grounded catalog products through the business's commerce provider.",
   inputSchema: z.object({
     text: z.string().optional(),
     category: z.string().optional(),
-    occasion: z.string().optional(),
-    color: z.string().optional(),
-    size: z.string().optional(),
-    budgetAmount: z.number().optional(),
+    attributes: optionsSchema.optional(),
+    options: optionsSchema.optional(),
+    budgetAmount: z.number().positive().optional(),
     currency: z.string().optional(),
   }),
-  outputSchema: z.object({ products: z.array(productSchema) }),
+  outputSchema: z.object({ products: z.array(productSchema), requestedOptions: optionsSchema.optional() }),
   async execute(input, ctx) {
     const result = await searchCommerceProducts(ctx.graph, {
       text: input.text,
       category: input.category,
-      occasion: input.occasion,
-      color: input.color,
-      size: input.size,
+      attributes: input.attributes,
+      options: input.options,
       budget: input.budgetAmount ? { amount: input.budgetAmount, currency: input.currency ?? "ILS" } : undefined,
     });
-    return result;
+    return { products: result.products, requestedOptions: input.options };
   },
 });
 
 export const addToCart = defineTool({
   name: "addToCart",
-  description: "Add a grounded product variant to the active commerce cart.",
+  description: "Add the exact requested product variant to the provider cart, or report real alternatives.",
   inputSchema: z.object({
     productId: z.string(),
-    size: z.string().optional(),
+    options: optionsSchema.optional(),
     quantity: z.number().int().positive().default(1),
   }),
   outputSchema: z.object({
-    cart: cartSchema,
+    added: z.boolean(),
+    cart: cartSchema.optional(),
     lineId: z.string().optional(),
-    requestedAvailable: z.boolean(),
-    selectedSize: z.string().optional(),
+    notAdded: notAddedSchema.optional(),
   }),
   async execute(input, ctx) {
     const product = await getCommerceProduct(ctx.graph, input.productId);
-    if (!product) throw new Error("Product not found");
-    const exact = input.size
-      ? product.variants.find(
-          (variant) => variant.options.size?.toLowerCase() === input.size?.toLowerCase() && variant.inventory.available >= input.quantity
-        )
-      : undefined;
-    const selected = exact ?? variantFor(product, input.size);
-    if (!selected) throw new Error("Requested variant not available");
+    if (!product) throw new Error("That item is no longer available");
+    const resolution = resolveVariant(product, input.options, input.quantity);
+    if (!resolution.ok) {
+      return {
+        added: false,
+        notAdded: {
+          reason: resolution.reason,
+          productId: product.id,
+          productTitle: product.title,
+          requested: input.options,
+          availableOptions: resolution.availableOptions,
+        },
+      };
+    }
     const cart = await addCommerceItem({
       graph: ctx.graph,
       customerId: ctx.customerId,
       conversationId: ctx.conversationId,
       productId: product.id,
-      variantId: selected.id,
+      variantId: resolution.variant.id,
       quantity: input.quantity,
     });
-    const line = cart.lines.find((cartLine) => cartLine.variantId === selected.id);
-    return {
-      cart,
-      lineId: line?.id,
-      requestedAvailable: Boolean(exact || !input.size),
-      selectedSize: selected.options.size,
-    };
+    const line = cart.lines.find((cartLine) => cartLine.variantId === resolution.variant.id);
+    return { added: true, cart, lineId: line?.id };
   },
 });
 
 export const updateCartLine = defineTool({
   name: "updateCartLine",
-  description: "Update the active commerce cart line size or quantity.",
+  description: "Change a provider cart line's variant or quantity (0 removes it). Executed on the provider, never locally.",
   inputSchema: z.object({
     cartId: z.string(),
     lineId: z.string(),
-    size: z.string().optional(),
-    quantity: z.number().int().positive().default(1),
+    options: optionsSchema.optional(),
+    quantity: z.number().int().min(0).optional(),
   }),
-  outputSchema: z.object({ cart: cartSchema, lineId: z.string().optional(), selectedSize: z.string().optional() }),
+  outputSchema: z.object({
+    added: z.boolean(),
+    cart: cartSchema.optional(),
+    lineId: z.string().optional(),
+    notAdded: notAddedSchema.optional(),
+  }),
   async execute(input, ctx) {
-    const cart = await ensureCommerceCart({ graph: ctx.graph, customerId: ctx.customerId, conversationId: ctx.conversationId });
+    const scope = { graph: ctx.graph, customerId: ctx.customerId, conversationId: ctx.conversationId };
+    const cart = await getOwnedCart(scope, input.cartId);
     const line = cart.lines.find((cartLine) => cartLine.id === input.lineId);
     if (!line) throw new Error("Cart is empty");
-    if (!input.size || line.options.size?.toLowerCase() === input.size.toLowerCase()) {
-      const saved = await saveCommerceCart({
-        graph: ctx.graph,
-        customerId: ctx.customerId,
-        conversationId: ctx.conversationId,
-        cart: { ...cart, lines: cart.lines.map((cartLine) => cartLine.id === line.id ? { ...cartLine, quantity: input.quantity } : cartLine) },
-      });
-      return { cart: saved, lineId: line.id, selectedSize: line.options.size };
+    const quantity = input.quantity ?? line.quantity;
+
+    if (!input.options || Object.keys(input.options).length === 0) {
+      const updated = await setCommerceLineQuantity({ ...scope, cartId: cart.id, lineId: line.id, quantity });
+      return { added: true, cart: updated, lineId: quantity === 0 ? undefined : line.id };
     }
+
     const product = await getCommerceProduct(ctx.graph, line.productId);
-    const variant = product?.variants.find(
-      (candidate) => candidate.options.size?.toLowerCase() === input.size?.toLowerCase() && candidate.inventory.available >= input.quantity
-    );
-    if (!product || !variant) throw new Error("Requested variant not available");
-    const updatedLines = cart.lines.map((cartLine) =>
-      cartLine.id === line.id
-        ? { ...cartLine, variantId: variant.id, unitPrice: variant.price, options: variant.options, quantity: input.quantity }
-        : cartLine
-    );
-    const total = {
-      amount: Math.round(updatedLines.reduce((sum, cartLine) => sum + cartLine.unitPrice.amount * cartLine.quantity, 0) * 100) / 100,
-      currency: updatedLines[0]?.unitPrice.currency ?? "ILS",
-    };
-    const saved = await saveCommerceCart({
-      graph: ctx.graph,
-      customerId: ctx.customerId,
-      conversationId: ctx.conversationId,
-      cart: { ...cart, lines: updatedLines, total },
-    });
-    return { cart: saved, lineId: line.id, selectedSize: variant.options.size };
+    if (!product) throw new Error("That item is no longer available");
+    const resolution = resolveVariant(product, { ...line.options, ...input.options }, Math.max(quantity, 1));
+    if (!resolution.ok) {
+      return {
+        added: false,
+        cart,
+        lineId: line.id,
+        notAdded: {
+          reason: resolution.reason,
+          productId: product.id,
+          productTitle: product.title,
+          requested: input.options,
+          availableOptions: resolution.availableOptions,
+        },
+      };
+    }
+    const updated = await replaceCommerceLineVariant({ ...scope, cartId: cart.id, lineId: line.id, variantId: resolution.variant.id, quantity: Math.max(quantity, 1) });
+    const newLine = updated.lines.find((cartLine) => cartLine.variantId === resolution.variant.id);
+    return { added: true, cart: updated, lineId: newLine?.id };
   },
 });
 
 export const createCommerceCheckout = defineTool({
   name: "createCommerceCheckout",
-  description: "Create a verified commerce checkout and matching payment request.",
+  description: "Price the provider cart and create a payment bound to that exact cart snapshot.",
   inputSchema: z.object({ cartId: z.string() }),
   outputSchema: z.object({
     checkoutId: z.string(),
     cartId: z.string(),
     amount: moneySchema,
+    snapshotHash: z.string(),
     status: z.literal("pending"),
     paymentRequestId: z.string(),
     checkoutUrl: z.string().optional(),
   }),
-  async execute(_input, ctx) {
+  async execute(input, ctx) {
     const checkout = await createCommerceCheckoutCapability({
       graph: ctx.graph,
       customerId: ctx.customerId,
       conversationId: ctx.conversationId,
+      cartId: input.cartId,
     });
     const pr = await createPaymentLink({
       graph: ctx.graph,
       businessId: ctx.graph.business.id,
       conversationId: ctx.conversationId,
       customerId: ctx.customerId,
-      amount: checkout.amount.amount,
-      currency: checkout.amount.currency,
-      reason: `Commerce checkout ${checkout.cartId}`,
+      amount: checkout.cart.total.amount,
+      currency: checkout.cart.total.currency,
+      reason: `Order for cart ${checkout.cart.id}`,
+      binding: {
+        kind: "commerce_cart",
+        cartId: checkout.cart.id,
+        snapshotHash: checkout.snapshotHash,
+        amount: checkout.cart.total.amount,
+        currency: checkout.cart.total.currency,
+      },
     });
     return {
-      checkoutId: checkout.id,
-      cartId: checkout.cartId,
-      amount: checkout.amount,
+      checkoutId: checkout.checkoutId,
+      cartId: checkout.cart.id,
+      amount: checkout.cart.total,
+      snapshotHash: checkout.snapshotHash,
       status: "pending" as const,
       paymentRequestId: pr.paymentRequestId,
-      checkoutUrl: pr.checkoutUrl,
+      checkoutUrl: pr.checkoutUrl || checkout.checkoutUrl,
     };
   },
 });
 
 export const createCommerceOrder = defineTool({
   name: "createCommerceOrder",
-  description: "Create exactly one verified commerce order after payment is verified.",
-  inputSchema: z.object({ cartId: z.string() }),
+  description: "Create exactly one order, only for a verified payment bound to the unchanged cart.",
+  inputSchema: z.object({ cartId: z.string(), paymentRequestId: z.string() }),
   outputSchema: z.object({
     orderId: z.string(),
     cartId: z.string(),
@@ -351,13 +364,27 @@ export const createCommerceOrder = defineTool({
       customerId: ctx.customerId,
       conversationId: ctx.conversationId,
       cartId: input.cartId,
-      idempotencyKey: commerceOrderIdempotencyKey({
-        businessId: ctx.graph.business.id,
-        conversationId: ctx.conversationId,
-        cartId: input.cartId,
-      }),
+      paymentRequestId: input.paymentRequestId,
     });
     return { orderId: order.id, cartId: order.cartId, status: "paid" as const, total: order.total, verifiedAt: order.verifiedAt };
+  },
+});
+
+export const verifyPayment = defineTool({
+  name: "verifyPayment",
+  description: "Ask the trusted payment provider whether a payment request was paid. Customer claims never set paid state.",
+  inputSchema: z.object({ paymentRequestId: z.string() }),
+  outputSchema: z.object({
+    paymentRequestId: z.string(),
+    status: z.enum(["pending", "paid", "failed", "cancelled"]),
+    verifiedAt: z.string().optional(),
+  }),
+  async execute(input, ctx) {
+    return verifyPaymentWithProvider({
+      paymentRequestId: input.paymentRequestId,
+      businessId: ctx.graph.business.id,
+      conversationId: ctx.conversationId,
+    });
   },
 });
 

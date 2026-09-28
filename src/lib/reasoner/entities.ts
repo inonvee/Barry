@@ -74,7 +74,7 @@ const HEBREW_PARTNER_WORDS = ["אשתי", "אישתי", "בעלי", "בן הזו
 // "סבבה" and "יאללה" are casual affirmatives extremely common in
 // everyday Hebrew texting, not formal registers a naive translation
 // would guess.
-const HEBREW_ACCEPT_WORDS = ["כן", "סבבה", "יאללה", "בסדר", "מעולה"];
+const HEBREW_ACCEPT_WORDS = ["כן", "סבבה", "יאללה", "בסדר", "מעולה", "מאשר", "מאשרת", "מתאים", "מתאימה"];
 const HEBREW_DECLINE_WORDS = ["לא"];
 
 const HEBREW_WEEKDAY_TOKENS: { weekday: number; forms: string[] }[] = [
@@ -276,32 +276,10 @@ function extractAnnouncedNameEnglish(message: string): string | undefined {
 // before the actual name.
 const HEBREW_NAME_MARKERS = ["קוראים לי", "השם שלי"];
 const HEBREW_NAME_COPULAS = new Set(["זה", "הוא", "היא"]);
-// The bare "אני X" ("I [am] X") pattern is far riskier: "אני" alone
-// starts countless Hebrew sentences that are NOT a self-identification
-// ("אני רוצה" = "I want", "אני בא עם אשתי" = "I'm coming with my
-// wife", "אני עם בעלי" = "I'm with my husband"). Hebrew has no letter
-// casing to lean on the way English's capitalization check does, so
-// this is guarded by an explicit blocklist of common words/relationship
-// terms that follow "אני" without being a name — this is exactly the
-// live bug class Part 8 exists to prevent (a relationship word like
-// "אישתי" must never become the customer's name).
-const HEBREW_NAME_BLOCK_AFTER_ANI = new Set([
-  "רוצה", "צריך", "צריכה", "בא", "באה", "מגיע", "מגיעה", "עם",
-  "גם", "כבר", "פה", "כאן", "יכול", "יכולה", "אוהב", "אוהבת", "מעוניין",
-  "מעוניינת", "אשמח", "חושב", "חושבת", "חוזר", "חוזרת", "מתעניין",
-  "מתעניינת", "לא", "כן", "הולך", "הולכת", "נמצא", "נמצאת", "פנוי",
-  "פנויה", "זמין", "זמינה",
-  ...HEBREW_NAME_COPULAS,
-  ...HEBREW_PARTNER_WORDS,
-]);
-
-/** The word immediately after a Hebrew marker, in ANY script — a mixed-language message ("קוראים לי Inon") must still work. Unicode-letter-aware, mirroring extractAnnouncedNameEnglish's own cleaning. */
-function wordAfter(message: string, markerIndex: number, markerLength: number): string | undefined {
-  const rest = message.slice(markerIndex + markerLength).trim();
-  const word = rest.split(/\s+/)[0]?.replace(/[^\p{L}'"-]+$/gu, "").replace(/^[^\p{L}]+/gu, "");
-  return word && word.length > 0 ? word : undefined;
-}
-
+// There is intentionally NO bare "אני X" ("I [am] X") rule: "אני אקח את
+// הראשונה" ("I'll take the first one") became name="אקח" in a live
+// simulator run. Whether a word after "אני" is a name is a semantic
+// judgment — the model's job, never a blocklist's.
 function firstNameWordAfterHebrewMarker(message: string, markerIndex: number, markerLength: number): string | undefined {
   const rest = message.slice(markerIndex + markerLength).trim();
   for (const rawWord of rest.split(/\s+/).slice(0, 4)) {
@@ -319,16 +297,6 @@ function extractAnnouncedNameHebrew(message: string): string | undefined {
     if (idx === undefined) continue;
     const word = firstNameWordAfterHebrewMarker(message, idx, marker.length);
     if (word) return word;
-  }
-
-  // The bare "אני X" form is deliberately kept Hebrew-script-only here —
-  // HEBREW_NAME_BLOCK_AFTER_ANI (the safety net for this risky pattern)
-  // is a table of Hebrew words; a Latin continuation would be entirely
-  // unguarded by it, so it's left to the Reasoner instead.
-  const idx = matchHebrewToken(message, "אני");
-  if (idx !== undefined) {
-    const word = wordAfter(message, idx, "אני".length);
-    if (word && word.length >= 2 && isHebrewLetter(word[0]) && !HEBREW_NAME_BLOCK_AFTER_ANI.has(word)) return word;
   }
 
   return undefined;

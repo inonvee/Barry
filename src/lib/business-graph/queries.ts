@@ -19,8 +19,18 @@ export function resourcesByType(graph: BusinessGraph, type: string): Resource[] 
   return graph.resources.filter((r) => r.type === type);
 }
 
+/**
+ * Read-only safety actions implied by a capability the business already
+ * enabled: any business that can request money can ask its provider
+ * whether that money arrived.
+ */
+const IMPLIED_ACTIONS: Record<string, string[]> = {
+  verifyPayment: ["createPaymentRequest", "createCommerceCheckout"],
+};
+
 export function isActionAvailable(graph: BusinessGraph, actionName: string): boolean {
-  return graph.availableActions.some((a) => a.name === actionName && a.enabled);
+  if (graph.availableActions.some((a) => a.name === actionName && a.enabled)) return true;
+  return (IMPLIED_ACTIONS[actionName] ?? []).some((base) => graph.availableActions.some((a) => a.name === base && a.enabled));
 }
 
 export function getPolicy<T extends Policy["rule"]["type"]>(

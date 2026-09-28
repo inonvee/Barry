@@ -9,6 +9,10 @@ import type { BarryIR } from "@/lib/reasoner/ir";
 import { buildSpaGraph } from "@/lib/fixtures/spa";
 
 /**
+ * (Updated for the model-first architecture: customerInfo is the model's
+ * evidence-cited claim; verifyIR checks the evidence and never recovers
+ * values from raw text itself.)
+ *
  * CUSTOMER INFO SINGLE-SOURCE-OF-TRUTH FIX. Live bug: the LLM correctly
  * understood "My name is Inon and my phone number is 057484848" — it
  * showed up in `understood.entities` — but the OLD duplicate
@@ -50,84 +54,82 @@ describe("Regression 1: exact live message persists name/phone in the same turn"
   });
 });
 
-describe("Regression 2: the exact OpenAIReasoner IR shape, with customerInfo left empty by the model", () => {
-  it("verifyIR recovers name+phone from raw text even when the LLM's customerInfo array is empty (entities alone is not enough)", () => {
+describe("Regression 2: customerInfo is the model's evidence-cited claim — BARRY never recovers it from raw text", () => {
+  it("an LLM response that cites evidence for name+phone persists them", () => {
     const graph = buildSpaGraph();
-
-    // A raw LLM completion shaped exactly like a real OpenAI structured-
-    // output response: entities correctly holds the values (exactly what
-    // was observed live in Supabase), but customerInfo — the field that
-    // actually matters — is empty, reproducing the live bug's root cause
-    // at the wire-contract level, not just in MockReasoner.
+    const message = "My name is Inon and my phone number is 057484848";
     const rawLlmResponse = JSON.stringify({
       intent: "provide_contact_info",
       selectedOfferId: "offer-couples-massage",
       offerCandidateIds: [],
       offerChangeRequested: null,
-      entities: [
+      entities: [],
+      constraints: { schedulingWindow: null, partySize: null, discountPct: null, slotAccepted: null, slotDeclined: null },
+      customerInfo: [
         { key: "name", value: "Inon" },
         { key: "phone", value: "057484848" },
       ],
-      constraints: { schedulingWindow: null, partySize: null, discountPct: null, slotAccepted: null },
-      customerInfo: [],
       requestedCapability: null,
       goal: null,
+      commerce: null,
+      customerClaimsPaymentCompleted: null,
+      evidence: [
+        { key: "customerInfo.name", value: "My name is Inon" },
+        { key: "customerInfo.phone", value: "my phone number is 057484848" },
+      ],
+      knowledgeTopic: null,
     });
 
     const parsed = parseIRResponse(graph, rawLlmResponse);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-
-    // Confirms the exact bug shape: entities has the facts, customerInfo doesn't.
-    expect(parsed.ir.entities).toEqual({ name: "Inon", phone: "057484848" });
-    expect(parsed.ir.customerInfo).toEqual({});
-
-    const { verified, verification } = verifyIR(
-      graph,
-      "My name is Inon and my phone number is 057484848",
-      parsed.ir
-    );
-
-    expect(verification.customerInfoOverridden).toBe(true);
-    expect(verified.customerInfo.name).toBe("Inon");
-    expect(verified.customerInfo.phone).toBe("057484848");
+    const { verified, verification } = verifyIR(graph, message, parsed.ir);
+    expect(verification.rejected).toEqual([]);
 
     const state = createInitialConversationState("cis-2", graph.business.id, "cust-cis-2");
     state.selectedOfferId = "offer-couples-massage";
     const outcome = compile(graph, state, verified);
-
     expect(state.knownFields.name).toBe("Inon");
     expect(state.knownFields.phone).toBe("057484848");
     expect(outcome.kind).not.toBe("needs_info");
   });
+
+  it("if the model leaves customerInfo empty, verifyIR does NOT recover it from raw text (no deterministic name parser)", () => {
+    const graph = buildSpaGraph();
+    const { verified } = verifyIR(graph, "My name is Inon and my phone number is 057484848", emptyIR());
+    expect(verified.customerInfo).toEqual({});
+  });
 });
 
-describe("Regression 2b: identity evidence gate rejects impossible LLM-only customer names", () => {
-  it('LLM proposes "זה" but raw Hebrew self-identification says the name is ינון — verified value wins', () => {
+describe("Regression 2b: customer facts require evidence; impossible values never persist", () => {
+  it("a proposed name with no cited evidence is rejected — and never replaced by a guess", () => {
     const graph = buildSpaGraph();
-    const { verified, verification } = verifyIR(
-      graph,
-      "השם שלי זה ינון",
-      emptyIR({ customerInfo: { name: "זה" } })
-    );
+    const { verified, verification } = verifyIR(graph, "השם שלי זה ינון", emptyIR({ customerInfo: { name: "זה" } }));
+    expect(verified.customerInfo.name).toBeUndefined();
+    expect(verification.rejected[0]).toMatchObject({ claim: "customerInfo.name", reason: "no evidence cited" });
+  });
 
-    expect(verification.customerInfoOverridden).toBe(true);
-    expect(verified.customerInfo.name).toBe("ינון");
+  it("evidence must really occur in the message and contain the value", () => {
+    const graph = buildSpaGraph();
+    const notInMessage = verifyIR(graph, "hello", emptyIR({ customerInfo: { name: "Dana" }, evidence: { "customerInfo.name": "my name is Dana" } }));
+    const doesNotContain = verifyIR(graph, "my name is Dana", emptyIR({ customerInfo: { name: "Rina" }, evidence: { "customerInfo.name": "my name is Dana" } }));
+    expect(notInMessage.verified.customerInfo.name).toBeUndefined();
+    expect(doesNotContain.verified.customerInfo.name).toBeUndefined();
   });
 
   const invalidHebrewNames = ["אשתי", "אישתי", "בעלי", "בן הזוג", "בת הזוג"];
 
   for (const invalidName of invalidHebrewNames) {
-    it(`rejects LLM-proposed relationship value "${invalidName}" when raw text has no customer-identity evidence`, () => {
+    it(`relationship value "${invalidName}" never persists as a customer name, even with cited evidence`, () => {
       const graph = buildSpaGraph();
-      const { verified, verification } = verifyIR(
-        graph,
-        "אני רוצה לבוא עם אשתי",
-        emptyIR({ customerInfo: { name: invalidName } })
-      );
+      const message = "אני רוצה לבוא עם אשתי ועם בעלי ועם בן הזוג ועם בת הזוג ועם אישתי";
+      const noEvidence = verifyIR(graph, message, emptyIR({ customerInfo: { name: invalidName } }));
+      expect(noEvidence.verified.customerInfo.name).toBeUndefined();
 
-      expect(verification.customerInfoOverridden).toBe(true);
-      expect(verified.customerInfo.name).toBeUndefined();
+      const withEvidence = verifyIR(graph, message, emptyIR({ customerInfo: { name: invalidName }, evidence: { "customerInfo.name": invalidName } }));
+      const state = createInitialConversationState(`cis-rel-${invalidName}`, graph.business.id, "c");
+      compile(graph, state, withEvidence.verified);
+      expect(state.knownFields.name).toBeUndefined();
     });
   }
 

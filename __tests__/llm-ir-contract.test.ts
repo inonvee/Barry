@@ -36,10 +36,14 @@ function validRawIR(overrides: Record<string, unknown> = {}) {
     offerCandidateIds: [],
     offerChangeRequested: null,
     entities: [],
-    constraints: { schedulingWindow: NULL_SCHEDULING_WINDOW, partySize: null, discountPct: null, slotAccepted: null },
+    constraints: { schedulingWindow: NULL_SCHEDULING_WINDOW, partySize: null, discountPct: null, slotAccepted: null, slotDeclined: null },
     customerInfo: [],
     requestedCapability: null,
     goal: null,
+    commerce: null,
+    customerClaimsPaymentCompleted: null,
+    evidence: [],
+    knowledgeTopic: null,
     ...overrides,
   };
 }
@@ -64,6 +68,7 @@ describe("LLM IR contract: parseIRResponse", () => {
           partySize: 2,
           discountPct: null,
           slotAccepted: null,
+          slotDeclined: null,
         },
         customerInfo: [{ key: "name", value: "Jordan Lee" }],
       })
@@ -162,6 +167,7 @@ describe("LLM IR contract: parseIRResponse", () => {
           partySize: null,
           discountPct: null,
           slotAccepted: null,
+          slotDeclined: null,
         },
       })
     );

@@ -42,6 +42,18 @@ export type PaymentRequestRecord = {
   idempotencyKey?: string;
   verifiedAt?: string;
   providerEventId?: string;
+  /** The provider's real transaction identifier, recorded only once the provider has actually reported one (never the payment-page/link id). */
+  providerTransactionId?: string;
+  /** What exactly this money pays for. An order may only be created while the thing it's bound to is unchanged. */
+  binding?: PaymentBinding;
+};
+
+export type PaymentBinding = {
+  kind: "commerce_cart";
+  cartId: string;
+  snapshotHash: string;
+  amount: number;
+  currency: string;
 };
 
 export type ConnectionCapability = "payments" | "scheduling" | "commerce" | "messaging" | "crm";
@@ -160,7 +172,7 @@ export interface BarryBackend {
   updatePaymentRequestStatus(
     id: string,
     status: PaymentRequestRecord["status"],
-    metadata?: { verifiedAt?: string; providerEventId?: string }
+    metadata?: { verifiedAt?: string; providerEventId?: string; providerTransactionId?: string }
   ): Promise<PaymentRequestRecord>;
   recordPaymentWebhookEvent(
     provider: string,

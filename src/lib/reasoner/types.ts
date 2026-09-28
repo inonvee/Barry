@@ -4,10 +4,22 @@ import type { BarryIR, CompileOutcome } from "./ir";
 
 export type { BarryIR, BarryIRConstraints, RequestedCapability, CompileOutcome, CompiledToolCall, OfferFact } from "./ir";
 
+/**
+ * What BARRY has actually shown/holds for this conversation, fetched from
+ * the real providers before understanding. The model resolves "the first
+ * one" against THIS list; BARRY resolves the index back to real ids.
+ */
+export type GroundedContext = {
+  shownResults?: { index: number; title: string; options: { options: Record<string, string>; price: string; inStock: boolean }[] }[];
+  cart?: { index: number; title: string; options: Record<string, string>; quantity: number }[];
+  cartTotal?: string;
+};
+
 export type ReasonerContext = {
   graph: BusinessGraph;
   state: ConversationState;
   customerMessage: string;
+  grounded?: GroundedContext;
 };
 
 /**

@@ -3,7 +3,7 @@ import { resolveConnection } from "@/lib/connections/registry";
 import type { ConnectionRecord } from "@/lib/store";
 import { MemoryPaymentAdapter } from "./adapters/memory";
 import { StripePaymentAdapter } from "./adapters/stripe";
-import { PayPlusPaymentAdapter } from "./adapters/payplus";
+import { PayPlusPaymentAdapter, parsePayPlusEnvironment } from "./adapters/payplus";
 import type { PaymentAdapter, PaymentProvider, PaymentWebhookHeaders } from "./adapters/types";
 
 type PaymentAdapterFactory = (connection: ConnectionRecord) => PaymentAdapter;
@@ -25,7 +25,9 @@ const factories = new Map<PaymentProvider, PaymentAdapterFactory>([
       apiKey: credentials.apiKey,
       secretKey: credentials.secretKey,
       paymentPageUid: String(connection.config.paymentPageUid ?? credentials.paymentPageUid ?? ""),
-      environment: connection.config.environment === "production" ? "production" : "staging",
+      // Connection config wins; otherwise the scoped PAYPLUS_<REF>_ENVIRONMENT
+      // credential decides. Invalid values throw rather than guess.
+      environment: parsePayPlusEnvironment(connection.config.environment) ?? parsePayPlusEnvironment(credentials.environment) ?? "staging",
       callbackUrl: credentials.callbackUrl,
       successUrl: credentials.successUrl,
       failureUrl: credentials.failureUrl,

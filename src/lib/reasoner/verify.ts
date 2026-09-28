@@ -1,96 +1,115 @@
 import type { BusinessGraph } from "@/lib/business-graph";
+import { findOffer } from "@/lib/business-graph";
 import type { ConversationState } from "@/lib/state";
 import type { DateSpec, SchedulingConstraint, TimeSpec } from "@/lib/scheduling/resolver";
-import {
-  findOffersByExplicitNameReference,
-  extractExplicitSchedulingConstraint,
-  extractAnnouncedName,
-  extractExplicitPhone,
-  extractExplicitEmail,
-  hasThirdPartyNameEvidence,
-  isInvalidCustomerNameCandidate,
-} from "./entities";
-import { extractCommerceConstraint } from "@/lib/commerce/extract";
-import type { BarryIR } from "./ir";
+import type { BarryIR, CommerceSemantics } from "./ir";
+
+/**
+ * Grounding, not understanding.
+ *
+ *   customer text + model's BarryIR -> verifyIR() -> grounded BarryIR -> compiler
+ *
+ * The model owns semantics: what the customer means, what they refer to,
+ * whether a phrase is a name. This layer never re-derives any of that
+ * from the raw text and never INJECTS a value the model didn't propose —
+ * the live bug that motivated this rewrite was a deterministic regex
+ * turning "אני אקח את הראשונה" ("I'll take the first one") into
+ * `name: "אקח"` over a model that had understood the message correctly.
+ *
+ * What it does instead:
+ * - evidence: a customerInfo value is only accepted when the model cited
+ *   a span of THIS message that is really there and really contains the
+ *   value. Unsupported values are rejected, never replaced.
+ * - state: a claim that only makes sense against existing state (slot
+ *   confirmation, a reference into previous results) must match state.
+ * - structure: values must be in range (weekday 0-6, hour 0-23, ...).
+ * Every rejection is recorded so the Inspector can show exactly why.
+ */
+export type IRRejection = { claim: string; value?: unknown; reason: string };
+
+export type IRVerification = {
+  /** The reasoner's raw customerInfo proposal, before grounding. */
+  llmCustomerInfo?: Record<string, string>;
+  rejected: IRRejection[];
+};
 
 const OFFERED_SLOT_START_KEY = "__offeredSlotStart";
 const SLOT_ACCEPTED_KEY = "__slotAccepted";
 
-const AFFIRMATIVE_SHORT_REPLIES = new Set([
-  "yes",
-  "yeah",
-  "yep",
-  "sure",
-  "confirm",
-  "confirmed",
-  "כן",
-  "מאשר",
-  "סבבה",
-  "מתאים",
-  "יאללה",
-]);
+function normalizeText(value: string): string {
+  return value.normalize("NFKC").toLowerCase().replace(/[\s‏‎]+/g, " ").trim();
+}
 
-const DECLINE_SHORT_REPLIES = new Set(["no", "nope", "לא", "לא מתאים"]);
+function digitsOnly(value: string): string {
+  return value.replace(/\D/g, "");
+}
 
-/**
- * Deterministic semantic verification, sitting between ANY Reasoner's
- * (LLM or mock) BarryIR and the compiler:
- *
- *   customer text + Reasoner's BarryIR -> verifyIR() -> normalized BarryIR -> compiler
- *
- * The model understands fuzzy language; this is the ONE place BARRY
- * cross-checks high-confidence, directly-verifiable business semantics —
- * offer references and explicit weekday/relative-day tokens — against
- * the raw customer text, and overrides the Reasoner when its IR
- * contradicts something the customer plainly, verifiably said. It is
- * NOT a replacement for the Reasoner: it only acts when its OWN
- * deterministic check produces a confident, unambiguous answer;
- * otherwise the Reasoner's own (possibly more nuanced) judgment stands
- * untouched. It never computes a final UTC instant — that remains
- * `resolveSchedulingWindow()`'s job, called only from the compiler.
- */
-export type IRVerification = {
-  llmSelectedOfferId?: string;
-  llmOfferCandidateIds?: string[];
-  llmSchedulingWindow?: SchedulingConstraint;
-  llmCustomerInfo?: Record<string, string>;
-  offerOverridden: boolean;
-  schedulingOverridden: boolean;
-  customerInfoOverridden: boolean;
-};
+/** Does `evidence` really occur in the message, and does it really contain `value`? */
+export function evidenceSupports(message: string, evidence: string | undefined, value: string, field: string): boolean {
+  if (!evidence || !evidence.trim()) return false;
+  const text = normalizeText(message);
+  const quote = normalizeText(evidence);
+  if (!text.includes(quote)) return false;
+  if (field === "phone") {
+    const digits = digitsOnly(value);
+    return digits.length > 0 && digitsOnly(quote).includes(digits);
+  }
+  return quote.includes(normalizeText(value));
+}
 
-function dateSpecsMatch(a: DateSpec | undefined, b: DateSpec): boolean {
-  if (!a || a.kind !== b.kind) return false;
-  switch (b.kind) {
+function validDate(date: DateSpec | undefined): boolean {
+  if (!date) return true;
+  switch (date.kind) {
     case "weekday":
-      return a.kind === "weekday" && a.weekday === b.weekday && (a.qualifier ?? undefined) === (b.qualifier ?? undefined);
+      return Number.isInteger(date.weekday) && date.weekday >= 0 && date.weekday <= 6;
     case "relativeDay":
-      return a.kind === "relativeDay" && a.days === b.days;
+      return Number.isInteger(date.days) && date.days >= 0 && date.days <= 366;
     case "explicitDate":
-      return a.kind === "explicitDate" && a.isoDate === b.isoDate;
+      return /^\d{4}-\d{2}-\d{2}$/.test(date.isoDate) && !Number.isNaN(Date.parse(`${date.isoDate}T00:00:00Z`));
   }
 }
 
-function timesMatch(a: TimeSpec | undefined, b: TimeSpec): boolean {
-  if (!a || a.kind !== b.kind) return false;
-  switch (b.kind) {
-    case "explicitTime":
-      return a.kind === "explicitTime" && a.hour === b.hour && a.minute === b.minute;
-    case "partOfDay":
-      return a.kind === "partOfDay" && a.part === b.part;
+function validTime(time: TimeSpec | undefined): boolean {
+  if (!time) return true;
+  if (time.kind === "partOfDay") return true;
+  return Number.isInteger(time.hour) && time.hour >= 0 && time.hour <= 23 && Number.isInteger(time.minute) && time.minute >= 0 && time.minute <= 59;
+}
+
+function groundScheduling(window: SchedulingConstraint | undefined, rejected: IRRejection[]): SchedulingConstraint | undefined {
+  if (!window) return undefined;
+  const date = validDate(window.date) ? window.date : undefined;
+  const time = validTime(window.time) ? window.time : undefined;
+  if (window.date && !date) rejected.push({ claim: "schedulingWindow.date", value: window.date, reason: "out of range" });
+  if (window.time && !time) rejected.push({ claim: "schedulingWindow.time", value: window.time, reason: "out of range" });
+  return date || time ? { date, time } : undefined;
+}
+
+function groundCommerce(commerce: CommerceSemantics | undefined, rejected: IRRejection[]): CommerceSemantics | undefined {
+  if (!commerce) return undefined;
+  const grounded: CommerceSemantics = { ...commerce };
+  if (grounded.reference && (!Number.isInteger(grounded.reference.index) || grounded.reference.index < 0)) {
+    rejected.push({ claim: "commerce.reference", value: grounded.reference, reason: "invalid index" });
+    grounded.reference = undefined;
   }
-}
-
-function normalizeShortReply(text: string): string {
-  return text
-    .trim()
-    .toLowerCase()
-    .replace(/^[\s"'`.,!?;:()]+|[\s"'`.,!?;:()]+$/g, "")
-    .replace(/\s+/g, " ");
-}
-
-function awaitingSlotConfirmation(state: ConversationState | undefined): boolean {
-  return Boolean(state?.knownFields[OFFERED_SLOT_START_KEY] && !state.knownFields[SLOT_ACCEPTED_KEY]);
+  if (grounded.quantity !== undefined && (!Number.isInteger(grounded.quantity) || grounded.quantity < 1 || grounded.quantity > 50)) {
+    rejected.push({ claim: "commerce.quantity", value: grounded.quantity, reason: "out of range" });
+    grounded.quantity = undefined;
+  }
+  if (grounded.requestedPrice && !(grounded.requestedPrice.amount > 0)) {
+    rejected.push({ claim: "commerce.requestedPrice", value: grounded.requestedPrice, reason: "not a positive amount" });
+    grounded.requestedPrice = undefined;
+  }
+  if (grounded.query?.budget && !(grounded.query.budget.amount > 0)) {
+    rejected.push({ claim: "commerce.query.budget", value: grounded.query.budget, reason: "not a positive amount" });
+    grounded.query = { ...grounded.query, budget: undefined };
+  }
+  if (grounded.variant) {
+    const clean = Object.fromEntries(
+      Object.entries(grounded.variant).filter(([k, v]) => typeof k === "string" && k.trim() && typeof v === "string" && v.trim())
+    );
+    grounded.variant = Object.keys(clean).length > 0 ? clean : undefined;
+  }
+  return grounded;
 }
 
 export function verifyIR(
@@ -99,126 +118,53 @@ export function verifyIR(
   ir: BarryIR,
   state?: ConversationState
 ): { verified: BarryIR; verification: IRVerification } {
-  const verification: IRVerification = {
-    llmSelectedOfferId: ir.selectedOfferId,
-    llmOfferCandidateIds: ir.offerCandidateIds,
-    llmSchedulingWindow: ir.constraints.schedulingWindow,
-    llmCustomerInfo: ir.customerInfo,
-    offerOverridden: false,
-    schedulingOverridden: false,
-    customerInfoOverridden: false,
-  };
+  const rejected: IRRejection[] = [];
 
-  // --- Offer reference verification ---
-  // If the raw text confidently and unambiguously names exactly one
-  // offer (by its own name — never a description word, to avoid
-  // false-positive overrides on incidental overlap), that deterministic
-  // read wins, whether the Reasoner was ambiguous (multiple candidates)
-  // or confidently wrong (a single, different selection). A tie (0 or
-  // 2+ matches) means the raw text alone can't decide it — the
-  // Reasoner's own judgment (which may use conversation context this
-  // simple matcher can't see) stands untouched.
-  let selectedOfferId = ir.selectedOfferId;
-  let offerCandidateIds = ir.offerCandidateIds;
-
-  const explicitOfferMatches = findOffersByExplicitNameReference(graph, customerMessage);
-  if (explicitOfferMatches.length === 1) {
-    const confidentId = explicitOfferMatches[0].id;
-    if (selectedOfferId !== confidentId || (offerCandidateIds && offerCandidateIds.length > 0)) {
-      verification.offerOverridden = true;
+  // Customer facts persist, so each one must be backed by evidence the
+  // model cited from THIS message. Nothing is ever added here.
+  const customerInfo: Record<string, string> = {};
+  for (const [field, value] of Object.entries(ir.customerInfo)) {
+    const evidence = ir.evidence?.[`customerInfo.${field}`];
+    if (evidenceSupports(customerMessage, evidence, value, field)) {
+      customerInfo[field] = value;
+    } else {
+      rejected.push({
+        claim: `customerInfo.${field}`,
+        value,
+        reason: evidence ? "evidence not found in message" : "no evidence cited",
+      });
     }
-    selectedOfferId = confidentId;
-    offerCandidateIds = undefined;
   }
 
-  // --- Scheduling date verification ---
-  // If the raw text contains a directly-verifiable explicit weekday or
-  // relative-day token ("Tuesday", "next Monday", "tomorrow", "today")
-  // and the Reasoner's date disagrees (wrong kind, wrong weekday number,
-  // wrong qualifier, wrong day offset), the explicit token wins. The
-  // Reasoner's TIME reading is kept when present — it may have parsed
-  // "3pm" correctly even while botching the date — falling back to
-  // whatever the deterministic extractor found only if the Reasoner
-  // gave no time at all.
-  let schedulingWindow = ir.constraints.schedulingWindow;
-  const explicitWindow = extractExplicitSchedulingConstraint(customerMessage);
-  if (explicitWindow?.date && !dateSpecsMatch(schedulingWindow?.date, explicitWindow.date)) {
-    verification.schedulingOverridden = true;
-    schedulingWindow = { date: explicitWindow.date, time: schedulingWindow?.time ?? explicitWindow.time };
-  }
-  if (explicitWindow?.time && !timesMatch(schedulingWindow?.time, explicitWindow.time)) {
-    verification.schedulingOverridden = true;
-    schedulingWindow = { ...schedulingWindow, time: explicitWindow.time };
-  }
+  const selectedOfferId = ir.selectedOfferId && findOffer(graph, ir.selectedOfferId) ? ir.selectedOfferId : undefined;
+  if (ir.selectedOfferId && !selectedOfferId) rejected.push({ claim: "selectedOfferId", value: ir.selectedOfferId, reason: "unknown offer" });
+  const offerCandidateIds = ir.offerCandidateIds?.filter((id) => findOffer(graph, id));
+  const offerChangeRequested =
+    ir.offerChangeRequested && findOffer(graph, ir.offerChangeRequested) ? ir.offerChangeRequested : undefined;
 
-  // --- Customer identity verification ---
-  // The live bug this guards against: a Reasoner (LLM) correctly
-  // understood "My name is Inon and my phone number is 057484848" (it
-  // showed up in `entities`) but never populated `customerInfo` — the
-  // ONLY field the compiler actually merges into persistent state — so
-  // BARRY kept asking for name/phone it had already been given. Rather
-  // than trust the Reasoner to always remember to fill customerInfo,
-  // BARRY independently extracts the same small set of high-confidence,
-  // structurally unambiguous identity signals from the raw text — an
-  // explicit self-announcement ("my name is X", "call me X"), an
-  // explicit phone number, an explicit email address — and injects them
-  // whenever they're absent or disagree with what the Reasoner reported.
-  // Fuzzy/contextual identity inference (a bare "Inon" replying to "what's
-  // your name?") is NOT extracted here — that's still the Reasoner's job;
-  // this only acts on text that is unambiguous on its own.
-  let customerInfo = ir.customerInfo;
-
-  const explicitName = extractAnnouncedName(customerMessage);
-  if (explicitName && customerInfo.name !== explicitName) {
-    customerInfo = { ...customerInfo, name: explicitName };
-    verification.customerInfoOverridden = true;
-  } else if (!explicitName && customerInfo.name && (isInvalidCustomerNameCandidate(customerInfo.name) || hasThirdPartyNameEvidence(customerMessage))) {
-    const rest = { ...customerInfo };
-    delete rest.name;
-    customerInfo = rest;
-    verification.customerInfoOverridden = true;
-  }
-
-  const explicitPhone = extractExplicitPhone(customerMessage);
-  if (explicitPhone && customerInfo.phone !== explicitPhone) {
-    customerInfo = { ...customerInfo, phone: explicitPhone };
-    verification.customerInfoOverridden = true;
-  }
-
-  const explicitEmail = extractExplicitEmail(customerMessage);
-  if (explicitEmail && customerInfo.email !== explicitEmail) {
-    customerInfo = { ...customerInfo, email: explicitEmail };
-    verification.customerInfoOverridden = true;
-  }
-
-  let slotAccepted = ir.constraints.slotAccepted;
-  let slotDeclined = ir.constraints.slotDeclined;
-  if (awaitingSlotConfirmation(state)) {
-    const shortReply = normalizeShortReply(customerMessage);
-    if (AFFIRMATIVE_SHORT_REPLIES.has(shortReply)) {
-      slotAccepted = true;
-      slotDeclined = undefined;
-      if (!ir.constraints.slotAccepted) verification.schedulingOverridden = true;
-    } else if (DECLINE_SHORT_REPLIES.has(shortReply)) {
-      slotDeclined = true;
-      slotAccepted = undefined;
-      if (!ir.constraints.slotDeclined) verification.schedulingOverridden = true;
-    }
+  // Accepting/declining a slot only means something while one is on offer.
+  const awaitingConfirmation = Boolean(state?.knownFields[OFFERED_SLOT_START_KEY] && !state.knownFields[SLOT_ACCEPTED_KEY]);
+  let { slotAccepted, slotDeclined } = ir.constraints;
+  if ((slotAccepted || slotDeclined) && !awaitingConfirmation) {
+    rejected.push({ claim: slotAccepted ? "slotAccepted" : "slotDeclined", reason: "no slot is awaiting confirmation" });
+    slotAccepted = undefined;
+    slotDeclined = undefined;
   }
 
   const verified: BarryIR = {
     ...ir,
     selectedOfferId,
-    offerCandidateIds,
+    offerCandidateIds: offerCandidateIds && offerCandidateIds.length > 0 ? offerCandidateIds : undefined,
+    offerChangeRequested,
     constraints: {
       ...ir.constraints,
-      schedulingWindow,
+      schedulingWindow: groundScheduling(ir.constraints.schedulingWindow, rejected),
       slotAccepted,
       slotDeclined,
-      commerce: extractCommerceConstraint(customerMessage) ?? ir.constraints.commerce,
     },
+    commerce: groundCommerce(ir.commerce, rejected),
     customerInfo,
   };
 
-  return { verified, verification };
+  return { verified, verification: { llmCustomerInfo: ir.customerInfo, rejected } };
 }

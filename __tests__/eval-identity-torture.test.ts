@@ -42,6 +42,19 @@ describe("Identity: positive explicit self-identification (English)", () => {
   }
 });
 
+describe("Identity: bare 'אני X' is never guessed into a name offline", () => {
+  for (const msg of ["אני אקח את הראשונה", "יאללה אני אקח את הראשונה", "אני עם אשתי", "אני ינון"]) {
+    it(`"${msg}" -> no name guessed by the stand-in`, async () => {
+      const { turns } = await runScenario({
+        name: `id-he-bare-${msg}`,
+        graph: buildSpaGraph,
+        turns: [{ customer: "זוגי" }, { customer: msg }],
+      });
+      expect(turns[1].compiled?.appliedCustomerInfo.name).toBeUndefined();
+    });
+  }
+});
+
 describe("Identity: positive explicit self-identification (Hebrew)", () => {
   const cases: [string, string][] = [
     ["קוראים לי ינון", "ינון"],
@@ -51,8 +64,12 @@ describe("Identity: positive explicit self-identification (Hebrew)", () => {
     ["השם שלי היא דנה", "דנה"],
     ["השם שלי זה Inon", "Inon"],
     ["קוראים לי Inon", "Inon"],
-    ["אני ינון", "ינון"],
   ];
+  // Bare "אני X" is deliberately NOT a rule any more: "אני ינון" (I'm
+  // Inon) and "אני אקח את הראשונה" (I'll take the first one) have the same
+  // surface form, and telling them apart is understanding — the model's
+  // job, with evidence the grounding layer checks. The offline stand-in
+  // must not guess; see the scripted-model evals for the model path.
   for (const [msg, expected] of cases) {
     it(`"${msg}" -> customerInfo.name = ${expected}`, async () => {
       const { turns } = await runScenario({
@@ -200,7 +217,7 @@ describe("Identity: NEGATIVE cases — a relationship/role word must never becom
       graph: buildSpaGraph,
       turns: [{ customer: "זוגי" }, { customer: "אני בא עם אשתי", assert: assertNeverCrashes }],
     });
-    expect(state.knownFields.name).not.toMatch(/^(אשתי|אישתי|בעלי)$/);
+    expect(state.knownFields.name ?? "").not.toMatch(/^(אשתי|אישתי|בעלי)$/);
     // This message DOES legitimately imply partySize 2 — that's a
     // separate, correct signal from the (absent) name.
     expect(state.knownFields.__mentionedPartySize).toBe("2");

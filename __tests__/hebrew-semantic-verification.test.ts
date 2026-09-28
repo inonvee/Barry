@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { verifyIR } from "@/lib/reasoner/verify";
+import { MockReasoner } from "@/lib/reasoner/mock-reasoner";
+import { createInitialConversationState } from "@/lib/state";
 import { extractExplicitSchedulingConstraint, findOffersByExplicitNameReference } from "@/lib/reasoner/entities";
 import { handleCustomerMessage } from "@/lib/runtime";
 import type { BarryIR } from "@/lib/reasoner/ir";
@@ -30,42 +32,24 @@ function emptyIR(overrides: Partial<BarryIR> = {}): BarryIR {
   return { intent: "test", entities: {}, constraints: {}, customerInfo: {}, ...overrides };
 }
 
-describe("Hebrew offer references (verifyIR)", () => {
+async function standIn(text: string) {
+  const graph = buildSpaGraph();
+  const state = createInitialConversationState(`heb-${Math.random()}`, graph.business.id, "c");
+  return new MockReasoner().understand({ graph, state, customerMessage: text });
+}
+
+describe("Hebrew offer references (offline stand-in model)", () => {
   const graph = buildSpaGraph();
 
-  it('1. "זוגי" resolves confidently to the couples offer only', () => {
-    const { verified } = verifyIR(graph, "זוגי", emptyIR());
-    expect(verified.selectedOfferId).toBe("offer-couples-massage");
-  });
-
-  it('2. "מסאז זוגי" resolves confidently to the couples offer only', () => {
-    const { verified } = verifyIR(graph, "מסאז זוגי", emptyIR());
-    expect(verified.selectedOfferId).toBe("offer-couples-massage");
-  });
-
-  it("gershayim spelling \"מסאז' זוגי\" resolves the same way", () => {
-    const { verified } = verifyIR(graph, "מסאז' זוגי", emptyIR());
-    expect(verified.selectedOfferId).toBe("offer-couples-massage");
-  });
-
-  it('3. "שוודי" resolves confidently to the solo offer only', () => {
-    const { verified } = verifyIR(graph, "שוודי", emptyIR());
-    expect(verified.selectedOfferId).toBe("offer-solo-massage");
-  });
-
-  it('"יחיד" and "אישי" also resolve confidently to the solo offer', () => {
-    expect(verifyIR(graph, "יחיד", emptyIR()).verified.selectedOfferId).toBe("offer-solo-massage");
-    expect(verifyIR(graph, "אישי", emptyIR()).verified.selectedOfferId).toBe("offer-solo-massage");
-  });
-
-  it("overrides an LLM that left the offer ambiguous when the raw Hebrew text is unambiguous", () => {
-    const { verified, verification } = verifyIR(
-      graph,
-      "זוגי",
-      emptyIR({ offerCandidateIds: ["offer-couples-massage", "offer-solo-massage"] })
-    );
-    expect(verified.selectedOfferId).toBe("offer-couples-massage");
-    expect(verification.offerOverridden).toBe(true);
+  it.each([
+    ["זוגי", "offer-couples-massage"],
+    ["מסאז זוגי", "offer-couples-massage"],
+    ["מסאז' זוגי", "offer-couples-massage"],
+    ["שוודי", "offer-solo-massage"],
+    ["יחיד", "offer-solo-massage"],
+    ["אישי", "offer-solo-massage"],
+  ])('"%s" -> %s', async (text, offerId) => {
+    expect((await standIn(text)).selectedOfferId).toBe(offerId);
   });
 
   it("uses aliases, not hardcoded business-type logic — findOffersByExplicitNameReference matches via Offer.aliases generically", () => {
@@ -76,11 +60,8 @@ describe("Hebrew offer references (verifyIR)", () => {
 });
 
 describe("Hebrew weekdays and time (extractExplicitSchedulingConstraint)", () => {
-  it('4. "זוגי ביום חמישי ב3" -> couples offer, weekday 4 (Thursday), 15:00', () => {
-    const graph = buildSpaGraph();
-    const message = "זוגי ביום חמישי ב3";
-
-    const { verified } = verifyIR(graph, message, emptyIR());
+  it('4. "זוגי ביום חמישי ב3" -> couples offer, weekday 4 (Thursday), 15:00', async () => {
+    const verified = await standIn("זוגי ביום חמישי ב3");
     expect(verified.selectedOfferId).toBe("offer-couples-massage");
     expect(verified.constraints.schedulingWindow?.date).toEqual({ kind: "weekday", weekday: 4, qualifier: undefined });
     expect(verified.constraints.schedulingWindow?.time).toEqual({ kind: "explicitTime", hour: 15, minute: 0 });
@@ -132,17 +113,10 @@ describe("Hebrew weekdays and time (extractExplicitSchedulingConstraint)", () =>
     });
   });
 
-  it("verifyIR overrides a weekday-only LLM read with the deterministic colloquial Hebrew time when the raw text supplies it", () => {
-    const graph = buildSpaGraph();
-    const { verified, verification } = verifyIR(
-      graph,
-      "אני רוצה לבוא עם אשתי בחמישי בשעה אחד",
-      emptyIR({ constraints: { schedulingWindow: { date: { kind: "weekday", weekday: 4 } } } })
-    );
-
-    expect(verification.schedulingOverridden).toBe(true);
-    expect(verified.constraints.schedulingWindow?.date).toEqual({ kind: "weekday", weekday: 4, qualifier: undefined });
-    expect(verified.constraints.schedulingWindow?.time).toEqual({ kind: "explicitTime", hour: 13, minute: 0 });
+  it("the stand-in model reads colloquial Hebrew weekday + time together", async () => {
+    const ir = await standIn("אני רוצה לבוא עם אשתי בחמישי בשעה אחד");
+    expect(ir.constraints.schedulingWindow?.date).toEqual({ kind: "weekday", weekday: 4, qualifier: undefined });
+    expect(ir.constraints.schedulingWindow?.time).toEqual({ kind: "explicitTime", hour: 13, minute: 0 });
   });
 
   it('"3 בצהריים" and "שלוש בצהריים" both resolve to 15:00 (explicit afternoon marker)', () => {
@@ -189,27 +163,19 @@ describe("Hebrew weekdays and time (extractExplicitSchedulingConstraint)", () =>
   });
 });
 
-describe("Hebrew semantics override wrong/incomplete LLM IR", () => {
-  it('7. "יום חמישי" must not become an unrelated explicitDate', () => {
+describe("verifyIR never re-reads Hebrew text over the model", () => {
+  it('a model reading of "יום חמישי" is kept as the model gave it (structurally valid)', () => {
     const graph = buildSpaGraph();
-    const ir = emptyIR({
-      constraints: {
-        schedulingWindow: { date: { kind: "explicitDate", isoDate: "2026-09-27" } }, // wrong: a Sunday
-      },
-    });
+    const ir = emptyIR({ constraints: { schedulingWindow: { date: { kind: "explicitDate", isoDate: "2026-10-01" } } } });
     const { verified, verification } = verifyIR(graph, "יום חמישי", ir);
-
-    expect(verification.schedulingOverridden).toBe(true);
-    expect(verified.constraints.schedulingWindow?.date).toEqual({ kind: "weekday", weekday: 4, qualifier: undefined });
+    expect(verified.constraints.schedulingWindow).toEqual(ir.constraints.schedulingWindow);
+    expect(verification.rejected).toEqual([]);
   });
 
-  it('8. raw Hebrew explicit offer reference overrides a wrong LLM selection', () => {
+  it("a valid model offer selection is kept even if the text also names another offer", () => {
     const graph = buildSpaGraph();
-    const ir = emptyIR({ selectedOfferId: "offer-solo-massage" }); // LLM guessed wrong
-    const { verified, verification } = verifyIR(graph, "זוגי בבקשה", ir);
-
-    expect(verified.selectedOfferId).toBe("offer-couples-massage");
-    expect(verification.offerOverridden).toBe(true);
+    const { verified } = verifyIR(graph, "זוגי בבקשה", emptyIR({ selectedOfferId: "offer-solo-massage" }));
+    expect(verified.selectedOfferId).toBe("offer-solo-massage");
   });
 });
 

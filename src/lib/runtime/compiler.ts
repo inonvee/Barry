@@ -28,11 +28,93 @@ export const SCRATCH_KEYS = {
   inventoryChecked: "__inventoryChecked",
   lastSchedulingDate: "__lastSchedulingDate",
   commerceLastProductIds: "__commerceLastProductIds",
+  commercePendingProductId: "__commercePendingProductId",
   commerceCartId: "__commerceCartId",
   commerceCartLineId: "__commerceCartLineId",
+  commerceCartTotal: "__commerceCartTotal",
   commerceCheckoutId: "__commerceCheckoutId",
+  commerceCartSnapshot: "__commerceCartSnapshot",
   commerceOrderId: "__commerceOrderId",
 };
+
+/**
+ * Grounds commerce semantics against what BARRY actually showed/holds.
+ * The model says "the first one"; the ids come ONLY from persisted state
+ * written by real tool results. Never trusts a product/line id from IR.
+ */
+function compileCommerce(ir: BarryIR, known: Record<string, string>): CompileOutcome | undefined {
+  const commerce = ir.commerce!;
+  const lastIds = known[SCRATCH_KEYS.commerceLastProductIds]?.split(",").filter(Boolean) ?? [];
+  const cartId = known[SCRATCH_KEYS.commerceCartId];
+  const lineId = known[SCRATCH_KEYS.commerceCartLineId];
+
+  switch (commerce.intent) {
+    case "search":
+      return finalizeAction(
+        "searchProducts",
+        {
+          text: commerce.query?.text,
+          category: commerce.query?.category,
+          attributes: commerce.query?.attributes,
+          options: commerce.variant,
+          budgetAmount: commerce.query?.budget?.amount,
+          currency: commerce.query?.budget?.currency,
+        },
+        "discovery",
+        "completePurchase"
+      );
+
+    case "select": {
+      let productId: string | undefined;
+      if (commerce.reference?.type === "previous_result") {
+        productId = lastIds[commerce.reference.index];
+        if (!productId) return { kind: "clarify_reference", available: lastIds.length, stage: "offer_selection" };
+      } else {
+        productId = known[SCRATCH_KEYS.commercePendingProductId] ?? (lastIds.length === 1 ? lastIds[0] : undefined);
+        if (!productId) return { kind: "clarify_reference", available: lastIds.length, stage: "offer_selection" };
+      }
+      return finalizeAction(
+        "addToCart",
+        { productId, options: commerce.variant, quantity: commerce.quantity ?? 1 },
+        "offer_selection",
+        "completePurchase"
+      );
+    }
+
+    case "change_variant":
+    case "change_quantity":
+    case "remove": {
+      if (!cartId || !lineId) {
+        // Nothing in the cart yet: a variant choice completes a pending selection.
+        if (commerce.intent === "change_variant" && (known[SCRATCH_KEYS.commercePendingProductId] || lastIds.length === 1)) {
+          return compileCommerce({ ...ir, commerce: { ...commerce, intent: "select", reference: undefined } }, known);
+        }
+        return { kind: "clarify_reference", available: lastIds.length, stage: "offer_selection" };
+      }
+      return finalizeAction(
+        "updateCartLine",
+        {
+          cartId,
+          lineId,
+          options: commerce.intent === "change_variant" ? commerce.variant : undefined,
+          quantity: commerce.intent === "remove" ? 0 : commerce.quantity,
+        },
+        "offer_selection",
+        "completePurchase"
+      );
+    }
+
+    case "checkout":
+      if (!cartId) return { kind: "clarify_reference", available: lastIds.length, stage: "offer_selection" };
+      return finalizeAction("createCommerceCheckout", { cartId }, "payment", "completePurchase");
+
+    case "negotiate_price": {
+      const total = known[SCRATCH_KEYS.commerceCartTotal] ? (JSON.parse(known[SCRATCH_KEYS.commerceCartTotal]) as { amount: number; currency: string }) : undefined;
+      if (!commerce.requestedPrice) return undefined;
+      return { kind: "price_request", requested: commerce.requestedPrice, current: total, stage: "offer_selection" };
+    }
+  }
+}
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -208,58 +290,37 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
     return { kind: "generic_confirm", stage: "closed" };
   }
 
-  if (ir.requestedCapability === "commerce_policy") {
-    const returns = graph.knowledge.find((item) => /return|exchange|sale/i.test([item.topic, item.content].join(" ")));
-    if (returns) return { kind: "knowledge_answer", answer: returns.content, stage: "discovery" };
+  // A customer ASSERTING payment is a claim, never a fact. The only thing
+  // BARRY does with it is ask the trusted provider (verifyPayment); paid
+  // state can only come from that tool's result or a verified webhook.
+  if (ir.customerClaims?.paymentCompleted && !known[SCRATCH_KEYS.paid]) {
+    if (known[SCRATCH_KEYS.paymentRequestId]) {
+      return finalizeAction("verifyPayment", { paymentRequestId: known[SCRATCH_KEYS.paymentRequestId] }, "payment");
+    }
+    return { kind: "no_payment_to_verify", stage: state.stage };
   }
 
-  const commerce = ir.constraints.commerce;
-  if (commerce?.action === "search") {
+  // Verified payment for a cart -> exactly one order, re-verified by the
+  // tool against the payment's bound cart snapshot.
+  if (known[SCRATCH_KEYS.paid] && known[SCRATCH_KEYS.commerceCartId] && !known[SCRATCH_KEYS.commerceOrderId] && known[SCRATCH_KEYS.paymentRequestId]) {
     return finalizeAction(
-      "searchProducts",
-      {
-        text: commerce.query?.text,
-        category: commerce.query?.category,
-        occasion: commerce.query?.occasion,
-        color: commerce.query?.color,
-        size: commerce.query?.size,
-        budgetAmount: commerce.query?.budgetAmount,
-        currency: commerce.query?.currency,
-      },
-      "discovery",
+      "createCommerceOrder",
+      { cartId: known[SCRATCH_KEYS.commerceCartId], paymentRequestId: known[SCRATCH_KEYS.paymentRequestId] },
+      "confirmation",
       "completePurchase"
     );
   }
-  if (commerce?.action === "add_first") {
-    const productIds = known[SCRATCH_KEYS.commerceLastProductIds]?.split(",").filter(Boolean) ?? [];
-    const productId = productIds[commerce.selectionIndex ?? 0];
-    if (productId) {
-      return finalizeAction(
-        "addToCart",
-        { productId, size: commerce.size, quantity: commerce.quantity ?? 1 },
-        "payment",
-        "completePurchase"
-      );
-    }
+
+  // Knowledge answers come verbatim from the business's own stored item
+  // for the topic the model named — BARRY never paraphrases policy.
+  if (ir.knowledgeTopic) {
+    const item = graph.knowledge.find((k) => k.topic === ir.knowledgeTopic);
+    if (item) return { kind: "knowledge_answer", answer: item.content, stage: state.stage };
   }
-  if (commerce?.action === "update_size" && known[SCRATCH_KEYS.commerceCartId] && known[SCRATCH_KEYS.commerceCartLineId]) {
-    return finalizeAction(
-      "updateCartLine",
-      {
-        cartId: known[SCRATCH_KEYS.commerceCartId],
-        lineId: known[SCRATCH_KEYS.commerceCartLineId],
-        size: commerce.size,
-        quantity: commerce.quantity ?? 1,
-      },
-      "payment",
-      "completePurchase"
-    );
-  }
-  if (commerce?.action === "checkout" && known[SCRATCH_KEYS.commerceCartId] && !known[SCRATCH_KEYS.paymentRequestId]) {
-    return finalizeAction("createCommerceCheckout", { cartId: known[SCRATCH_KEYS.commerceCartId] }, "payment", "completePurchase");
-  }
-  if (known[SCRATCH_KEYS.paid] && known[SCRATCH_KEYS.commerceCartId] && !known[SCRATCH_KEYS.commerceOrderId]) {
-    return finalizeAction("createCommerceOrder", { cartId: known[SCRATCH_KEYS.commerceCartId] }, "confirmation", "completePurchase");
+
+  if (ir.commerce) {
+    const commerceOutcome = compileCommerce(ir, known);
+    if (commerceOutcome) return commerceOutcome;
   }
 
   // An explicit decline of a previously offered slot ("no"/"לא") only

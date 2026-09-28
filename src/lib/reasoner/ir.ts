@@ -32,21 +32,46 @@ export type BarryIRConstraints = {
   slotAccepted?: boolean;
   /** Customer explicitly declined the previously offered slot ("no"/"לא") — never inferred from anything else. */
   slotDeclined?: boolean;
-  commerce?: {
-    action: "search" | "add_first" | "update_size" | "checkout";
-    query?: {
-      text?: string;
-      category?: string;
-      occasion?: string;
-      color?: string;
-      size?: string;
-      budgetAmount?: number;
-      currency?: string;
-    };
-    selectionIndex?: number;
-    size?: string;
-    quantity?: number;
+};
+
+/**
+ * What the customer is referring to — a pointer into something BARRY
+ * already showed them, never a raw id the model made up. The model says
+ * "the first one I just showed"; BARRY's grounding layer (verifyIR +
+ * compiler) resolves that to a real product/line id from persisted state.
+ */
+export type SemanticReference =
+  | { type: "previous_result"; index: number }
+  | { type: "cart_line"; index: number };
+
+/**
+ * Commerce semantics, in the model's own understanding — capability-
+ * level, never catalog- or industry-specific. Option/attribute names are
+ * open-ended (`size`, `color`, `length`, `flavor`, ...): whatever the
+ * business's catalog uses. BARRY resolves them against real variants.
+ */
+export type CommerceSemantics = {
+  intent: "search" | "select" | "change_variant" | "change_quantity" | "remove" | "checkout" | "negotiate_price";
+  query?: {
+    text?: string;
+    category?: string;
+    attributes?: Record<string, string>;
+    budget?: { amount: number; currency?: string };
   };
+  reference?: SemanticReference;
+  /** Variant options the customer asked for, e.g. { size: "M" }. */
+  variant?: Record<string, string>;
+  quantity?: number;
+  requestedPrice?: { amount: number; currency?: string };
+};
+
+/**
+ * Things the customer ASSERTS about the outside world. A claim is never
+ * a fact: "I paid" becomes `paymentCompleted: true` here, and the only
+ * thing BARRY does with it is ask the trusted provider (verifyPayment).
+ */
+export type CustomerClaims = {
+  paymentCompleted?: boolean;
 };
 
 /**
@@ -99,6 +124,23 @@ export type BarryIR = {
   customerInfo: Record<string, string>;
   requestedCapability?: RequestedCapability;
   goal?: Goal;
+  commerce?: CommerceSemantics;
+  customerClaims?: CustomerClaims;
+  /**
+   * Which of the business's OWN knowledge topics the customer is asking
+   * about (the model is given the topic list). The compiler answers only
+   * with that item's stored content, verbatim — never a paraphrase of
+   * something the Business Genome doesn't say.
+   */
+  knowledgeTopic?: string;
+  /**
+   * Evidence for claims that will be PERSISTED as customer facts: a map
+   * from claim path (e.g. "customerInfo.name") to the exact span of the
+   * customer's message that supports it. verifyIR() rejects any
+   * customerInfo value whose evidence is missing or not actually present
+   * in the message — it never invents a value of its own.
+   */
+  evidence?: Record<string, string>;
 };
 
 export type CompiledToolCall = { name: string; input: Record<string, unknown> };
@@ -148,6 +190,14 @@ export type CompileOutcome = { stage: ConversationStage; debug?: CompileDebugInf
   | { kind: "ask_slot_confirm"; offeredStart: string }
   | { kind: "waiting_payment" }
   | { kind: "offer_fact"; offerName: string; fact: OfferFact }
+  /** The customer referred to something that isn't grounded in what BARRY showed them (e.g. "the third one" when only two were shown). */
+  | { kind: "clarify_reference"; available: number }
+  /** A product was chosen but a required variant option is missing/unavailable — ask using REAL options only. */
+  | { kind: "ask_variant"; productTitle: string; requested?: Record<string, string>; availableOptions: Record<string, string>[] }
+  /** The customer asked for a different price. BARRY states the grounded price; it never negotiates on its own authority. */
+  | { kind: "price_request"; requested: { amount: number; currency?: string }; current?: { amount: number; currency: string }; productTitle?: string }
+  /** The customer claimed payment but there is no open payment request to verify. */
+  | { kind: "no_payment_to_verify" }
   | { kind: "generic_confirm" }
   /** Assembled input failed the tool's own schema — a compiler bug, not a customer data problem. Never reaches callTool(). */
   | { kind: "compiler_error"; reason: string }

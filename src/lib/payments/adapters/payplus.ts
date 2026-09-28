@@ -2,12 +2,20 @@ import crypto from "node:crypto";
 import type {
   CreatePaymentLinkInput,
   PaymentAdapter,
+  PaymentStatusRef,
   PaymentWebhookHeaders,
   ProviderPayment,
   VerifiedPaymentWebhook,
 } from "./types";
 
-type PayPlusEnvironment = "staging" | "production";
+export type PayPlusEnvironment = "staging" | "production";
+
+/** Scoped credential/config value -> environment. Unknown values fail closed instead of silently picking one. */
+export function parsePayPlusEnvironment(value: unknown): PayPlusEnvironment | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (value === "staging" || value === "production") return value;
+  throw new Error(`Invalid PayPlus environment "${String(value)}"`);
+}
 
 type PayPlusPaymentAdapterOptions = {
   apiKey?: string;
@@ -69,13 +77,14 @@ export class PayPlusPaymentAdapter implements PaymentAdapter {
   private readonly failureUrl: string;
   private readonly cancelUrl: string;
   private readonly fetcher: typeof fetch;
+  readonly environment: PayPlusEnvironment;
 
   constructor(options: PayPlusPaymentAdapterOptions = {}) {
     this.apiKey = options.apiKey ?? process.env.PAYPLUS_API_KEY ?? "";
     this.secretKey = options.secretKey ?? process.env.PAYPLUS_SECRET_KEY ?? "";
     this.paymentPageUid = options.paymentPageUid ?? process.env.PAYPLUS_PAYMENT_PAGE_UID ?? "";
-    const environment = options.environment ?? (process.env.PAYPLUS_ENVIRONMENT === "production" ? "production" : "staging");
-    this.baseUrl = PAYPLUS_BASE_URLS[environment];
+    this.environment = options.environment ?? parsePayPlusEnvironment(process.env.PAYPLUS_ENVIRONMENT) ?? "staging";
+    this.baseUrl = PAYPLUS_BASE_URLS[this.environment];
     this.callbackUrl = options.callbackUrl ?? process.env.PAYPLUS_CALLBACK_URL ?? "https://example.com/api/payments/webhook";
     this.successUrl = options.successUrl ?? process.env.PAYPLUS_SUCCESS_URL ?? "https://example.com/payment/success";
     this.failureUrl = options.failureUrl ?? process.env.PAYPLUS_FAILURE_URL ?? "https://example.com/payment/failure";
@@ -131,17 +140,42 @@ export class PayPlusPaymentAdapter implements PaymentAdapter {
     };
   }
 
-  async getPaymentStatus(providerPaymentId: string): Promise<ProviderPayment | undefined> {
-    const json = await this.request("Transactions/View", { transaction_uid: providerPaymentId });
+  /**
+   * PayPlus identifier contract: `generateLink` returns a PAGE/request
+   * uid (page_request_uid / payment_request_uid) — that is NOT a
+   * transaction. Transactions/View is queried by `transaction_uid` only
+   * once a real transaction uid is durably known (from a verified
+   * callback); otherwise by our own durable `more_info` idempotency key.
+   * The page uid is never sent as a transaction uid.
+   */
+  async getPaymentStatus(ref: PaymentStatusRef): Promise<ProviderPayment | undefined> {
+    let query: Record<string, unknown>;
+    if (ref.providerTransactionId) query = { transaction_uid: ref.providerTransactionId };
+    else if (ref.idempotencyKey) query = { more_info: ref.idempotencyKey };
+    else return undefined;
+
+    const json = await this.request("Transactions/View", query);
     const transaction = firstTransaction(json);
     if (!transaction) return undefined;
+
+    const moreInfo = transaction.more_info === undefined ? undefined : String(transaction.more_info);
+    if (ref.idempotencyKey && moreInfo !== undefined && moreInfo !== ref.idempotencyKey) {
+      throw new Error("Payment provider verification mismatch");
+    }
+    const pageUid = String(transaction.payment_request_uid ?? transaction.page_request_uid ?? "");
+    if (pageUid && pageUid !== ref.providerPaymentId) throw new Error("Payment provider verification mismatch");
+
+    const transactionUid = transaction.transaction_uid ?? transaction.uid;
     return {
       provider: this.name,
-      providerPaymentId,
+      providerPaymentId: ref.providerPaymentId,
+      providerTransactionId: transactionUid ? String(transactionUid) : undefined,
       checkoutUrl: "",
       status: paymentStatusFromTransaction(transaction),
       createdAt: new Date().toISOString(),
-      idempotencyKey: String(transaction.more_info ?? providerPaymentId),
+      idempotencyKey: moreInfo ?? ref.idempotencyKey ?? "",
+      amount: numberValue(transaction.amount),
+      currency: String(transaction.currency_code ?? transaction.currency ?? "").toUpperCase() || undefined,
     };
   }
 
@@ -170,6 +204,14 @@ export class PayPlusPaymentAdapter implements PaymentAdapter {
     if (providerPaymentId && verifiedPaymentId && verifiedPaymentId !== providerPaymentId) {
       throw new Error("Payment provider verification mismatch");
     }
+    const verifiedMoreInfo = transaction.more_info === undefined ? undefined : String(transaction.more_info);
+    if (idempotencyKey && verifiedMoreInfo !== undefined && verifiedMoreInfo !== idempotencyKey) {
+      throw new Error("Payment provider verification mismatch");
+    }
+    const verifiedTransactionUid = String(transaction.transaction_uid ?? transactionUid ?? "");
+    if (transactionUid && verifiedTransactionUid && verifiedTransactionUid !== transactionUid) {
+      throw new Error("Payment provider verification mismatch");
+    }
 
     const callbackAmount = numberValue(body.amount);
     const verifiedAmount = numberValue(transaction.amount);
@@ -194,6 +236,7 @@ export class PayPlusPaymentAdapter implements PaymentAdapter {
       idempotencyKey: idempotencyKey || String(transaction.more_info ?? "") || undefined,
       amount: verifiedAmount ?? callbackAmount,
       currency: verifiedCurrency || callbackCurrency || undefined,
+      providerTransactionId: verifiedTransactionUid || undefined,
     };
   }
 }

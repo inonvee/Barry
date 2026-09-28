@@ -20,12 +20,18 @@ export type Product = {
   variants: ProductVariant[];
 };
 
+/**
+ * Capability-level search: attribute and option names are whatever the
+ * business's catalog uses (color, size, material, flavor, length...).
+ * Nothing here knows what kind of business is being searched.
+ */
 export type ProductSearchQuery = {
   text?: string;
   category?: string;
-  occasion?: string;
-  color?: string;
-  size?: string;
+  /** Product-level attributes that must match, e.g. { color: "black" }. */
+  attributes?: Record<string, string>;
+  /** Variant options at least one in-stock variant must have, e.g. { size: "M" }. */
+  options?: Record<string, string>;
   budget?: Money;
 };
 

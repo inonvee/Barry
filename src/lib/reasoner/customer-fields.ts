@@ -51,9 +51,24 @@ export function isValidPhoneValue(value: string): boolean {
   return true;
 }
 
+/**
+ * Values that can never be a person's own name (relationship words,
+ * fillers, time words). This validates a VALUE before it persists — like
+ * phone validation — it is not language understanding: it never produces
+ * a name, it only refuses to store one of these as one.
+ */
+const IMPOSSIBLE_NAME_VALUES = new Set([
+  "זה", "הוא", "היא",
+  "אשתי", "אישתי", "בעלי", "בן הזוג", "בת הזוג", "בן זוגי", "בת זוגי",
+  "wife", "husband", "partner", "spouse", "girlfriend", "boyfriend",
+  "my wife", "my husband", "my partner",
+  "tomorrow", "today", "tonight", "later",
+]);
+
 export function normalizeCustomerInfoField(key: string, value: string): string | undefined {
   const normalized = normalizeCustomerFieldValue(value);
   if (normalized === undefined) return undefined;
   if (key.toLowerCase() === "phone" && !isValidPhoneValue(normalized)) return undefined;
+  if (key.toLowerCase() === "name" && IMPOSSIBLE_NAME_VALUES.has(normalized.trim().replace(/\s+/g, " ").toLowerCase())) return undefined;
   return normalized;
 }

@@ -49,7 +49,7 @@ describe("Payment attacks: adversarial customer claims never fake a paid state",
 
   for (const claim of claims) {
     it(`"${claim}" never advances past waiting_payment`, async () => {
-      const { turns } = await runScenario({
+      const { turns, state } = await runScenario({
         name: `payment-claim-${claim.slice(0, 10)}`,
         graph: buildSpaGraph,
         turns: [
@@ -60,8 +60,16 @@ describe("Payment attacks: adversarial customer claims never fake a paid state",
         ],
       });
       const lastTurn = turns[turns.length - 1];
+      // A claim is never a fact: the most it can trigger is a READ-ONLY
+      // provider check (verifyPayment). The provider says unpaid, so
+      // nothing is booked and the conversation stays in payment.
       expect(lastTurn.selectedAction?.name).not.toBe("createBooking");
-      expect(lastTurn.toolResult).toBeUndefined();
+      if (lastTurn.selectedAction) {
+        expect(lastTurn.selectedAction.name).toBe("verifyPayment");
+        expect((lastTurn.toolResult?.output as { status?: string } | undefined)?.status).not.toBe("paid");
+      }
+      expect(state.knownFields.__paid).toBeUndefined();
+      expect(state.outcome).not.toBe("won");
     });
   }
 });

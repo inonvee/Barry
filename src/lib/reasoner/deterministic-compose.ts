@@ -28,6 +28,15 @@ function formatMissingFieldsList(missingFields: string[]): string {
  * language provider outage degrades to "correct but plain" instead of
  * losing the conversation.
  */
+function askVariantText(title: string, requested: Record<string, string> | undefined, available: Record<string, string>[]): string {
+  const options = [...new Set(available.map((o) => Object.values(o).join(" / ")))];
+  const asked = requested && Object.keys(requested).length ? Object.values(requested).join(" / ") : undefined;
+  if (options.length === 0) return `${title} isn't available right now${asked ? ` in ${asked}` : ""}.`;
+  return asked
+    ? `${title} isn't available in ${asked}. Available: ${options.join(", ")}. Which would you like?`
+    : `Which option would you like for ${title}? Available: ${options.join(", ")}.`;
+}
+
 export function composeDeterministic(input: ComposeResponseInput): string {
   const { outcome, toolResult, policyReason, scheduling } = input;
 
@@ -76,6 +85,18 @@ export function composeDeterministic(input: ComposeResponseInput): string {
         : `Let me get that finalized for you.`;
     case "compiler_error":
       return `Sorry — I need a little more information before I can do that. Could you tell me more?`;
+    case "clarify_reference":
+      return outcome.available > 0
+        ? `Which one did you mean? I showed you ${outcome.available} option${outcome.available === 1 ? "" : "s"}.`
+        : `What are you looking for? I'll search the catalog for you.`;
+    case "ask_variant":
+      return askVariantText(outcome.productTitle, outcome.requested, outcome.availableOptions);
+    case "price_request":
+      return outcome.current
+        ? `The current total is ${outcome.current.amount} ${outcome.current.currency}. I can't change prices myself.`
+        : `I can't change prices myself — the listed price is what I can offer.`;
+    case "no_payment_to_verify":
+      return `I don't see an open payment request for this conversation yet, so there's nothing for me to verify.`;
     case "action": {
       if (!toolResult) return "Got it.";
       if (!toolResult.ok) {
@@ -101,10 +122,9 @@ export function composeDeterministic(input: ComposeResponseInput): string {
             : `That item is out of stock right now — want me to notify you when it's back, or pick something else?`;
         }
         case "createPaymentRequest": {
-          const output = toolResult.output as { paymentRequestId: string; checkoutUrl?: string };
-          return output.checkoutUrl
-            ? `Here's your secure payment link: ${output.checkoutUrl}. Once the payment is verified, I'll confirm everything.`
-            : `Here's your payment request (${output.paymentRequestId}) — once the payment is verified, I'll confirm everything.`;
+          const output = toolResult.output as { paymentRequestId: string };
+          // The link itself is delivered in the channel's rich payload.
+          return `Here's your payment request (${output.paymentRequestId}) — once the payment is verified, I'll confirm everything.`;
         }
         case "searchProducts": {
           const output = toolResult.output as {
@@ -112,43 +132,54 @@ export function composeDeterministic(input: ComposeResponseInput): string {
               title: string;
               variants: { price: { amount: number; currency: string }; options: Record<string, string>; inventory: { available: number } }[];
             }[];
+            requestedOptions?: Record<string, string>;
           };
           if (output.products.length === 0) {
-            return `I don't see a grounded match in the catalog yet. Want to adjust the color, size, or budget?`;
+            return `I couldn't find a match in the catalog for that. Want to adjust what you're looking for?`;
           }
+          const wanted = output.requestedOptions ?? {};
           const lines = output.products.slice(0, 3).map((product, index) => {
-            const variant = product.variants.find((v) => v.inventory.available > 0) ?? product.variants[0];
-            const size = variant?.options.size ? `, size ${variant.options.size}` : "";
+            const matching = product.variants.filter((v) =>
+              Object.entries(wanted).every(([k, val]) => v.options[k]?.toLowerCase() === val.toLowerCase())
+            );
+            const variant = matching.find((v) => v.inventory.available > 0) ?? matching[0] ?? product.variants[0];
+            const label = Object.keys(wanted).length ? ` (${Object.values(wanted).join(" / ")}${matching.some((v) => v.inventory.available > 0) ? " in stock" : " out of stock"})` : "";
             const price = variant ? `${variant.price.amount} ${variant.price.currency}` : "price unavailable";
-            return `${index + 1}. ${product.title}${size} - ${price}`;
+            return `${index + 1}. ${product.title} - ${price}${label}`;
           });
-          return `I found these grounded options:\n${lines.join("\n")}`;
+          return `Here's what I found:\n${lines.join("\n")}`;
         }
-        case "addToCart": {
-          const output = toolResult.output as {
-            cart: { lines: { title: string; options: Record<string, string> }[]; total: { amount: number; currency: string } };
-            requestedAvailable: boolean;
-            selectedSize?: string;
-          };
-          const line = output.cart.lines[output.cart.lines.length - 1];
-          const prefix = output.requestedAvailable
-            ? `Added ${line.title}${line.options.size ? ` in ${line.options.size}` : ""} to your cart.`
-            : `That exact size is not available, so I added the available alternative${output.selectedSize ? ` in ${output.selectedSize}` : ""}.`;
-          return `${prefix} Cart total is ${output.cart.total.amount} ${output.cart.total.currency}.`;
+        case "verifyPayment": {
+          const output = toolResult.output as { status: string };
+          return output.status === "paid"
+            ? `Your payment is verified.`
+            : output.status === "pending"
+              ? `I checked with the payment provider and the payment hasn't come through yet. Once it's confirmed there, I'll finalize everything.`
+              : `The payment provider reports that payment didn't go through. Want to try again?`;
         }
+        case "addToCart":
         case "updateCartLine": {
           const output = toolResult.output as {
-            cart: { lines: { title: string; options: Record<string, string> }[]; total: { amount: number; currency: string } };
-            selectedSize?: string;
+            added: boolean;
+            cart?: { lines: { id: string; title: string; options: Record<string, string> }[]; total: { amount: number; currency: string } };
+            lineId?: string;
+            notAdded?: { productTitle: string; requested?: Record<string, string>; availableOptions: Record<string, string>[] };
           };
-          const line = output.cart.lines[0];
-          return `Updated ${line?.title ?? "the item"}${output.selectedSize ? ` to ${output.selectedSize}` : ""}. Cart total is ${output.cart.total.amount} ${output.cart.total.currency}.`;
+          if (!output.added && output.notAdded) {
+            return askVariantText(output.notAdded.productTitle, output.notAdded.requested, output.notAdded.availableOptions);
+          }
+          const line = output.cart?.lines.find((l) => l.id === output.lineId);
+          const what = line ? `${line.title}${Object.keys(line.options).length ? ` (${Object.values(line.options).join(" / ")})` : ""}` : "your cart";
+          if (!output.cart) return "Done.";
+          const total = `Cart total is ${output.cart.total.amount} ${output.cart.total.currency}.`;
+          if (outcome.action.name === "addToCart") return `Added ${what} to your cart. ${total}`;
+          return line ? `Updated your cart: ${what}. ${total}` : `Removed the item from your cart. ${total}`;
         }
         case "createCommerceCheckout": {
           const output = toolResult.output as { checkoutUrl?: string; amount: { amount: number; currency: string } };
           return output.checkoutUrl
-            ? `Your cart is ready: ${output.amount.amount} ${output.amount.currency}. Here's the secure payment link: ${output.checkoutUrl}. I'll create the order only after payment is verified.`
-            : `Your cart is ready: ${output.amount.amount} ${output.amount.currency}. I'll create the order only after payment is verified.`;
+            ? `Your cart is ready: ${output.amount.amount} ${output.amount.currency}. Use the secure payment link below — I'll create the order only after the payment provider confirms it.`
+            : `Your cart is ready: ${output.amount.amount} ${output.amount.currency}. I'll create the order only after the payment provider confirms payment.`;
         }
         case "createCommerceOrder": {
           const output = toolResult.output as { orderId: string };

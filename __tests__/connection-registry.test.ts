@@ -13,7 +13,7 @@ import { resolveSchedulingAdapterForBusiness } from "@/lib/scheduling/registry";
 import { PayPlusPaymentAdapter } from "@/lib/payments/adapters/payplus";
 import { resolveCredentials } from "@/lib/connections/credentials";
 import { resolveConnection } from "@/lib/connections/registry";
-import type { CreatePaymentLinkInput, PaymentAdapter, ProviderPayment, VerifiedPaymentWebhook } from "@/lib/payments/adapters/types";
+import type { CreatePaymentLinkInput, PaymentAdapter, PaymentStatusRef, ProviderPayment, VerifiedPaymentWebhook } from "@/lib/payments/adapters/types";
 
 class RecordingPaymentAdapter implements PaymentAdapter {
   readonly payments = new Map<string, ProviderPayment>();
@@ -35,8 +35,8 @@ class RecordingPaymentAdapter implements PaymentAdapter {
     return payment;
   }
 
-  async getPaymentStatus(providerPaymentId: string): Promise<ProviderPayment | undefined> {
-    return this.payments.get(providerPaymentId);
+  async getPaymentStatus(ref: PaymentStatusRef): Promise<ProviderPayment | undefined> {
+    return this.payments.get(ref.providerPaymentId);
   }
 
   async verifyWebhook(rawBody: string): Promise<VerifiedPaymentWebhook> {
@@ -309,7 +309,7 @@ describe("PayPlus adapter", () => {
     ).rejects.toThrow(/verification/i);
   });
 
-  it("uses documented transaction_uid lookup for PayPlus getPaymentStatus", async () => {
+  function recordingPayPlus(transactions: Record<string, unknown>[]) {
     const calls: Record<string, unknown>[] = [];
     const adapter = new PayPlusPaymentAdapter({
       apiKey: "api",
@@ -317,17 +317,74 @@ describe("PayPlus adapter", () => {
       paymentPageUid: "page",
       fetcher: (async (_url: RequestInfo | URL, init?: RequestInit) => {
         calls.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-        return Response.json({
-          results: { status: "success" },
-          data: { transactions: [{ transaction_uid: "txn_123", status: "success", more_info: "idem" }] },
-        });
+        return Response.json({ results: { status: "success" }, data: { transactions } });
       }) as typeof fetch,
     });
+    return { adapter, calls };
+  }
 
-    const status = await adapter.getPaymentStatus("txn_123");
+  it("looks up by transaction_uid only when the real transaction uid is known", async () => {
+    const { adapter, calls } = recordingPayPlus([
+      { transaction_uid: "txn_123", payment_request_uid: "ppr_123", status: "success", more_info: "idem", amount: 50, currency_code: "ILS" },
+    ]);
+
+    const status = await adapter.getPaymentStatus({ providerPaymentId: "ppr_123", providerTransactionId: "txn_123", idempotencyKey: "idem" });
 
     expect(calls).toEqual([{ transaction_uid: "txn_123" }]);
-    expect(status?.status).toBe("paid");
+    expect(status).toMatchObject({ status: "paid", providerPaymentId: "ppr_123", providerTransactionId: "txn_123", amount: 50, currency: "ILS" });
+  });
+
+  it("never passes the page_request_uid as transaction_uid — it looks up by the durable more_info key instead", async () => {
+    const { adapter, calls } = recordingPayPlus([
+      { transaction_uid: "txn_999", payment_request_uid: "ppr_123", status: "success", more_info: "idem-key" },
+    ]);
+
+    const status = await adapter.getPaymentStatus({ providerPaymentId: "ppr_123", idempotencyKey: "idem-key" });
+
+    expect(calls).toEqual([{ more_info: "idem-key" }]);
+    expect(calls.some((c) => c.transaction_uid === "ppr_123")).toBe(false);
+    expect(status).toMatchObject({ status: "paid", providerTransactionId: "txn_999" });
+  });
+
+  it("returns nothing (no guessing) when neither a transaction uid nor a durable key is known", async () => {
+    const { adapter, calls } = recordingPayPlus([{ transaction_uid: "txn_1", status: "success" }]);
+    expect(await adapter.getPaymentStatus({ providerPaymentId: "ppr_123" })).toBeUndefined();
+    expect(calls).toEqual([]);
+  });
+
+  it.each([
+    ["more_info", { transaction_uid: "txn_1", payment_request_uid: "ppr_123", status: "success", more_info: "someone-else" }],
+    ["payment page", { transaction_uid: "txn_1", payment_request_uid: "ppr_OTHER", status: "success", more_info: "idem-key" }],
+  ])("rejects a status lookup whose %s belongs to a different payment", async (_label, transaction) => {
+    const { adapter } = recordingPayPlus([transaction]);
+    await expect(adapter.getPaymentStatus({ providerPaymentId: "ppr_123", idempotencyKey: "idem-key" })).rejects.toThrow(/mismatch/i);
+  });
+
+  it("a scoped PAYPLUS_<REF>_ENVIRONMENT credential selects the environment", async () => {
+    process.env.PAYPLUS_PRODBIZ_API_KEY = "api";
+    process.env.PAYPLUS_PRODBIZ_SECRET_KEY = "secret";
+    process.env.PAYPLUS_PRODBIZ_ENVIRONMENT = "production";
+    try {
+      await getBackend().upsertBusinessConnection({
+        businessId: "payplus-env-business",
+        capability: "payments",
+        provider: "payplus",
+        status: "connected",
+        config: { paymentPageUid: "page" },
+        credentialsRef: "env:payplus:prodbiz",
+        permissions: ["createPaymentLink", "verifyWebhook"],
+      });
+      const adapter = await resolvePaymentAdapterForBusiness("payplus-env-business");
+      expect(adapter).toBeInstanceOf(PayPlusPaymentAdapter);
+      expect((adapter as PayPlusPaymentAdapter).environment).toBe("production");
+
+      process.env.PAYPLUS_PRODBIZ_ENVIRONMENT = "prod-ish";
+      await expect(resolvePaymentAdapterForBusiness("payplus-env-business")).rejects.toThrow(/Invalid PayPlus environment/);
+    } finally {
+      delete process.env.PAYPLUS_PRODBIZ_API_KEY;
+      delete process.env.PAYPLUS_PRODBIZ_SECRET_KEY;
+      delete process.env.PAYPLUS_PRODBIZ_ENVIRONMENT;
+    }
   });
 
   it.each([

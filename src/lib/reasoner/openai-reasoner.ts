@@ -1,7 +1,9 @@
 import OpenAI from "openai";
 import type { BusinessGraph } from "@/lib/business-graph";
 import { findOffer } from "@/lib/business-graph";
-import { LlmIRSchema, irJsonSchema, type LlmIR, type LlmSchedulingWindow, type KeyValuePair } from "./schemas";
+import { LlmIRSchema, irJsonSchema, type LlmCommerce, type LlmIR, type LlmSchedulingWindow, type KeyValuePair } from "./schemas";
+import { BARRY_CONSTITUTION } from "./constitution";
+import type { CommerceSemantics } from "./ir";
 import { composeDeterministic } from "./deterministic-compose";
 import { logReasonerFailure } from "./diagnostics";
 import type { BarryIR, ComposeResponseInput, Reasoner, ReasonerContext } from "./types";
@@ -80,66 +82,54 @@ function buildUnderstandingContext(ctx: ReasonerContext) {
     timeZone: graph.business.timezone,
   }).format(new Date());
 
+  // Customer-provided fields only — BARRY's internal "__" scratch state
+  // is never shown to the model as if it were conversation content.
+  const customerFields = Object.fromEntries(Object.entries(state.knownFields).filter(([key]) => !key.startsWith("__")));
+
   return {
     business: {
       name: graph.business.name,
+      description: graph.business.description,
       tone: graph.business.tone,
       locale: graph.business.locale,
       timezone: graph.business.timezone,
       currentDate: currentDateInBusinessTimezone,
     },
+    capabilities: graph.availableActions.filter((a) => a.enabled).map((a) => a.name),
     offers,
-    knownFields: state.knownFields,
+    knowledgeTopics: graph.knowledge.map((k) => k.topic),
+    knownCustomerFields: customerFields,
     previousMissingFields: state.missingFields,
     selectedOfferId: state.selectedOfferId ?? null,
     stage: state.stage,
+    awaitingSlotConfirmation: Boolean(state.knownFields.__offeredSlotStart && !state.knownFields.__slotAccepted),
+    openPaymentRequest: Boolean(state.knownFields.__paymentRequestId && !state.knownFields.__paid),
+    shownResults: ctx.grounded?.shownResults ?? [],
+    cart: ctx.grounded?.cart ?? [],
+    cartTotal: ctx.grounded?.cartTotal ?? null,
     recentMessages,
   };
 }
 
-const UNDERSTAND_SYSTEM_PROMPT = `You are BARRY's understanding layer for a customer conversation. Your ONLY
-job is to turn the customer's message into structured IR (intent, entities,
-constraints, known-field updates). You do NOT decide what BARRY does next —
-a separate deterministic system does that from the Business Graph. You have
-no tools and cannot execute anything.
+const UNDERSTAND_SYSTEM_PROMPT = `${BARRY_CONSTITUTION}
 
-Every field in the schema is always present in your response. Use null for
-"not applicable" and an empty array for "none" — never omit a field.
-"entities" and "customerInfo" are arrays of { key, value } pairs, not
-objects, because the schema can't express an open-ended dictionary.
+YOUR TASK NOW: understand the customer's latest message in context and describe it as structured IR. You are not replying and not acting — BARRY's runtime reads your IR and decides what to do under the business's rules. Every schema field is always present: null for "not applicable", [] for "none".
 
-"entities" vs "customerInfo" — these are NOT duplicates and must never
-both hold the same fact: "entities" is a free-form, debug-only bag for
-whatever semantic details you noticed (never read by anything that
-changes what BARRY does). "customerInfo" is the ONE AND ONLY channel
-for customer-provided identity/contact fields (name, phone, email, or
-any other field the business needs from the customer) — this is what
-actually gets remembered. If the customer gives you their name or phone
-number, you MUST put it in "customerInfo", not just "entities". Report
-each fact exactly once, in "customerInfo".
-
-SCHEDULING — read carefully: you describe what the customer said, you
-never compute a timestamp. "constraints.schedulingWindow" only has these
-fields: dateKind ("explicitDate" | "relativeDay" | "weekday" | null),
-isoDate (only for explicitDate, "YYYY-MM-DD" — use business.currentDate to
-resolve an ambiguous bare day/month), relativeDays (only for relativeDay:
-0=today, 1=tomorrow, 2=day after...), weekday (only for weekday: 0=Sun..
-6=Sat), weekdayQualifier ("this" | "next" | null — "next Monday" is
-"next", bare "Monday" is null/"this"), timeKind ("explicitTime" |
-"partOfDay" | null), hour/minute (only for explicitTime, 24-hour, exactly
-as the customer said it in their own local sense of time — never convert
-it yourself, never add a timezone offset), partOfDay (only for
-partOfDay). Leave every field you're not using as null — never invent an
-ISO datetime string anywhere.
-
-Rules you must never break:
-- Never invent prices, availability, inventory, policies, business hours, or payment status — you don't decide those; you only extract what the customer said.
-- customerInfo must contain ONLY fields the customer's message actually gave a real value for THIS turn. If they didn't mention a field, LEAVE IT OUT of the array entirely — never include a pair like {key:"name", value:"null"} (or "undefined"/"none"/"N/A"/empty string) as a placeholder for "nothing to report." An omitted key means no update; it does NOT mean "clear the existing value."
-- Accumulate information across turns: a day/time/party-size/service mentioned earlier (visible in knownFields/recentMessages) is still true unless the customer changed it — repeat it in constraints so it isn't lost. (customerInfo itself only ever needs a NEW value this turn; already-known customer fields are already in the knownFields context and don't need repeating.)
-- If multiple offers plausibly match, list them in offerCandidateIds and leave selectedOfferId null — do not guess.
-- selectedOfferId/offerCandidateIds are ONLY for the initial choice of offer. If "selectedOfferId" (given to you in context) is already set and the customer's message is an EXPLICIT change of mind ("actually, X instead", "change it to X", "switch to X") naming a different, real offer, put that offer's id in offerChangeRequested instead — never in selectedOfferId. Leave offerChangeRequested null for anything that isn't an explicit, confident change request; an unrelated message must never change the offer.
-- requestedCapability is advisory only: "ask_price" when they ask how much something costs, "ask_duration" when they ask how long it takes, "ask_deposit" when they ask about a deposit or upfront payment requirement. Use null if unsure.
-- Output strict JSON matching the provided schema. No explanation outside the JSON.`;
+- intent: a short label for what the customer wants.
+- commerce (null unless the business has commerce capabilities and the message is about products):
+  - search: describe what they want (queryText in their words, category/attributes/budget if stated; variant for option requirements such as size).
+  - select: they chose something BARRY already showed. Use referenceType "previous_result" + referenceIndex (0-based position in shownResults). Put requested options in variant (e.g. size -> "M"). Never invent an index outside shownResults.
+  - change_variant / change_quantity / remove: they changed an item in the cart (referenceType "cart_line").
+  - checkout: they want to pay / complete the purchase.
+  - negotiate_price: they ask for a different price (requestedPriceAmount).
+- customerInfo: ONLY identity/contact details the customer states about THEMSELVES in this message (name, phone, email, ...). For each one, add an evidence pair { key: "customerInfo.<field>", value: <exact quote from the message> }. A verb, a product, a relationship word ("my wife") or anything that isn't their own name is never a name. Omit fields not given this turn — never use placeholder values.
+- customerClaimsPaymentCompleted: true when the customer says they paid. It is only a claim; BARRY verifies it with the provider.
+- knowledgeTopic: when they ask about something covered by one of knowledgeTopics, that exact topic string.
+- Scheduling: describe what they said, never compute timestamps. schedulingWindow fields: dateKind (explicitDate|relativeDay|weekday), isoDate (YYYY-MM-DD, resolve using business.currentDate), relativeDays, weekday (0=Sun..6=Sat), weekdayQualifier (this|next), timeKind (explicitTime|partOfDay), hour/minute (24h, as the customer meant it locally), partOfDay. Keep a day/time stated earlier unless they changed it.
+- slotAccepted / slotDeclined: only when awaitingSlotConfirmation is true and they accept or decline the offered time.
+- selectedOfferId / offerCandidateIds: for services in "offers"; several plausible -> candidates. offerChangeRequested only for an explicit change of mind to a different real offer.
+- requestedCapability: "ask_price" | "ask_duration" | "ask_deposit" when they ask that about an offer; else null.
+- Output strict JSON only.`;
 
 /**
  * Live bug fixed by this prompt: after checkAvailability had ALREADY
@@ -150,7 +140,7 @@ Rules you must never break:
  * means the action is DONE; the model only ever describes the result.
  */
 export const COMPOSE_SYSTEM_PROMPT =
-  "You are BARRY, a helpful employee of this business, replying to a customer. " +
+  `${BARRY_CONSTITUTION}\n\nYOUR TASK NOW: write BARRY's reply to the customer. ` +
   "Use the business's tone. Reply in the same language as their last message. " +
   "The JSON summary below is the ONLY source of truth for what happened — " +
   "describe exactly that, never inventing a price, availability, or outcome beyond it. " +
@@ -222,11 +212,59 @@ export function sanitizeIR(graph: BusinessGraph, raw: LlmIR): BarryIR {
       partySize: raw.constraints.partySize ?? undefined,
       discountPct: raw.constraints.discountPct ?? undefined,
       slotAccepted: raw.constraints.slotAccepted ?? undefined,
+      slotDeclined: raw.constraints.slotDeclined ?? undefined,
     },
     customerInfo: kvArrayToRecord(raw.customerInfo),
     requestedCapability: raw.requestedCapability ?? undefined,
     goal: raw.goal ?? undefined,
+    commerce: raw.commerce ? unflattenCommerce(raw.commerce) : undefined,
+    customerClaims: raw.customerClaimsPaymentCompleted ? { paymentCompleted: true } : undefined,
+    evidence: kvArrayToRecord(raw.evidence),
+    knowledgeTopic: raw.knowledgeTopic ?? undefined,
   };
+}
+
+function nonEmptyRecord(pairs: KeyValuePair[]): Record<string, string> | undefined {
+  const record = kvArrayToRecord(pairs.filter((p) => p.key.trim() && p.value.trim()));
+  return Object.keys(record).length > 0 ? record : undefined;
+}
+
+/** Reconstruct commerce semantics from the flattened wire shape. Ids never come from the model — only positions. */
+function unflattenCommerce(raw: LlmCommerce): CommerceSemantics {
+  return {
+    intent: raw.intent,
+    query:
+      raw.queryText || raw.category || raw.attributes.length || raw.budgetAmount
+        ? {
+            text: raw.queryText ?? undefined,
+            category: raw.category ?? undefined,
+            attributes: nonEmptyRecord(raw.attributes),
+            budget: raw.budgetAmount ? { amount: raw.budgetAmount, currency: raw.budgetCurrency ?? undefined } : undefined,
+          }
+        : undefined,
+    reference:
+      raw.referenceType && raw.referenceIndex !== null ? { type: raw.referenceType, index: raw.referenceIndex } : undefined,
+    variant: nonEmptyRecord(raw.variant),
+    quantity: raw.quantity ?? undefined,
+    requestedPrice: raw.requestedPriceAmount ? { amount: raw.requestedPriceAmount, currency: raw.requestedPriceCurrency ?? undefined } : undefined,
+  };
+}
+
+/**
+ * Compose output is plain text; product cards and links travel in the
+ * channel's rich payload. Strip markdown the model may still produce so
+ * no "**[Title](url)**" / "![alt](img)" ever reaches a customer.
+ */
+export function toPlainText(text: string): string {
+  return text
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/(\*\*|__)(.+?)\1/g, "$2")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 export type ParseIRResult = { ok: true; ir: BarryIR } | { ok: false; kind: "json_parse_error" | "schema_validation_error"; detail: string };
@@ -409,7 +447,7 @@ export class OpenAIReasoner implements Reasoner {
         temperature: 0.4,
       });
       const text = completion.choices[0]?.message?.content?.trim();
-      if (text) return enforceComposeGrounding(text, ctx, input);
+      if (text) return enforceComposeGrounding(toPlainText(text), ctx, input);
       logReasonerFailure("openai_api_error", { message: "empty completion content during composeResponse" });
     } catch (err) {
       logReasonerFailure("openai_api_error", {

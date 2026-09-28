@@ -57,11 +57,25 @@ describe("commerce operator flow", () => {
     await handleCustomerMessage(graph, conv, cust, "I need a black dress for a wedding, size S under 450 shekels");
     const out = await handleCustomerMessage(graph, conv, cust, "Take the first one in S");
     expect(out.turn.selectedAction?.name).toBe("addToCart");
-    expect(out.response).toMatch(/not available|alternative/i);
+    // Never silently substituted: nothing enters the cart, the real
+    // in-stock alternatives are offered, and the stage does not advance.
+    expect(out.turn.toolResult?.output).toMatchObject({ added: false, notAdded: { reason: "unavailable" } });
+    expect(out.response).toMatch(/isn't available in S/i);
+    expect(out.response).toMatch(/M/);
+    expect(out.state.knownFields.__commerceCartId).toBeUndefined();
+    expect(out.state.stage).not.toBe("payment");
 
-    const changed = await handleCustomerMessage(graph, conv, cust, "Actually make it M");
+    // The customer picks a real alternative -> it enters the provider cart.
+    const chosen = await handleCustomerMessage(graph, conv, cust, "Actually make it M");
+    expect(chosen.turn.selectedAction?.name).toBe("addToCart");
+    expect(chosen.turn.toolResult?.output).toMatchObject({ added: true });
+    expect(chosen.state.knownFields.__commerceCartId).toBeTruthy();
+
+    // A later size change edits that line ON THE PROVIDER.
+    const changed = await handleCustomerMessage(graph, conv, cust, "Actually make it L");
     expect(changed.turn.selectedAction?.name).toBe("updateCartLine");
-    expect(changed.response).toMatch(/M/i);
+    expect(changed.turn.toolResult?.ok).toBe(true);
+    expect(changed.response).toMatch(/L/);
   });
 
   it("answers policy/order questions only from grounded commerce data", async () => {

@@ -3,6 +3,7 @@ import type { SchedulingConstraint } from "@/lib/scheduling/resolver";
 import type { CompileDebugInfo } from "@/lib/reasoner/ir";
 import type { CustomerFacingLocalDisplay } from "@/lib/reasoner/types";
 import type { IRVerification } from "@/lib/reasoner/verify";
+import type { NormalizedOutboundMessage } from "@/lib/channels/types";
 
 export type ConversationStage =
   | "discovery"
@@ -16,8 +17,11 @@ export type ConversationStage =
 
 export type ConversationMessage = {
   role: "customer" | "barry" | "system";
+  /** Plain text only — never markdown/image syntax. Rich content travels in `rich`. */
   content: string;
   at: string;
+  /** Channel-neutral rich content (product cards, payment link) rendered by the channel. */
+  rich?: NormalizedOutboundMessage["rich"];
 };
 
 /** One full Observe→Update runtime turn, kept for explainability/debugging. */
