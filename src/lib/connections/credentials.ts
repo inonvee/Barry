@@ -55,3 +55,37 @@ export function resolveCredentials(credentialsRef: string, provider: string): En
 export function resolveConnectionCredentials(connection: ConnectionRecord): EnvCredentials {
   return resolveCredentials(connection.credentialsRef, connection.provider);
 }
+
+const CREDENTIAL_KEYS: Record<string, { envProvider: string; keys: { key: string; required: boolean }[] }> = {
+  stripe: { envProvider: "stripe", keys: [{ key: "SECRET_KEY", required: true }, { key: "WEBHOOK_SECRET", required: true }] },
+  payplus: {
+    envProvider: "payplus",
+    keys: [
+      { key: "API_KEY", required: true },
+      { key: "SECRET_KEY", required: true },
+      { key: "PAYMENT_PAGE_UID", required: true },
+      { key: "ENVIRONMENT", required: false },
+      { key: "CALLBACK_URL", required: false },
+    ],
+  },
+  "google-calendar": { envProvider: "google_calendar", keys: [{ key: "CALENDAR_ID", required: true }] },
+  "custom-commerce": { envProvider: "custom_commerce", keys: [{ key: "API_KEY", required: true }] },
+};
+
+export type CredentialRequirement = { envVar: string; required: boolean; present: boolean };
+
+/**
+ * Setup requirements for a connection: the NAMES of the environment
+ * variables it reads and whether each is set. Never returns a value.
+ */
+export function describeCredentialRequirements(credentialsRef: string, provider: string): CredentialRequirement[] {
+  const spec = CREDENTIAL_KEYS[provider];
+  if (!spec) return [];
+  const [, , refName] = credentialsRef.split(":");
+  return spec.keys.map(({ key, required }) => {
+    const envVar =
+      provider === "google-calendar" && !refName ? "GOOGLE_CALENDAR_ID" : envName(spec.envProvider, refName, key);
+    const value = process.env[envVar];
+    return { envVar, required, present: typeof value === "string" && value.length > 0 };
+  });
+}

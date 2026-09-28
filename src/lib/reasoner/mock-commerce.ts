@@ -100,7 +100,9 @@ export function mockCommerceSemantics(
     if (variant && context.hasPreviousResults) return { intent: "select", variant };
   }
 
-  if (index !== undefined && context.hasPreviousResults && (SELECT_VERB.test(text) || text.trim().split(/\s+/).length <= 4)) {
+  // An explicit "I'll take the Nth" is a selection whether or not anything
+  // was shown — grounding the reference is BARRY's job, not understanding's.
+  if (index !== undefined && (SELECT_VERB.test(text) || (context.hasPreviousResults && text.trim().split(/\s+/).length <= 4))) {
     return { intent: "select", reference: { type: "previous_result", index }, variant };
   }
 

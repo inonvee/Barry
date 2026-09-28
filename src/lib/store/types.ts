@@ -73,6 +73,53 @@ export type ConnectionRecord = {
   lastVerifiedAt?: string;
 };
 
+/** Owner-approved learning run over explicit sources. */
+export type LearningRunStatus = "fetching" | "extracting" | "needs_owner" | "ready" | "failed";
+export type LearningRunRecord = {
+  id: string;
+  businessId: string;
+  status: LearningRunStatus;
+  approvedSources: { url: string; approvedBy: string; approvedAt: string }[];
+  /** Fetch outcomes, learner used, rejected candidates with reasons — never raw page content. */
+  summary: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LearnedFactClassification = "fact" | "inference" | "recommendation" | "policy";
+export type LearnedFactStatus = "candidate" | "verified" | "corrected" | "rejected";
+export type LearnedFactSource =
+  | { kind: "web"; url: string; title?: string; quote: string }
+  | { kind: "owner" };
+
+export type LearnedFactRecord = {
+  id: string;
+  businessId: string;
+  runId?: string;
+  key: string;
+  value: string;
+  classification: LearnedFactClassification;
+  source: LearnedFactSource;
+  confidence: "low" | "medium" | "high";
+  status: LearnedFactStatus;
+  /** True only once the owner verified, corrected, or supplied it. */
+  ownerVerified: boolean;
+  /** The learned value the owner replaced, kept for audit. */
+  correctedFrom?: string;
+  reviewedBy?: string;
+  reviewedAt?: string;
+  discoveredAt: string;
+  refreshedAt: string;
+};
+
+export type OperatingStrategyRecord = {
+  id: string;
+  businessId: string;
+  strategy: Record<string, unknown>;
+  readiness: Record<string, unknown>;
+  generatedAt: string;
+};
+
 export type CommerceCartRecord = {
   id: string;
   businessId: string;
@@ -200,6 +247,17 @@ export interface BarryBackend {
   upsertBusinessConnection(
     record: Omit<ConnectionRecord, "id" | "createdAt" | "updatedAt">
   ): Promise<ConnectionRecord>;
+  listBusinessConnections(businessId: string): Promise<ConnectionRecord[]>;
+
+  // Learn Business
+  createLearningRun(record: Omit<LearningRunRecord, "id" | "createdAt" | "updatedAt">): Promise<LearningRunRecord>;
+  updateLearningRun(id: string, patch: Partial<Pick<LearningRunRecord, "status" | "summary">>): Promise<LearningRunRecord>;
+  getLatestLearningRun(businessId: string): Promise<LearningRunRecord | undefined>;
+  listLearnedFacts(businessId: string): Promise<LearnedFactRecord[]>;
+  /** One row per (businessId, key). */
+  upsertLearnedFact(record: Omit<LearnedFactRecord, "id">): Promise<LearnedFactRecord>;
+  saveOperatingStrategy(record: Omit<OperatingStrategyRecord, "id" | "generatedAt">): Promise<OperatingStrategyRecord>;
+  getLatestOperatingStrategy(businessId: string): Promise<OperatingStrategyRecord | undefined>;
 
   // Commerce
   listCommerceCarts(businessId: string): Promise<CommerceCartRecord[]>;

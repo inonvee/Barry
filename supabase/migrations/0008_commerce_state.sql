@@ -41,3 +41,10 @@ create unique index if not exists commerce_orders_provider_order_uidx
 
 create index if not exists commerce_orders_conversation_idx
   on public.commerce_orders (business_id, conversation_id);
+
+-- Server-only tables: RLS on with no policies, and no privileges for the
+-- public API roles. Only the service role (server) reads or writes them.
+alter table public.commerce_carts enable row level security;
+alter table public.commerce_orders enable row level security;
+revoke all on table public.commerce_carts from anon, authenticated;
+revoke all on table public.commerce_orders from anon, authenticated;

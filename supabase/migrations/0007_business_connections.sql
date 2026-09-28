@@ -21,4 +21,7 @@ create table if not exists business_connections (
 create index if not exists business_connections_business_idx
   on business_connections (business_id);
 
+-- Server-only table: RLS on with no policies, and no privileges for the
+-- public API roles. Only the service role (server) reads or writes it.
 alter table business_connections enable row level security;
+revoke all on table business_connections from anon, authenticated;

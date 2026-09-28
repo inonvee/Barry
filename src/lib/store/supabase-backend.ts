@@ -8,6 +8,9 @@ import type {
   CommerceCartRecord,
   CommerceOrderRecord,
   FollowUpRecord,
+  LearnedFactRecord,
+  LearningRunRecord,
+  OperatingStrategyRecord,
   PaymentRequestRecord,
   PaymentWebhookEventRecord,
 } from "./types";
@@ -84,6 +87,48 @@ function connectionFromRow(row: Record<string, unknown>): ConnectionRecord {
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
     lastVerifiedAt: row.last_verified_at as string | undefined,
+  };
+}
+
+function learningRunFromRow(row: Record<string, unknown>): LearningRunRecord {
+  return {
+    id: row.id as string,
+    businessId: row.business_id as string,
+    status: row.status as LearningRunRecord["status"],
+    approvedSources: (row.approved_sources as LearningRunRecord["approvedSources"]) ?? [],
+    summary: (row.summary as Record<string, unknown>) ?? {},
+    createdAt: row.created_at as string,
+    updatedAt: row.updated_at as string,
+  };
+}
+
+function learnedFactFromRow(row: Record<string, unknown>): LearnedFactRecord {
+  return {
+    id: row.id as string,
+    businessId: row.business_id as string,
+    runId: (row.run_id as string | null) ?? undefined,
+    key: row.fact_key as string,
+    value: typeof row.fact_value === "string" ? row.fact_value : JSON.stringify(row.fact_value),
+    classification: row.classification as LearnedFactRecord["classification"],
+    source: row.source as LearnedFactRecord["source"],
+    confidence: row.confidence as LearnedFactRecord["confidence"],
+    status: row.status as LearnedFactRecord["status"],
+    ownerVerified: Boolean(row.owner_verified),
+    correctedFrom: (row.corrected_from as string | null) ?? undefined,
+    reviewedBy: (row.reviewed_by as string | null) ?? undefined,
+    reviewedAt: (row.reviewed_at as string | null) ?? undefined,
+    discoveredAt: row.discovered_at as string,
+    refreshedAt: row.refreshed_at as string,
+  };
+}
+
+function strategyFromRow(row: Record<string, unknown>): OperatingStrategyRecord {
+  return {
+    id: row.id as string,
+    businessId: row.business_id as string,
+    strategy: (row.strategy as Record<string, unknown>) ?? {},
+    readiness: (row.readiness as Record<string, unknown>) ?? {},
+    generatedAt: row.generated_at as string,
   };
 }
 
@@ -248,7 +293,9 @@ export class SupabaseBackend implements BarryBackend {
       provider_payment_id: record.providerPaymentId,
       provider_checkout_url: record.providerCheckoutUrl,
       idempotency_key: record.idempotencyKey,
-      binding: record.binding ?? null,
+      // Only written when present (migration 0010), so payment flows without
+      // a cart binding keep working on a database that predates it.
+      ...(record.binding ? { binding: record.binding } : {}),
     };
     const { data, error } = await client.from("payment_requests").insert(row).select("*").single();
     if (error) {
@@ -320,7 +367,7 @@ export class SupabaseBackend implements BarryBackend {
         status,
         verified_at: metadata.verifiedAt ?? existing.verifiedAt ?? null,
         provider_event_id: metadata.providerEventId ?? existing.providerEventId ?? null,
-        provider_transaction_id: metadata.providerTransactionId ?? existing.providerTransactionId ?? null,
+        ...(metadata.providerTransactionId ? { provider_transaction_id: metadata.providerTransactionId } : {}),
       })
       .eq("id", paymentId)
       .select("*")
@@ -464,6 +511,123 @@ export class SupabaseBackend implements BarryBackend {
       .single();
     if (error) throw new Error(`Failed to upsert business connection: ${error.message}`);
     return connectionFromRow(data);
+  }
+
+  async listBusinessConnections(businessId: string): Promise<ConnectionRecord[]> {
+    const client = getSupabaseClient();
+    const { data, error } = await client.from("business_connections").select("*").eq("business_id", businessId);
+    if (error) throw new Error(`Failed to list business connections: ${error.message}`);
+    return (data ?? []).map(connectionFromRow);
+  }
+
+  async createLearningRun(record: Omit<LearningRunRecord, "id" | "createdAt" | "updatedAt">): Promise<LearningRunRecord> {
+    const client = getSupabaseClient();
+    const { data, error } = await client
+      .from("business_learning_runs")
+      .insert({
+        id: id("lrun"),
+        business_id: record.businessId,
+        status: record.status,
+        approved_sources: record.approvedSources,
+        summary: record.summary,
+      })
+      .select("*")
+      .single();
+    if (error) throw new Error(`Failed to create learning run: ${error.message}`);
+    return learningRunFromRow(data);
+  }
+
+  async updateLearningRun(runId: string, patch: Partial<Pick<LearningRunRecord, "status" | "summary">>): Promise<LearningRunRecord> {
+    const client = getSupabaseClient();
+    const { data, error } = await client
+      .from("business_learning_runs")
+      .update({ ...(patch.status ? { status: patch.status } : {}), ...(patch.summary ? { summary: patch.summary } : {}), updated_at: new Date().toISOString() })
+      .eq("id", runId)
+      .select("*")
+      .single();
+    if (error) throw new Error(`Failed to update learning run: ${error.message}`);
+    return learningRunFromRow(data);
+  }
+
+  async getLatestLearningRun(businessId: string): Promise<LearningRunRecord | undefined> {
+    const client = getSupabaseClient();
+    const { data, error } = await client
+      .from("business_learning_runs")
+      .select("*")
+      .eq("business_id", businessId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw new Error(`Failed to load learning run: ${error.message}`);
+    return data ? learningRunFromRow(data) : undefined;
+  }
+
+  async listLearnedFacts(businessId: string): Promise<LearnedFactRecord[]> {
+    const client = getSupabaseClient();
+    const { data, error } = await client.from("learned_business_facts").select("*").eq("business_id", businessId);
+    if (error) throw new Error(`Failed to list learned facts: ${error.message}`);
+    return (data ?? []).map(learnedFactFromRow);
+  }
+
+  async upsertLearnedFact(record: Omit<LearnedFactRecord, "id">): Promise<LearnedFactRecord> {
+    const client = getSupabaseClient();
+    const { data: existing, error: loadError } = await client
+      .from("learned_business_facts")
+      .select("id")
+      .eq("business_id", record.businessId)
+      .eq("fact_key", record.key)
+      .maybeSingle();
+    if (loadError) throw new Error(`Failed to load learned fact: ${loadError.message}`);
+    const { data, error } = await client
+      .from("learned_business_facts")
+      .upsert(
+        {
+          id: (existing?.id as string | undefined) ?? id("lfact"),
+          business_id: record.businessId,
+          run_id: record.runId ?? null,
+          fact_key: record.key,
+          fact_value: record.value,
+          classification: record.classification,
+          source: record.source,
+          confidence: record.confidence,
+          status: record.status,
+          owner_verified: record.ownerVerified,
+          corrected_from: record.correctedFrom ?? null,
+          reviewed_by: record.reviewedBy ?? null,
+          reviewed_at: record.reviewedAt ?? null,
+          discovered_at: record.discoveredAt,
+          refreshed_at: record.refreshedAt,
+        },
+        { onConflict: "business_id,fact_key" }
+      )
+      .select("*")
+      .single();
+    if (error) throw new Error(`Failed to upsert learned fact: ${error.message}`);
+    return learnedFactFromRow(data);
+  }
+
+  async saveOperatingStrategy(record: Omit<OperatingStrategyRecord, "id" | "generatedAt">): Promise<OperatingStrategyRecord> {
+    const client = getSupabaseClient();
+    const { data, error } = await client
+      .from("business_operating_strategies")
+      .insert({ id: id("lstrat"), business_id: record.businessId, strategy: record.strategy, readiness: record.readiness })
+      .select("*")
+      .single();
+    if (error) throw new Error(`Failed to save operating strategy: ${error.message}`);
+    return strategyFromRow(data);
+  }
+
+  async getLatestOperatingStrategy(businessId: string): Promise<OperatingStrategyRecord | undefined> {
+    const client = getSupabaseClient();
+    const { data, error } = await client
+      .from("business_operating_strategies")
+      .select("*")
+      .eq("business_id", businessId)
+      .order("generated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw new Error(`Failed to load operating strategy: ${error.message}`);
+    return data ? strategyFromRow(data) : undefined;
   }
 
   async listCommerceCarts(businessId: string): Promise<CommerceCartRecord[]> {

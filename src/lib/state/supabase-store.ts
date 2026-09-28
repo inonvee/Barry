@@ -57,6 +57,7 @@ export class SupabaseConversationStore implements ConversationStore {
       role: m.role,
       content: m.content,
       at: m.at,
+      ...(m.rich ? { rich: m.rich } : {}),
     }));
     const turns: TurnLog[] = (turnRows ?? []).map((t) => ({
       id: t.id,
@@ -133,6 +134,8 @@ export class SupabaseConversationStore implements ConversationStore {
           role: m.role,
           content: m.content,
           at: m.at,
+          // Channel-neutral rich payload (migration 0010); omitted when absent.
+          ...(m.rich ? { rich: m.rich } : {}),
         }))
       );
       if (error) throw new Error(`Failed to save messages for ${state.id}: ${error.message}`);

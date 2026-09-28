@@ -40,6 +40,11 @@ export function registerFixtureCommerceCatalog(name: string, catalog: () => Prod
   if (businessId) fixtureBusinesses.set(businessId, name);
 }
 
+/** The simulator fixture catalog a business falls back to when it has no commerce connection, if any. */
+export function fixtureCatalogForBusiness(businessId: string): string | undefined {
+  return fixtureBusinesses.get(businessId);
+}
+
 /** Fixture data is for tests, local dev, and explicitly-allowed preview demos — never a real production business. */
 export function fixtureCommerceAllowed(): boolean {
   if (!isProductionRuntime()) return true;

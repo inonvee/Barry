@@ -3,6 +3,66 @@
 import { useState } from "react";
 import type { ConversationMessage } from "@/lib/state";
 
+type Rich = NonNullable<ConversationMessage["rich"]>;
+
+/** Only http(s) links are ever rendered — rich payloads are data, never markup. */
+function safeHref(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Channel-neutral rich payload (product cards, payment link) rendered by the simulator "channel". */
+export function RichContent({ rich }: { rich: Rich }) {
+  const paymentHref = safeHref(rich.paymentUrl);
+  return (
+    <div className="mt-2 space-y-2" data-testid="rich-content">
+      {rich.products && rich.products.length > 0 && (
+        <ol className="space-y-2">
+          {rich.products.map((p, i) => {
+            const href = safeHref(p.url);
+            const img = safeHref(p.imageUrl);
+            return (
+              <li key={i} className="flex gap-3 rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 p-2">
+                {img && (
+                  // eslint-disable-next-line @next/next/no-img-element -- arbitrary provider image hosts
+                  <img src={img} alt={p.title} className="h-16 w-16 shrink-0 rounded-lg object-cover bg-neutral-100" />
+                )}
+                <div className="min-w-0 text-xs">
+                  <p className="font-medium text-sm">
+                    {i + 1}. {p.title}
+                  </p>
+                  {p.price && <p className="text-neutral-600 dark:text-neutral-300">{p.price}</p>}
+                  {p.availability && <p className="text-neutral-500">{p.availability}</p>}
+                  {href && (
+                    <a href={href} target="_blank" rel="noopener noreferrer" className="text-indigo-600 underline">
+                      View product
+                    </a>
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+      {paymentHref && (
+        <a
+          href={paymentHref}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-block rounded-lg bg-green-600 text-white text-xs font-medium px-3 py-2"
+        >
+          Secure payment link
+        </a>
+      )}
+    </div>
+  );
+}
+
 export function ChatPanel({
   messages,
   onSend,
@@ -45,7 +105,8 @@ export function ChatPanel({
                     : "bg-neutral-100 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100 rounded-bl-sm"
                 }`}
               >
-                {m.content}
+                <p className="whitespace-pre-line">{m.content}</p>
+                {m.rich && <RichContent rich={m.rich} />}
               </div>
             )}
           </div>

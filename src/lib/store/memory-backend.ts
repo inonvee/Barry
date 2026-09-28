@@ -7,6 +7,9 @@ import type {
   CommerceCartRecord,
   CommerceOrderRecord,
   FollowUpRecord,
+  LearnedFactRecord,
+  LearningRunRecord,
+  OperatingStrategyRecord,
   PaymentWebhookEventRecord,
   PaymentRequestRecord,
 } from "./types";
@@ -31,6 +34,9 @@ export class MemoryBackend implements BarryBackend {
   private commerceOrders = new Map<string, CommerceOrderRecord>();
   private approvals = new Map<string, ApprovalRecord>();
   private followUps: FollowUpRecord[] = [];
+  private learningRuns = new Map<string, LearningRunRecord>();
+  private learnedFacts = new Map<string, LearnedFactRecord>(); // `${businessId}:${key}`
+  private strategies: OperatingStrategyRecord[] = [];
 
   async listBookings(businessId: string) {
     return this.bookings.filter((b) => b.businessId === businessId && b.status === "confirmed");
@@ -195,6 +201,54 @@ export class MemoryBackend implements BarryBackend {
     };
     this.businessConnections.set(key, connection);
     return connection;
+  }
+
+  async listBusinessConnections(businessId: string) {
+    return [...this.businessConnections.values()].filter((c) => c.businessId === businessId).map((c) => structuredClone(c));
+  }
+
+  async createLearningRun(record: Omit<LearningRunRecord, "id" | "createdAt" | "updatedAt">) {
+    const now = new Date().toISOString();
+    const run: LearningRunRecord = { ...structuredClone(record), id: id("lrun"), createdAt: now, updatedAt: now };
+    this.learningRuns.set(run.id, run);
+    return structuredClone(run);
+  }
+
+  async updateLearningRun(runId: string, patch: Partial<Pick<LearningRunRecord, "status" | "summary">>) {
+    const run = this.learningRuns.get(runId);
+    if (!run) throw new Error(`Learning run ${runId} not found`);
+    const updated: LearningRunRecord = { ...run, ...structuredClone(patch), updatedAt: new Date().toISOString() };
+    this.learningRuns.set(runId, updated);
+    return structuredClone(updated);
+  }
+
+  async getLatestLearningRun(businessId: string) {
+    const runs = [...this.learningRuns.values()].filter((r) => r.businessId === businessId);
+    const latest = runs.sort((a, b) => (a.createdAt === b.createdAt ? 0 : a.createdAt < b.createdAt ? 1 : -1))[0];
+    return latest ? structuredClone(latest) : undefined;
+  }
+
+  async listLearnedFacts(businessId: string) {
+    return [...this.learnedFacts.values()].filter((f) => f.businessId === businessId).map((f) => structuredClone(f));
+  }
+
+  async upsertLearnedFact(record: Omit<LearnedFactRecord, "id">) {
+    const key = `${record.businessId}:${record.key}`;
+    const existing = this.learnedFacts.get(key);
+    const fact: LearnedFactRecord = { ...structuredClone(record), id: existing?.id ?? id("lfact") };
+    this.learnedFacts.set(key, fact);
+    return structuredClone(fact);
+  }
+
+  async saveOperatingStrategy(record: Omit<OperatingStrategyRecord, "id" | "generatedAt">) {
+    const saved: OperatingStrategyRecord = { ...structuredClone(record), id: id("lstrat"), generatedAt: new Date().toISOString() };
+    this.strategies.push(saved);
+    return structuredClone(saved);
+  }
+
+  async getLatestOperatingStrategy(businessId: string) {
+    const latest = this.strategies.filter((s) => s.businessId === businessId).at(-1);
+    return latest ? structuredClone(latest) : undefined;
   }
 
   async listCommerceCarts(businessId: string) {
