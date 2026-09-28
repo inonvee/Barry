@@ -9,7 +9,7 @@ describe("scenario: garage / automotive service", () => {
     const conv = "garage-conv-1";
     const customer = "cust-garage-1";
 
-    await handleCustomerMessage(graph, conv, customer, "Can I get a brake inspection Monday morning?");
+    await handleCustomerMessage(graph, conv, customer, "Can I get a brake inspection Tuesday morning?");
     await handleCustomerMessage(graph, conv, customer, "Sam Torres");
     const afterPhone = await handleCustomerMessage(graph, conv, customer, "555-000-1111");
     expect(afterPhone.turn.selectedAction?.name).toBe("checkAvailability");

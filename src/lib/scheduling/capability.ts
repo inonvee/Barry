@@ -1,7 +1,5 @@
-import { getBackend } from "@/lib/store";
-import { GoogleCalendarAdapter } from "./adapters/google-calendar";
-import { MemorySchedulingAdapter } from "./adapters/memory";
 import type { CheckAvailabilityInput, CreateBookingInput, SchedulingAdapter } from "./adapters/types";
+import { resolveSchedulingAdapterForBusiness } from "./registry";
 
 let adapterOverride: SchedulingAdapter | undefined;
 
@@ -11,20 +9,17 @@ export function setSchedulingAdapterForTests(adapter: SchedulingAdapter | undefi
 
 export function getSchedulingAdapter(): SchedulingAdapter {
   if (adapterOverride) return adapterOverride;
-  if (process.env.BARRY_SCHEDULING_PROVIDER === "google-calendar") {
-    const calendarId = process.env.GOOGLE_CALENDAR_ID;
-    if (!calendarId) throw new Error("Google Calendar auth invalid");
-    return new GoogleCalendarAdapter({ calendarId, backend: getBackend() });
-  }
-  return new MemorySchedulingAdapter(getBackend());
+  throw new Error("Scheduling adapter requires a business connection");
 }
 
 export async function checkSchedulingAvailability(input: CheckAvailabilityInput) {
-  return getSchedulingAdapter().checkAvailability(input);
+  const adapter = adapterOverride ?? (await resolveSchedulingAdapterForBusiness(input.graph.business.id));
+  return adapter.checkAvailability(input);
 }
 
 export async function createSchedulingBooking(input: CreateBookingInput) {
-  return getSchedulingAdapter().createBooking(input);
+  const adapter = adapterOverride ?? (await resolveSchedulingAdapterForBusiness(input.graph.business.id));
+  return adapter.createBooking(input);
 }
 
 export function bookingIdempotencyKey(input: Omit<CreateBookingInput, "idempotencyKey" | "graph"> & { businessId: string }): string {

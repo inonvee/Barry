@@ -3,8 +3,8 @@ import { getConversationStore } from "@/lib/state";
 import type { BusinessGraph } from "@/lib/business-graph";
 import type { PaymentRequestRecord } from "@/lib/store";
 import { MemoryPaymentAdapter } from "./adapters/memory";
-import { StripePaymentAdapter } from "./adapters/stripe";
 import type { PaymentAdapter, PaymentWebhookHeaders } from "./adapters/types";
+import { resolvePaymentAdapterForBusiness, resolvePaymentAdapterForWebhook } from "./registry";
 
 let adapterOverride: PaymentAdapter | undefined;
 
@@ -14,8 +14,11 @@ export function setPaymentAdapterForTests(adapter: PaymentAdapter | undefined): 
 
 export function getPaymentAdapter(): PaymentAdapter {
   if (adapterOverride) return adapterOverride;
-  if (process.env.BARRY_PAYMENT_PROVIDER === "stripe") return new StripePaymentAdapter();
   return new MemoryPaymentAdapter();
+}
+
+async function paymentAdapterForBusiness(businessId: string): Promise<PaymentAdapter> {
+  return adapterOverride ?? resolvePaymentAdapterForBusiness(businessId);
 }
 
 export type CreatePaymentLinkRequest = {
@@ -77,7 +80,7 @@ async function nextPaymentAttemptKey(businessId: string, baseKey: string): Promi
 
 export async function createPaymentLink(input: CreatePaymentLinkRequest): Promise<BarryPayment> {
   const backend = getBackend();
-  const adapter = getPaymentAdapter();
+  const adapter = await paymentAdapterForBusiness(input.businessId);
   const baseIdempotencyKey = paymentIdempotencyKey(input);
   const idempotencyKey = await nextPaymentAttemptKey(input.businessId, baseIdempotencyKey);
   const existing = await backend.findPaymentRequestByIdempotencyKey(input.businessId, idempotencyKey);
@@ -114,7 +117,7 @@ export async function processPaymentWebhook(
   rawBody: string,
   headers: PaymentWebhookHeaders
 ): Promise<PaymentWebhookResult> {
-  const adapter = getPaymentAdapter();
+  const adapter = adapterOverride ?? (await resolvePaymentAdapterForWebhook(rawBody, headers));
   const verified = await adapter.verifyWebhook(rawBody, headers);
   const backend = getBackend();
   const payment = await backend.findPaymentRequestByProviderPaymentId(
@@ -124,6 +127,12 @@ export async function processPaymentWebhook(
   if (!payment) throw new Error("Unknown payment request");
   if (verified.conversationId && verified.conversationId !== payment.conversationId) {
     throw new Error("Payment webhook conversation mismatch");
+  }
+  if (verified.amount !== undefined && verified.amount !== payment.amount) {
+    throw new Error("Payment webhook amount mismatch");
+  }
+  if (verified.currency && verified.currency.toUpperCase() !== payment.currency.toUpperCase()) {
+    throw new Error("Payment webhook currency mismatch");
   }
 
   const event = await backend.recordPaymentWebhookEvent(verified.provider, verified.providerEventId, payment.id);

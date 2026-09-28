@@ -2,6 +2,8 @@ import type {
   ApprovalRecord,
   BarryBackend,
   BookingRecord,
+  ConnectionCapability,
+  ConnectionRecord,
   FollowUpRecord,
   PaymentWebhookEventRecord,
   PaymentRequestRecord,
@@ -22,6 +24,7 @@ export class MemoryBackend implements BarryBackend {
   private inventoryDeltas = new Map<string, number>(); // `${businessId}:${sku}` -> consumed qty
   private paymentRequests = new Map<string, PaymentRequestRecord>();
   private paymentWebhookEvents = new Map<string, PaymentWebhookEventRecord>();
+  private businessConnections = new Map<string, ConnectionRecord>();
   private approvals = new Map<string, ApprovalRecord>();
   private followUps: FollowUpRecord[] = [];
 
@@ -169,6 +172,24 @@ export class MemoryBackend implements BarryBackend {
     const pr = this.paymentRequests.get(paymentId);
     if (!pr) throw new Error(`Payment request ${paymentId} not found`);
     return this.updatePaymentRequestStatus(paymentId, outcome, { verifiedAt: new Date().toISOString() });
+  }
+
+  async getBusinessConnection(businessId: string, capability: ConnectionCapability) {
+    return this.businessConnections.get(`${businessId}:${capability}`);
+  }
+
+  async upsertBusinessConnection(record: Omit<ConnectionRecord, "id" | "createdAt" | "updatedAt">) {
+    const key = `${record.businessId}:${record.capability}`;
+    const existing = this.businessConnections.get(key);
+    const now = new Date().toISOString();
+    const connection: ConnectionRecord = {
+      ...record,
+      id: existing?.id ?? id("conn"),
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    this.businessConnections.set(key, connection);
+    return connection;
   }
 
   async createApproval(record: Omit<ApprovalRecord, "id" | "createdAt" | "status">) {

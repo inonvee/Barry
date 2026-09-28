@@ -60,6 +60,8 @@ export class StripePaymentAdapter implements PaymentAdapter {
   private readonly webhookSecret: string;
   private readonly now: () => number;
   private readonly webhookToleranceSeconds: number;
+  private readonly successUrl: string;
+  private readonly cancelUrl: string;
 
   constructor(options: {
     secretKey?: string;
@@ -67,12 +69,16 @@ export class StripePaymentAdapter implements PaymentAdapter {
     fetcher?: typeof fetch;
     now?: () => number;
     webhookToleranceSeconds?: number;
+    successUrl?: string;
+    cancelUrl?: string;
   } = {}) {
     this.secretKey = options.secretKey ?? process.env.STRIPE_SECRET_KEY ?? "";
     this.webhookSecret = options.webhookSecret ?? process.env.STRIPE_WEBHOOK_SECRET ?? "";
     this.fetcher = options.fetcher ?? fetch;
     this.now = options.now ?? Date.now;
     this.webhookToleranceSeconds = options.webhookToleranceSeconds ?? 300;
+    this.successUrl = options.successUrl ?? process.env.STRIPE_SUCCESS_URL ?? "https://example.com/payment/success";
+    this.cancelUrl = options.cancelUrl ?? process.env.STRIPE_CANCEL_URL ?? "https://example.com/payment/cancel";
     if (!this.secretKey) throw new Error("Stripe payment provider is not configured");
   }
 
@@ -100,8 +106,8 @@ export class StripePaymentAdapter implements PaymentAdapter {
       "metadata[conversationId]": input.conversationId,
       "metadata[customerId]": input.customerId,
       "metadata[idempotencyKey]": input.idempotencyKey,
-      success_url: process.env.STRIPE_SUCCESS_URL ?? "https://example.com/payment/success",
-      cancel_url: process.env.STRIPE_CANCEL_URL ?? "https://example.com/payment/cancel",
+      success_url: this.successUrl,
+      cancel_url: this.cancelUrl,
     });
 
     const session = await this.request("/checkout/sessions", {

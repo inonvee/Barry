@@ -36,12 +36,29 @@ export type PaymentRequestRecord = {
   reason: string;
   status: "pending" | "paid" | "failed" | "cancelled";
   createdAt: string;
-  provider?: "memory" | "stripe";
+  provider?: "memory" | "stripe" | "payplus";
   providerPaymentId?: string;
   providerCheckoutUrl?: string;
   idempotencyKey?: string;
   verifiedAt?: string;
   providerEventId?: string;
+};
+
+export type ConnectionCapability = "payments" | "scheduling" | "commerce" | "messaging" | "crm";
+export type ConnectionStatus = "connected" | "disconnected" | "error";
+
+export type ConnectionRecord = {
+  id: string;
+  businessId: string;
+  capability: ConnectionCapability;
+  provider: string;
+  status: ConnectionStatus;
+  config: Record<string, unknown>;
+  credentialsRef: string;
+  permissions: string[];
+  createdAt: string;
+  updatedAt: string;
+  lastVerifiedAt?: string;
 };
 
 export type PaymentWebhookEventStatus = "received" | "processing" | "completed" | "failed";
@@ -134,6 +151,15 @@ export interface BarryBackend {
     error: string
   ): Promise<PaymentWebhookEventRecord>;
   simulatePaymentOutcome(id: string, outcome: "paid" | "failed"): Promise<PaymentRequestRecord>;
+
+  // Business connections
+  getBusinessConnection(
+    businessId: string,
+    capability: ConnectionCapability
+  ): Promise<ConnectionRecord | undefined>;
+  upsertBusinessConnection(
+    record: Omit<ConnectionRecord, "id" | "createdAt" | "updatedAt">
+  ): Promise<ConnectionRecord>;
 
   // Approvals
   createApproval(

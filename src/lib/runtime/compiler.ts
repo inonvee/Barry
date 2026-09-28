@@ -143,7 +143,11 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
     }
     const resolved = resolveSchedulingWindow(window, graph.business.timezone);
     if (resolved) {
-      if (known[SCRATCH_KEYS.offeredStart] && known[SCRATCH_KEYS.offeredStart] !== resolved.earliest) {
+      if (
+        known[SCRATCH_KEYS.offeredStart] &&
+        known[SCRATCH_KEYS.offeredStart] !== resolved.earliest &&
+        !ir.constraints.slotAccepted
+      ) {
         delete known[SCRATCH_KEYS.offeredStart];
         delete known[SCRATCH_KEYS.offeredEnd];
         delete known[SCRATCH_KEYS.offeredResource];

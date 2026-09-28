@@ -3,6 +3,8 @@ import type {
   ApprovalRecord,
   BarryBackend,
   BookingRecord,
+  ConnectionCapability,
+  ConnectionRecord,
   FollowUpRecord,
   PaymentRequestRecord,
   PaymentWebhookEventRecord,
@@ -62,6 +64,22 @@ function webhookEventFromRow(row: Record<string, unknown>): PaymentWebhookEventR
     receivedAt: row.received_at as string,
     processedAt: row.processed_at as string | undefined,
     lastError: row.last_error as string | undefined,
+  };
+}
+
+function connectionFromRow(row: Record<string, unknown>): ConnectionRecord {
+  return {
+    id: row.id as string,
+    businessId: row.business_id as string,
+    capability: row.capability as ConnectionRecord["capability"],
+    provider: row.provider as string,
+    status: row.status as ConnectionRecord["status"],
+    config: (row.config as Record<string, unknown>) ?? {},
+    credentialsRef: row.credentials_ref as string,
+    permissions: (row.permissions as string[]) ?? [],
+    createdAt: row.created_at as string,
+    updatedAt: row.updated_at as string,
+    lastVerifiedAt: row.last_verified_at as string | undefined,
   };
 }
 
@@ -367,6 +385,47 @@ export class SupabaseBackend implements BarryBackend {
     outcome: "paid" | "failed"
   ): Promise<PaymentRequestRecord> {
     return this.updatePaymentRequestStatus(paymentId, outcome, { verifiedAt: new Date().toISOString() });
+  }
+
+  async getBusinessConnection(
+    businessId: string,
+    capability: ConnectionCapability
+  ): Promise<ConnectionRecord | undefined> {
+    const client = getSupabaseClient();
+    const { data, error } = await client
+      .from("business_connections")
+      .select("*")
+      .eq("business_id", businessId)
+      .eq("capability", capability)
+      .maybeSingle();
+    if (error) throw new Error(`Failed to load business connection: ${error.message}`);
+    return data ? connectionFromRow(data) : undefined;
+  }
+
+  async upsertBusinessConnection(
+    record: Omit<ConnectionRecord, "id" | "createdAt" | "updatedAt">
+  ): Promise<ConnectionRecord> {
+    const client = getSupabaseClient();
+    const existing = await this.getBusinessConnection(record.businessId, record.capability);
+    const row = {
+      id: existing?.id ?? id("conn"),
+      business_id: record.businessId,
+      capability: record.capability,
+      provider: record.provider,
+      status: record.status,
+      config: record.config,
+      credentials_ref: record.credentialsRef,
+      permissions: record.permissions,
+      last_verified_at: record.lastVerifiedAt ?? null,
+      updated_at: new Date().toISOString(),
+    };
+    const { data, error } = await client
+      .from("business_connections")
+      .upsert(row, { onConflict: "business_id,capability" })
+      .select("*")
+      .single();
+    if (error) throw new Error(`Failed to upsert business connection: ${error.message}`);
+    return connectionFromRow(data);
   }
 
   async createApproval(record: Omit<ApprovalRecord, "id" | "createdAt" | "status">): Promise<ApprovalRecord> {

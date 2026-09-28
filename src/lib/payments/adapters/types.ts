@@ -1,7 +1,7 @@
 import type { BusinessGraph } from "@/lib/business-graph";
 import type { PaymentRequestRecord } from "@/lib/store";
 
-export type PaymentProvider = "memory" | "stripe";
+export type PaymentProvider = "memory" | "stripe" | "payplus";
 export type PaymentStatus = PaymentRequestRecord["status"];
 
 export type CreatePaymentLinkInput = {
@@ -32,6 +32,8 @@ export type VerifiedPaymentWebhook = {
   verifiedAt: string;
   conversationId?: string;
   idempotencyKey?: string;
+  amount?: number;
+  currency?: string;
 };
 
 export type PaymentWebhookHeaders = Record<string, string | string[] | undefined>;
