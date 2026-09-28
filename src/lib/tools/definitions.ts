@@ -3,6 +3,7 @@ import { defineTool } from "./types";
 import { findOffer, inventoryFor } from "@/lib/business-graph";
 import { getBackend } from "@/lib/store";
 import { bookingIdempotencyKey, checkSchedulingAvailability, createSchedulingBooking } from "@/lib/scheduling/capability";
+import { createPaymentLink } from "@/lib/payments/capability";
 
 /**
  * Simulated tool adapters. Each mirrors what a real integration (Google
@@ -94,10 +95,15 @@ export const createPaymentRequest = defineTool({
   outputSchema: z.object({
     paymentRequestId: z.string(),
     status: z.literal("pending"),
+    provider: z.string().optional(),
+    providerPaymentId: z.string().optional(),
+    checkoutUrl: z.string().optional(),
+    idempotencyKey: z.string().optional(),
+    createdAt: z.string().optional(),
   }),
   async execute(input, ctx) {
-    const backend = getBackend();
-    const pr = await backend.createPaymentRequest({
+    const pr = await createPaymentLink({
+      graph: ctx.graph,
       businessId: ctx.graph.business.id,
       conversationId: ctx.conversationId,
       customerId: ctx.customerId,
@@ -105,7 +111,15 @@ export const createPaymentRequest = defineTool({
       currency: input.currency,
       reason: input.reason,
     });
-    return { paymentRequestId: pr.id, status: "pending" as const };
+    return {
+      paymentRequestId: pr.paymentRequestId,
+      status: "pending" as const,
+      provider: pr.provider,
+      providerPaymentId: pr.providerPaymentId,
+      checkoutUrl: pr.checkoutUrl,
+      idempotencyKey: pr.idempotencyKey,
+      createdAt: pr.createdAt,
+    };
   },
 });
 

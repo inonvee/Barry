@@ -36,6 +36,12 @@ export type PaymentRequestRecord = {
   reason: string;
   status: "pending" | "paid" | "failed" | "cancelled";
   createdAt: string;
+  provider?: "memory" | "stripe";
+  providerPaymentId?: string;
+  providerCheckoutUrl?: string;
+  idempotencyKey?: string;
+  verifiedAt?: string;
+  providerEventId?: string;
 };
 
 export type ApprovalRecord = {
@@ -90,6 +96,15 @@ export interface BarryBackend {
     record: Omit<PaymentRequestRecord, "id" | "createdAt" | "status">
   ): Promise<PaymentRequestRecord>;
   getPaymentRequest(id: string): Promise<PaymentRequestRecord | undefined>;
+  listPaymentRequests(businessId: string): Promise<PaymentRequestRecord[]>;
+  findPaymentRequestByIdempotencyKey(businessId: string, idempotencyKey: string): Promise<PaymentRequestRecord | undefined>;
+  findPaymentRequestByProviderPaymentId(provider: string, providerPaymentId: string): Promise<PaymentRequestRecord | undefined>;
+  updatePaymentRequestStatus(
+    id: string,
+    status: PaymentRequestRecord["status"],
+    metadata?: { verifiedAt?: string; providerEventId?: string }
+  ): Promise<PaymentRequestRecord>;
+  recordPaymentWebhookEvent(provider: string, providerEventId: string, paymentRequestId: string): Promise<boolean>;
   simulatePaymentOutcome(id: string, outcome: "paid" | "failed"): Promise<PaymentRequestRecord>;
 
   // Approvals

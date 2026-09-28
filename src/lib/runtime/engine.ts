@@ -1,5 +1,6 @@
 import type { BusinessGraph } from "@/lib/business-graph";
 import { knowledgeSearch } from "@/lib/business-graph";
+import { getBusinessGraph } from "@/lib/fixtures";
 import { decide, type PolicyDecision } from "@/lib/policy";
 import { getReasoner } from "@/lib/reasoner";
 import { callTool } from "@/lib/tools";
@@ -11,6 +12,8 @@ import { formatLocalDateTime } from "@/lib/scheduling/resolver";
 import type { CustomerFacingLocalDisplay, SchedulingDisplayFacts } from "@/lib/reasoner/types";
 import { sanitizeComposeInput } from "@/lib/reasoner/compose-sanitization";
 import { verifyIR } from "@/lib/reasoner/verify";
+import { processPaymentWebhook, type PaymentWebhookResult } from "@/lib/payments/capability";
+import type { PaymentWebhookHeaders } from "@/lib/payments/adapters/types";
 import { compile, SCRATCH_KEYS, type CompileOutcome } from "./compiler";
 
 /**
@@ -301,6 +304,22 @@ export async function handlePaymentOutcome(
 
   state.knownFields[SCRATCH_KEYS.paid] = "1";
   return handleCustomerMessage(graph, conversationId, state.customerId, "(payment received)");
+}
+
+export async function handlePaymentWebhook(
+  rawBody: string,
+  headers: PaymentWebhookHeaders
+): Promise<PaymentWebhookResult & { result?: TurnOutcome }> {
+  const processed = await processPaymentWebhook(rawBody, headers);
+  if (processed.duplicate || processed.payment?.status !== "paid") return processed;
+  const graph = getBusinessGraph(processed.payment.businessId);
+  const result = await handleCustomerMessage(
+    graph,
+    processed.payment.conversationId,
+    processed.payment.customerId,
+    "(payment received)"
+  );
+  return { ...processed, result };
 }
 
 /** Owner resolves a pending approval; BARRY resumes the conversation with the decision. */

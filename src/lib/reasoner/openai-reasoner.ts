@@ -246,6 +246,8 @@ type ComposeResponseStatus =
 
 const BOOKING_SUCCESS_LANGUAGE =
   /\b(successfully\s+booked|booked|reserved|reservation\s+confirmed|booking\s+confirmed|confirmed\s+(?:your\s+)?appointment|appointment\s+(?:is\s+)?confirmed)\b/i;
+const PAYMENT_SUCCESS_LANGUAGE =
+  /\b(successfully\s+paid|payment\s+(?:is\s+)?(?:complete|completed|received|successful|verified)|paid\s+(?:successfully|confirmed))\b/i;
 
 function composeResponseStatus(ctx: ReasonerContext, input: ComposeResponseInput): ComposeResponseStatus {
   const { outcome, toolResult } = input;
@@ -262,6 +264,9 @@ function composeResponseStatus(ctx: ReasonerContext, input: ComposeResponseInput
 export function enforceComposeGrounding(text: string, ctx: ReasonerContext, input: ComposeResponseInput): string {
   const status = composeResponseStatus(ctx, input);
   if (status !== "booking_confirmed" && BOOKING_SUCCESS_LANGUAGE.test(text)) {
+    return composeDeterministic(input);
+  }
+  if (ctx.state.knownFields.__paid !== "1" && PAYMENT_SUCCESS_LANGUAGE.test(text)) {
     return composeDeterministic(input);
   }
   return text;

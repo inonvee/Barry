@@ -20,6 +20,7 @@ export class MemoryBackend implements BarryBackend {
   private bookings: BookingRecord[] = [];
   private inventoryDeltas = new Map<string, number>(); // `${businessId}:${sku}` -> consumed qty
   private paymentRequests = new Map<string, PaymentRequestRecord>();
+  private paymentWebhookEvents = new Set<string>();
   private approvals = new Map<string, ApprovalRecord>();
   private followUps: FollowUpRecord[] = [];
 
@@ -66,12 +67,48 @@ export class MemoryBackend implements BarryBackend {
     return this.paymentRequests.get(paymentId);
   }
 
+  async listPaymentRequests(businessId: string) {
+    return [...this.paymentRequests.values()].filter((p) => p.businessId === businessId);
+  }
+
+  async findPaymentRequestByIdempotencyKey(businessId: string, idempotencyKey: string) {
+    return [...this.paymentRequests.values()].find(
+      (p) => p.businessId === businessId && p.idempotencyKey === idempotencyKey
+    );
+  }
+
+  async findPaymentRequestByProviderPaymentId(provider: string, providerPaymentId: string) {
+    return [...this.paymentRequests.values()].find(
+      (p) => p.provider === provider && p.providerPaymentId === providerPaymentId
+    );
+  }
+
+  async updatePaymentRequestStatus(
+    paymentId: string,
+    status: PaymentRequestRecord["status"],
+    metadata: { verifiedAt?: string; providerEventId?: string } = {}
+  ) {
+    const pr = this.paymentRequests.get(paymentId);
+    if (!pr) throw new Error(`Payment request ${paymentId} not found`);
+    if (pr.status === "paid" && status !== "paid") return pr;
+    pr.status = status;
+    pr.verifiedAt = metadata.verifiedAt ?? pr.verifiedAt;
+    pr.providerEventId = metadata.providerEventId ?? pr.providerEventId;
+    this.paymentRequests.set(paymentId, pr);
+    return pr;
+  }
+
+  async recordPaymentWebhookEvent(provider: string, providerEventId: string) {
+    const key = `${provider}:${providerEventId}`;
+    if (this.paymentWebhookEvents.has(key)) return false;
+    this.paymentWebhookEvents.add(key);
+    return true;
+  }
+
   async simulatePaymentOutcome(paymentId: string, outcome: "paid" | "failed") {
     const pr = this.paymentRequests.get(paymentId);
     if (!pr) throw new Error(`Payment request ${paymentId} not found`);
-    pr.status = outcome;
-    this.paymentRequests.set(paymentId, pr);
-    return pr;
+    return this.updatePaymentRequestStatus(paymentId, outcome, { verifiedAt: new Date().toISOString() });
   }
 
   async createApproval(record: Omit<ApprovalRecord, "id" | "createdAt" | "status">) {

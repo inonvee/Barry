@@ -42,6 +42,12 @@ function paymentFromRow(row: Record<string, unknown>): PaymentRequestRecord {
     reason: row.reason as string,
     status: row.status as PaymentRequestRecord["status"],
     createdAt: row.created_at as string,
+    provider: row.provider as PaymentRequestRecord["provider"],
+    providerPaymentId: row.provider_payment_id as string | undefined,
+    providerCheckoutUrl: row.provider_checkout_url as string | undefined,
+    idempotencyKey: row.idempotency_key as string | undefined,
+    verifiedAt: row.verified_at as string | undefined,
+    providerEventId: row.provider_event_id as string | undefined,
   };
 }
 
@@ -170,6 +176,10 @@ export class SupabaseBackend implements BarryBackend {
       currency: record.currency,
       reason: record.reason,
       status: "pending" as const,
+      provider: record.provider,
+      provider_payment_id: record.providerPaymentId,
+      provider_checkout_url: record.providerCheckoutUrl,
+      idempotency_key: record.idempotencyKey,
     };
     const { data, error } = await client.from("payment_requests").insert(row).select("*").single();
     if (error) {
@@ -182,6 +192,13 @@ export class SupabaseBackend implements BarryBackend {
     return paymentFromRow(data);
   }
 
+  async listPaymentRequests(businessId: string): Promise<PaymentRequestRecord[]> {
+    const client = getSupabaseClient();
+    const { data, error } = await client.from("payment_requests").select("*").eq("business_id", businessId);
+    if (error) throw new Error(`Failed to list payment requests: ${error.message}`);
+    return (data ?? []).map(paymentFromRow);
+  }
+
   async getPaymentRequest(paymentId: string): Promise<PaymentRequestRecord | undefined> {
     const client = getSupabaseClient();
     const { data, error } = await client.from("payment_requests").select("*").eq("id", paymentId).maybeSingle();
@@ -189,19 +206,80 @@ export class SupabaseBackend implements BarryBackend {
     return data ? paymentFromRow(data) : undefined;
   }
 
-  async simulatePaymentOutcome(
-    paymentId: string,
-    outcome: "paid" | "failed"
-  ): Promise<PaymentRequestRecord> {
+  async findPaymentRequestByIdempotencyKey(
+    businessId: string,
+    idempotencyKey: string
+  ): Promise<PaymentRequestRecord | undefined> {
     const client = getSupabaseClient();
     const { data, error } = await client
       .from("payment_requests")
-      .update({ status: outcome })
+      .select("*")
+      .eq("business_id", businessId)
+      .eq("idempotency_key", idempotencyKey)
+      .maybeSingle();
+    if (error) throw new Error(`Failed to load payment request by idempotency key: ${error.message}`);
+    return data ? paymentFromRow(data) : undefined;
+  }
+
+  async findPaymentRequestByProviderPaymentId(
+    provider: string,
+    providerPaymentId: string
+  ): Promise<PaymentRequestRecord | undefined> {
+    const client = getSupabaseClient();
+    const { data, error } = await client
+      .from("payment_requests")
+      .select("*")
+      .eq("provider", provider)
+      .eq("provider_payment_id", providerPaymentId)
+      .maybeSingle();
+    if (error) throw new Error(`Failed to load payment request by provider id: ${error.message}`);
+    return data ? paymentFromRow(data) : undefined;
+  }
+
+  async updatePaymentRequestStatus(
+    paymentId: string,
+    status: PaymentRequestRecord["status"],
+    metadata: { verifiedAt?: string; providerEventId?: string } = {}
+  ): Promise<PaymentRequestRecord> {
+    const existing = await this.getPaymentRequest(paymentId);
+    if (!existing) throw new Error(`Payment request ${paymentId} not found`);
+    if (existing.status === "paid" && status !== "paid") return existing;
+    const client = getSupabaseClient();
+    const { data, error } = await client
+      .from("payment_requests")
+      .update({
+        status,
+        verified_at: metadata.verifiedAt ?? existing.verifiedAt ?? null,
+        provider_event_id: metadata.providerEventId ?? existing.providerEventId ?? null,
+      })
       .eq("id", paymentId)
       .select("*")
       .single();
     if (error) throw new Error(`Failed to update payment request ${paymentId}: ${error.message}`);
     return paymentFromRow(data);
+  }
+
+  async recordPaymentWebhookEvent(
+    provider: string,
+    providerEventId: string,
+    paymentRequestId: string
+  ): Promise<boolean> {
+    const client = getSupabaseClient();
+    const { error } = await client.from("payment_webhook_events").insert({
+      provider,
+      provider_event_id: providerEventId,
+      payment_request_id: paymentRequestId,
+    });
+    if (!error) return true;
+    if (error.code === "23505") return false;
+    throw new Error(`Failed to record payment webhook event: ${error.message}`);
+  }
+
+  async simulatePaymentOutcome(
+    paymentId: string,
+    outcome: "paid" | "failed"
+  ): Promise<PaymentRequestRecord> {
+    return this.updatePaymentRequestStatus(paymentId, outcome, { verifiedAt: new Date().toISOString() });
   }
 
   async createApproval(record: Omit<ApprovalRecord, "id" | "createdAt" | "status">): Promise<ApprovalRecord> {

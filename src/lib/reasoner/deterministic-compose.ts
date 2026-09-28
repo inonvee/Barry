@@ -99,8 +99,10 @@ export function composeDeterministic(input: ComposeResponseInput): string {
             : `That item is out of stock right now — want me to notify you when it's back, or pick something else?`;
         }
         case "createPaymentRequest": {
-          const output = toolResult.output as { paymentRequestId: string };
-          return `Here's your payment request (${output.paymentRequestId}) — once it's paid I'll confirm everything.`;
+          const output = toolResult.output as { paymentRequestId: string; checkoutUrl?: string };
+          return output.checkoutUrl
+            ? `Here's your secure payment link: ${output.checkoutUrl}. Once the payment is verified, I'll confirm everything.`
+            : `Here's your payment request (${output.paymentRequestId}) — once the payment is verified, I'll confirm everything.`;
         }
         case "createBooking": {
           const output = toolResult.output as { bookingId: string };
