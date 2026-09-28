@@ -39,6 +39,12 @@ export const SCRATCH_KEYS = {
   commerceOrderId: "__commerceOrderId",
   /** The customer decided to buy (or asked to check out): BARRY carries the cart forward to checkout. */
   commerceCheckoutRequested: "__commerceCheckoutRequested",
+  /**
+   * The customer decided to buy what they're choosing THIS turn. Only an
+   * intent: it becomes checkout eligibility (commerceCheckoutRequested)
+   * solely when the requested cart mutation verifiably succeeds.
+   */
+  commerceCheckoutOnSuccess: "__commerceCheckoutOnSuccess",
   /** The customer decided to buy the selected offer (consent to send a payment link). */
   purchaseDecided: "__purchaseDecided",
 };
@@ -391,14 +397,21 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
     // Record the customer's purchase decision (the model's judgment, applied
     // per the business playbook). A new search means they're browsing again.
     const c = ir.commerce;
-    if (c.intent === "search") delete known[SCRATCH_KEYS.commerceCheckoutRequested];
+    if (c.intent === "search") {
+      delete known[SCRATCH_KEYS.commerceCheckoutRequested];
+      delete known[SCRATCH_KEYS.commerceCheckoutOnSuccess];
+    }
     if (c.intent === "checkout") known[SCRATCH_KEYS.commerceCheckoutRequested] = "1";
     if (c.intent === "select" || c.intent === "replace" || c.intent === "change_variant" || c.intent === "change_quantity") {
+      // A decision attached to a cart change is only INTENT here: checkout
+      // eligibility follows the verified result of that change (see the
+      // runtime's state patch), never the customer's words alone.
       if (ir.purchaseDecision === true && graph.playbook.commerce.advanceToCheckout === "on_purchase_decision") {
-        known[SCRATCH_KEYS.commerceCheckoutRequested] = "1";
-      } else if (ir.purchaseDecision === false) {
-        delete known[SCRATCH_KEYS.commerceCheckoutRequested];
+        known[SCRATCH_KEYS.commerceCheckoutOnSuccess] = "1";
+      } else {
+        delete known[SCRATCH_KEYS.commerceCheckoutOnSuccess];
       }
+      if (ir.purchaseDecision === false) delete known[SCRATCH_KEYS.commerceCheckoutRequested];
     }
     const commerceOutcome = compileCommerce(ir, known);
     if (commerceOutcome) return commerceOutcome;

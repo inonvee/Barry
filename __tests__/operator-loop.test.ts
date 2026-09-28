@@ -47,6 +47,28 @@ const SCRIPT: Record<string, Partial<BarryIR>> = {
     evidence: { "customerInfo.name": "דנה", "customerInfo.phone": "0501234567" },
   },
   "checkout": { intent: "commerce_checkout", commerce: { intent: "checkout" } },
+  // Two results: 0 = Midnight Wrap Dress (S sold out), 1 = Onyx Slip Dress (M only in stock).
+  "show me black dresses": { intent: "commerce_search", commerce: { intent: "search", query: { text: "black dresses", category: "dress", attributes: { color: "black" } } } },
+  "add the second one in M": {
+    intent: "commerce_select",
+    purchaseDecision: false,
+    commerce: { intent: "select", reference: { type: "previous_result", index: 1 }, variant: { size: "M" } },
+  },
+  "I'll take the second one in M": {
+    intent: "commerce_select",
+    purchaseDecision: true,
+    commerce: { intent: "select", reference: { type: "previous_result", index: 1 }, variant: { size: "M" } },
+  },
+  "actually swap it for the first one in S, I'll take that": {
+    intent: "commerce_replace",
+    purchaseDecision: true,
+    commerce: { intent: "replace", reference: { type: "previous_result", index: 0 }, variant: { size: "S" } },
+  },
+  "make it L, I'll take it": {
+    intent: "commerce_change_variant",
+    purchaseDecision: true,
+    commerce: { intent: "change_variant", reference: { type: "cart_line", index: 0 }, variant: { size: "L" } },
+  },
   "I paid": { intent: "payment_claim", customerClaims: { paymentCompleted: true } },
 };
 
@@ -223,6 +245,107 @@ describe("the customer and the business stay in control", () => {
       const actions = out.turn.trace?.steps.map((s) => s.action) ?? [];
       expect(actions.length).toBeLessThanOrEqual(MAX_STEPS_PER_TURN);
       expect(new Set(actions).size).toBe(actions.length);
+    }
+  });
+});
+
+describe("checkout eligibility follows VERIFIED cart state, never the customer's words alone", () => {
+  const ONYX = "prod-onyx-slip-dress";
+
+  async function cartOf(graph: BusinessGraph, cartId: string | undefined) {
+    const adapter = await resolveCommerceAdapterForBusiness(graph.business.id);
+    return cartId ? adapter.getCart(cartId) : undefined;
+  }
+
+  it("deciding to swap the cart item for an UNAVAILABLE one never checks out the old cart", async () => {
+    const graph = withPlaybook(buildFashionRetailerGraph(), { checkoutRequires: [] });
+    const { outs, graph: g } = await converse(graph, ["show me black dresses", "add the second one in M", "actually swap it for the first one in S, I'll take that"]);
+    const [, added, swap] = outs;
+    expect(added.turn.trace?.steps.map((st) => st.action)).toEqual(["addToCart"]);
+
+    // The swap call ran, but the requested change did not happen.
+    expect(swap.turn.trace?.steps.map((st) => [st.action, st.result?.ok])).toEqual([["addToCart", true]]);
+    expect(swap.turn.toolResult?.output).toMatchObject({ added: false, notAdded: { reason: "unavailable" } });
+    expect(swap.turn.trace?.stop).toEqual({ reason: "requested_change_not_applied", outcome: "addToCart" });
+
+    // Old item A remains; no checkout, no payment link.
+    const cart = await cartOf(g, swap.state.knownFields.__commerceCartId);
+    expect(cart?.lines.map((l) => [l.productId, l.options.size])).toEqual([[ONYX, "M"]]);
+    expect(swap.state.knownFields.__paymentRequestId).toBeUndefined();
+    expect(swap.state.knownFields.__commerceCheckoutRequested).toBeUndefined();
+    expect(swap.rich?.paymentUrl).toBeUndefined();
+    const payments = (await getBackend().listPaymentRequests(g.business.id)).filter((p) => p.conversationId === swap.state.id);
+    expect(payments).toHaveLength(0);
+
+    // BARRY explains and asks for another choice.
+    expect(swap.response).toMatch(/isn't available in S/i);
+    expect(swap.response).toMatch(/M|L/);
+  });
+
+  it("a failed swap also cancels an EARLIER decision: supplying details afterwards does not check out the stale cart", async () => {
+    // Rina Studio's real playbook: name + phone before checkout.
+    const { outs, last } = await converse(buildFashionRetailerGraph(), [
+      "show me black dresses",
+      "I'll take the second one in M", // decided; waiting on details
+      "actually swap it for the first one in S, I'll take that", // fails: S sold out
+      DETAILS,
+    ]);
+    expect(outs[1].turn.trace?.stop.outcome).toBe("checkout_needs_info");
+    expect(outs[2].turn.trace?.stop.reason).toBe("requested_change_not_applied");
+    expect(last.turn.trace?.steps.map((st) => st.action) ?? []).not.toContain("createCommerceCheckout");
+    expect(last.state.knownFields.__paymentRequestId).toBeUndefined();
+  });
+
+  it("a failed variant change with a purchase decision never checks out the unchanged cart", async () => {
+    const graph = withPlaybook(buildFashionRetailerGraph(), { checkoutRequires: [] });
+    const { outs, graph: g } = await converse(graph, ["show me black dresses", "add the second one in M", "make it L, I'll take it"]);
+    const change = outs[2];
+    expect(change.turn.trace?.steps.map((st) => st.action)).toEqual(["updateCartLine"]);
+    expect(change.turn.toolResult?.output).toMatchObject({ added: false });
+    expect(change.turn.trace?.stop.reason).toBe("requested_change_not_applied");
+    const cart = await cartOf(g, change.state.knownFields.__commerceCartId);
+    expect(cart?.lines.map((l) => [l.productId, l.options.size])).toEqual([[ONYX, "M"]]);
+    expect(change.state.knownFields.__paymentRequestId).toBeUndefined();
+    expect(change.rich?.paymentUrl).toBeUndefined();
+  });
+
+  it("a SUCCESSFUL change with a purchase decision does proceed to checkout (the intent is kept, not lost)", async () => {
+    const graph = withPlaybook(buildFashionRetailerGraph(), { checkoutRequires: [] });
+    const { last } = await converse(graph, ["show me black dresses", "I'll take the second one in M"]);
+    expect(last.turn.trace?.steps.map((st) => st.action)).toEqual(["addToCart", "createCommerceCheckout"]);
+    expect(last.state.knownFields.__commerceCheckoutOnSuccess).toBeUndefined();
+  });
+});
+
+describe("capability gate applies to customer-triggered actions too", () => {
+  it("a provider without carts is never asked to add to cart — BARRY hands off instead", async () => {
+    class NoCart extends MemoryCommerceAdapter {
+      async describeCapabilities() {
+        return ["catalogSearch", "catalogSchema", "variants", "liveInventory"];
+      }
+    }
+    const id = `no-cart-${Date.now()}`;
+    let addCalls = 0;
+    const adapter = new NoCart(fashionCatalog());
+    const original = adapter.addToCart.bind(adapter);
+    adapter.addToCart = async (input) => {
+      addCalls += 1;
+      return original(input);
+    };
+    registerCommerceAdapterFactoryForTests(id, () => adapter);
+    try {
+      const graph = withPlaybook(buildFashionRetailerGraph(), { checkoutRequires: [] }, id);
+      const { outs } = await converse(graph, ["show me black dresses", "add the second one in M"], { freshCatalog: false });
+      expect(outs[0].turn.trace?.steps.map((st) => st.action)).toEqual(["searchProducts"]);
+      const take = outs[1];
+      expect(take.turn.trace?.steps).toEqual([]);
+      expect(take.turn.trace?.stop).toEqual({ reason: "capability_unavailable", outcome: "addToCart" });
+      expect(take.turn.selectedAction ?? undefined).toBeUndefined();
+      expect(take.state.knownFields.__commerceCartId).toBeUndefined();
+      expect(addCalls).toBe(0);
+      expect(take.response).toMatch(/follow up/i);
+    } finally {
+      registerCommerceAdapterFactoryForTests(id, undefined);
     }
   });
 });

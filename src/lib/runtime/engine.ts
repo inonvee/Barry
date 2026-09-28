@@ -10,7 +10,7 @@ import type { ConversationState, TurnLog } from "@/lib/state";
 import { getBackend } from "@/lib/store";
 import { formatLocalDateTime } from "@/lib/scheduling/resolver";
 import type { CustomerFacingLocalDisplay, GroundedContext, ReasonerContext, SchedulingDisplayFacts } from "@/lib/reasoner/types";
-import { resolveCapabilityProfiles, ACTION_REQUIREMENTS, type CapabilityProfiles } from "@/lib/capabilities";
+import { resolveCapabilityProfiles, actionSupported, ACTION_REQUIREMENTS, type CapabilityProfiles } from "@/lib/capabilities";
 import type { TurnStep, TurnTrace } from "@/lib/state";
 import { CONSTITUTION_VERSION } from "@/lib/reasoner/constitution";
 import { BARRY_RUNTIME_VERSION, runtimeCommit } from "./version";
@@ -89,6 +89,10 @@ async function patchStateAfterTool(state: ConversationState, toolName: string, o
         notAdded?: { productId: string; replacesLineId?: string };
       };
       if (!result.added) {
+        // The requested change did NOT happen: the cart still holds what it
+        // held before. Nothing may progress toward checkout on that basis.
+        delete known[SCRATCH_KEYS.commerceCheckoutOnSuccess];
+        delete known[SCRATCH_KEYS.commerceCheckoutRequested];
         if (toolName === "addToCart" && result.notAdded) {
           known[SCRATCH_KEYS.commercePendingProductId] = result.notAdded.productId;
           if (result.notAdded.replacesLineId) known[SCRATCH_KEYS.commercePendingReplaceLineId] = result.notAdded.replacesLineId;
@@ -99,6 +103,12 @@ async function patchStateAfterTool(state: ConversationState, toolName: string, o
       }
       delete known[SCRATCH_KEYS.commercePendingProductId];
       delete known[SCRATCH_KEYS.commercePendingReplaceLineId];
+      // Verified success: a purchase decision made with this change now
+      // makes the cart eligible for checkout.
+      if (known[SCRATCH_KEYS.commerceCheckoutOnSuccess]) {
+        known[SCRATCH_KEYS.commerceCheckoutRequested] = "1";
+        delete known[SCRATCH_KEYS.commerceCheckoutOnSuccess];
+      }
       if (result.cart) {
         known[SCRATCH_KEYS.commerceCartId] = result.cart.id;
         known[SCRATCH_KEYS.commerceCartTotal] = JSON.stringify(result.cart.total);
@@ -326,6 +336,20 @@ export async function handleCustomerMessage(
     let current: Extract<CompileOutcome, { kind: "action" }> = outcome;
     let trigger: TurnStep["trigger"] = "customer";
     for (;;) {
+      // Same gate for every step, customer-triggered or continued: never
+      // attempt an operation the connected provider says it can't perform.
+      const support = actionSupported(profiles, current.action.name);
+      if (!support.ok) {
+        const unavailable: CompileOutcome = { kind: "capability_unavailable", action: current.action.name, missing: support.missing, stage: state.stage };
+        if (steps.length === 0) {
+          state.stage = prevStage;
+          outcome = unavailable;
+        } else {
+          next = unavailable;
+        }
+        stop = { reason: "capability_unavailable", outcome: current.action.name };
+        break;
+      }
       const step = await runStep(graph, state, current, ctx, trigger === "customer" ? prevStage : state.stage, trigger, profiles);
       steps.push(step);
       if (step.policyDecision.status !== "allowed") {
@@ -334,6 +358,13 @@ export async function handleCustomerMessage(
       }
       if (!step.toolResult?.ok) {
         stop = { reason: "tool_failed", outcome: current.action.name };
+        break;
+      }
+      // A call can succeed while the requested change did not happen (e.g.
+      // the variant is unavailable). That ends the chain: nothing that
+      // follows may build on a change that never occurred.
+      if (!requestedChangeApplied(current.action.name, step.toolResult.output)) {
+        stop = { reason: "requested_change_not_applied", outcome: current.action.name };
         break;
       }
       if (steps.length >= MAX_STEPS_PER_TURN) {
@@ -358,7 +389,7 @@ export async function handleCustomerMessage(
       current = candidate;
       trigger = "continuation";
     }
-    outcome = steps[steps.length - 1].outcome;
+    if (steps.length > 0) outcome = steps[steps.length - 1].outcome;
   }
 
   if (next) {
@@ -475,6 +506,12 @@ export const MAX_STEPS_PER_TURN = 4;
 const CUSTOMER_CHOICE_ACTIONS = new Set(["addToCart", "updateCartLine", "searchProducts", "requestApproval"]);
 /** After a chain, these tell the customer the one thing still needed; others are left unsaid. */
 const NEEDS_CUSTOMER_OUTCOMES = new Set<CompileOutcome["kind"]>(["checkout_needs_info", "needs_info", "capability_unavailable", "confirm_purchase"]);
+
+/** Did an action that asks for a change actually make it? (Tool success is not the same thing.) */
+function requestedChangeApplied(action: string, output: unknown): boolean {
+  if (action === "addToCart" || action === "updateCartLine") return (output as { added?: boolean } | undefined)?.added === true;
+  return true;
+}
 
 type ExecutedStep = {
   outcome: Extract<CompileOutcome, { kind: "action" }>;
