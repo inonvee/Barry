@@ -27,6 +27,11 @@ export const SCRATCH_KEYS = {
   slotAccepted: "__slotAccepted",
   inventoryChecked: "__inventoryChecked",
   lastSchedulingDate: "__lastSchedulingDate",
+  commerceLastProductIds: "__commerceLastProductIds",
+  commerceCartId: "__commerceCartId",
+  commerceCartLineId: "__commerceCartLineId",
+  commerceCheckoutId: "__commerceCheckoutId",
+  commerceOrderId: "__commerceOrderId",
 };
 
 function round2(n: number): number {
@@ -199,6 +204,64 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
   debug.appliedCustomerInfo = appliedCustomerInfo;
   Object.assign(state.knownFields, scratchUpdate, appliedCustomerInfo);
 
+  if (state.stage === "closed") {
+    return { kind: "generic_confirm", stage: "closed" };
+  }
+
+  if (ir.requestedCapability === "commerce_policy") {
+    const returns = graph.knowledge.find((item) => /return|exchange|sale/i.test([item.topic, item.content].join(" ")));
+    if (returns) return { kind: "knowledge_answer", answer: returns.content, stage: "discovery" };
+  }
+
+  const commerce = ir.constraints.commerce;
+  if (commerce?.action === "search") {
+    return finalizeAction(
+      "searchProducts",
+      {
+        text: commerce.query?.text,
+        category: commerce.query?.category,
+        occasion: commerce.query?.occasion,
+        color: commerce.query?.color,
+        size: commerce.query?.size,
+        budgetAmount: commerce.query?.budgetAmount,
+        currency: commerce.query?.currency,
+      },
+      "discovery",
+      "completePurchase"
+    );
+  }
+  if (commerce?.action === "add_first") {
+    const productIds = known[SCRATCH_KEYS.commerceLastProductIds]?.split(",").filter(Boolean) ?? [];
+    const productId = productIds[commerce.selectionIndex ?? 0];
+    if (productId) {
+      return finalizeAction(
+        "addToCart",
+        { productId, size: commerce.size, quantity: commerce.quantity ?? 1 },
+        "payment",
+        "completePurchase"
+      );
+    }
+  }
+  if (commerce?.action === "update_size" && known[SCRATCH_KEYS.commerceCartId] && known[SCRATCH_KEYS.commerceCartLineId]) {
+    return finalizeAction(
+      "updateCartLine",
+      {
+        cartId: known[SCRATCH_KEYS.commerceCartId],
+        lineId: known[SCRATCH_KEYS.commerceCartLineId],
+        size: commerce.size,
+        quantity: commerce.quantity ?? 1,
+      },
+      "payment",
+      "completePurchase"
+    );
+  }
+  if (commerce?.action === "checkout" && known[SCRATCH_KEYS.commerceCartId] && !known[SCRATCH_KEYS.paymentRequestId]) {
+    return finalizeAction("createCommerceCheckout", { cartId: known[SCRATCH_KEYS.commerceCartId] }, "payment", "completePurchase");
+  }
+  if (known[SCRATCH_KEYS.paid] && known[SCRATCH_KEYS.commerceCartId] && !known[SCRATCH_KEYS.commerceOrderId]) {
+    return finalizeAction("createCommerceOrder", { cartId: known[SCRATCH_KEYS.commerceCartId] }, "confirmation", "completePurchase");
+  }
+
   // An explicit decline of a previously offered slot ("no"/"לא") only
   // means anything when there's actually a slot on file to decline —
   // otherwise it's a no-op, never a spurious state change. Clears the
@@ -304,10 +367,6 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
   // which the tool's own conflict check correctly rejected — but as a
   // customer-facing ERROR ("Slot no longer available... try a different
   // option?") on a booking that had, in fact, already succeeded.
-  if (state.stage === "closed") {
-    return { kind: "generic_confirm", stage: "closed" };
-  }
-
   // Quote / lead-only offers: no scheduling, no inventory, no fixed price.
   if (!offer.requiresScheduling && !offer.requiresInventory && offer.price === null) {
     return finalizeAction(

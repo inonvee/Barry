@@ -10,6 +10,7 @@ import {
   hasThirdPartyNameEvidence,
   isInvalidCustomerNameCandidate,
 } from "./entities";
+import { extractCommerceConstraint } from "@/lib/commerce/extract";
 import type { BarryIR } from "./ir";
 
 const OFFERED_SLOT_START_KEY = "__offeredSlotStart";
@@ -209,7 +210,13 @@ export function verifyIR(
     ...ir,
     selectedOfferId,
     offerCandidateIds,
-    constraints: { ...ir.constraints, schedulingWindow, slotAccepted, slotDeclined },
+    constraints: {
+      ...ir.constraints,
+      schedulingWindow,
+      slotAccepted,
+      slotDeclined,
+      commerce: extractCommerceConstraint(customerMessage) ?? ir.constraints.commerce,
+    },
     customerInfo,
   };
 

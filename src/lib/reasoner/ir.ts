@@ -32,6 +32,21 @@ export type BarryIRConstraints = {
   slotAccepted?: boolean;
   /** Customer explicitly declined the previously offered slot ("no"/"לא") — never inferred from anything else. */
   slotDeclined?: boolean;
+  commerce?: {
+    action: "search" | "add_first" | "update_size" | "checkout";
+    query?: {
+      text?: string;
+      category?: string;
+      occasion?: string;
+      color?: string;
+      size?: string;
+      budgetAmount?: number;
+      currency?: string;
+    };
+    selectionIndex?: number;
+    size?: string;
+    quantity?: number;
+  };
 };
 
 /**
@@ -127,6 +142,7 @@ export type CompileOutcome = { stage: ConversationStage; debug?: CompileDebugInf
   | { kind: "action"; action: CompiledToolCall; goal?: Goal }
   | { kind: "ask_general"; offerNames: string[] }
   | { kind: "clarify_offer"; offerNames: string[] }
+  | { kind: "knowledge_answer"; answer: string }
   | { kind: "needs_info"; offerName: string; missingFields: string[] }
   | { kind: "ask_datetime"; offerName: string }
   | { kind: "ask_slot_confirm"; offeredStart: string }

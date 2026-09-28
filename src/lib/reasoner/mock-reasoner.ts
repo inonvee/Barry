@@ -1,4 +1,5 @@
 import { extractEntities, findOfferCandidates, matchHebrewToken } from "./entities";
+import { extractCommerceConstraint } from "@/lib/commerce/extract";
 import { composeDeterministic } from "./deterministic-compose";
 import type { BarryIR, BarryIRConstraints, ComposeResponseInput, Reasoner, ReasonerContext } from "./types";
 
@@ -35,7 +36,9 @@ export class MockReasoner implements Reasoner {
     const entities = extractEntities(customerMessage);
 
     const requestedCapability =
-      PRICE_QUESTION.test(customerMessage) || matchesAnyHebrewWord(customerMessage, HEBREW_PRICE_WORDS)
+      /\breturn|returns|exchange|sale items?\b/i.test(customerMessage)
+        ? "commerce_policy"
+        : PRICE_QUESTION.test(customerMessage) || matchesAnyHebrewWord(customerMessage, HEBREW_PRICE_WORDS)
         ? "ask_price"
         : DURATION_QUESTION.test(customerMessage) || matchesAnyHebrewWord(customerMessage, HEBREW_DURATION_WORDS)
           ? "ask_duration"
@@ -49,6 +52,8 @@ export class MockReasoner implements Reasoner {
     if (entities.discountPct) constraints.discountPct = entities.discountPct;
     if (entities.accepted) constraints.slotAccepted = true;
     if (entities.declined) constraints.slotDeclined = true;
+    const commerce = extractCommerceConstraint(customerMessage);
+    if (commerce) constraints.commerce = commerce;
 
     const customerInfo: Record<string, string> = {};
     if (entities.email) customerInfo.email = entities.email;
@@ -95,7 +100,7 @@ export class MockReasoner implements Reasoner {
     }
 
     return {
-      intent: selectedOfferId || state.selectedOfferId ? "offer_interest" : "discovery",
+      intent: commerce ? "commerce" : selectedOfferId || state.selectedOfferId ? "offer_interest" : "discovery",
       selectedOfferId,
       offerCandidateIds,
       offerChangeRequested,

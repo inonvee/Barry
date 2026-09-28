@@ -4,8 +4,9 @@ import { buildEcommerceBagsGraph } from "./ecommerce-bags";
 import { buildGarageGraph } from "./garage";
 import { buildPersonalTrainerGraph } from "./personal-trainer";
 import { buildFurnitureStoreGraph } from "./furniture-store";
+import { buildFashionRetailerGraph } from "./fashion-retailer";
 
-export { buildSpaGraph, buildEcommerceBagsGraph, buildGarageGraph, buildPersonalTrainerGraph, buildFurnitureStoreGraph };
+export { buildSpaGraph, buildEcommerceBagsGraph, buildGarageGraph, buildPersonalTrainerGraph, buildFurnitureStoreGraph, buildFashionRetailerGraph };
 
 const BUILDERS: Record<string, () => BusinessGraph> = {
   spa: buildSpaGraph,
@@ -13,6 +14,7 @@ const BUILDERS: Record<string, () => BusinessGraph> = {
   garage: buildGarageGraph,
   "personal-trainer": buildPersonalTrainerGraph,
   "furniture-store": buildFurnitureStoreGraph,
+  "fashion-retailer": buildFashionRetailerGraph,
 };
 
 export const TEST_BUSINESS_IDS = Object.keys(BUILDERS);

@@ -40,6 +40,8 @@ export function composeDeterministic(input: ComposeResponseInput): string {
       return `Happy to help! Could you tell me a bit more about what you're looking for? We offer: ${outcome.offerNames.join(", ")}.`;
     case "clarify_offer":
       return `Sure — is that for ${outcome.offerNames.join(" or ")}?`;
+    case "knowledge_answer":
+      return outcome.answer;
     case "needs_info":
       return `Great choice — ${outcome.offerName}. Could you share your ${formatMissingFieldsList(outcome.missingFields)}?`;
     case "ask_datetime":
@@ -103,6 +105,54 @@ export function composeDeterministic(input: ComposeResponseInput): string {
           return output.checkoutUrl
             ? `Here's your secure payment link: ${output.checkoutUrl}. Once the payment is verified, I'll confirm everything.`
             : `Here's your payment request (${output.paymentRequestId}) — once the payment is verified, I'll confirm everything.`;
+        }
+        case "searchProducts": {
+          const output = toolResult.output as {
+            products: {
+              title: string;
+              variants: { price: { amount: number; currency: string }; options: Record<string, string>; inventory: { available: number } }[];
+            }[];
+          };
+          if (output.products.length === 0) {
+            return `I don't see a grounded match in the catalog yet. Want to adjust the color, size, or budget?`;
+          }
+          const lines = output.products.slice(0, 3).map((product, index) => {
+            const variant = product.variants.find((v) => v.inventory.available > 0) ?? product.variants[0];
+            const size = variant?.options.size ? `, size ${variant.options.size}` : "";
+            const price = variant ? `${variant.price.amount} ${variant.price.currency}` : "price unavailable";
+            return `${index + 1}. ${product.title}${size} - ${price}`;
+          });
+          return `I found these grounded options:\n${lines.join("\n")}`;
+        }
+        case "addToCart": {
+          const output = toolResult.output as {
+            cart: { lines: { title: string; options: Record<string, string> }[]; total: { amount: number; currency: string } };
+            requestedAvailable: boolean;
+            selectedSize?: string;
+          };
+          const line = output.cart.lines[output.cart.lines.length - 1];
+          const prefix = output.requestedAvailable
+            ? `Added ${line.title}${line.options.size ? ` in ${line.options.size}` : ""} to your cart.`
+            : `That exact size is not available, so I added the available alternative${output.selectedSize ? ` in ${output.selectedSize}` : ""}.`;
+          return `${prefix} Cart total is ${output.cart.total.amount} ${output.cart.total.currency}.`;
+        }
+        case "updateCartLine": {
+          const output = toolResult.output as {
+            cart: { lines: { title: string; options: Record<string, string> }[]; total: { amount: number; currency: string } };
+            selectedSize?: string;
+          };
+          const line = output.cart.lines[0];
+          return `Updated ${line?.title ?? "the item"}${output.selectedSize ? ` to ${output.selectedSize}` : ""}. Cart total is ${output.cart.total.amount} ${output.cart.total.currency}.`;
+        }
+        case "createCommerceCheckout": {
+          const output = toolResult.output as { checkoutUrl?: string; amount: { amount: number; currency: string } };
+          return output.checkoutUrl
+            ? `Your cart is ready: ${output.amount.amount} ${output.amount.currency}. Here's the secure payment link: ${output.checkoutUrl}. I'll create the order only after payment is verified.`
+            : `Your cart is ready: ${output.amount.amount} ${output.amount.currency}. I'll create the order only after payment is verified.`;
+        }
+        case "createCommerceOrder": {
+          const output = toolResult.output as { orderId: string };
+          return `Payment verified and your order is confirmed (${output.orderId}).`;
         }
         case "createBooking": {
           const output = toolResult.output as { bookingId: string };

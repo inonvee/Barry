@@ -55,6 +55,40 @@ function patchStateAfterTool(state: ConversationState, toolName: string, output:
       state.stage = "payment";
       break;
     }
+    case "searchProducts": {
+      const { products } = output as { products: { id: string }[] };
+      if (products.length > 0) {
+        state.knownFields[SCRATCH_KEYS.commerceLastProductIds] = products.map((product) => product.id).join(",");
+      }
+      break;
+    }
+    case "addToCart":
+    case "updateCartLine": {
+      const { cart, lineId } = output as { cart: { id: string }; lineId?: string };
+      state.knownFields[SCRATCH_KEYS.commerceCartId] = cart.id;
+      if (lineId) state.knownFields[SCRATCH_KEYS.commerceCartLineId] = lineId;
+      state.stage = "payment";
+      break;
+    }
+    case "createCommerceCheckout": {
+      const { checkoutId, cartId, paymentRequestId } = output as {
+        checkoutId: string;
+        cartId: string;
+        paymentRequestId: string;
+      };
+      state.knownFields[SCRATCH_KEYS.commerceCheckoutId] = checkoutId;
+      state.knownFields[SCRATCH_KEYS.commerceCartId] = cartId;
+      state.knownFields[SCRATCH_KEYS.paymentRequestId] = paymentRequestId;
+      state.stage = "payment";
+      break;
+    }
+    case "createCommerceOrder": {
+      const { orderId } = output as { orderId: string };
+      state.knownFields[SCRATCH_KEYS.commerceOrderId] = orderId;
+      state.outcome = "won";
+      state.stage = "closed";
+      break;
+    }
     case "createBooking": {
       state.outcome = "won";
       state.stage = "closed";
@@ -334,6 +368,7 @@ export async function handlePaymentWebhook(
     await markPaymentWebhookCompleted(processed);
     return { ...processed, result };
   } catch (err) {
+    console.error("[barry:payment-webhook] resume failed", err);
     await markPaymentWebhookFailed(processed, err);
     throw new Error("Payment webhook resume failed");
   }

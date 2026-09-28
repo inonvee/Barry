@@ -4,6 +4,8 @@ import type {
   BookingRecord,
   ConnectionCapability,
   ConnectionRecord,
+  CommerceCartRecord,
+  CommerceOrderRecord,
   FollowUpRecord,
   PaymentWebhookEventRecord,
   PaymentRequestRecord,
@@ -25,6 +27,8 @@ export class MemoryBackend implements BarryBackend {
   private paymentRequests = new Map<string, PaymentRequestRecord>();
   private paymentWebhookEvents = new Map<string, PaymentWebhookEventRecord>();
   private businessConnections = new Map<string, ConnectionRecord>();
+  private commerceCarts = new Map<string, CommerceCartRecord>();
+  private commerceOrders = new Map<string, CommerceOrderRecord>();
   private approvals = new Map<string, ApprovalRecord>();
   private followUps: FollowUpRecord[] = [];
 
@@ -190,6 +194,35 @@ export class MemoryBackend implements BarryBackend {
     };
     this.businessConnections.set(key, connection);
     return connection;
+  }
+
+  async listCommerceCarts(businessId: string) {
+    return [...this.commerceCarts.values()].filter((cart) => cart.businessId === businessId);
+  }
+
+  async upsertCommerceCart(record: Omit<CommerceCartRecord, "id" | "createdAt" | "updatedAt">) {
+    const existing = [...this.commerceCarts.values()].find((cart) => cart.businessId === record.businessId && cart.cartId === record.cartId);
+    const now = new Date().toISOString();
+    const cart: CommerceCartRecord = {
+      ...record,
+      id: existing?.id ?? id("ccart"),
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    this.commerceCarts.set(cart.id, cart);
+    return cart;
+  }
+
+  async listCommerceOrders(businessId: string) {
+    return [...this.commerceOrders.values()].filter((order) => order.businessId === businessId);
+  }
+
+  async createCommerceOrder(record: Omit<CommerceOrderRecord, "id" | "createdAt">) {
+    const existing = [...this.commerceOrders.values()].find((order) => order.businessId === record.businessId && order.idempotencyKey === record.idempotencyKey);
+    if (existing) return existing;
+    const order: CommerceOrderRecord = { ...record, id: id("corder"), createdAt: new Date().toISOString() };
+    this.commerceOrders.set(order.id, order);
+    return order;
   }
 
   async createApproval(record: Omit<ApprovalRecord, "id" | "createdAt" | "status">) {

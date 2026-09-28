@@ -5,6 +5,8 @@ import type {
   BookingRecord,
   ConnectionCapability,
   ConnectionRecord,
+  CommerceCartRecord,
+  CommerceOrderRecord,
   FollowUpRecord,
   PaymentRequestRecord,
   PaymentWebhookEventRecord,
@@ -80,6 +82,38 @@ function connectionFromRow(row: Record<string, unknown>): ConnectionRecord {
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
     lastVerifiedAt: row.last_verified_at as string | undefined,
+  };
+}
+
+function commerceCartFromRow(row: Record<string, unknown>): CommerceCartRecord {
+  return {
+    id: row.id as string,
+    businessId: row.business_id as string,
+    conversationId: row.conversation_id as string,
+    customerId: row.customer_id as string,
+    cartId: row.cart_id as string,
+    status: row.status as CommerceCartRecord["status"],
+    data: row.data,
+    createdAt: row.created_at as string,
+    updatedAt: row.updated_at as string,
+  };
+}
+
+function commerceOrderFromRow(row: Record<string, unknown>): CommerceOrderRecord {
+  return {
+    id: row.id as string,
+    businessId: row.business_id as string,
+    conversationId: row.conversation_id as string,
+    customerId: row.customer_id as string,
+    orderId: row.order_id as string,
+    cartId: row.cart_id as string,
+    totalAmount: Number(row.total_amount),
+    currency: row.currency as string,
+    status: row.status as CommerceOrderRecord["status"],
+    idempotencyKey: row.idempotency_key as string,
+    verifiedAt: row.verified_at as string,
+    data: row.data,
+    createdAt: row.created_at as string,
   };
 }
 
@@ -426,6 +460,72 @@ export class SupabaseBackend implements BarryBackend {
       .single();
     if (error) throw new Error(`Failed to upsert business connection: ${error.message}`);
     return connectionFromRow(data);
+  }
+
+  async listCommerceCarts(businessId: string): Promise<CommerceCartRecord[]> {
+    const client = getSupabaseClient();
+    const { data, error } = await client.from("commerce_carts").select("*").eq("business_id", businessId);
+    if (error) throw new Error(`Failed to list commerce carts: ${error.message}`);
+    return (data ?? []).map(commerceCartFromRow);
+  }
+
+  async upsertCommerceCart(
+    record: Omit<CommerceCartRecord, "id" | "createdAt" | "updatedAt">
+  ): Promise<CommerceCartRecord> {
+    const client = getSupabaseClient();
+    const row = {
+      id: id("ccart"),
+      business_id: record.businessId,
+      conversation_id: record.conversationId,
+      customer_id: record.customerId,
+      cart_id: record.cartId,
+      status: record.status,
+      data: record.data,
+      updated_at: new Date().toISOString(),
+    };
+    const { data, error } = await client
+      .from("commerce_carts")
+      .upsert(row, { onConflict: "business_id,cart_id" })
+      .select("*")
+      .single();
+    if (error) throw new Error(`Failed to upsert commerce cart: ${error.message}`);
+    return commerceCartFromRow(data);
+  }
+
+  async listCommerceOrders(businessId: string): Promise<CommerceOrderRecord[]> {
+    const client = getSupabaseClient();
+    const { data, error } = await client.from("commerce_orders").select("*").eq("business_id", businessId);
+    if (error) throw new Error(`Failed to list commerce orders: ${error.message}`);
+    return (data ?? []).map(commerceOrderFromRow);
+  }
+
+  async createCommerceOrder(
+    record: Omit<CommerceOrderRecord, "id" | "createdAt">
+  ): Promise<CommerceOrderRecord> {
+    const client = getSupabaseClient();
+    const row = {
+      id: id("corder"),
+      business_id: record.businessId,
+      conversation_id: record.conversationId,
+      customer_id: record.customerId,
+      order_id: record.orderId,
+      cart_id: record.cartId,
+      total_amount: record.totalAmount,
+      currency: record.currency,
+      status: record.status,
+      idempotency_key: record.idempotencyKey,
+      verified_at: record.verifiedAt,
+      data: record.data,
+    };
+    const { data, error } = await client.from("commerce_orders").insert(row).select("*").single();
+    if (error) {
+      if (error.code === "23505") {
+        const existing = (await this.listCommerceOrders(record.businessId)).find((order) => order.idempotencyKey === record.idempotencyKey);
+        if (existing) return existing;
+      }
+      throw new Error(`Failed to create commerce order: ${error.message}`);
+    }
+    return commerceOrderFromRow(data);
   }
 
   async createApproval(record: Omit<ApprovalRecord, "id" | "createdAt" | "status">): Promise<ApprovalRecord> {

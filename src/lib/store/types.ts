@@ -61,6 +61,34 @@ export type ConnectionRecord = {
   lastVerifiedAt?: string;
 };
 
+export type CommerceCartRecord = {
+  id: string;
+  businessId: string;
+  conversationId: string;
+  customerId: string;
+  cartId: string;
+  status: "open" | "checkout" | "ordered";
+  data: unknown;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CommerceOrderRecord = {
+  id: string;
+  businessId: string;
+  conversationId: string;
+  customerId: string;
+  orderId: string;
+  cartId: string;
+  totalAmount: number;
+  currency: string;
+  status: "created" | "paid" | "fulfilled" | "cancelled";
+  idempotencyKey: string;
+  verifiedAt: string;
+  data: unknown;
+  createdAt: string;
+};
+
 export type PaymentWebhookEventStatus = "received" | "processing" | "completed" | "failed";
 
 export type PaymentWebhookEventRecord = {
@@ -160,6 +188,16 @@ export interface BarryBackend {
   upsertBusinessConnection(
     record: Omit<ConnectionRecord, "id" | "createdAt" | "updatedAt">
   ): Promise<ConnectionRecord>;
+
+  // Commerce
+  listCommerceCarts(businessId: string): Promise<CommerceCartRecord[]>;
+  upsertCommerceCart(
+    record: Omit<CommerceCartRecord, "id" | "createdAt" | "updatedAt">
+  ): Promise<CommerceCartRecord>;
+  listCommerceOrders(businessId: string): Promise<CommerceOrderRecord[]>;
+  createCommerceOrder(
+    record: Omit<CommerceOrderRecord, "id" | "createdAt">
+  ): Promise<CommerceOrderRecord>;
 
   // Approvals
   createApproval(

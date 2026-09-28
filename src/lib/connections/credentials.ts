@@ -43,6 +43,10 @@ export function resolveCredentials(credentialsRef: string, provider: string): En
           ? process.env[envName("google_calendar", refName, "CALENDAR_ID")]
           : process.env.GOOGLE_CALENDAR_ID,
       };
+    case "custom-commerce":
+      return {
+        apiKey: process.env[envName("custom_commerce", refName, "API_KEY")],
+      };
     default:
       return {};
   }

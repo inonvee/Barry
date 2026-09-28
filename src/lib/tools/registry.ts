@@ -9,6 +9,11 @@ import {
   createLead,
   sendMedia,
   fulfillOrder,
+  searchProducts,
+  addToCart,
+  updateCartLine,
+  createCommerceCheckout,
+  createCommerceOrder,
 } from "./definitions";
 
 const ALL_TOOLS: AnyToolDefinition[] = [
@@ -21,6 +26,11 @@ const ALL_TOOLS: AnyToolDefinition[] = [
   createLead,
   sendMedia,
   fulfillOrder,
+  searchProducts,
+  addToCart,
+  updateCartLine,
+  createCommerceCheckout,
+  createCommerceOrder,
 ];
 
 const REGISTRY = new Map<string, AnyToolDefinition>(ALL_TOOLS.map((t) => [t.name, t]));
@@ -47,6 +57,8 @@ const CUSTOMER_SAFE_TOOL_ERRORS = new Set<string>([
   "Slot no longer available",
   "Item sold out before this order could be fulfilled",
   "A payment request is already pending for this conversation",
+  "Requested variant not available",
+  "Cart is empty",
 ]);
 
 const GENERIC_TOOL_ERROR = "Something went wrong on our end — could we try that again in a moment?";
