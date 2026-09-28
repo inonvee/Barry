@@ -1,4 +1,4 @@
-import { createInitialConversationState, type ConversationState, type ConversationStore } from "./types";
+import { createInitialConversationState, type ConversationState, type ConversationStore, type ConversationSummary, type TurnActivity } from "./types";
 
 /**
  * In-memory implementation of ConversationStore. Process-scoped — good for
@@ -29,14 +29,39 @@ export class MemoryConversationStore implements ConversationStore {
     return [...this.conversations.values()].filter((c) => c.businessId === businessId);
   }
 
+  async listSummariesByBusiness(businessId: string, limit: number): Promise<{ total: number; conversations: ConversationSummary[] }> {
+    const all = (await this.listByBusiness(businessId)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return {
+      total: all.length,
+      conversations: all.slice(0, limit).map((c) => ({
+        id: c.id,
+        customerId: c.customerId,
+        stage: c.stage,
+        outcome: c.outcome,
+        pendingApprovalId: c.pendingApprovalId ?? null,
+        createdAt: c.createdAt,
+        updatedAt: c.updatedAt,
+      })),
+    };
+  }
+
+  async listRecentTurnActivity(businessId: string, limit: number): Promise<TurnActivity[]> {
+    return (await this.listByBusiness(businessId))
+      .flatMap((c) => c.turns.map((t) => ({ conversationId: c.id, turnId: t.id, at: t.at, reasoner: t.reasoner, intent: t.understood.intent ?? null, trace: t.trace ?? null })))
+      .sort((a, b) => b.at.localeCompare(a.at))
+      .slice(0, limit);
+  }
+
   reset(id: string): void {
     this.conversations.delete(id);
   }
 }
 
-let singleton: MemoryConversationStore | undefined;
+// Kept on globalThis: in `next dev`, route handlers and pages are separate
+// module graphs, and must still see the same process-local data.
+const holder = globalThis as { __barryMemoryConversationStore?: MemoryConversationStore };
 
 export function getMemoryConversationStore(): MemoryConversationStore {
-  if (!singleton) singleton = new MemoryConversationStore();
-  return singleton;
+  if (!holder.__barryMemoryConversationStore) holder.__barryMemoryConversationStore = new MemoryConversationStore();
+  return holder.__barryMemoryConversationStore;
 }

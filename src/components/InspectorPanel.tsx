@@ -78,7 +78,7 @@ function CommerceSummary({ commerce }: { commerce: unknown }) {
   );
 }
 
-function TurnView({ state, turn, isLatest }: { state: ConversationState; turn: TurnLog; isLatest: boolean }) {
+export function TurnView({ state, turn, isLatest }: { state: ConversationState; turn: TurnLog; isLatest: boolean }) {
   const trace = turn.trace;
   const rt = trace?.runtime;
   const facts = turn.verification?.customerFacts ?? [];

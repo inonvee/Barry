@@ -1,6 +1,6 @@
 import { getSupabaseClient } from "@/lib/store/supabase-client";
 import { createInitialConversationState } from "./types";
-import type { ConversationMessage, ConversationState, ConversationStore, TurnLog } from "./types";
+import type { ConversationMessage, ConversationState, ConversationStore, ConversationSummary, TurnActivity, TurnLog } from "./types";
 
 // Tracks, per in-memory ConversationState object, how many messages/turns
 // have already been persisted — so save() only inserts what's new instead
@@ -190,6 +190,61 @@ export class SupabaseConversationStore implements ConversationStore {
 
     const states = await Promise.all((data ?? []).map((row) => this.get(row.id as string)));
     return states.filter((s): s is ConversationState => s !== undefined);
+  }
+
+  async listSummariesByBusiness(businessId: string, limit: number): Promise<{ total: number; conversations: ConversationSummary[] }> {
+    const client = getSupabaseClient();
+    const { data, error, count } = await client
+      .from("conversations")
+      .select("id, customer_id, stage, outcome, pending_approval_id, created_at, updated_at", { count: "exact" })
+      .eq("business_id", businessId)
+      .order("updated_at", { ascending: false })
+      .limit(limit);
+    if (error) throw new Error(`Failed to list conversations for ${businessId}: ${error.message}`);
+    return {
+      total: count ?? (data ?? []).length,
+      conversations: (data ?? []).map((row) => ({
+        id: row.id as string,
+        customerId: row.customer_id as string,
+        stage: row.stage as ConversationState["stage"],
+        outcome: ((row.outcome as ConversationState["outcome"]) ?? "pending"),
+        pendingApprovalId: (row.pending_approval_id as string) ?? null,
+        createdAt: row.created_at as string,
+        updatedAt: row.updated_at as string,
+      })),
+    };
+  }
+
+  async listRecentTurnActivity(businessId: string, limit: number): Promise<TurnActivity[]> {
+    const client = getSupabaseClient();
+    // turn_logs has no business_id: scope through this business's own conversations.
+    const { data: convos, error: convoError } = await client
+      .from("conversations")
+      .select("id")
+      .eq("business_id", businessId)
+      .order("updated_at", { ascending: false })
+      .limit(200);
+    if (convoError) throw new Error(`Failed to list conversations for ${businessId}: ${convoError.message}`);
+    const ids = (convos ?? []).map((c) => c.id as string);
+    if (ids.length === 0) return [];
+    const { data, error } = await client
+      .from("turn_logs")
+      .select("id, conversation_id, at, reasoner, trace, intent:understood->>intent")
+      .in("conversation_id", ids)
+      .order("at", { ascending: false })
+      .limit(limit);
+    if (error) throw new Error(`Failed to list turn activity for ${businessId}: ${error.message}`);
+    return (data ?? []).map((t) => {
+      const row = t as Record<string, unknown>;
+      return {
+        conversationId: row.conversation_id as string,
+        turnId: row.id as string,
+        at: row.at as string,
+        reasoner: row.reasoner as TurnActivity["reasoner"],
+        intent: (row.intent as string) ?? null,
+        trace: (row.trace as TurnActivity["trace"]) ?? null,
+      };
+    });
   }
 }
 

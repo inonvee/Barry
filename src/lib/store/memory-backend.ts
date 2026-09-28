@@ -334,9 +334,11 @@ export class MemoryBackend implements BarryBackend {
   }
 }
 
-let singleton: MemoryBackend | undefined;
+// Kept on globalThis: in `next dev`, route handlers and pages are separate
+// module graphs, and must still see the same process-local data.
+const holder = globalThis as { __barryMemoryBackend?: MemoryBackend };
 
 export function getBackend(): MemoryBackend {
-  if (!singleton) singleton = new MemoryBackend();
-  return singleton;
+  if (!holder.__barryMemoryBackend) holder.__barryMemoryBackend = new MemoryBackend();
+  return holder.__barryMemoryBackend;
 }

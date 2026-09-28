@@ -139,11 +139,36 @@ export type ConversationState = {
  * `supabase-store.ts` both implement this; the runtime only ever depends
  * on this interface via `getConversationStore()`.
  */
+/** A conversation without its messages or turns — for listings (HQ). */
+export type ConversationSummary = {
+  id: string;
+  customerId: string;
+  stage: ConversationState["stage"];
+  outcome: ConversationState["outcome"];
+  pendingApprovalId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** One turn's value-free explanation (its trace), for cross-conversation views. */
+export type TurnActivity = {
+  conversationId: string;
+  turnId: string;
+  at: string;
+  reasoner: "mock" | "llm";
+  intent: string | null;
+  trace: TurnTrace | null;
+};
+
 export interface ConversationStore {
   get(id: string): Promise<ConversationState | undefined>;
   getOrCreate(id: string, businessId: string, customerId: string): Promise<ConversationState>;
   save(state: ConversationState): Promise<void>;
   listByBusiness(businessId: string): Promise<ConversationState[]>;
+  /** The business's conversations, most recently active first, WITHOUT messages/turns; `total` counts all of them. */
+  listSummariesByBusiness(businessId: string, limit: number): Promise<{ total: number; conversations: ConversationSummary[] }>;
+  /** The business's most recent turns across conversations: trace + intent only — never messages or customer details. */
+  listRecentTurnActivity(businessId: string, limit: number): Promise<TurnActivity[]>;
 }
 
 export function createInitialConversationState(
