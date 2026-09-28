@@ -24,6 +24,33 @@ export type ConversationMessage = {
   rich?: NormalizedOutboundMessage["rich"];
 };
 
+/** One action BARRY took this turn — who triggered it, which capability/provider served it, what policy said, what happened. */
+export type TurnStep = {
+  /** "customer": the customer's message asked for it. "continuation": BARRY's goal planner took the next safe step. */
+  trigger: "customer" | "continuation";
+  action: string;
+  capabilities: { capability: string; provider: string | null }[];
+  policy: { status: string; reason: string; policyId?: string };
+  result: { ok: boolean; error?: string } | null;
+  stageBefore: string;
+  stageAfter: string;
+  /** Names of state keys this step changed — never their values. */
+  stateKeysChanged: string[];
+};
+
+/**
+ * Everything needed to answer "why did BARRY do this?" later, from the
+ * database alone: which runtime/constitution/model ran, what grounding
+ * rejected, each step with its capability, provider, policy decision and
+ * result, and why the turn stopped.
+ */
+export type TurnTrace = {
+  runtime: { barryVersion: string; commit: string | null; constitutionVersion: string; reasoner: "mock" | "llm"; model: string | null };
+  rejectedClaims: { claim: string; reason: string }[];
+  steps: TurnStep[];
+  stop: { reason: string; outcome: string };
+};
+
 /** One full Observe→Update runtime turn, kept for explainability/debugging. */
 export type TurnLog = {
   id: string;
@@ -55,6 +82,8 @@ export type TurnLog = {
   stateAfter: Partial<ConversationState>;
   /** Which Reasoner implementation produced this turn — surfaced in the Inspector. */
   reasoner: "mock" | "llm";
+  /** HQ-grade explanation of the turn (see TurnTrace). */
+  trace?: TurnTrace;
 };
 
 export type ConversationState = {

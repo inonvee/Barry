@@ -321,7 +321,11 @@ export const updateCartLine = defineTool({
 export const createCommerceCheckout = defineTool({
   name: "createCommerceCheckout",
   description: "Price the provider cart and create a payment bound to that exact cart snapshot.",
-  inputSchema: z.object({ cartId: z.string() }),
+  inputSchema: z.object({
+    cartId: z.string(),
+    /** The total policy approved. If the provider's cart no longer totals this, nothing is sent. */
+    expectedTotal: moneySchema.optional(),
+  }),
   outputSchema: z.object({
     checkoutId: z.string(),
     cartId: z.string(),
@@ -338,6 +342,13 @@ export const createCommerceCheckout = defineTool({
       conversationId: ctx.conversationId,
       cartId: input.cartId,
     });
+    if (
+      input.expectedTotal &&
+      (Math.round(checkout.cart.total.amount * 100) !== Math.round(input.expectedTotal.amount * 100) ||
+        checkout.cart.total.currency.toUpperCase() !== input.expectedTotal.currency.toUpperCase())
+    ) {
+      throw new Error("Your cart changed — please review it before checkout");
+    }
     const pr = await createPaymentLink({
       graph: ctx.graph,
       businessId: ctx.graph.business.id,

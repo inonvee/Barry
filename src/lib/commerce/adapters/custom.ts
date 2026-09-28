@@ -58,6 +58,26 @@ export class CustomCommerceAdapter implements CommerceAdapter {
     }
   }
 
+  /**
+   * GET /capabilities — optional. A provider that implements only part of
+   * the contract (e.g. catalog + inventory + orders, no carts) says so
+   * here, and BARRY plans around it. Absent: the full base contract.
+   */
+  async describeCapabilities(): Promise<readonly string[]> {
+    let raw: unknown;
+    try {
+      raw = await this.request<unknown>("/capabilities");
+    } catch (err) {
+      if (err instanceof Error && /returned 404/.test(err.message)) {
+        return ["catalogSearch", "catalogSchema", "variants", "liveInventory", "cart", "checkout", "orders", "orderStatus"];
+      }
+      throw err;
+    }
+    const parsed = z.object({ operations: z.array(z.string().max(64)).max(50) }).safeParse(raw);
+    if (!parsed.success) throw new Error("Commerce provider returned invalid capabilities");
+    return parsed.data.operations;
+  }
+
   /** GET /catalog/schema — required by the custom-commerce contract. */
   async describeCatalog(): Promise<CatalogSchema> {
     const parsed = CatalogSchemaSchema.safeParse(await this.request<unknown>("/catalog/schema"));

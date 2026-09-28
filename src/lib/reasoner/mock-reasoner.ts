@@ -21,6 +21,11 @@ const POLICY_QUESTION = /\b(return|returns|exchange|refund)\b|החזר|להחז�
 const CHANGE_OF_MIND_SIGNAL = /\b(actually|instead|change (it |that )?to|switch (it |that )?to|rather have|no,? (i want|make it|let'?s do))\b/i;
 const PAYMENT_CLAIM = /\b(i('ve| have)?\s+(already\s+)?paid|paid already|already paid|payment (is )?(done|complete|completed|sent|went through)|sent the payment)\b|שילמתי|העברתי את התשלום|כבר שילמתי/i;
 
+/** Stand-in for the model's judgment that the customer has decided to buy. */
+const PURCHASE_DECISION =
+  /\b(i'?ll take|take it|take the|let'?s (do it|buy|go with|try again)|i'?d like to buy|i want to buy|i'?ll buy|buy it|sold|put .* in my cart|go ahead|checkout|check out)\b|אקח|לוקחת|לוקח|קונה|אני רוצה לקנות|סגרנו|יאללה/i;
+const STILL_BROWSING = /\b(also|too|as well|show me more|and more)\b|גם|עוד/i;
+
 const HEBREW_PRICE_WORDS = ["מחיר", "עולה"];
 const HEBREW_DURATION_WORDS = ["זמן"];
 const HEBREW_DEPOSIT_WORDS = ["פיקדון", "מקדמה"];
@@ -151,6 +156,11 @@ export class MockReasoner implements Reasoner {
       requestedCapability,
       commerce,
       customerClaims: PAYMENT_CLAIM.test(customerMessage) ? { paymentCompleted: true } : undefined,
+      // In context, a plain "yes" right after BARRY confirmed availability is a go-ahead.
+      purchaseDecision:
+        PURCHASE_DECISION.test(customerMessage) || (entities.accepted && Boolean(state.knownFields.__inventoryChecked))
+          ? !STILL_BROWSING.test(customerMessage)
+          : undefined,
       knowledgeTopic: requestedCapability === "ask_policy" ? mockKnowledgeTopic(graph, customerMessage) : undefined,
     };
   }

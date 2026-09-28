@@ -207,6 +207,52 @@ the conversation is and asks whatever's actually next.
 language; on failure it falls back to `composeDeterministic()` (the same
 canned phrasing `MockReasoner` uses) rather than losing the reply.
 
+## The operator loop (goal-driven, bounded)
+
+BARRY is goal-driven, not request-driven. A customer message yields at most
+ONE customer-triggered action. After it succeeds, the engine re-plans from
+real state alone (`compile(graph, state, CONTINUE_IR)` — no new customer
+words) and keeps taking the next step toward the business goal while that
+step is:
+
+- **state-derived** — the compiler's state gates already encode consent
+  (a confirmed slot, a purchase decision, a provider-verified payment);
+- **not a customer choice** — adding/changing cart items, searching and
+  approval requests are never taken on the customer's behalf;
+- **supported** — the business's connected providers declare the needed
+  operations (see *Capability profiles*); otherwise BARRY says so;
+- **enabled and policy-allowed** — every step goes through `decide()`;
+  an approval stops the chain and goes to the owner;
+- **new this turn and within budget** — never the same action twice,
+  never more than `MAX_STEPS_PER_TURN`.
+
+It stops the moment a human is needed: missing details
+(`checkout_needs_info` / `needs_info`), a decision (`confirm_purchase`,
+slot confirmation), owner approval, a failure, or a missing capability.
+The reply describes where things now stand plus the one thing still needed.
+
+The customer's *decision* is the model's judgment (`ir.purchaseDecision`),
+applied per the business playbook (`playbook.commerce.advanceToCheckout`,
+`checkoutRequires`). Interest ("do you have it?") never produces a payment
+link.
+
+## Capability profiles
+
+The reasoner thinks in capabilities; providers implement them. Each adapter
+declares which operations of its capability it really supports
+(`describeCapabilities()`; custom-commerce may publish `GET /capabilities`).
+`resolveCapabilityProfiles(graph)` turns the business's actual connections
+into a profile that the planner (never promise what the provider can't do),
+the model's context, readiness, Learn Stack and the Connections page all use.
+
+## Turn traces (HQ-ready)
+
+Every `TurnLog.trace` records the runtime version, constitution version and
+model; grounding rejections; each step with trigger, capability, provider,
+policy decision, result and the *names* of changed state keys; and why the
+turn stopped. Persisted in `turn_logs.trace` (migration 0011; turns still
+save without it, the explanation is dropped with a logged warning).
+
 ## Asynchronous events
 
 `handlePaymentOutcome(graph, conversationId, paymentRequestId, outcome)`

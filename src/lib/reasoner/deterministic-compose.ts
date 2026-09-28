@@ -38,6 +38,19 @@ function askVariantText(title: string, requested: Record<string, string> | undef
 }
 
 export function composeDeterministic(input: ComposeResponseInput): string {
+  if (input.steps && input.steps.length > 0) {
+    // Several things happened: say each in order, then the one thing still needed.
+    const parts = input.steps.map((st, i) =>
+      composeSingle({ outcome: st.outcome, toolResult: st.toolResult, policyReason: st.policyReason, scheduling: i === input.steps!.length - 1 ? input.scheduling : undefined })
+    );
+    if (input.next) parts.push(composeSingle({ outcome: input.next }));
+    return parts.join(" ");
+  }
+  if (input.next) return `${composeSingle(input)} ${composeSingle({ outcome: input.next })}`;
+  return composeSingle(input);
+}
+
+function composeSingle(input: ComposeResponseInput): string {
   const { outcome, toolResult, policyReason, scheduling } = input;
 
   if (policyReason) {
@@ -95,6 +108,12 @@ export function composeDeterministic(input: ComposeResponseInput): string {
       return outcome.current
         ? `The current total is ${outcome.current.amount} ${outcome.current.currency}. I can't change prices myself.`
         : `I can't change prices myself — the listed price is what I can offer.`;
+    case "confirm_purchase":
+      return `Shall I send you a secure payment link for the ${outcome.offerName}?`;
+    case "checkout_needs_info":
+      return `To send you a secure payment link, could you share your ${formatMissingFieldsList(outcome.missingFields)}?`;
+    case "capability_unavailable":
+      return `I can't complete that step here yet — I've noted your choice and the team will follow up to finish it with you.`;
     case "no_payment_to_verify":
       return `I don't see an open payment request for this conversation yet, so there's nothing for me to verify.`;
     case "action": {

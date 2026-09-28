@@ -85,6 +85,8 @@ export type CommerceAdapter = {
   readonly name: "memory" | "custom-commerce";
   /** What this catalog can be searched by: categories, attributes, variant options, currency. */
   describeCatalog(): Promise<CatalogSchema>;
+  /** Operations of its capability this adapter really supports (see lib/capabilities). */
+  describeCapabilities?(): Promise<readonly string[]>;
   searchProducts(query: ProductSearchQuery): Promise<{ products: Product[] }>;
   getProduct(productId: string): Promise<Product | undefined>;
   createCart(input: { businessId: string; customerId: string; conversationId: string }): Promise<Cart>;

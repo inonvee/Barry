@@ -5,7 +5,9 @@ import { parseSourceDocument } from "./document";
 import { groundCandidateFacts } from "./grounding";
 import { getBusinessLearner, type BusinessLearner } from "./learner";
 import { safeFetchSource, validateSourceUrl, type HostResolver, type SafeFetchLimits, type SourceTransport } from "./safe-fetch";
-import { buildOperatingStrategy, buildReadiness, enabledCapabilities } from "./strategy";
+import { buildCapabilityReport, buildOperatingStrategy, buildReadiness, enabledCapabilities } from "./strategy";
+import { detectStack, stackFactKey } from "./stack";
+import { resolveCapabilityProfiles } from "@/lib/capabilities";
 
 /**
  * Learn Business: owner-approved URL -> bounded safe fetch -> parse ->
@@ -25,8 +27,11 @@ function ownerApproved(fact: LearnedFactRecord): boolean {
 }
 
 function reviewedClassification(key: string, current: LearnedFactRecord["classification"]): LearnedFactRecord["classification"] {
-  // Owner-approved rules become operating POLICY; everything else keeps its kind.
-  return key.startsWith("policy.") || key.startsWith("authority.") ? "policy" : current === "policy" ? "fact" : current;
+  // Owner-approved rules become operating POLICY; an inference the owner
+  // confirms becomes a FACT; a recommendation stays advisory.
+  if (key.startsWith("policy.") || key.startsWith("authority.")) return "policy";
+  if (current === "policy" || current === "inference") return "fact";
+  return current;
 }
 
 export async function runLearning(input: {
@@ -68,6 +73,20 @@ export async function runLearning(input: {
       const doc = parseSourceDocument(fetched.finalUrl, fetched.body, fetched.contentType, fetched.truncated);
       const candidates = await learner.extract(doc);
       const { facts, rejected } = groundCandidateFacts(doc, candidates);
+      // Learn Stack: which systems the business already runs (fingerprints in the raw page).
+      if (fetched.contentType.includes("html")) {
+        for (const signal of detectStack(fetched.body)) {
+          facts.push({
+            key: stackFactKey(signal),
+            value: signal.platform,
+            classification: "inference",
+            quote: signal.evidence,
+            confidence: "medium",
+            sourceUrl: doc.url,
+            sourceTitle: doc.title,
+          });
+        }
+      }
       const skipped: { key: string; reason: string }[] = [];
       for (const fact of facts) {
         const prior = existing.get(fact.key);
@@ -103,7 +122,8 @@ export async function runLearning(input: {
   }
 
   const connections = await backend.listBusinessConnections(businessId);
-  const readiness = buildReadiness({ capabilities: enabledCapabilities(input.graph), facts: [...existing.values()], connections });
+  const profiles = await resolveCapabilityProfiles(input.graph);
+  const readiness = buildReadiness({ capabilities: enabledCapabilities(input.graph), facts: [...existing.values()], connections, profiles });
   const anyOk = sources.some((s) => s.ok);
   run = await backend.updateLearningRun(run.id, {
     status: !anyOk ? "failed" : readiness.questions.length + readiness.needsReview.length > 0 ? "needs_owner" : "ready",
@@ -186,7 +206,8 @@ export async function getLearningWorkspace(graph: BusinessGraph) {
     backend.getLatestOperatingStrategy(businessId),
   ]);
   const capabilities = enabledCapabilities(graph);
-  const readiness = buildReadiness({ capabilities, facts, connections });
+  const profiles = await resolveCapabilityProfiles(graph);
+  const readiness = buildReadiness({ capabilities, facts, connections, profiles });
   return {
     business: { id: businessId, name: graph.business.name },
     capabilities,
@@ -196,6 +217,7 @@ export async function getLearningWorkspace(graph: BusinessGraph) {
     needsReview: readiness.needsReview,
     readiness: { understanding: readiness.understanding, operational: readiness.operational },
     strategy: strategy ?? null,
+    capabilityReport: buildCapabilityReport({ graph, facts, profiles }),
   };
 }
 
@@ -203,8 +225,9 @@ export async function generateOperatingStrategy(graph: BusinessGraph) {
   const backend = getBackend();
   const businessId = graph.business.id;
   const [facts, connections] = await Promise.all([backend.listLearnedFacts(businessId), backend.listBusinessConnections(businessId)]);
-  const strategy = buildOperatingStrategy({ graph, facts, connections });
-  const readiness = buildReadiness({ capabilities: enabledCapabilities(graph), facts, connections });
+  const profiles = await resolveCapabilityProfiles(graph);
+  const strategy = { ...buildOperatingStrategy({ graph, facts, connections }), capabilityReport: buildCapabilityReport({ graph, facts, profiles }) };
+  const readiness = buildReadiness({ capabilities: enabledCapabilities(graph), facts, connections, profiles });
   return backend.saveOperatingStrategy({
     businessId,
     strategy,

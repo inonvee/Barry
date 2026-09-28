@@ -132,6 +132,14 @@ export type BarryIR = {
   commerce?: CommerceSemantics;
   customerClaims?: CustomerClaims;
   /**
+   * The model's judgment that the customer has DECIDED to buy what's being
+   * discussed ("I'll take it", "let's do it", "יאללה סגור") — as opposed
+   * to asking, comparing or still browsing. It is consent to move the
+   * purchase forward (cart -> checkout / payment link), never a payment,
+   * an order or a price.
+   */
+  purchaseDecision?: boolean;
+  /**
    * Which of the business's OWN knowledge topics the customer is asking
    * about (the model is given the topic list). The compiler answers only
    * with that item's stored content, verbatim — never a paraphrase of
@@ -203,6 +211,12 @@ export type CompileOutcome = { stage: ConversationStage; debug?: CompileDebugInf
   | { kind: "price_request"; requested: { amount: number; currency?: string }; current?: { amount: number; currency: string }; productTitle?: string }
   /** The customer claimed payment but there is no open payment request to verify. */
   | { kind: "no_payment_to_verify" }
+  /** The item is available and everything is ready; BARRY needs the customer's go-ahead to send a payment link. */
+  | { kind: "confirm_purchase"; offerName: string }
+  /** The purchase is decided; the business needs these customer details before BARRY can send checkout. */
+  | { kind: "checkout_needs_info"; missingFields: string[] }
+  /** The next step toward the goal needs a provider operation this business hasn't connected. */
+  | { kind: "capability_unavailable"; action: string; missing: string[] }
   | { kind: "generic_confirm" }
   /** Assembled input failed the tool's own schema — a compiler bug, not a customer data problem. Never reaches callTool(). */
   | { kind: "compiler_error"; reason: string }

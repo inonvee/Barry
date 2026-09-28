@@ -96,6 +96,9 @@ async function defaultAccessTokenProvider(fetcher: typeof fetch): Promise<string
 
 export class GoogleCalendarAdapter implements SchedulingAdapter {
   readonly name = "google-calendar" as const;
+  async describeCapabilities(): Promise<readonly string[]> {
+    return ["availability", "booking", "bookingLookup"];
+  }
   private readonly fetcher: typeof fetch;
   private readonly accessTokenProvider: () => Promise<string>;
   private readonly calendarId: string;

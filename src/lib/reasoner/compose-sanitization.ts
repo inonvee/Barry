@@ -63,5 +63,6 @@ export function sanitizeComposeInput(input: ComposeResponseInput): ComposeRespon
     ...input,
     toolResult: sanitizeToolResultForCompose(input),
     scheduling: sanitizeSchedulingForCompose(input.scheduling),
+    ...(input.steps ? { steps: input.steps.map((st) => ({ ...st, toolResult: sanitizeToolResultForCompose(st) })) } : {}),
   };
 }

@@ -108,6 +108,23 @@ export function InspectorPanel({ state }: { state: ConversationState | null }) {
             </Section>
           )}
 
+          {lastTurn.trace && (
+            <Section title="Operator steps">
+              {lastTurn.trace.steps.length === 0 && <p className="text-xs text-neutral-500">No action this turn.</p>}
+              {lastTurn.trace.steps.map((step, i) => (
+                <Kv
+                  key={i}
+                  k={`${i + 1}. ${step.action}${step.trigger === "continuation" ? " (continued)" : ""}`}
+                  v={`${step.policy.status}${step.result ? (step.result.ok ? " → ok" : ` → failed: ${step.result.error ?? ""}`) : ""}${
+                    step.capabilities.length ? ` · ${step.capabilities.map((c) => `${c.capability}:${c.provider ?? "—"}`).join(", ")}` : ""
+                  }`}
+                />
+              ))}
+              <Kv k="Stopped because" v={`${lastTurn.trace.stop.reason} (${lastTurn.trace.stop.outcome})`} />
+              <Kv k="Runtime" v={`${lastTurn.trace.runtime.barryVersion} · constitution ${lastTurn.trace.runtime.constitutionVersion}${lastTurn.trace.runtime.model ? ` · ${lastTurn.trace.runtime.model}` : ""}`} />
+            </Section>
+          )}
+
           {lastTurn.compiled && (
             <Section title="Compiler">
               {lastTurn.compiled.resolvedSchedulingWindow && (

@@ -56,6 +56,10 @@ function stripeStatus(session: Record<string, unknown>): "pending" | "paid" | "f
 
 export class StripePaymentAdapter implements PaymentAdapter {
   readonly name = "stripe" as const;
+  /** What BARRY's adapter implements for this provider (not everything the vendor offers — e.g. refunds are not wired yet). */
+  async describeCapabilities(): Promise<readonly string[]> {
+    return ["paymentLinks", "statusLookup", "webhookVerification"];
+  }
   private readonly fetcher: typeof fetch;
   private readonly secretKey: string;
   private readonly webhookSecret: string;

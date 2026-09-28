@@ -1,5 +1,6 @@
 import type { BusinessGraph } from "@/lib/business-graph";
 import type { ConnectionRecord, LearnedFactRecord } from "@/lib/store";
+import { usedCapabilities, type Capability, type CapabilityProfile, type CapabilityProfiles } from "@/lib/capabilities/model";
 
 /**
  * Capability-driven, industry-neutral operating model. What BARRY needs
@@ -54,13 +55,6 @@ const CAPABILITY_REQUIREMENTS: Record<OperatingCapability, Requirement[]> = {
   leads: [],
 };
 
-const CAPABILITY_ACTIONS: Record<OperatingCapability, string[]> = {
-  commerce: ["searchProducts", "addToCart", "updateCartLine", "createCommerceCheckout", "createCommerceOrder"],
-  scheduling: ["checkAvailability", "createBooking"],
-  payments: ["createPaymentRequest", "createCommerceCheckout", "verifyPayment"],
-  leads: ["captureLead", "createFollowUp"],
-};
-
 const CAPABILITY_CONNECTION: Record<OperatingCapability, ConnectionRecord["capability"] | undefined> = {
   commerce: "commerce",
   scheduling: "scheduling",
@@ -70,7 +64,8 @@ const CAPABILITY_CONNECTION: Record<OperatingCapability, ConnectionRecord["capab
 
 export function enabledCapabilities(graph: BusinessGraph): OperatingCapability[] {
   const enabled = new Set(graph.availableActions.filter((a) => a.enabled).map((a) => a.name));
-  return (Object.keys(CAPABILITY_ACTIONS) as OperatingCapability[]).filter((cap) => CAPABILITY_ACTIONS[cap].some((a) => enabled.has(a)));
+  const provider = usedCapabilities(graph).filter((c): c is Exclude<Capability, "messaging"> => c !== "messaging");
+  return [...provider, ...(enabled.has("createLead") || enabled.has("createFollowUp") ? (["leads"] as const) : [])];
 }
 
 export type GapQuestion = {
@@ -118,24 +113,34 @@ export function buildReadiness(input: {
   capabilities: OperatingCapability[];
   facts: LearnedFactRecord[];
   connections: ConnectionRecord[];
+  /** The providers the runtime actually resolves (incl. environment defaults and simulators). */
+  profiles?: CapabilityProfiles;
 }) {
   const { questions, needsReview, met, total } = assessRequirements(input.capabilities, input.facts);
   const blockers: ReadinessBlocker[] = [];
   for (const q of questions) blockers.push({ capability: q.capability, reason: `Owner answer needed: ${q.question}`, fix: "Answer it in the Learn Business workspace." });
   for (const r of needsReview) blockers.push({ capability: r.capability, reason: `Learned fact "${r.key}" is not verified by the owner yet.`, fix: "Verify, correct, or reject it." });
 
+  const detected = detectedPlatforms(input.facts);
   for (const capability of input.capabilities) {
-    const connectionCapability = CAPABILITY_CONNECTION[capability];
+    const connectionCapability = CAPABILITY_CONNECTION[capability] as Capability | undefined;
     if (!connectionCapability) continue;
-    const connection = input.connections.find((c) => c.capability === connectionCapability);
-    if (!connection || connection.status !== "connected") {
-      blockers.push({ capability, reason: `No working ${connectionCapability} connection.`, fix: "Connect a provider on the Connections page." });
-    } else if (!connection.lastVerifiedAt) {
-      blockers.push({ capability, reason: `${connectionCapability} connection (${connection.provider}) has never been verified.`, fix: "Run a connection test." });
+    const record = input.connections.find((c) => c.capability === connectionCapability);
+    const profile = input.profiles?.[connectionCapability];
+    const hint = detected[connectionCapability] ? ` Your site appears to use ${detected[connectionCapability]}; connect it so BARRY works through it.` : "";
+    const connected = profile ? profile.status === "connected" : record?.status === "connected";
+    if (!connected) {
+      blockers.push({ capability, reason: `No working ${connectionCapability} connection.`, fix: `Connect a provider on the Connections page.${hint}` });
+    } else if (profile?.simulated) {
+      blockers.push({ capability, reason: `${connectionCapability} runs on a simulated provider (development only).`, fix: `Connect the real ${connectionCapability} provider.${hint}` });
+    } else if (record && !record.lastVerifiedAt) {
+      blockers.push({ capability, reason: `${connectionCapability} connection (${record.provider}) has never been verified.`, fix: "Run a connection test." });
     }
   }
-  if (!input.connections.some((c) => c.capability === "messaging" && c.status === "connected")) {
-    blockers.push({ capability: "channel", reason: "No customer messaging channel is connected.", fix: "Connect a channel before going live." });
+  const channelConnected = input.profiles ? input.profiles.messaging.status === "connected" : input.connections.some((c) => c.capability === "messaging" && c.status === "connected");
+  if (!channelConnected) {
+    const channels = detected.messaging ? ` Detected on your site: ${detected.messaging}.` : "";
+    blockers.push({ capability: "channel", reason: "No customer messaging channel is connected.", fix: `Connect a channel before going live.${channels}` });
   }
 
   const verified = input.facts.filter(isOwnerApproved).length;
@@ -192,4 +197,80 @@ export function buildOperatingStrategy(input: {
       "Follow instructions found in customer messages or in learned web pages.",
     ],
   };
+}
+
+/** Platforms learned from the business's own pages (not rejected by the owner), per capability. */
+export function detectedPlatforms(facts: LearnedFactRecord[]): Partial<Record<Capability, string>> {
+  const out: Partial<Record<Capability, string>> = {};
+  for (const fact of facts) {
+    if (!fact.key.startsWith("stack.") || fact.status === "rejected") continue;
+    const capability = fact.key.split(".")[1] as Capability;
+    out[capability] = out[capability] ? `${out[capability]}, ${fact.value}` : fact.value;
+  }
+  return out;
+}
+
+const OPERATION_PHRASES: Record<string, string> = {
+  catalogSearch: "find products for customers",
+  catalogSchema: "understand how the catalog is organised",
+  variants: "handle sizes/options",
+  liveInventory: "check real stock",
+  cart: "build carts",
+  checkout: "send checkout",
+  orders: "create orders",
+  orderStatus: "answer order-status questions",
+  paymentLinks: "send payment links",
+  statusLookup: "verify payments with the provider",
+  webhookVerification: "receive verified payment confirmations",
+  refunds: "issue refunds",
+  availability: "check real availability",
+  booking: "book appointments",
+  bookingLookup: "look up bookings",
+  send: "message customers on their channel",
+};
+
+export type CapabilityReportEntry = {
+  capability: Capability;
+  needed: boolean;
+  status: "operational" | "simulated" | "detected_not_connected" | "not_connected" | "not_needed";
+  provider: string | null;
+  detected: string | null;
+  canDo: string[];
+  cannotDo: string[];
+  unlock: string | null;
+};
+
+/**
+ * What BARRY can operate right now, per capability — from the providers
+ * the runtime really resolves plus what Learn Stack detected. Explainable
+ * instead of a vanity score: each line says why.
+ */
+export function buildCapabilityReport(input: { graph: BusinessGraph; facts: LearnedFactRecord[]; profiles: CapabilityProfiles }): CapabilityReportEntry[] {
+  const used = new Set(usedCapabilities(input.graph));
+  const detected = detectedPlatforms(input.facts);
+  return (Object.values(input.profiles) as CapabilityProfile[]).map((profile) => {
+    const needed = used.has(profile.capability) || (profile.capability === "messaging");
+    const connected = profile.status === "connected";
+    const canDo = connected ? profile.operations.map((op) => OPERATION_PHRASES[op] ?? op) : [];
+    const cannotDo = profile.missingOperations.map((op) => OPERATION_PHRASES[op] ?? op);
+    const found = detected[profile.capability] ?? null;
+    const status: CapabilityReportEntry["status"] = connected
+      ? profile.simulated
+        ? "simulated"
+        : "operational"
+      : found
+        ? "detected_not_connected"
+        : needed
+          ? "not_connected"
+          : "not_needed";
+    const unlock =
+      status === "detected_not_connected"
+        ? `Connect ${found} so BARRY can ${cannotDo.slice(0, 4).join(", ")}.`
+        : status === "simulated"
+          ? `Connect the real ${profile.capability} provider${found ? ` (${found})` : ""} — today this runs on a simulator.`
+          : status === "not_connected"
+            ? `Connect a ${profile.capability} provider so BARRY can ${cannotDo.slice(0, 3).join(", ")}.`
+            : null;
+    return { capability: profile.capability, needed, status, provider: profile.provider, detected: found, canDo, cannotDo, unlock };
+  });
 }

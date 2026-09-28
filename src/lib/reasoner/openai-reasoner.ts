@@ -3,6 +3,7 @@ import type { BusinessGraph } from "@/lib/business-graph";
 import { findOffer } from "@/lib/business-graph";
 import { LlmIRSchema, irJsonSchema, type LlmCommerce, type LlmIR, type LlmSchedulingWindow, type KeyValuePair } from "./schemas";
 import { catalogForModel } from "@/lib/commerce/catalog";
+import { profilesForModel } from "@/lib/capabilities/model";
 import { BARRY_CONSTITUTION } from "./constitution";
 import type { CommerceSemantics } from "./ir";
 import { composeDeterministic } from "./deterministic-compose";
@@ -54,7 +55,19 @@ export function sanitizeOutcomeForCompose(outcome: CompileOutcome): unknown {
  * the model was never asked for tool input in the first place.
  */
 
-function buildUnderstandingContext(ctx: ReasonerContext) {
+/** What BARRY may decide alone vs. what goes to the owner — from the Genome's policies, never assumed. */
+export function authorityForModel(graph: BusinessGraph) {
+  const rule = <T extends string>(type: T) => graph.policies.find((p) => p.rule.type === type)?.rule as { value: number | boolean } | undefined;
+  return {
+    maxAutomaticDiscountPct: (rule("max_auto_discount_pct")?.value as number | undefined) ?? 0,
+    maxAutomaticPaymentAmount: (rule("max_auto_payment_amount")?.value as number | undefined) ?? null,
+    customPricingNeedsOwner: Boolean(rule("custom_pricing_requires_approval")?.value),
+    refundsNeedOwner: rule("refund_requires_approval")?.value !== false,
+    bookingsAutomatic: rule("bookings_auto_allowed")?.value !== false,
+  };
+}
+
+export function buildUnderstandingContext(ctx: ReasonerContext) {
   const { graph, state } = ctx;
   const recentMessages = state.messages.slice(-8).map((m) => `${m.role}: ${m.content}`);
 
@@ -97,6 +110,22 @@ function buildUnderstandingContext(ctx: ReasonerContext) {
       currentDate: currentDateInBusinessTimezone,
     },
     capabilities: graph.availableActions.filter((a) => a.enabled).map((a) => a.name),
+    // What this business wants BARRY to achieve, and how it wants BARRY to operate.
+    goals: graph.goals,
+    playbook: {
+      salesStyle: graph.playbook.salesStyle ?? null,
+      advanceToCheckout: graph.playbook.commerce.advanceToCheckout,
+      suggestions: graph.playbook.suggestions,
+    },
+    authority: authorityForModel(graph),
+    // What the business's connected systems can actually do right now.
+    connectedCapabilities: ctx.grounded?.profiles ? profilesForModel(ctx.grounded.profiles) : [],
+    transaction: {
+      cartOpen: Boolean(state.knownFields.__commerceCartId),
+      checkoutSent: Boolean(state.knownFields.__paymentRequestId && !state.knownFields.__paid),
+      paid: Boolean(state.knownFields.__paid),
+      orderPlaced: Boolean(state.knownFields.__commerceOrderId),
+    },
     offers,
     knowledgeTopics: graph.knowledge.map((k) => k.topic),
     knownCustomerFields: customerFields,
@@ -135,6 +164,7 @@ YOUR TASK NOW: understand the customer's latest message in context and describe 
   - negotiate_price: they ask for a different price (requestedPriceAmount).
 - customerInfo: ONLY identity/contact details the customer states about THEMSELVES in this message (name, phone, email, ...). For each one, add an evidence pair { key: "customerInfo.<field>", value: <exact quote from the message> }. A verb, a product, a relationship word ("my wife") or anything that isn't their own name is never a name. Omit fields not given this turn — never use placeholder values.
 - customerClaimsPaymentCompleted: true when the customer says they paid. It is only a claim; BARRY verifies it with the provider.
+- purchaseDecision: true when the customer has DECIDED to buy what's being discussed ("I'll take it", "let's do it", "that one, yalla"); false when they are asking, comparing, or adding while still browsing ("do you have it?", "add it too and show me more"); null if unclear. It is consent for BARRY to move the purchase forward per the business playbook — never a payment or an order.
 - knowledgeTopic: when they ask about something covered by one of knowledgeTopics, that exact topic string.
 - Scheduling: describe what they said, never compute timestamps. schedulingWindow fields: dateKind (explicitDate|relativeDay|weekday), isoDate (YYYY-MM-DD, resolve using business.currentDate), relativeDays, weekday (0=Sun..6=Sat), weekdayQualifier (this|next), timeKind (explicitTime|partOfDay), hour/minute (24h, as the customer meant it locally), partOfDay. Keep a day/time stated earlier unless they changed it.
 - slotAccepted / slotDeclined: only when awaitingSlotConfirmation is true and they accept or decline the offered time.
@@ -173,6 +203,10 @@ export const COMPOSE_SYSTEM_PROMPT =
   "requirement (e.g. \"names and phone numbers\" when missingFields is just [\"name\", " +
   "\"phone\"]) — BARRY collects ONE customer's contact info per booking unless the Business " +
   "Graph's own required fields say otherwise. " +
+  "If `steps` is present, BARRY took several actions this turn and ALL of them already happened: " +
+  "say briefly where things now stand (the end result, not a log of each step), then ask for the ONE thing in `next` if present. " +
+  "When outcome.kind is \"checkout_needs_info\", the customer has decided to buy: ask only for those details so BARRY can send the payment link — never ask whether they want to continue. " +
+  "Follow `playbook.salesStyle` when present; mention at most one genuinely relevant suggestion and only if playbook.suggestions is \"one_relevant\". " +
   "Keep it to 1-3 sentences, no headers, no JSON.";
 
 function kvArrayToRecord(pairs: KeyValuePair[]): Record<string, string> {
@@ -230,6 +264,7 @@ export function sanitizeIR(graph: BusinessGraph, raw: LlmIR): BarryIR {
     goal: raw.goal ?? undefined,
     commerce: raw.commerce ? unflattenCommerce(raw.commerce) : undefined,
     customerClaims: raw.customerClaimsPaymentCompleted ? { paymentCompleted: true } : undefined,
+    purchaseDecision: raw.purchaseDecision ?? undefined,
     evidence: kvArrayToRecord(raw.evidence),
     knowledgeTopic: raw.knowledgeTopic ?? undefined,
   };
@@ -284,6 +319,8 @@ export type ComposeSummaryContext = {
   businessTone: unknown;
   lastCustomerMessage: string;
   responseStatus?: ComposeResponseStatus;
+  /** The business's own operating playbook (sales style, suggestions) — overrides general habits. */
+  playbook?: { salesStyle: string | null; suggestions: string };
 };
 
 type ComposeResponseStatus =
@@ -346,6 +383,19 @@ export function buildComposeSummary(context: ComposeSummaryContext, input: Compo
     // "what time is that for the customer." Never present when there's
     // nothing scheduling-related to phrase.
     scheduling: sanitizedInput.scheduling ?? null,
+    playbook: context.playbook ?? null,
+    // Everything BARRY already did this turn, in order — all of it has happened.
+    steps: sanitizedInput.steps
+      ? sanitizedInput.steps.map((st) => ({
+          outcome: sanitizeOutcomeForCompose(st.outcome),
+          succeeded: st.toolResult ? st.toolResult.ok : null,
+          output: st.toolResult?.ok ? st.toolResult.output : undefined,
+          error: st.toolResult && !st.toolResult.ok ? st.toolResult.error : undefined,
+          waitingForOwner: st.policyReason ?? undefined,
+        }))
+      : null,
+    // The single thing still needed from the customer, if any.
+    next: sanitizedInput.next ? sanitizeOutcomeForCompose(sanitizedInput.next) : null,
   };
 }
 
@@ -382,7 +432,7 @@ function emptyIR(intent: string): BarryIR {
 export class OpenAIReasoner implements Reasoner {
   readonly name = "llm" as const;
   private client: OpenAI;
-  private model: string;
+  readonly model: string;
 
   constructor() {
     const apiKey = process.env.OPENAI_API_KEY;
@@ -444,7 +494,12 @@ export class OpenAIReasoner implements Reasoner {
     const lastCustomerMessage = ctx.state.messages.filter((m) => m.role === "customer").at(-1)?.content ?? "";
 
     const summary = buildComposeSummary(
-      { businessTone: ctx.graph.business.tone, lastCustomerMessage, responseStatus: composeResponseStatus(ctx, input) },
+      {
+        businessTone: ctx.graph.business.tone,
+        lastCustomerMessage,
+        responseStatus: composeResponseStatus(ctx, input),
+        playbook: { salesStyle: ctx.graph.playbook.salesStyle ?? null, suggestions: ctx.graph.playbook.suggestions },
+      },
       input
     );
 

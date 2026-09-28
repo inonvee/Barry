@@ -73,6 +73,7 @@ describe("Regression 2: customerInfo is the model's evidence-cited claim — BAR
       goal: null,
       commerce: null,
       customerClaimsPaymentCompleted: null,
+    purchaseDecision: null,
       evidence: [
         { key: "customerInfo.name", value: "My name is Inon" },
         { key: "customerInfo.phone", value: "my phone number is 057484848" },

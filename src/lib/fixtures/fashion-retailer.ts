@@ -85,5 +85,10 @@ export function buildFashionRetailerGraph(): BusinessGraph {
       { name: "requestApproval" },
     ],
     goals: ["completePurchase"],
+    playbook: {
+      salesStyle: "Warm and relaxed, like a stylist friend. Short messages, no emojis, never pushy.",
+      commerce: { advanceToCheckout: "on_purchase_decision", checkoutRequires: ["name", "phone"] },
+      suggestions: "one_relevant",
+    },
   });
 }

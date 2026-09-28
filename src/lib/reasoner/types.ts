@@ -1,3 +1,4 @@
+import type { CapabilityProfiles } from "@/lib/capabilities/model";
 import type { CatalogSchema } from "@/lib/commerce/catalog";
 import type { BusinessGraph } from "@/lib/business-graph";
 import type { ConversationState } from "@/lib/state";
@@ -13,6 +14,8 @@ export type { BarryIR, BarryIRConstraints, RequestedCapability, CompileOutcome, 
 export type GroundedContext = {
   /** The commerce provider's searchable schema (categories, attributes, variant options, currency). */
   catalog?: CatalogSchema;
+  /** What the business's connected providers can actually do. */
+  profiles?: CapabilityProfiles;
   shownResults?: { index: number; title: string; options: { options: Record<string, string>; price: string; inStock: boolean }[] }[];
   cart?: { index: number; title: string; options: Record<string, string>; quantity: number }[];
   cartTotal?: string;
@@ -52,11 +55,21 @@ export type SchedulingDisplayFacts = {
  * or WHAT to ask, only HOW to say it. `toolResult` is only present when
  * `outcome.kind === "action"` and the Policy Engine allowed it to run.
  */
+export type ComposeStep = {
+  outcome: CompileOutcome;
+  toolResult?: { ok: boolean; output?: unknown; error?: string } | null;
+  policyReason?: string;
+};
+
 export type ComposeResponseInput = {
   outcome: CompileOutcome;
   toolResult?: { ok: boolean; output?: unknown; error?: string } | null;
   policyReason?: string;
   scheduling?: SchedulingDisplayFacts;
+  /** When BARRY took several steps this turn: all of them, in order (the last equals outcome/toolResult). */
+  steps?: ComposeStep[];
+  /** The one thing still needed from the customer after those steps, if any. */
+  next?: CompileOutcome;
 };
 
 /**
@@ -71,4 +84,6 @@ export interface Reasoner {
   readonly name: "mock" | "llm";
   understand(ctx: ReasonerContext): Promise<BarryIR>;
   composeResponse(ctx: ReasonerContext, input: ComposeResponseInput): Promise<string>;
+  /** The underlying model id, when there is one (recorded in turn traces). */
+  readonly model?: string;
 }

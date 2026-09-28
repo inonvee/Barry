@@ -71,6 +71,9 @@ export default function ConnectionsPage() {
                     <dd>{c.lastVerifiedAt ? new Date(c.lastVerifiedAt).toLocaleString() : "Never"}</dd>
                   </div>
                 </dl>
+                {c.operations.length > 0 && (
+                  <p className="mt-2 text-sm text-[#475467]">Can: {c.operations.join(" · ")}</p>
+                )}
                 {Object.keys(c.settings).length > 0 && (
                   <p className="mt-2 text-sm text-[#475467]">
                     {Object.entries(c.settings)

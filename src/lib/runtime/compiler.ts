@@ -5,6 +5,7 @@ import type { BarryIR, CompileDebugInfo, CompileOutcome, OfferFact } from "@/lib
 import { normalizeCustomerInfoField } from "@/lib/reasoner/customer-fields";
 import type { ConversationStage, ConversationState } from "@/lib/state";
 import { resolveSchedulingWindow } from "@/lib/scheduling/resolver";
+import { actionSupported, type CapabilityProfiles } from "@/lib/capabilities/model";
 
 export type { CompileOutcome, CompileDebugInfo } from "@/lib/reasoner/ir";
 
@@ -36,6 +37,10 @@ export const SCRATCH_KEYS = {
   commerceCheckoutId: "__commerceCheckoutId",
   commerceCartSnapshot: "__commerceCartSnapshot",
   commerceOrderId: "__commerceOrderId",
+  /** The customer decided to buy (or asked to check out): BARRY carries the cart forward to checkout. */
+  commerceCheckoutRequested: "__commerceCheckoutRequested",
+  /** The customer decided to buy the selected offer (consent to send a payment link). */
+  purchaseDecided: "__purchaseDecided",
 };
 
 /**
@@ -133,7 +138,8 @@ function compileCommerce(ir: BarryIR, known: Record<string, string>): CompileOut
 
     case "checkout":
       if (!cartId) return { kind: "clarify_reference", available: lastIds.length, stage: "offer_selection" };
-      return finalizeAction("createCommerceCheckout", { cartId }, "payment", "completePurchase");
+      // The request is recorded in compileCore; the goal planner decides what checkout still needs.
+      return undefined;
 
     case "negotiate_price": {
       const total = known[SCRATCH_KEYS.commerceCartTotal] ? (JSON.parse(known[SCRATCH_KEYS.commerceCartTotal]) as { amount: number; currency: string }) : undefined;
@@ -141,6 +147,34 @@ function compileCommerce(ir: BarryIR, known: Record<string, string>): CompileOut
       return { kind: "price_request", requested: commerce.requestedPrice, current: total, stage: "offer_selection" };
     }
   }
+}
+
+/**
+ * STATE-DRIVEN commerce goal planner: once the customer has decided to
+ * buy (or asked to check out), the next safe step toward completePurchase
+ * is derived from real state alone — never from new customer words — so
+ * the runtime can run it as a continuation. It stops at anything that
+ * needs a human: missing customer details, or a provider that can't do it.
+ */
+function planCommerceGoal(graph: BusinessGraph, known: Record<string, string>, options: CompileOptions): CompileOutcome | undefined {
+  const cartId = known[SCRATCH_KEYS.commerceCartId];
+  if (!cartId || !known[SCRATCH_KEYS.commerceCheckoutRequested]) return undefined;
+  if (known[SCRATCH_KEYS.paymentRequestId] || known[SCRATCH_KEYS.paid] || known[SCRATCH_KEYS.commerceOrderId]) return undefined;
+
+  const missingFields = graph.playbook.commerce.checkoutRequires.filter((field) => !known[field]);
+  if (missingFields.length > 0) return { kind: "checkout_needs_info", missingFields, stage: "info_gathering" };
+
+  const supported = actionSupported(options.profiles, "createCommerceCheckout");
+  if (!supported.ok) return { kind: "capability_unavailable", action: "createCommerceCheckout", missing: supported.missing, stage: "offer_selection" };
+
+  const total = known[SCRATCH_KEYS.commerceCartTotal] ? (JSON.parse(known[SCRATCH_KEYS.commerceCartTotal]) as { amount: number; currency: string }) : undefined;
+  return finalizeAction(
+    "createCommerceCheckout",
+    // expectedTotal lets policy judge the real amount; the tool refuses if the provider's total differs.
+    { cartId, ...(total ? { expectedTotal: total, amount: total.amount } : {}) },
+    "payment",
+    "completePurchase"
+  );
 }
 
 function round2(n: number): number {
@@ -230,13 +264,18 @@ function resolveOfferId(graph: BusinessGraph, state: ConversationState, ir: Barr
  * must keep working) while still attaching debug/observability info
  * uniformly at the one exit point, instead of touching every return.
  */
-export function compile(graph: BusinessGraph, state: ConversationState, ir: BarryIR): CompileOutcome {
+export type CompileOptions = {
+  /** What the business's connected providers can actually do (planning never promises what they can't). */
+  profiles?: CapabilityProfiles;
+};
+
+export function compile(graph: BusinessGraph, state: ConversationState, ir: BarryIR, options: CompileOptions = {}): CompileOutcome {
   const debug: CompileDebugInfo = { appliedCustomerInfo: {} };
-  const outcome = compileCore(graph, state, ir, debug);
+  const outcome = compileCore(graph, state, ir, debug, options);
   return { ...outcome, debug };
 }
 
-function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR, debug: CompileDebugInfo): CompileOutcome {
+function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR, debug: CompileDebugInfo, options: CompileOptions): CompileOutcome {
   const known = state.knownFields;
   const scratchUpdate: Record<string, string> = {};
   // The ONLY place a semantic scheduling constraint ("Sunday", "at 2pm")
@@ -283,6 +322,9 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
   }
   if (ir.constraints.slotAccepted) {
     scratchUpdate[SCRATCH_KEYS.slotAccepted] = "1";
+  }
+  if (ir.purchaseDecision === true) {
+    scratchUpdate[SCRATCH_KEYS.purchaseDecided] = "1";
   }
   // `customerInfo` is THE single authoritative key/value bag for
   // customer-provided identity fields (name/email/phone/...) — a
@@ -346,9 +388,26 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
   }
 
   if (ir.commerce) {
+    // Record the customer's purchase decision (the model's judgment, applied
+    // per the business playbook). A new search means they're browsing again.
+    const c = ir.commerce;
+    if (c.intent === "search") delete known[SCRATCH_KEYS.commerceCheckoutRequested];
+    if (c.intent === "checkout") known[SCRATCH_KEYS.commerceCheckoutRequested] = "1";
+    if (c.intent === "select" || c.intent === "replace" || c.intent === "change_variant" || c.intent === "change_quantity") {
+      if (ir.purchaseDecision === true && graph.playbook.commerce.advanceToCheckout === "on_purchase_decision") {
+        known[SCRATCH_KEYS.commerceCheckoutRequested] = "1";
+      } else if (ir.purchaseDecision === false) {
+        delete known[SCRATCH_KEYS.commerceCheckoutRequested];
+      }
+    }
     const commerceOutcome = compileCommerce(ir, known);
     if (commerceOutcome) return commerceOutcome;
   }
+
+  // Nothing new to act on from the customer's words: take the next safe
+  // step toward the commerce goal, if one is in progress.
+  const commerceStep = planCommerceGoal(graph, known, options);
+  if (commerceStep) return commerceStep;
 
   // An explicit decline of a previously offered slot ("no"/"לא") only
   // means anything when there's actually a slot on file to decline —
@@ -388,6 +447,7 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
     delete known[SCRATCH_KEYS.paymentRequestId];
     delete known[SCRATCH_KEYS.paid];
     delete known[SCRATCH_KEYS.inventoryChecked];
+    delete known[SCRATCH_KEYS.purchaseDecided];
   }
 
   let selectedOfferId = resolveOfferId(graph, state, ir);
@@ -528,6 +588,10 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
       return finalizeAction("checkInventory", { offerId: offer.id }, "payment", "completePurchase");
     }
     if (offer.requiresPayment && !known[SCRATCH_KEYS.paymentRequestId]) {
+      // A payment link needs the customer's decision, not just their interest.
+      if (!known[SCRATCH_KEYS.purchaseDecided]) {
+        return { kind: "confirm_purchase", offerName: offer.name, stage: "offer_selection" };
+      }
       const discountPct = Number(known[SCRATCH_KEYS.discountPct] ?? 0);
       return finalizeAction(
         "createPaymentRequest",

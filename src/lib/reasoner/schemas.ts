@@ -99,6 +99,7 @@ export const LlmIRSchema = z.object({
     .nullable(),
   commerce: LlmCommerceSchema.nullable(),
   customerClaimsPaymentCompleted: z.boolean().nullable(),
+  purchaseDecision: z.boolean().nullable(),
   /** Claim path (e.g. "customerInfo.name") -> exact quote from the customer's message supporting it. */
   evidence: z.array(KeyValuePairSchema),
   knowledgeTopic: z.string().nullable(),
@@ -209,6 +210,7 @@ export function irJsonSchema() {
           ],
         },
         customerClaimsPaymentCompleted: { type: ["boolean", "null"] },
+        purchaseDecision: { type: ["boolean", "null"] },
         evidence: { type: "array", items: kvSchema() },
         knowledgeTopic: { type: ["string", "null"] },
       },
@@ -224,6 +226,7 @@ export function irJsonSchema() {
         "goal",
         "commerce",
         "customerClaimsPaymentCompleted",
+        "purchaseDecision",
         "evidence",
         "knowledgeTopic",
       ],

@@ -1,6 +1,7 @@
 import { getBackend } from "@/lib/store";
 import type { ConnectionCapability, ConnectionRecord } from "@/lib/store";
 import { describeCredentialRequirements, type CredentialRequirement } from "./credentials";
+import type { CapabilityProfiles } from "@/lib/capabilities/model";
 import { fixtureCatalogForBusiness, fixtureCommerceAllowed } from "@/lib/commerce/registry";
 import "@/lib/fixtures";
 import { resolveConnection } from "./registry";
@@ -23,6 +24,8 @@ export type ConnectionView = {
   settings: Record<string, string>;
   setup: CredentialRequirement[];
   missing: string[];
+  /** Operations of the capability this provider really supports (from its adapter). */
+  operations: string[];
 };
 
 const CAPABILITIES: ConnectionCapability[] = ["payments", "scheduling", "commerce", "messaging"];
@@ -54,10 +57,16 @@ function view(capability: ConnectionCapability, connection: ConnectionRecord, or
     settings,
     setup,
     missing,
+    operations: [],
   };
 }
 
-export async function describeBusinessConnections(businessId: string): Promise<ConnectionView[]> {
+export async function describeBusinessConnections(businessId: string, profiles?: CapabilityProfiles): Promise<ConnectionView[]> {
+  const views = await describeConnectionRecords(businessId);
+  return profiles ? views.map((v) => ({ ...v, operations: profiles[v.capability as keyof CapabilityProfiles]?.operations ?? [] })) : views;
+}
+
+async function describeConnectionRecords(businessId: string): Promise<ConnectionView[]> {
   const stored = await getBackend().listBusinessConnections(businessId);
   const views: ConnectionView[] = [];
   for (const capability of CAPABILITIES) {
@@ -93,6 +102,7 @@ export async function describeBusinessConnections(businessId: string): Promise<C
         settings: {},
         setup: [],
         missing: [],
+        operations: [],
       });
     }
   }

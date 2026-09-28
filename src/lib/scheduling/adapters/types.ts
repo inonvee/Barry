@@ -37,6 +37,8 @@ export type CreateBookingInput = {
 
 export interface SchedulingAdapter {
   readonly name: "memory" | "google-calendar";
+  /** Operations of its capability this adapter really supports (see lib/capabilities). */
+  describeCapabilities?(): Promise<readonly string[]>;
   checkAvailability(input: CheckAvailabilityInput): Promise<{ slots: SchedulingSlot[] }>;
   createBooking(input: CreateBookingInput): Promise<SchedulingBooking>;
   getBooking(providerEventId: string): Promise<SchedulingBooking | undefined>;

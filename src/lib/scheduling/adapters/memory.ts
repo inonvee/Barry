@@ -18,6 +18,9 @@ function bookingToSchedulingBooking(record: BookingRecord): SchedulingBooking {
 
 export class MemorySchedulingAdapter implements SchedulingAdapter {
   readonly name = "memory" as const;
+  async describeCapabilities(): Promise<readonly string[]> {
+    return ["availability", "booking", "bookingLookup"];
+  }
 
   constructor(private readonly backend: BarryBackend) {}
 

@@ -126,7 +126,7 @@ describe("offline stand-in: never the wrong action (safety), whether or not it u
     bucket.total += 1;
 
     // Never: invent a name, claim payment, or take a consequential action the meaning didn't ask for.
-    expect(c.out.state.knownFields.name).toBeUndefined();
+    expect(c.out.turn.compiled?.appliedCustomerInfo.name).toBeUndefined(); // this turn never invents a name
     expect(c.out.state.knownFields.__paid).toBeUndefined();
     let understood = false;
     try {

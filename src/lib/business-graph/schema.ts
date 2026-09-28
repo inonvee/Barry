@@ -175,6 +175,35 @@ export const GoalSchema = z.enum([
 ]);
 export type Goal = z.infer<typeof GoalSchema>;
 
+/**
+ * How THIS business wants BARRY to operate — the business-specific layer
+ * on top of the universal BARRY Constitution. Written by the owner (or
+ * learned and owner-approved), never inferred from an industry. An
+ * explicit playbook setting always wins over BARRY's global default.
+ */
+export const PlaybookSchema = z.object({
+  /** The owner's own words on how to sell/serve (e.g. "relaxed, no pressure, short messages"). */
+  salesStyle: z.string().max(1000).optional(),
+  commerce: z
+    .object({
+      /**
+       * on_purchase_decision: once a customer has decided ("I'll take it"),
+       * BARRY moves straight on to checkout. on_request: BARRY adds to the
+       * cart and waits until the customer asks to check out (e.g. stores
+       * where customers usually build large baskets).
+       */
+      advanceToCheckout: z.enum(["on_purchase_decision", "on_request"]).default("on_purchase_decision"),
+      /** Customer details this business needs before it can send a checkout (e.g. name, phone). */
+      checkoutRequires: z.array(z.string()).default([]),
+    })
+    .prefault({}),
+  /** Whether BARRY may suggest one genuinely relevant addition (never more). */
+  suggestions: z.enum(["none", "one_relevant"]).default("one_relevant"),
+  /** Who/how to hand off to when BARRY can't help. */
+  handoff: z.string().max(500).optional(),
+});
+export type Playbook = z.infer<typeof PlaybookSchema>;
+
 export const BusinessGraphSchema = z.object({
   business: BusinessSchema,
   capabilities: CapabilityFlagsSchema,
@@ -186,5 +215,6 @@ export const BusinessGraphSchema = z.object({
   policies: z.array(PolicySchema),
   availableActions: z.array(AvailableActionSchema),
   goals: z.array(GoalSchema),
+  playbook: PlaybookSchema.prefault({}),
 });
 export type BusinessGraph = z.infer<typeof BusinessGraphSchema>;

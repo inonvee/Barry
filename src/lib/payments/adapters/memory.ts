@@ -26,6 +26,10 @@ export function signedMemoryWebhook(input: {
 
 export class MemoryPaymentAdapter implements PaymentAdapter {
   readonly name = "memory" as const;
+  /** What BARRY's adapter implements for this provider (not everything the vendor offers — e.g. refunds are not wired yet). */
+  async describeCapabilities(): Promise<readonly string[]> {
+    return ["paymentLinks", "statusLookup", "webhookVerification"];
+  }
   readonly payments = new Map<string, ProviderPayment>();
   createdCount = 0;
 

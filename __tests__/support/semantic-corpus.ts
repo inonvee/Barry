@@ -133,6 +133,12 @@ export const SETUP_SCRIPT: Record<string, Partial<BarryIR>> = {
   "__setup: second in M": commerce({ intent: "select", reference: { type: "previous_result", index: 1 }, variant: { size: "M" } }),
   "__setup: first in M": commerce({ intent: "select", reference: { type: "previous_result", index: 0 }, variant: { size: "M" } }),
   "__setup: checkout": commerce({ intent: "checkout" }),
+  // The business needs name + phone before checkout; the model cites them from the message.
+  "My name is Dana, phone 0501234567": {
+    intent: "provide_details",
+    customerInfo: { name: "Dana", phone: "0501234567" },
+    evidence: { "customerInfo.name": "Dana", "customerInfo.phone": "0501234567" },
+  },
   // What a model emits when BARRY asked "which size?" and the answer is "M".
   "__followup: M": commerce({ intent: "select", variant: { size: "M" } }),
 };
@@ -142,7 +148,7 @@ export const SETUP_TURNS: Record<Setup, string[]> = {
   results: ["__setup: search black dresses"],
   cart_first_L: ["__setup: search black dresses", "__setup: first in L"],
   cart_second_M: ["__setup: search black dresses", "__setup: second in M"],
-  checkout: ["__setup: search black dresses", "__setup: first in M", "__setup: checkout"],
+  checkout: ["__setup: search black dresses", "__setup: first in M", "__setup: checkout", "My name is Dana, phone 0501234567"],
 };
 
 /**

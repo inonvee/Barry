@@ -98,7 +98,7 @@ describe("payment is bound to the cart snapshot", () => {
     const { conv, cust } = ids();
     await handleCustomerMessage(graph, conv, cust, "I need a black dress for a wedding, size M, under ₪450");
     await handleCustomerMessage(graph, conv, cust, "Take the first one in M");
-    const checkout = await handleCustomerMessage(graph, conv, cust, "Checkout please");
+    const checkout = await handleCustomerMessage(graph, conv, cust, "My name is Dana and my phone is 0501234567");
     expect(checkout.turn.selectedAction?.name).toBe("createCommerceCheckout");
     const paymentId = checkout.state.knownFields.__paymentRequestId;
     const payment = (await getBackend().getPaymentRequest(paymentId))!;
@@ -121,20 +121,23 @@ describe("payment is bound to the cart snapshot", () => {
     expect(checkout.response).not.toMatch(/https?:\/\//);
   });
 
-  it("changing the cart after checkout cancels the unpaid payment and requires a new checkout", async () => {
+  it("changing the cart after checkout cancels the unpaid payment and re-issues checkout for the new cart", async () => {
     const { graph, conv, cust, payment } = await toCheckout();
     const changed = await handleCustomerMessage(graph, conv, cust, "Actually make it L");
-    expect(changed.turn.selectedAction?.name).toBe("updateCartLine");
-    expect(changed.turn.toolResult?.ok).toBe(true);
-    expect(changed.state.knownFields.__paymentRequestId).toBeUndefined();
-    expect(changed.state.stage).not.toBe("payment");
+    // The customer's change runs first; BARRY then re-prices the new cart in the same turn.
+    expect(changed.turn.trace?.steps.map((st) => [st.action, st.trigger])).toEqual([
+      ["updateCartLine", "customer"],
+      ["createCommerceCheckout", "continuation"],
+    ]);
     expect((await getBackend().getPaymentRequest(payment.id))?.status).toBe("cancelled");
-
-    const again = await handleCustomerMessage(graph, conv, cust, "Checkout please");
-    expect(again.turn.selectedAction?.name).toBe("createCommerceCheckout");
-    const fresh = (await getBackend().getPaymentRequest(again.state.knownFields.__paymentRequestId))!;
+    const fresh = (await getBackend().getPaymentRequest(changed.state.knownFields.__paymentRequestId))!;
     expect(fresh.id).not.toBe(payment.id);
     expect(fresh.binding?.snapshotHash).not.toBe(payment.binding?.snapshotHash);
+    const adapter = await resolveCommerceAdapterForBusiness(graph.business.id);
+    const cart = (await adapter.getCart(changed.state.knownFields.__commerceCartId))!;
+    expect(cart.lines.map((l) => l.options.size)).toEqual(["L"]);
+    expect(fresh.binding?.snapshotHash).toBe(cartSnapshotHash(cart));
+    expect(changed.rich?.paymentUrl).toMatch(/^https:\/\//);
   });
 
   it("a verified payment for a superseded payment request never creates an order", async () => {

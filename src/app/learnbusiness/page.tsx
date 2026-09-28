@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { OwnerBar, useOwnerApi } from "@/components/owner/useOwnerApi";
 import type { LearnedFactRecord, LearningRunRecord, OperatingStrategyRecord } from "@/lib/store/types";
+import type { CapabilityReportEntry } from "@/lib/learn-business/strategy";
 
 type Question = { key: string; question: string; reason: string; capability: string; kind: "missing_fact" | "owner_decision" };
 type Blocker = { capability: string; reason: string; fix: string };
@@ -18,6 +19,7 @@ type Workspace = {
     operational: { state: "ready" | "blocked"; blockers: Blocker[] };
   };
   strategy: OperatingStrategyRecord | null;
+  capabilityReport: CapabilityReportEntry[];
 };
 
 const card = "rounded-lg border border-[#d0d5dd] bg-white p-4 md:p-5";
@@ -198,6 +200,38 @@ export default function LearnBusinessPage() {
             </div>
           )}
         </section>
+
+        {workspace && workspace.capabilityReport.length > 0 && (
+          <section className={card}>
+            <h2 className="text-lg font-semibold">What BARRY can operate now</h2>
+            <p className="mt-1 text-sm text-[#667085]">From the systems your business is actually connected to, and what BARRY spotted on your pages.</p>
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              {workspace.capabilityReport
+                .filter((c) => c.needed || c.detected || c.status !== "not_needed")
+                .map((c) => (
+                  <div key={c.capability} className="rounded-md bg-[#f9fafb] p-4 text-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-medium capitalize">{c.capability}</span>
+                      <span className="text-xs uppercase tracking-[0.12em] text-[#667085]">
+                        {c.status === "operational"
+                          ? `via ${c.provider}`
+                          : c.status === "simulated"
+                            ? "simulated"
+                            : c.status === "detected_not_connected"
+                              ? `${c.detected} detected — not connected`
+                              : c.status === "not_connected"
+                                ? "not connected"
+                                : "not used"}
+                      </span>
+                    </div>
+                    {c.canDo.length > 0 && <p className="mt-2 text-[#027a48]">✓ {c.canDo.join(" · ")}</p>}
+                    {c.needed && c.cannotDo.length > 0 && <p className="mt-1 text-[#b42318]">✗ {c.cannotDo.join(" · ")}</p>}
+                    {c.unlock && <p className="mt-2 text-[#475467]">{c.unlock}</p>}
+                  </div>
+                ))}
+            </div>
+          </section>
+        )}
 
         {workspace && (
           <div className="grid gap-6 lg:grid-cols-[1.3fr_0.7fr]">

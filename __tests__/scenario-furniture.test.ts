@@ -24,10 +24,14 @@ describe("scenario: furniture store", () => {
 
     await handleCustomerMessage(graph, conv, customer, "I'll take the Harlow sofa.");
     await handleCustomerMessage(graph, conv, customer, "Taylor Reed");
-    const afterEmail = await handleCustomerMessage(graph, conv, customer, "taylor@example.com");
-    expect(afterEmail.turn.selectedAction?.name).toBe("checkInventory");
-
-    const buy = await handleCustomerMessage(graph, conv, customer, "Let's do it.");
+    // The customer already decided ("I'll take the Harlow sofa"): once the last
+    // detail arrives, BARRY checks real stock and sends the payment link in
+    // the same turn — the customer never has to say "continue".
+    const buy = await handleCustomerMessage(graph, conv, customer, "taylor@example.com");
+    expect(buy.turn.trace?.steps.map((s) => [s.action, s.trigger])).toEqual([
+      ["checkInventory", "customer"],
+      ["createPaymentRequest", "continuation"],
+    ]);
     expect(buy.turn.selectedAction?.name).toBe("createPaymentRequest");
     const paymentRequestId = (buy.turn.toolResult?.output as { paymentRequestId: string }).paymentRequestId;
 

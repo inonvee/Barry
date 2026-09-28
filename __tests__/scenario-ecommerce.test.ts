@@ -13,10 +13,10 @@ describe("scenario: ecommerce bag store", () => {
     expect(t1.state.selectedOfferId).toBe("offer-backpack");
     expect(t1.state.missingFields).toContain("email");
 
-    const t2 = await handleCustomerMessage(graph, conv, customer, "shopper@example.com");
-    expect(t2.turn.selectedAction?.name).toBe("checkInventory");
-
-    const t3 = await handleCustomerMessage(graph, conv, customer, "Great, let's do it.");
+    // "I'd like to buy" was the decision: with the email in hand, BARRY checks
+    // stock and sends the payment link in one turn.
+    const t3 = await handleCustomerMessage(graph, conv, customer, "shopper@example.com");
+    expect(t3.turn.trace?.steps.map((s) => s.action)).toEqual(["checkInventory", "createPaymentRequest"]);
     expect(t3.turn.selectedAction?.name).toBe("createPaymentRequest");
     const paymentRequestId = (t3.turn.toolResult?.output as { paymentRequestId: string }).paymentRequestId;
 

@@ -72,6 +72,9 @@ export class SupabaseConversationStore implements ConversationStore {
       response: t.response,
       stateAfter: t.state_after,
       reasoner: t.reasoner,
+      ...(t.trace ? { trace: t.trace } : {}),
+      ...(t.verification ? { verification: t.verification } : {}),
+      ...(t.compiled ? { compiled: t.compiled } : {}),
     }));
 
     const state = rowToState(convoRow, messages, turns);
@@ -143,23 +146,34 @@ export class SupabaseConversationStore implements ConversationStore {
 
     const newTurns = state.turns.slice(prev.turns);
     if (newTurns.length > 0) {
-      const { error } = await client.from("turn_logs").insert(
-        newTurns.map((t) => ({
-          id: t.id,
-          conversation_id: state.id,
-          at: t.at,
-          customer_message: t.customerMessage,
-          understood: t.understood,
-          retrieved: t.retrieved,
-          goal: t.goal ?? null,
-          selected_action: t.selectedAction ?? null,
-          policy_decision: t.policyDecision ?? null,
-          tool_result: t.toolResult ?? null,
-          response: t.response,
-          state_after: t.stateAfter,
-          reasoner: t.reasoner,
-        }))
-      );
+      const base = newTurns.map((t) => ({
+        id: t.id,
+        conversation_id: state.id,
+        at: t.at,
+        customer_message: t.customerMessage,
+        understood: t.understood,
+        retrieved: t.retrieved,
+        goal: t.goal ?? null,
+        selected_action: t.selectedAction ?? null,
+        policy_decision: t.policyDecision ?? null,
+        tool_result: t.toolResult ?? null,
+        response: t.response,
+        state_after: t.stateAfter,
+        reasoner: t.reasoner,
+      }));
+      // Explainability columns (migration 0011). Until 0011 is applied, the
+      // turn is still saved — only the explanation is dropped, loudly.
+      const explained = base.map((row, i) => ({
+        ...row,
+        trace: newTurns[i].trace ?? null,
+        verification: newTurns[i].verification ?? null,
+        compiled: newTurns[i].compiled ?? null,
+      }));
+      let { error } = await client.from("turn_logs").insert(explained);
+      if (error && isMissingColumnError(error)) {
+        console.error("[barry:store] turn_logs explainability columns missing — apply migration 0011", error.message);
+        ({ error } = await client.from("turn_logs").insert(base));
+      }
       if (error) throw new Error(`Failed to save turn logs for ${state.id}: ${error.message}`);
     }
 
@@ -177,4 +191,9 @@ export class SupabaseConversationStore implements ConversationStore {
     const states = await Promise.all((data ?? []).map((row) => this.get(row.id as string)));
     return states.filter((s): s is ConversationState => s !== undefined);
   }
+}
+
+/** PostgREST's "column not in schema cache" (the migration adding it isn't applied yet). */
+function isMissingColumnError(error: { code?: string; message?: string }): boolean {
+  return error.code === "PGRST204" || /column .* (does not exist|not find)|Could not find the '.*' column/i.test(error.message ?? "");
 }

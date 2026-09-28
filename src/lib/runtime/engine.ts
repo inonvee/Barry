@@ -9,7 +9,11 @@ import { getConversationStore } from "@/lib/state";
 import type { ConversationState, TurnLog } from "@/lib/state";
 import { getBackend } from "@/lib/store";
 import { formatLocalDateTime } from "@/lib/scheduling/resolver";
-import type { CustomerFacingLocalDisplay, GroundedContext, SchedulingDisplayFacts } from "@/lib/reasoner/types";
+import type { CustomerFacingLocalDisplay, GroundedContext, ReasonerContext, SchedulingDisplayFacts } from "@/lib/reasoner/types";
+import { resolveCapabilityProfiles, ACTION_REQUIREMENTS, type CapabilityProfiles } from "@/lib/capabilities";
+import type { TurnStep, TurnTrace } from "@/lib/state";
+import { CONSTITUTION_VERSION } from "@/lib/reasoner/constitution";
+import { BARRY_RUNTIME_VERSION, runtimeCommit } from "./version";
 import { getCatalogSchema, getCommerceProduct, getOwnedCart } from "@/lib/commerce/capability";
 import { sanitizeComposeInput } from "@/lib/reasoner/compose-sanitization";
 import { verifyIR } from "@/lib/reasoner/verify";
@@ -288,14 +292,18 @@ export async function handleCustomerMessage(
   const reasoner = getReasoner();
   const ctx: ToolContext = { graph, conversationId, customerId };
 
-  const grounded = await buildGroundedContext(graph, state, ctx);
+  const profiles = await resolveCapabilityProfiles(graph).catch((err) => {
+    console.error("[barry:engine] capability profiles unavailable", err instanceof Error ? err.message : err);
+    return undefined;
+  });
+  const grounded = await buildGroundedContext(graph, state, ctx, profiles);
   const rawIr = await reasoner.understand({ graph, state, customerMessage: message, grounded });
   // The model owns understanding; verifyIR() only GROUNDS it — evidence
   // for persisted facts, consistency with current state, structural
   // ranges. It never adds a semantic value of its own.
   const { verified: ir, verification } = verifyIR(graph, message, rawIr, state, { catalog: grounded?.catalog });
   const prevStage = state.stage;
-  let outcome = compile(graph, state, ir);
+  let outcome = compile(graph, state, ir, { profiles });
 
   state.detectedIntent = ir.intent;
   // Non-action outcomes describe where the conversation now is. An
@@ -303,53 +311,66 @@ export async function handleCustomerMessage(
   if (outcome.kind !== "action") state.stage = outcome.stage;
   state.missingFields = outcome.kind === "needs_info" ? outcome.missingFields : [];
 
-  let policyDecision: PolicyDecision | undefined;
-  let toolResult: ToolCallResult | null = null;
-  let response: string;
+  // ── Goal-driven operator loop ─────────────────────────────────────────
+  // The customer's message yields at most ONE customer-triggered action.
+  // After it succeeds, BARRY re-plans from real state alone (no new
+  // customer words) and keeps going while the next step toward the
+  // business goal is safe: state-derived, supported by a connected
+  // provider, enabled, policy-allowed, not already done this turn, and
+  // within a small step budget. It stops the moment a human is needed.
+  const steps: ExecutedStep[] = [];
+  let next: CompileOutcome | undefined;
+  let stop: TurnTrace["stop"] = { reason: "no_action", outcome: outcome.kind };
 
   if (outcome.kind === "action") {
-    const executed = await authorizeAndExecute(graph, state, outcome, ctx, prevStage);
-    policyDecision = executed.policyDecision;
-    toolResult = executed.toolResult;
-
-    // One bounded continuation: a provider-verified payment may unlock the
-    // next grounded step (e.g. creating the order) in the same turn.
-    if (outcome.action.name === "verifyPayment" && toolResult?.ok && state.knownFields[SCRATCH_KEYS.paid]) {
-      const next = compile(graph, state, CONTINUE_IR);
-      if (next.kind === "action") {
-        const stageBefore = state.stage;
-        const continued = await authorizeAndExecute(graph, state, next, ctx, stageBefore);
-        if (continued.toolResult || continued.policyDecision?.status !== "allowed") {
-          outcome = next;
-          policyDecision = continued.policyDecision;
-          toolResult = continued.toolResult;
-        }
+    let current: Extract<CompileOutcome, { kind: "action" }> = outcome;
+    let trigger: TurnStep["trigger"] = "customer";
+    for (;;) {
+      const step = await runStep(graph, state, current, ctx, trigger === "customer" ? prevStage : state.stage, trigger, profiles);
+      steps.push(step);
+      if (step.policyDecision.status !== "allowed") {
+        stop = { reason: step.policyDecision.status === "denied" ? "policy_denied" : "owner_approval_required", outcome: current.action.name };
+        break;
       }
+      if (!step.toolResult?.ok) {
+        stop = { reason: "tool_failed", outcome: current.action.name };
+        break;
+      }
+      if (steps.length >= MAX_STEPS_PER_TURN) {
+        stop = { reason: "step_budget", outcome: current.action.name };
+        break;
+      }
+      const candidate = compile(graph, state, CONTINUE_IR, { profiles });
+      if (candidate.kind !== "action") {
+        if (NEEDS_CUSTOMER_OUTCOMES.has(candidate.kind)) next = candidate;
+        stop = { reason: NEEDS_CUSTOMER_OUTCOMES.has(candidate.kind) ? "needs_customer" : "goal_idle", outcome: candidate.kind };
+        break;
+      }
+      const name = candidate.action.name;
+      if (CUSTOMER_CHOICE_ACTIONS.has(name) || steps.some((s) => s.outcome.action.name === name)) {
+        stop = { reason: "no_safe_next_step", outcome: name };
+        break;
+      }
+      if (decide(graph, { action: name, params: candidate.action.input }).status === "denied") {
+        stop = { reason: "next_step_not_enabled", outcome: name };
+        break;
+      }
+      current = candidate;
+      trigger = "continuation";
     }
-
-    if (policyDecision?.status === "denied") {
-      response = `I'm not able to do that: ${policyDecision.reason}`;
-    } else if (policyDecision?.status === "requires_approval") {
-      response = await reasoner.composeResponse(
-        { graph, state, customerMessage: message },
-        { outcome, toolResult: null, policyReason: policyDecision.reason }
-      );
-    } else {
-      const scheduling = buildSchedulingDisplay(graph, outcome, toolResult, message);
-      response = await reasoner.composeResponse(
-        { graph, state, customerMessage: message },
-        sanitizeComposeInput({ outcome, toolResult, scheduling })
-      );
-    }
-  } else {
-    const scheduling = buildSchedulingDisplay(graph, outcome, toolResult, message);
-    response = await reasoner.composeResponse(
-      { graph, state, customerMessage: message },
-      sanitizeComposeInput({ outcome, scheduling })
-    );
+    outcome = steps[steps.length - 1].outcome;
   }
 
-  const rich = buildRichPayload(outcome, toolResult);
+  if (next) {
+    state.stage = next.stage;
+    if (next.kind === "checkout_needs_info" || next.kind === "needs_info") state.missingFields = next.missingFields;
+  }
+
+  const last = steps[steps.length - 1];
+  const policyDecision: PolicyDecision | undefined = last?.policyDecision;
+  const toolResult: ToolCallResult | null = last?.toolResult ?? null;
+  const response = await composeTurn(reasoner, { graph, state, customerMessage: message }, outcome, steps, next, message);
+  const rich = mergeRich(steps.map((st) => buildRichPayload(st.outcome, st.toolResult)));
   state.messages.push({ role: "barry", content: response, at: new Date().toISOString(), ...(rich ? { rich } : {}) });
 
   const knowledgeIds = knowledgeSearch(graph, message).map((k) => k.id);
@@ -382,6 +403,18 @@ export async function handleCustomerMessage(
     response,
     stateAfter: { stage: state.stage, selectedOfferId: state.selectedOfferId, outcome: state.outcome },
     reasoner: reasoner.name,
+    trace: {
+      runtime: {
+        barryVersion: BARRY_RUNTIME_VERSION,
+        commit: runtimeCommit(),
+        constitutionVersion: CONSTITUTION_VERSION,
+        reasoner: reasoner.name,
+        model: reasoner.model ?? null,
+      },
+      rejectedClaims: verification.rejected.map((r) => ({ claim: r.claim, reason: r.reason })),
+      steps: steps.map((st) => st.trace),
+      stop,
+    },
   };
   state.turns.push(turn);
 
@@ -394,12 +427,17 @@ export async function handleCustomerMessage(
  * the model resolves "the first one" against exactly this, and BARRY maps
  * the position back to the real id. Read-only; failures just omit it.
  */
-async function buildGroundedContext(graph: BusinessGraph, state: ConversationState, ctx: ToolContext): Promise<GroundedContext | undefined> {
+async function buildGroundedContext(
+  graph: BusinessGraph,
+  state: ConversationState,
+  ctx: ToolContext,
+  profiles?: CapabilityProfiles
+): Promise<GroundedContext | undefined> {
   const lastIds = state.knownFields[SCRATCH_KEYS.commerceLastProductIds]?.split(",").filter(Boolean) ?? [];
   const cartId = state.knownFields[SCRATCH_KEYS.commerceCartId];
   const canSearch = isActionAvailable(graph, "searchProducts");
-  if (lastIds.length === 0 && !cartId && !canSearch) return undefined;
-  const grounded: GroundedContext = {};
+  if (lastIds.length === 0 && !cartId && !canSearch && !profiles) return undefined;
+  const grounded: GroundedContext = { profiles };
   if (canSearch) {
     try {
       grounded.catalog = await getCatalogSchema(graph);
@@ -430,6 +468,104 @@ async function buildGroundedContext(graph: BusinessGraph, state: ConversationSta
 }
 
 const CONTINUE_IR: BarryIR = { intent: "continue", entities: {}, constraints: {}, customerInfo: {} };
+
+/** Hard ceiling on actions per customer message — the loop is bounded no matter what state says. */
+export const MAX_STEPS_PER_TURN = 4;
+/** Actions that express a customer's choice: never taken on the customer's behalf. */
+const CUSTOMER_CHOICE_ACTIONS = new Set(["addToCart", "updateCartLine", "searchProducts", "requestApproval"]);
+/** After a chain, these tell the customer the one thing still needed; others are left unsaid. */
+const NEEDS_CUSTOMER_OUTCOMES = new Set<CompileOutcome["kind"]>(["checkout_needs_info", "needs_info", "capability_unavailable", "confirm_purchase"]);
+
+type ExecutedStep = {
+  outcome: Extract<CompileOutcome, { kind: "action" }>;
+  policyDecision: PolicyDecision;
+  toolResult: ToolCallResult | null;
+  trace: TurnStep;
+};
+
+/** Policy -> tool -> state for one action, recorded for audit (key names only — no customer values). */
+async function runStep(
+  graph: BusinessGraph,
+  state: ConversationState,
+  outcome: Extract<CompileOutcome, { kind: "action" }>,
+  ctx: ToolContext,
+  restoreStage: ConversationState["stage"],
+  trigger: TurnStep["trigger"],
+  profiles: CapabilityProfiles | undefined
+): Promise<ExecutedStep> {
+  const before = { ...state.knownFields };
+  const stageBefore = state.stage;
+  const { policyDecision, toolResult } = await authorizeAndExecute(graph, state, outcome, ctx, restoreStage);
+  const after = state.knownFields;
+  const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((k) => before[k] !== after[k]).sort();
+  const capabilities = (ACTION_REQUIREMENTS[outcome.action.name] ?? []).map((r) => ({
+    capability: r.capability,
+    provider: profiles?.[r.capability]?.provider ?? null,
+  }));
+  return {
+    outcome,
+    policyDecision,
+    toolResult,
+    trace: {
+      trigger,
+      action: outcome.action.name,
+      capabilities,
+      policy: { status: policyDecision.status, reason: policyDecision.reason, ...(policyDecision.policyId ? { policyId: policyDecision.policyId } : {}) },
+      result: toolResult ? (toolResult.ok ? { ok: true } : { ok: false, error: toolResult.error }) : null,
+      stageBefore,
+      stageAfter: state.stage,
+      stateKeysChanged: changed,
+    },
+  };
+}
+
+/** One reply for everything that happened this turn, in order, plus the single thing still needed. */
+async function composeTurn(
+  reasoner: ReturnType<typeof getReasoner>,
+  rctx: ReasonerContext,
+  outcome: CompileOutcome,
+  steps: ExecutedStep[],
+  next: CompileOutcome | undefined,
+  message: string
+): Promise<string> {
+  const graph = rctx.graph;
+  const last = steps[steps.length - 1];
+  if (steps.length <= 1 && !next) {
+    if (last?.policyDecision.status === "denied") return `I'm not able to do that: ${last.policyDecision.reason}`;
+    if (last?.policyDecision.status === "requires_approval") {
+      return reasoner.composeResponse(rctx, { outcome, toolResult: null, policyReason: last.policyDecision.reason });
+    }
+    const scheduling = buildSchedulingDisplay(graph, outcome, last?.toolResult ?? null, message);
+    return reasoner.composeResponse(rctx, sanitizeComposeInput({ outcome, toolResult: last?.toolResult ?? null, scheduling }));
+  }
+  const scheduling = buildSchedulingDisplay(graph, outcome, last?.toolResult ?? null, message);
+  return reasoner.composeResponse(
+    rctx,
+    sanitizeComposeInput({
+      outcome,
+      toolResult: last?.toolResult ?? null,
+      policyReason: last?.policyDecision.status === "requires_approval" ? last.policyDecision.reason : undefined,
+      scheduling,
+      steps: steps.map((st) => ({
+        outcome: st.outcome,
+        toolResult: st.toolResult,
+        policyReason: st.policyDecision.status !== "allowed" ? st.policyDecision.reason : undefined,
+      })),
+      next,
+    })
+  );
+}
+
+function mergeRich(parts: (NormalizedOutboundMessage["rich"] | undefined)[]): NormalizedOutboundMessage["rich"] | undefined {
+  const merged: NonNullable<NormalizedOutboundMessage["rich"]> = {};
+  for (const part of parts) {
+    if (!part) continue;
+    if (part.products) merged.products = part.products;
+    if (part.paymentUrl) merged.paymentUrl = part.paymentUrl;
+    if (part.media) merged.media = part.media;
+  }
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
 
 /**
  * Policy -> tool -> state, for one compiled action. The ONLY path by

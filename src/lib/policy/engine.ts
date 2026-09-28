@@ -57,6 +57,21 @@ export function decide(graph: BusinessGraph, request: ActionRequest): PolicyDeci
       return { status: "allowed", reason: "Booking creation is permitted automatically." };
     }
 
+    case "createCommerceCheckout": {
+      // A checkout sends a payment link for the cart's real total (read from
+      // the provider result BARRY holds, and re-verified by the tool).
+      const amount = (request.params as { amount?: number }).amount;
+      const maxAmount = getPolicy(graph, "max_auto_payment_amount");
+      if (maxAmount && typeof amount === "number" && amount > maxAmount.value) {
+        return {
+          status: "requires_approval",
+          reason: `Order total ${amount} exceeds automatic limit of ${maxAmount.value}.`,
+          policyId: "max_auto_payment_amount",
+        };
+      }
+      return { status: "allowed", reason: "Checkout within the automatic payment limit." };
+    }
+
     case "createPaymentRequest": {
       const params = request.params as { amount: number; discountPct?: number; isCustomPrice?: boolean };
 

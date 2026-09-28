@@ -63,6 +63,7 @@ const CUSTOMER_SAFE_TOOL_ERRORS = new Set<string>([
   "Cart is empty",
   "Cart changed after payment",
   "That item is no longer available",
+  "Your cart changed — please review it before checkout",
 ]);
 
 const GENERIC_TOOL_ERROR = "Something went wrong on our end — could we try that again in a moment?";

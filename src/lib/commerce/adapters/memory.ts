@@ -38,6 +38,10 @@ function valueMatches(value: unknown, wanted: string): boolean {
 
 export class MemoryCommerceAdapter implements CommerceAdapter {
   readonly name = "memory" as const;
+  /** This adapter implements BARRY's full commerce contract. */
+  async describeCapabilities(): Promise<readonly string[]> {
+    return ["catalogSearch", "catalogSchema", "variants", "liveInventory", "cart", "checkout", "orders", "orderStatus"];
+  }
   private readonly carts = new Map<string, Cart>();
   private readonly orders = new Map<string, Order>();
 

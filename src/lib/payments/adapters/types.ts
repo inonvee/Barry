@@ -58,6 +58,8 @@ export type PaymentWebhookHeaders = Record<string, string | string[] | undefined
 
 export interface PaymentAdapter {
   readonly name: PaymentProvider;
+  /** Operations of its capability this adapter really supports (see lib/capabilities). */
+  describeCapabilities?(): Promise<readonly string[]>;
   createPaymentLink(input: CreatePaymentLinkInput): Promise<ProviderPayment>;
   getPaymentStatus(ref: PaymentStatusRef): Promise<ProviderPayment | undefined>;
   verifyWebhook(rawBody: string, headers: PaymentWebhookHeaders): Promise<VerifiedPaymentWebhook>;

@@ -68,6 +68,10 @@ function firstTransaction(json: Record<string, unknown>): Record<string, unknown
 
 export class PayPlusPaymentAdapter implements PaymentAdapter {
   readonly name = "payplus" as const;
+  /** What BARRY's adapter implements for this provider (not everything the vendor offers — e.g. refunds are not wired yet). */
+  async describeCapabilities(): Promise<readonly string[]> {
+    return ["paymentLinks", "statusLookup", "webhookVerification"];
+  }
   private readonly apiKey: string;
   private readonly secretKey: string;
   private readonly paymentPageUid: string;
