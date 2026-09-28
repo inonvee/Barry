@@ -29,6 +29,7 @@ export const SCRATCH_KEYS = {
   lastSchedulingDate: "__lastSchedulingDate",
   commerceLastProductIds: "__commerceLastProductIds",
   commercePendingProductId: "__commercePendingProductId",
+  commercePendingReplaceLineId: "__commercePendingReplaceLineId",
   commerceCartId: "__commerceCartId",
   commerceCartLineId: "__commerceCartLineId",
   commerceCartTotal: "__commerceCartTotal",
@@ -73,9 +74,30 @@ function compileCommerce(ir: BarryIR, known: Record<string, string>): CompileOut
         productId = known[SCRATCH_KEYS.commercePendingProductId] ?? (lastIds.length === 1 ? lastIds[0] : undefined);
         if (!productId) return { kind: "clarify_reference", available: lastIds.length, stage: "offer_selection" };
       }
+      // Completing a swap that was waiting on a variant choice.
+      const pendingReplace =
+        !commerce.reference && productId === known[SCRATCH_KEYS.commercePendingProductId] ? known[SCRATCH_KEYS.commercePendingReplaceLineId] : undefined;
       return finalizeAction(
         "addToCart",
-        { productId, options: commerce.variant, quantity: commerce.quantity ?? 1 },
+        {
+          productId,
+          options: commerce.variant,
+          quantity: commerce.quantity ?? 1,
+          ...(pendingReplace && cartId ? { replaceLine: { cartId, lineId: pendingReplace } } : {}),
+        },
+        "offer_selection",
+        "completePurchase"
+      );
+    }
+
+    case "replace": {
+      // Without an item in the cart there is nothing to replace: it is a plain selection.
+      if (!cartId || !lineId) return compileCommerce({ ...ir, commerce: { ...commerce, intent: "select" } }, known);
+      const productId = commerce.reference?.type === "previous_result" ? lastIds[commerce.reference.index] : undefined;
+      if (!productId) return { kind: "clarify_reference", available: lastIds.length, stage: "offer_selection" };
+      return finalizeAction(
+        "addToCart",
+        { productId, options: commerce.variant, quantity: commerce.quantity ?? 1, replaceLine: { cartId, lineId } },
         "offer_selection",
         "completePurchase"
       );
@@ -84,6 +106,11 @@ function compileCommerce(ir: BarryIR, known: Record<string, string>): CompileOut
     case "change_variant":
     case "change_quantity":
     case "remove": {
+      // BARRY just asked which option the customer wants for a pending
+      // item; an option named without pointing at a cart line answers it.
+      if (commerce.intent === "change_variant" && known[SCRATCH_KEYS.commercePendingProductId] && commerce.reference?.type !== "cart_line") {
+        return compileCommerce({ ...ir, commerce: { ...commerce, intent: "select", reference: undefined } }, known);
+      }
       if (!cartId || !lineId) {
         // Nothing in the cart yet: a variant choice completes a pending selection.
         if (commerce.intent === "change_variant" && (known[SCRATCH_KEYS.commercePendingProductId] || lastIds.length === 1)) {

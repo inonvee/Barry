@@ -94,7 +94,7 @@ export function mockCommerceSemantics(
 
   if (CHANGE_VERB.test(text)) {
     if (index !== undefined && context.hasPreviousResults) {
-      return { intent: "select", reference: { type: "previous_result", index }, variant };
+      return { intent: context.hasCart ? "replace" : "select", reference: { type: "previous_result", index }, variant };
     }
     if (variant && context.hasCart) return { intent: "change_variant", reference: { type: "cart_line", index: 0 }, variant };
     if (variant && context.hasPreviousResults) return { intent: "select", variant };
@@ -102,11 +102,20 @@ export function mockCommerceSemantics(
 
   // An explicit "I'll take the Nth" is a selection whether or not anything
   // was shown — grounding the reference is BARRY's job, not understanding's.
+  // With something already in the cart, naming another result means
+  // "that one instead" unless the customer says they want it as well.
+  const alsoAdd = /\b(also|too|as well|another|both)\b|גם|עוד/i.test(text);
+  if (index !== undefined && context.hasCart && context.hasPreviousResults && !alsoAdd) {
+    return { intent: "replace", reference: { type: "previous_result", index }, variant };
+  }
   if (index !== undefined && (SELECT_VERB.test(text) || (context.hasPreviousResults && text.trim().split(/\s+/).length <= 4))) {
     return { intent: "select", reference: { type: "previous_result", index }, variant };
   }
 
-  if (SELECT_VERB.test(text) && context.hasPreviousResults && /\b(it|this one|that one)\b|אותה|אותו/i.test(text)) {
+  const pronoun = /\b(it|this one|that one)\b|אותה|אותו/i.test(text);
+  // "put it in M" with a cart item: that item changes.
+  if (pronoun && variant && context.hasCart) return { intent: "change_variant", reference: { type: "cart_line", index: 0 }, variant };
+  if (SELECT_VERB.test(text) && context.hasPreviousResults && pronoun) {
     return { intent: "select", reference: { type: "previous_result", index: 0 }, variant };
   }
 

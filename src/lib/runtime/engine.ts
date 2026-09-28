@@ -72,6 +72,7 @@ async function patchStateAfterTool(state: ConversationState, toolName: string, o
       if (products.length > 0) {
         known[SCRATCH_KEYS.commerceLastProductIds] = products.map((product) => product.id).join(",");
         delete known[SCRATCH_KEYS.commercePendingProductId];
+        delete known[SCRATCH_KEYS.commercePendingReplaceLineId];
       }
       break;
     }
@@ -81,14 +82,19 @@ async function patchStateAfterTool(state: ConversationState, toolName: string, o
         added: boolean;
         cart?: { id: string; total: { amount: number; currency: string }; lines: unknown[] };
         lineId?: string;
-        notAdded?: { productId: string };
+        notAdded?: { productId: string; replacesLineId?: string };
       };
       if (!result.added) {
-        if (toolName === "addToCart" && result.notAdded) known[SCRATCH_KEYS.commercePendingProductId] = result.notAdded.productId;
+        if (toolName === "addToCart" && result.notAdded) {
+          known[SCRATCH_KEYS.commercePendingProductId] = result.notAdded.productId;
+          if (result.notAdded.replacesLineId) known[SCRATCH_KEYS.commercePendingReplaceLineId] = result.notAdded.replacesLineId;
+          else delete known[SCRATCH_KEYS.commercePendingReplaceLineId];
+        }
         state.stage = prevStage;
         break;
       }
       delete known[SCRATCH_KEYS.commercePendingProductId];
+      delete known[SCRATCH_KEYS.commercePendingReplaceLineId];
       if (result.cart) {
         known[SCRATCH_KEYS.commerceCartId] = result.cart.id;
         known[SCRATCH_KEYS.commerceCartTotal] = JSON.stringify(result.cart.total);

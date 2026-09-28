@@ -9,6 +9,12 @@ export { MockReasoner } from "./mock-reasoner";
 export { OpenAIReasoner } from "./openai-reasoner";
 
 let singleton: Reasoner | undefined;
+let testOverride: Reasoner | undefined;
+
+/** Test-only: run the real pipeline with a scripted/live model in place of the configured one. */
+export function setReasonerForTests(reasoner: Reasoner | undefined): void {
+  testOverride = reasoner;
+}
 
 /**
  * Reasoner selection point. Set BARRY_REASONER=openai (with OPENAI_API_KEY)
@@ -21,6 +27,7 @@ let singleton: Reasoner | undefined;
  * Misconfiguration throws loudly instead.
  */
 export function getReasoner(): Reasoner {
+  if (testOverride) return testOverride;
   if (singleton) return singleton;
 
   const configuredForOpenAI = process.env.BARRY_REASONER === "openai";

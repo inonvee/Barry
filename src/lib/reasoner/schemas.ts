@@ -56,7 +56,7 @@ export type LlmSchedulingWindow = z.infer<typeof LlmSchedulingWindowSchema>;
  * already showed — the model never supplies a product id.
  */
 export const LlmCommerceSchema = z.object({
-  intent: z.enum(["search", "select", "change_variant", "change_quantity", "remove", "checkout", "negotiate_price"]),
+  intent: z.enum(["search", "select", "replace", "change_variant", "change_quantity", "remove", "checkout", "negotiate_price"]),
   queryText: z.string().nullable(),
   category: z.string().nullable(),
   attributes: z.array(KeyValuePairSchema),
@@ -180,7 +180,7 @@ export function irJsonSchema() {
           type: ["object", "null"],
           additionalProperties: false,
           properties: {
-            intent: { type: "string", enum: ["search", "select", "change_variant", "change_quantity", "remove", "checkout", "negotiate_price"] },
+            intent: { type: "string", enum: ["search", "select", "replace", "change_variant", "change_quantity", "remove", "checkout", "negotiate_price"] },
             queryText: { type: ["string", "null"] },
             category: { type: ["string", "null"] },
             attributes: { type: "array", items: kvSchema() },

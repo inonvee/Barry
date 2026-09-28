@@ -180,6 +180,8 @@ const notAddedSchema = z.object({
   productTitle: z.string(),
   requested: optionsSchema.optional(),
   availableOptions: z.array(optionsSchema),
+  /** Set when this was a swap: the line that should be replaced once a variant is chosen. */
+  replacesLineId: z.string().optional(),
 });
 
 export const searchProducts = defineTool({
@@ -213,14 +215,23 @@ export const addToCart = defineTool({
     productId: z.string(),
     options: optionsSchema.optional(),
     quantity: z.number().int().positive().default(1),
+    /** Swap: remove this existing line once the new item is safely in the cart. */
+    replaceLine: z.object({ cartId: z.string(), lineId: z.string() }).optional(),
   }),
   outputSchema: z.object({
     added: z.boolean(),
     cart: cartSchema.optional(),
     lineId: z.string().optional(),
+    replacedLineId: z.string().optional(),
     notAdded: notAddedSchema.optional(),
   }),
   async execute(input, ctx) {
+    const scope = { graph: ctx.graph, customerId: ctx.customerId, conversationId: ctx.conversationId };
+    if (input.replaceLine) {
+      // Prove the line being replaced is this conversation's before touching anything.
+      const current = await getOwnedCart(scope, input.replaceLine.cartId);
+      if (!current.lines.some((l) => l.id === input.replaceLine!.lineId)) throw new Error("Cart line not found");
+    }
     const product = await getCommerceProduct(ctx.graph, input.productId);
     if (!product) throw new Error("That item is no longer available");
     const resolution = resolveVariant(product, input.options, input.quantity);
@@ -233,6 +244,7 @@ export const addToCart = defineTool({
           productTitle: product.title,
           requested: input.options,
           availableOptions: resolution.availableOptions,
+          ...(input.replaceLine ? { replacesLineId: input.replaceLine.lineId } : {}),
         },
       };
     }
@@ -245,6 +257,12 @@ export const addToCart = defineTool({
       quantity: input.quantity,
     });
     const line = cart.lines.find((cartLine) => cartLine.variantId === resolution.variant.id);
+    // Add first, then remove the replaced line: if the add fails, the
+    // customer's existing item is untouched.
+    if (input.replaceLine && line && line.id !== input.replaceLine.lineId && cart.lines.some((l) => l.id === input.replaceLine!.lineId)) {
+      const swapped = await setCommerceLineQuantity({ ...scope, cartId: cart.id, lineId: input.replaceLine.lineId, quantity: 0 });
+      return { added: true, cart: swapped, lineId: line.id, replacedLineId: input.replaceLine.lineId };
+    }
     return { added: true, cart, lineId: line?.id };
   },
 });

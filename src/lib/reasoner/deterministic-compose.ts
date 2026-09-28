@@ -172,7 +172,11 @@ export function composeDeterministic(input: ComposeResponseInput): string {
           const what = line ? `${line.title}${Object.keys(line.options).length ? ` (${Object.values(line.options).join(" / ")})` : ""}` : "your cart";
           if (!output.cart) return "Done.";
           const total = `Cart total is ${output.cart.total.amount} ${output.cart.total.currency}.`;
-          if (outcome.action.name === "addToCart") return `Added ${what} to your cart. ${total}`;
+          if (outcome.action.name === "addToCart") {
+            return (output as { replacedLineId?: string }).replacedLineId
+              ? `Swapped your item for ${what}. ${total}`
+              : `Added ${what} to your cart. ${total}`;
+          }
           return line ? `Updated your cart: ${what}. ${total}` : `Removed the item from your cart. ${total}`;
         }
         case "createCommerceCheckout": {

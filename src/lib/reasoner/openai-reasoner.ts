@@ -105,6 +105,8 @@ function buildUnderstandingContext(ctx: ReasonerContext) {
     awaitingSlotConfirmation: Boolean(state.knownFields.__offeredSlotStart && !state.knownFields.__slotAccepted),
     openPaymentRequest: Boolean(state.knownFields.__paymentRequestId && !state.knownFields.__paid),
     shownResults: ctx.grounded?.shownResults ?? [],
+    // BARRY just asked which option the customer wants for this shown item.
+    awaitingVariantChoiceForProductId: state.knownFields.__commercePendingProductId ?? null,
     cart: ctx.grounded?.cart ?? [],
     cartTotal: ctx.grounded?.cartTotal ?? null,
     recentMessages,
@@ -119,7 +121,8 @@ YOUR TASK NOW: understand the customer's latest message in context and describe 
 - commerce (null unless the business has commerce capabilities and the message is about products):
   - search: describe what they want (queryText in their words, category/attributes/budget if stated; variant for option requirements such as size).
   - select: they chose something BARRY already showed. Use referenceType "previous_result" + referenceIndex (0-based position in shownResults). Put requested options in variant (e.g. size -> "M"). Never invent an index outside shownResults.
-  - change_variant / change_quantity / remove: they changed an item in the cart (referenceType "cart_line").
+  - replace: the cart already has an item and they want a DIFFERENT shown result instead of it ("actually switch to the first one"). referenceType "previous_result" + referenceIndex for the new item; variant if stated.
+  - change_variant / change_quantity / remove: they changed an item in the cart (referenceType "cart_line"). If awaitingVariantChoiceForProductId is set and they just name an option ("M"), that answers BARRY's question: use select with that variant and no reference.
   - checkout: they want to pay / complete the purchase.
   - negotiate_price: they ask for a different price (requestedPriceAmount).
 - customerInfo: ONLY identity/contact details the customer states about THEMSELVES in this message (name, phone, email, ...). For each one, add an evidence pair { key: "customerInfo.<field>", value: <exact quote from the message> }. A verb, a product, a relationship word ("my wife") or anything that isn't their own name is never a name. Omit fields not given this turn — never use placeholder values.

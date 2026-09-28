@@ -51,7 +51,12 @@ export type SemanticReference =
  * business's catalog uses. BARRY resolves them against real variants.
  */
 export type CommerceSemantics = {
-  intent: "search" | "select" | "change_variant" | "change_quantity" | "remove" | "checkout" | "negotiate_price";
+  /**
+   * `replace` = swap the item already in the cart for another shown
+   * result ("actually, switch to the first one"): `reference` names the
+   * new item; the current cart line is replaced on the provider.
+   */
+  intent: "search" | "select" | "replace" | "change_variant" | "change_quantity" | "remove" | "checkout" | "negotiate_price";
   query?: {
     text?: string;
     category?: string;
