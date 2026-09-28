@@ -41,3 +41,19 @@ export function normalizeCustomerFieldValue(value: string): string | undefined {
   if (SENTINEL_VALUES.has(trimmed.toLowerCase())) return undefined;
   return value;
 }
+
+export function isValidPhoneValue(value: string): boolean {
+  const trimmed = value.trim();
+  const digits = trimmed.replace(/\D/g, "");
+  if (digits.length < 9 || digits.length > 15) return false;
+  if (/^0+$/.test(digits)) return false;
+  if (trimmed.includes("+") && !trimmed.startsWith("+")) return false;
+  return true;
+}
+
+export function normalizeCustomerInfoField(key: string, value: string): string | undefined {
+  const normalized = normalizeCustomerFieldValue(value);
+  if (normalized === undefined) return undefined;
+  if (key.toLowerCase() === "phone" && !isValidPhoneValue(normalized)) return undefined;
+  return normalized;
+}

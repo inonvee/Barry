@@ -2,7 +2,7 @@ import type { BusinessGraph, Goal, Offer } from "@/lib/business-graph";
 import { findOffer } from "@/lib/business-graph";
 import { getTool } from "@/lib/tools";
 import type { BarryIR, CompileDebugInfo, CompileOutcome, OfferFact } from "@/lib/reasoner/ir";
-import { normalizeCustomerFieldValue } from "@/lib/reasoner/customer-fields";
+import { normalizeCustomerInfoField } from "@/lib/reasoner/customer-fields";
 import type { ConversationStage, ConversationState } from "@/lib/state";
 import { resolveSchedulingWindow } from "@/lib/scheduling/resolver";
 
@@ -180,7 +180,7 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
   // Live bug: a strict-JSON-schema Reasoner sometimes literalizes a
   // sentinel string ("null", "undefined", ...) in place of actually
   // omitting a key/value pair it has nothing new to report for.
-  // normalizeCustomerFieldValue() rejects those (and empty/whitespace
+  // normalizeCustomerInfoField() rejects those (and empty/whitespace
   // values) BEFORE they ever reach persistent state — an empty/sentinel
   // value must never overwrite a real one already on file. This is the
   // ONE place ANY reasoner's customer-info values are trusted from, and
@@ -189,7 +189,7 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
   const appliedCustomerInfo: Record<string, string> = {};
   for (const [key, rawValue] of Object.entries(ir.customerInfo)) {
     if (key.startsWith("__")) continue;
-    const value = normalizeCustomerFieldValue(rawValue);
+    const value = normalizeCustomerInfoField(key, rawValue);
     if (value !== undefined) appliedCustomerInfo[key] = value;
   }
   debug.appliedCustomerInfo = appliedCustomerInfo;

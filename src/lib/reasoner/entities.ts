@@ -1,5 +1,6 @@
 import type { BusinessGraph, Offer } from "@/lib/business-graph";
 import type { SchedulingConstraint } from "@/lib/scheduling/resolver";
+import { isValidPhoneValue } from "./customer-fields";
 
 const STOPWORDS = new Set([
   "the", "and", "for", "any", "are", "can", "you", "that", "this", "with",
@@ -340,7 +341,7 @@ export function extractAnnouncedName(message: string): string | undefined {
 
 /** Extract an explicit phone number — a mostly-digit token at least 8 characters long. Unambiguous by construction: the regex only matches contiguous digit/space/hyphen runs, so it can't accidentally span unrelated words. */
 export function extractExplicitPhone(message: string): string | undefined {
-  return message.match(/\+?\d[\d\s-]{6,}\d/)?.[0];
+  return [...message.matchAll(/\+?\d[\d\s-]{6,}\d/g)].map((match) => match[0]).find(isValidPhoneValue);
 }
 
 /** Extract an explicit email address — unambiguous by construction (requires an "@" and a domain). */

@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { buildSpaGraph } from "@/lib/fixtures/spa";
+import { buildPersonalTrainerGraph } from "@/lib/fixtures/personal-trainer";
 import { callTool } from "@/lib/tools";
 import { formatLocalDateTime } from "@/lib/scheduling/resolver";
-import { sanitizeOutcomeForCompose } from "@/lib/reasoner/openai-reasoner";
+import { enforceComposeGrounding, sanitizeOutcomeForCompose } from "@/lib/reasoner/openai-reasoner";
+import { createInitialConversationState } from "@/lib/state";
+import type { ComposeResponseInput } from "@/lib/reasoner/types";
 import { runScenario, assertDoesNotAskFor } from "./support/eval-harness";
 
 /**
@@ -63,6 +66,43 @@ describe("Response grounding: never claims to still be checking something a tool
     });
     const response = turns[0].response.toLowerCase();
     expect(response).not.toMatch(/i'?ll check|i will check|get back to you|look into it/);
+  });
+
+  it("checkAvailability success cannot surface booking-success language, but createBooking success can", () => {
+    const graph = buildPersonalTrainerGraph();
+    const schedulingState = createInitialConversationState("grounding-check", graph.business.id, "cust-grounding");
+    const availabilityInput: ComposeResponseInput = {
+      outcome: { kind: "action", action: { name: "checkAvailability", input: {} }, stage: "scheduling" },
+      toolResult: { ok: true, output: { slots: [{ resourceId: "trainer-riley" }] } },
+      scheduling: {
+        availableSlots: [{ localDate: "October 8, 2026", localTime: "12:00 PM", timeZone: "America/Denver" }],
+      },
+    };
+
+    const guarded = enforceComposeGrounding(
+      "I've successfully booked your appointment for Thursday at 12pm.",
+      { graph, state: schedulingState, customerMessage: "Thursday 12pm" },
+      availabilityInput
+    );
+
+    expect(guarded.toLowerCase()).not.toMatch(/successfully booked|booked|reserved|confirmed appointment/);
+    expect(guarded).toContain("12:00 PM");
+
+    const bookedState = createInitialConversationState("grounding-booked", graph.business.id, "cust-booked");
+    bookedState.stage = "closed";
+    bookedState.outcome = "won";
+    const bookingInput: ComposeResponseInput = {
+      outcome: { kind: "action", action: { name: "createBooking", input: {} }, stage: "confirmation" },
+      toolResult: { ok: true, output: { bookingId: "booking-123", status: "confirmed" } },
+    };
+
+    const allowed = enforceComposeGrounding(
+      "I've successfully booked your appointment for Thursday at 12pm.",
+      { graph, state: bookedState, customerMessage: "Yes" },
+      bookingInput
+    );
+
+    expect(allowed.toLowerCase()).toMatch(/successfully booked/);
   });
 });
 

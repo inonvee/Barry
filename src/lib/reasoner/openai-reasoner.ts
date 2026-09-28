@@ -234,7 +234,38 @@ export type ParseIRResult = { ok: true; ir: BarryIR } | { ok: false; kind: "json
 export type ComposeSummaryContext = {
   businessTone: unknown;
   lastCustomerMessage: string;
+  responseStatus?: ComposeResponseStatus;
 };
+
+type ComposeResponseStatus =
+  | "booking_confirmed"
+  | "availability_checked"
+  | "booking_failed"
+  | "tool_failed"
+  | "other";
+
+const BOOKING_SUCCESS_LANGUAGE =
+  /\b(successfully\s+booked|booked|reserved|reservation\s+confirmed|booking\s+confirmed|confirmed\s+(?:your\s+)?appointment|appointment\s+(?:is\s+)?confirmed)\b/i;
+
+function composeResponseStatus(ctx: ReasonerContext, input: ComposeResponseInput): ComposeResponseStatus {
+  const { outcome, toolResult } = input;
+  if (outcome.kind !== "action") return "other";
+  if (outcome.action.name === "createBooking") {
+    if (toolResult?.ok && ctx.state.stage === "closed" && ctx.state.outcome === "won") return "booking_confirmed";
+    return toolResult?.ok ? "other" : "booking_failed";
+  }
+  if (outcome.action.name === "checkAvailability" && toolResult?.ok) return "availability_checked";
+  if (toolResult && !toolResult.ok) return "tool_failed";
+  return "other";
+}
+
+export function enforceComposeGrounding(text: string, ctx: ReasonerContext, input: ComposeResponseInput): string {
+  const status = composeResponseStatus(ctx, input);
+  if (status !== "booking_confirmed" && BOOKING_SUCCESS_LANGUAGE.test(text)) {
+    return composeDeterministic(input);
+  }
+  return text;
+}
 
 export function buildComposeSummary(context: ComposeSummaryContext, input: ComposeResponseInput) {
   const sanitizedInput = sanitizeComposeInput(input);
@@ -246,6 +277,7 @@ export function buildComposeSummary(context: ComposeSummaryContext, input: Compo
     toolSucceeded: sanitizedInput.toolResult?.ok ?? null,
     toolOutput: sanitizedInput.toolResult?.ok ? sanitizedInput.toolResult.output : undefined,
     toolError: sanitizedInput.toolResult && !sanitizedInput.toolResult.ok ? sanitizedInput.toolResult.error : undefined,
+    responseStatus: context.responseStatus ?? "other",
     // Pre-computed, business-timezone-local display facts for any
     // scheduling instant this turn — the ONLY source of truth for
     // "what time is that for the customer." Never present when there's
@@ -348,7 +380,10 @@ export class OpenAIReasoner implements Reasoner {
   async composeResponse(ctx: ReasonerContext, input: ComposeResponseInput): Promise<string> {
     const lastCustomerMessage = ctx.state.messages.filter((m) => m.role === "customer").at(-1)?.content ?? "";
 
-    const summary = buildComposeSummary({ businessTone: ctx.graph.business.tone, lastCustomerMessage }, input);
+    const summary = buildComposeSummary(
+      { businessTone: ctx.graph.business.tone, lastCustomerMessage, responseStatus: composeResponseStatus(ctx, input) },
+      input
+    );
 
     try {
       const completion = await this.client.chat.completions.create({
@@ -360,7 +395,7 @@ export class OpenAIReasoner implements Reasoner {
         temperature: 0.4,
       });
       const text = completion.choices[0]?.message?.content?.trim();
-      if (text) return text;
+      if (text) return enforceComposeGrounding(text, ctx, input);
       logReasonerFailure("openai_api_error", { message: "empty completion content during composeResponse" });
     } catch (err) {
       logReasonerFailure("openai_api_error", {
