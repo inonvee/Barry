@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import type { LearnedFactClassification } from "@/lib/store";
 import { BARRY_CONSTITUTION } from "@/lib/reasoner/constitution";
+import { createCompletion, modelFor, samplingParams } from "@/lib/reasoner/model-config";
 import type { SourceDocument } from "./document";
 
 /**
@@ -165,11 +166,11 @@ export class OpenAIBusinessLearner implements BusinessLearner {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) throw new Error("OPENAI_API_KEY is not set — cannot construct OpenAIBusinessLearner.");
     this.client = new OpenAI({ apiKey });
-    this.model = process.env.BARRY_MODEL || "gpt-4o-mini";
+    this.model = modelFor("learner");
   }
 
   async extract(doc: SourceDocument): Promise<CandidateFact[]> {
-    const completion = await this.client.chat.completions.create({
+    const completion = await createCompletion(this.client, {
       model: this.model,
       messages: [
         { role: "system", content: LEARN_SYSTEM_PROMPT },
@@ -188,7 +189,7 @@ export class OpenAIBusinessLearner implements BusinessLearner {
         },
       ],
       response_format: { type: "json_schema", json_schema: learnJsonSchema() },
-      temperature: 0,
+      ...samplingParams(this.model, "reasoner", 0),
     });
     const raw = completion.choices[0]?.message?.content;
     if (!raw) return [];

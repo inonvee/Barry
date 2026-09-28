@@ -56,7 +56,7 @@ export type CommerceSemantics = {
    * result ("actually, switch to the first one"): `reference` names the
    * new item; the current cart line is replaced on the provider.
    */
-  intent: "search" | "select" | "replace" | "change_variant" | "change_quantity" | "remove" | "checkout" | "negotiate_price";
+  intent: "search" | "select" | "inquire" | "replace" | "change_variant" | "change_quantity" | "remove" | "checkout" | "negotiate_price";
   query?: {
     text?: string;
     category?: string;
@@ -64,6 +64,8 @@ export type CommerceSemantics = {
     budget?: { amount: number; currency?: string };
   };
   reference?: SemanticReference;
+  /** Set by grounding when the model's explicit reference points outside what BARRY showed / holds: BARRY asks, never guesses. */
+  referenceInvalid?: boolean;
   /** Variant options the customer asked for, e.g. { size: "M" }. */
   variant?: Record<string, string>;
   quantity?: number;
@@ -213,6 +215,8 @@ export type CompileOutcome = { stage: ConversationStage; debug?: CompileDebugInf
   | { kind: "no_payment_to_verify" }
   /** The item is available and everything is ready; BARRY needs the customer's go-ahead to send a payment link. */
   | { kind: "confirm_purchase"; offerName: string }
+  /** Real, provider-read facts about a shown product the customer asked about (availability, price, options). */
+  | { kind: "product_info"; productTitle: string; variants: { options: Record<string, string>; price: string; inStock: boolean }[]; asked?: Record<string, string> }
   /** The purchase is decided; the business needs these customer details before BARRY can send checkout. */
   | { kind: "checkout_needs_info"; missingFields: string[] }
   /** The next step toward the goal needs a provider operation this business hasn't connected. */

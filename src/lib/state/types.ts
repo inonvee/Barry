@@ -45,7 +45,7 @@ export type TurnStep = {
  * result, and why the turn stopped.
  */
 export type TurnTrace = {
-  runtime: { barryVersion: string; commit: string | null; constitutionVersion: string; reasoner: "mock" | "llm"; model: string | null };
+  runtime: { barryVersion: string; commit: string | null; constitutionVersion: string; reasoner: "mock" | "llm"; model: string | null; composerModel?: string | null };
   rejectedClaims: { claim: string; reason: string }[];
   steps: TurnStep[];
   stop: { reason: string; outcome: string };
@@ -63,6 +63,11 @@ export type TurnLog = {
     customerInfo?: Record<string, string>;
     /** The SEMANTIC scheduling constraint the Reasoner described ("Sunday", "at 2pm") — never a resolved timestamp. */
     schedulingWindow?: SchedulingConstraint;
+    /** The grounded commerce semantics (intent, reference, variant, query) — so a failure is diagnosable from the log alone. */
+    commerce?: unknown;
+    purchaseDecision?: boolean;
+    customerClaims?: unknown;
+    knowledgeTopic?: string;
   };
   retrieved: {
     offerIds: string[];

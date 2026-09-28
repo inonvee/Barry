@@ -17,7 +17,18 @@ Project Settings → Environment Variables, for the environments you want
 | `SUPABASE_SERVICE_ROLE_KEY` | *(Supabase dashboard → Barry project → Settings → API → service_role key)* | same |
 | `OPENAI_API_KEY` | *(your OpenAI key)* | LLM-backed natural conversation |
 | `BARRY_REASONER` | `openai` | switches from MockReasoner to OpenAIReasoner (needs `OPENAI_API_KEY` too) |
-| `BARRY_MODEL` | e.g. `gpt-4o-mini` | optional, defaults to `gpt-4o-mini` |
+| `BARRY_REASONER_MODEL` | e.g. `gpt-5.6-sol` | the **understanding** model (customer message -> BARRY IR). Falls back to `BARRY_MODEL`, then `gpt-4o-mini` |
+| `BARRY_REASONER_REASONING_EFFORT` | `none`/`minimal`/`low`/`medium`/`high` | reasoning models only (GPT-5 family / o-series); omit for the model default |
+| `BARRY_COMPOSER_MODEL` | optional | the model that words replies from verified outcomes; defaults to the reasoner model |
+| `BARRY_COMPOSER_REASONING_EFFORT` | optional | as above, for composition |
+| `BARRY_LEARNER_MODEL` | optional | Learn Business extraction; defaults to the reasoner model |
+| `BARRY_MODEL` | e.g. `gpt-4o-mini` | legacy single-model setting, still honoured as the fallback |
+
+Choose the launch reasoner with the semantic evals, not by cost: run
+`npm run eval:models` (needs `OPENAI_API_KEY`; see `__tests__/live-model-comparison.test.ts`)
+and set `BARRY_REASONER_MODEL` to the model that passes. The code default is
+unchanged on purpose — a deployment's model changes only when its environment
+says so.
 
 `SUPABASE_SERVICE_ROLE_KEY` and `OPENAI_API_KEY` are server-only secrets —
 they're read only in API route handlers and the runtime, never in a

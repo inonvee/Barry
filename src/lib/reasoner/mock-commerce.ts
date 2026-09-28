@@ -71,7 +71,8 @@ function ordinal(text: string): number | undefined {
   return undefined;
 }
 
-const SELECT_VERB = /\b(take|add|want|get|buy|i'?ll have|go with)\b|אקח|ניקח|תוסיף|תוסיפי|שים לי|שימי לי|תביא לי|תביאי לי|רוצה את|בא לי את/i;
+const SELECT_VERB = /\b(take|add|want|get|buy|give me|i'?ll have|go with)\b|אקח|ניקח|לוקחת|לוקח|קח|תוסיף|תוסיפי|שים לי|שימי לי|תביא לי|תביאי לי|רוצה את|רוצה אותה|רוצה אותו|בא לי את/i;
+const QUESTION = /\?|\b(do you have|is it available|how much)\b|יש אותה|יש אותו|כמה עולה/i;
 const CHANGE_VERB = /\b(make it|change (?:it|size)?|switch (?:it|to)|instead)\b|תחליף|תחליפי|תשנה|תשני|במקום|עזוב/i;
 const CHECKOUT = /\b(checkout|check out|pay now|ready to pay)\b|לתשלום|לקופה|אני רוצה לשלם|בוא נשלם|איך משלמים/i;
 const NEGOTIATE = /(?:יש מצב|אפשר ב-?|תעשה לי|can you do|would you take|for)\s*(?:₪)?\s*(\d{2,6})\s*\??/i;
@@ -91,6 +92,12 @@ export function mockCommerceSemantics(
 
   const index = ordinal(text);
   const variant = mockVariant(text);
+  const pronoun = /\b(it|this one|that one)\b|אותה|אותו|את זה/i.test(text);
+
+  // A question about something already shown is an inquiry, not a choice.
+  if (context.hasPreviousResults && QUESTION.test(text) && (pronoun || index !== undefined) && !NEGOTIATE.test(text)) {
+    return { intent: "inquire", ...(index !== undefined ? { reference: { type: "previous_result" as const, index } } : {}), variant };
+  }
 
   if (CHANGE_VERB.test(text)) {
     if (index !== undefined && context.hasPreviousResults) {
@@ -112,11 +119,11 @@ export function mockCommerceSemantics(
     return { intent: "select", reference: { type: "previous_result", index }, variant };
   }
 
-  const pronoun = /\b(it|this one|that one)\b|אותה|אותו/i.test(text);
   // "put it in M" with a cart item: that item changes.
   if (pronoun && variant && context.hasCart) return { intent: "change_variant", reference: { type: "cart_line", index: 0 }, variant };
+  // "I'll take it": no position — BARRY's grounding decides whether that is unambiguous.
   if (SELECT_VERB.test(text) && context.hasPreviousResults && pronoun) {
-    return { intent: "select", reference: { type: "previous_result", index: 0 }, variant };
+    return { intent: "select", variant };
   }
 
   if (variant && !context.hasCart && context.hasPreviousResults && text.trim().split(/\s+/).length <= 3) {

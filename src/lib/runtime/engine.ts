@@ -313,7 +313,7 @@ export async function handleCustomerMessage(
   // ranges. It never adds a semantic value of its own.
   const { verified: ir, verification } = verifyIR(graph, message, rawIr, state, { catalog: grounded?.catalog });
   const prevStage = state.stage;
-  let outcome = compile(graph, state, ir, { profiles });
+  let outcome = compile(graph, state, ir, { profiles, shownProducts: grounded?.shownProducts });
 
   state.detectedIntent = ir.intent;
   // Non-action outcomes describe where the conversation now is. An
@@ -420,6 +420,10 @@ export async function handleCustomerMessage(
       entities: ir.entities,
       customerInfo: ir.customerInfo,
       schedulingWindow: ir.constraints.schedulingWindow,
+      ...(ir.commerce ? { commerce: ir.commerce } : {}),
+      ...(ir.purchaseDecision !== undefined ? { purchaseDecision: ir.purchaseDecision } : {}),
+      ...(ir.customerClaims ? { customerClaims: ir.customerClaims } : {}),
+      ...(ir.knowledgeTopic ? { knowledgeTopic: ir.knowledgeTopic } : {}),
     },
     retrieved: { offerIds, knowledgeIds },
     verification,
@@ -441,6 +445,7 @@ export async function handleCustomerMessage(
         constitutionVersion: CONSTITUTION_VERSION,
         reasoner: reasoner.name,
         model: reasoner.model ?? null,
+        composerModel: reasoner.composerModel ?? null,
       },
       rejectedClaims: verification.rejected.map((r) => ({ claim: r.claim, reason: r.reason })),
       steps: steps.map((st) => st.trace),
@@ -478,18 +483,25 @@ async function buildGroundedContext(
   }
   try {
     const products = await Promise.all(lastIds.map((id) => getCommerceProduct(graph, id)));
-    grounded.shownResults = products.flatMap((product, index) =>
+    // Positions stay aligned with what the customer saw, even if a product
+    // has since disappeared from the provider (it is simply omitted).
+    grounded.shownProducts = products.flatMap((product, index) =>
       product
         ? [{
-            index,
+            id: product.id,
+            position: index + 1,
             title: product.title,
-            options: product.variants.map((v) => ({ options: v.options, price: `${v.price.amount} ${v.price.currency}`, inStock: v.inventory.available > 0 })),
+            variants: product.variants.map((v) => ({ options: v.options, price: `${v.price.amount} ${v.price.currency}`, inStock: v.inventory.available > 0 })),
           }]
         : []
     );
+    grounded.shownResults = grounded.shownProducts.map(({ id: _id, ...shown }) => {
+      void _id;
+      return shown;
+    });
     if (cartId) {
       const cart = await getOwnedCart({ graph, customerId: ctx.customerId, conversationId: ctx.conversationId }, cartId);
-      grounded.cart = cart.lines.map((line, index) => ({ index, title: line.title, options: line.options, quantity: line.quantity }));
+      grounded.cart = cart.lines.map((line, index) => ({ position: index + 1, title: line.title, options: line.options, quantity: line.quantity }));
       grounded.cartTotal = `${cart.total.amount} ${cart.total.currency}`;
     }
   } catch (err) {

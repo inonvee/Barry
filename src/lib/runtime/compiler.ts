@@ -6,6 +6,7 @@ import { normalizeCustomerInfoField } from "@/lib/reasoner/customer-fields";
 import type { ConversationStage, ConversationState } from "@/lib/state";
 import { resolveSchedulingWindow } from "@/lib/scheduling/resolver";
 import { actionSupported, type CapabilityProfiles } from "@/lib/capabilities/model";
+import type { GroundedContext } from "@/lib/reasoner/types";
 
 export type { CompileOutcome, CompileDebugInfo } from "@/lib/reasoner/ir";
 
@@ -54,7 +55,25 @@ export const SCRATCH_KEYS = {
  * The model says "the first one"; the ids come ONLY from persisted state
  * written by real tool results. Never trusts a product/line id from IR.
  */
-function compileCommerce(ir: BarryIR, known: Record<string, string>): CompileOutcome | undefined {
+/**
+ * Which shown product does the customer mean? DETERMINISTIC grounding of a
+ * reference the model already understood — never language interpretation:
+ *  - an explicit position the model gave -> that result, if it exists;
+ *  - an explicit position that grounding rejected -> nothing (ask, never guess);
+ *  - no position ("it", "that one", "I'll take it"): the item BARRY is
+ *    currently waiting on (a pending variant choice), else the ONLY shown
+ *    result when exactly one was shown; with several, nothing (ask).
+ */
+function resolveShownProduct(commerce: NonNullable<BarryIR["commerce"]>, known: Record<string, string>): string | undefined {
+  const lastIds = known[SCRATCH_KEYS.commerceLastProductIds]?.split(",").filter(Boolean) ?? [];
+  if (commerce.referenceInvalid) return undefined;
+  if (commerce.reference?.type === "previous_result") return lastIds[commerce.reference.index];
+  const pending = known[SCRATCH_KEYS.commercePendingProductId];
+  if (pending) return pending;
+  return lastIds.length === 1 ? lastIds[0] : undefined;
+}
+
+function compileCommerce(ir: BarryIR, known: Record<string, string>, options: CompileOptions = {}): CompileOutcome | undefined {
   const commerce = ir.commerce!;
   const lastIds = known[SCRATCH_KEYS.commerceLastProductIds]?.split(",").filter(Boolean) ?? [];
   const cartId = known[SCRATCH_KEYS.commerceCartId];
@@ -77,14 +96,8 @@ function compileCommerce(ir: BarryIR, known: Record<string, string>): CompileOut
       );
 
     case "select": {
-      let productId: string | undefined;
-      if (commerce.reference?.type === "previous_result") {
-        productId = lastIds[commerce.reference.index];
-        if (!productId) return { kind: "clarify_reference", available: lastIds.length, stage: "offer_selection" };
-      } else {
-        productId = known[SCRATCH_KEYS.commercePendingProductId] ?? (lastIds.length === 1 ? lastIds[0] : undefined);
-        if (!productId) return { kind: "clarify_reference", available: lastIds.length, stage: "offer_selection" };
-      }
+      const productId = resolveShownProduct(commerce, known);
+      if (!productId) return { kind: "clarify_reference", available: lastIds.length, stage: "offer_selection" };
       // Completing a swap that was waiting on a variant choice.
       const pendingReplace =
         !commerce.reference && productId === known[SCRATCH_KEYS.commercePendingProductId] ? known[SCRATCH_KEYS.commercePendingReplaceLineId] : undefined;
@@ -101,10 +114,19 @@ function compileCommerce(ir: BarryIR, known: Record<string, string>): CompileOut
       );
     }
 
+    case "inquire": {
+      // A question about a shown product is answered from the provider's
+      // real data re-read this turn — never from the model's belief.
+      const productId = resolveShownProduct(commerce, known);
+      const product = productId ? options.shownProducts?.find((p) => p.id === productId) : undefined;
+      if (!product) return { kind: "clarify_reference", available: lastIds.length, stage: "offer_selection" };
+      return { kind: "product_info", productTitle: product.title, variants: product.variants, asked: commerce.variant, stage: "offer_selection" };
+    }
+
     case "replace": {
       // Without an item in the cart there is nothing to replace: it is a plain selection.
-      if (!cartId || !lineId) return compileCommerce({ ...ir, commerce: { ...commerce, intent: "select" } }, known);
-      const productId = commerce.reference?.type === "previous_result" ? lastIds[commerce.reference.index] : undefined;
+      if (!cartId || !lineId) return compileCommerce({ ...ir, commerce: { ...commerce, intent: "select" } }, known, options);
+      const productId = !commerce.referenceInvalid && commerce.reference?.type === "previous_result" ? lastIds[commerce.reference.index] : undefined;
       if (!productId) return { kind: "clarify_reference", available: lastIds.length, stage: "offer_selection" };
       return finalizeAction(
         "addToCart",
@@ -120,12 +142,12 @@ function compileCommerce(ir: BarryIR, known: Record<string, string>): CompileOut
       // BARRY just asked which option the customer wants for a pending
       // item; an option named without pointing at a cart line answers it.
       if (commerce.intent === "change_variant" && known[SCRATCH_KEYS.commercePendingProductId] && commerce.reference?.type !== "cart_line") {
-        return compileCommerce({ ...ir, commerce: { ...commerce, intent: "select", reference: undefined } }, known);
+        return compileCommerce({ ...ir, commerce: { ...commerce, intent: "select", reference: undefined } }, known, options);
       }
       if (!cartId || !lineId) {
         // Nothing in the cart yet: a variant choice completes a pending selection.
         if (commerce.intent === "change_variant" && (known[SCRATCH_KEYS.commercePendingProductId] || lastIds.length === 1)) {
-          return compileCommerce({ ...ir, commerce: { ...commerce, intent: "select", reference: undefined } }, known);
+          return compileCommerce({ ...ir, commerce: { ...commerce, intent: "select", reference: undefined } }, known, options);
         }
         return { kind: "clarify_reference", available: lastIds.length, stage: "offer_selection" };
       }
@@ -273,7 +295,11 @@ function resolveOfferId(graph: BusinessGraph, state: ConversationState, ir: Barr
 export type CompileOptions = {
   /** What the business's connected providers can actually do (planning never promises what they can't). */
   profiles?: CapabilityProfiles;
+  /** What BARRY last showed, re-read from the provider this turn (real ids, real stock). */
+  shownProducts?: ShownProduct[];
 };
+
+type ShownProduct = NonNullable<GroundedContext["shownProducts"]>[number];
 
 export function compile(graph: BusinessGraph, state: ConversationState, ir: BarryIR, options: CompileOptions = {}): CompileOutcome {
   const debug: CompileDebugInfo = { appliedCustomerInfo: {} };
@@ -394,9 +420,17 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
   }
 
   if (ir.commerce) {
+    // Live failure (gpt-4o-mini, "I'll take it in medium" with ONE shown item):
+    // the model filed "I'll take it" as CHECKOUT while the cart was still
+    // empty, and checkout-without-cart asked "which item?". Structurally,
+    // asking to buy with nothing in the cart IS a decided selection of the
+    // item under discussion — resolved by the same deterministic grounding
+    // as any other reference (unique shown item or explicit position; else ask).
+    const cartlessCheckout = ir.commerce.intent === "checkout" && !known[SCRATCH_KEYS.commerceCartId];
+    if (cartlessCheckout) ir = { ...ir, commerce: { ...ir.commerce, intent: "select" } };
     // Record the customer's purchase decision (the model's judgment, applied
     // per the business playbook). A new search means they're browsing again.
-    const c = ir.commerce;
+    const c = ir.commerce!;
     if (c.intent === "search") {
       delete known[SCRATCH_KEYS.commerceCheckoutRequested];
       delete known[SCRATCH_KEYS.commerceCheckoutOnSuccess];
@@ -406,14 +440,15 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
       // A decision attached to a cart change is only INTENT here: checkout
       // eligibility follows the verified result of that change (see the
       // runtime's state patch), never the customer's words alone.
-      if (ir.purchaseDecision === true && graph.playbook.commerce.advanceToCheckout === "on_purchase_decision") {
+      // An explicit request to buy it now needs no playbook permission to advance.
+      if (cartlessCheckout || (ir.purchaseDecision === true && graph.playbook.commerce.advanceToCheckout === "on_purchase_decision")) {
         known[SCRATCH_KEYS.commerceCheckoutOnSuccess] = "1";
       } else {
         delete known[SCRATCH_KEYS.commerceCheckoutOnSuccess];
       }
       if (ir.purchaseDecision === false) delete known[SCRATCH_KEYS.commerceCheckoutRequested];
     }
-    const commerceOutcome = compileCommerce(ir, known);
+    const commerceOutcome = compileCommerce(ir, known, options);
     if (commerceOutcome) return commerceOutcome;
   }
 

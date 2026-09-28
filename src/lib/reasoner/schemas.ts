@@ -52,18 +52,19 @@ export type LlmSchedulingWindow = z.infer<typeof LlmSchedulingWindowSchema>;
 
 /**
  * Flattened commerce semantics (strict mode can't express the optional
- * nested union directly). `referenceIndex` points into results BARRY
+ * nested union directly). `referencePosition` (1-based) points into results BARRY
  * already showed — the model never supplies a product id.
  */
 export const LlmCommerceSchema = z.object({
-  intent: z.enum(["search", "select", "replace", "change_variant", "change_quantity", "remove", "checkout", "negotiate_price"]),
+  intent: z.enum(["search", "select", "inquire", "replace", "change_variant", "change_quantity", "remove", "checkout", "negotiate_price"]),
   queryText: z.string().nullable(),
   category: z.string().nullable(),
   attributes: z.array(KeyValuePairSchema),
   budgetAmount: z.number().nullable(),
   budgetCurrency: z.string().nullable(),
   referenceType: z.enum(["previous_result", "cart_line"]).nullable(),
-  referenceIndex: z.number().nullable(),
+  /** 1-based, exactly as numbered to the customer (shownResults[].position / cart[].position). */
+  referencePosition: z.number().nullable(),
   variant: z.array(KeyValuePairSchema),
   quantity: z.number().nullable(),
   requestedPriceAmount: z.number().nullable(),
@@ -181,14 +182,14 @@ export function irJsonSchema() {
           type: ["object", "null"],
           additionalProperties: false,
           properties: {
-            intent: { type: "string", enum: ["search", "select", "replace", "change_variant", "change_quantity", "remove", "checkout", "negotiate_price"] },
+            intent: { type: "string", enum: ["search", "select", "inquire", "replace", "change_variant", "change_quantity", "remove", "checkout", "negotiate_price"] },
             queryText: { type: ["string", "null"] },
             category: { type: ["string", "null"] },
             attributes: { type: "array", items: kvSchema() },
             budgetAmount: { type: ["number", "null"] },
             budgetCurrency: { type: ["string", "null"] },
             referenceType: { type: ["string", "null"], enum: ["previous_result", "cart_line", null] },
-            referenceIndex: { type: ["number", "null"] },
+            referencePosition: { type: ["number", "null"] },
             variant: { type: "array", items: kvSchema() },
             quantity: { type: ["number", "null"] },
             requestedPriceAmount: { type: ["number", "null"] },
@@ -202,7 +203,7 @@ export function irJsonSchema() {
             "budgetAmount",
             "budgetCurrency",
             "referenceType",
-            "referenceIndex",
+            "referencePosition",
             "variant",
             "quantity",
             "requestedPriceAmount",

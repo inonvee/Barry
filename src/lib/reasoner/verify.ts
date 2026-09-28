@@ -85,12 +85,28 @@ function groundScheduling(window: SchedulingConstraint | undefined, rejected: IR
   return date || time ? { date, time } : undefined;
 }
 
-function groundCommerce(commerce: CommerceSemantics | undefined, rejected: IRRejection[], catalog?: CatalogSchema): CommerceSemantics | undefined {
+function groundCommerce(
+  commerce: CommerceSemantics | undefined,
+  rejected: IRRejection[],
+  catalog?: CatalogSchema,
+  state?: ConversationState
+): CommerceSemantics | undefined {
   if (!commerce) return undefined;
   const grounded: CommerceSemantics = { ...commerce, query: commerce.query ? { ...commerce.query } : undefined };
-  if (grounded.reference && (!Number.isInteger(grounded.reference.index) || grounded.reference.index < 0)) {
-    rejected.push({ claim: "commerce.reference", value: grounded.reference, reason: "invalid index" });
-    grounded.reference = undefined;
+  if (grounded.reference) {
+    // An explicit reference must point at something BARRY actually showed
+    // or holds. Outside that set it is rejected AND marked, so the compiler
+    // asks — it never falls back to guessing another item.
+    const shownCount = state?.knownFields.__commerceLastProductIds?.split(",").filter(Boolean).length;
+    const cartLines = state?.knownFields.__commerceCartLineId ? 1 : 0;
+    const { type, index } = grounded.reference;
+    const limit = type === "previous_result" ? shownCount : cartLines;
+    const reason = !Number.isInteger(index) || index < 0 ? "invalid position" : limit !== undefined && index >= limit ? "points outside what BARRY showed" : undefined;
+    if (reason) {
+      rejected.push({ claim: "commerce.reference", value: grounded.reference, reason });
+      grounded.reference = undefined;
+      grounded.referenceInvalid = true;
+    }
   }
   if (grounded.quantity !== undefined && (!Number.isInteger(grounded.quantity) || grounded.quantity < 1 || grounded.quantity > 50)) {
     rejected.push({ claim: "commerce.quantity", value: grounded.quantity, reason: "out of range" });
@@ -189,7 +205,7 @@ export function verifyIR(
       slotAccepted,
       slotDeclined,
     },
-    commerce: groundCommerce(ir.commerce, rejected, context.catalog),
+    commerce: groundCommerce(ir.commerce, rejected, context.catalog, state),
     customerInfo,
   };
 

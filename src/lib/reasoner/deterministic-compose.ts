@@ -108,6 +108,20 @@ function composeSingle(input: ComposeResponseInput): string {
       return outcome.current
         ? `The current total is ${outcome.current.amount} ${outcome.current.currency}. I can't change prices myself.`
         : `I can't change prices myself — the listed price is what I can offer.`;
+    case "product_info": {
+      const label = (o: Record<string, string>) => Object.values(o).join(" / ");
+      const matches = (o: Record<string, string>) =>
+        Object.entries(outcome.asked ?? {}).every(([k, v]) => Object.entries(o).some(([ok, ov]) => ok.toLowerCase() === k.toLowerCase() && ov.toLowerCase() === v.toLowerCase()));
+      const inStock = outcome.variants.filter((v) => v.inStock);
+      if (outcome.asked && Object.keys(outcome.asked).length > 0) {
+        const hit = outcome.variants.find((v) => matches(v.options) && v.inStock);
+        if (hit) return `Yes — ${outcome.productTitle} is in stock in ${label(outcome.asked)} (${hit.price}).`;
+        return `${outcome.productTitle} isn't available in ${label(outcome.asked)} right now.${inStock.length ? ` In stock: ${inStock.map((v) => label(v.options)).join(", ")}.` : ""}`;
+      }
+      return inStock.length
+        ? `${outcome.productTitle} is in stock in ${inStock.map((v) => `${label(v.options)} (${v.price})`).join(", ")}.`
+        : `${outcome.productTitle} is currently out of stock.`;
+    }
     case "confirm_purchase":
       return `Shall I send you a secure payment link for the ${outcome.offerName}?`;
     case "checkout_needs_info":

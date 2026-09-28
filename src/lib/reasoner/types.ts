@@ -11,13 +11,26 @@ export type { BarryIR, BarryIRConstraints, RequestedCapability, CompileOutcome, 
  * the real providers before understanding. The model resolves "the first
  * one" against THIS list; BARRY resolves the index back to real ids.
  */
+export type ShownResult = {
+  position: number;
+  title: string;
+  variants: { options: Record<string, string>; price: string; inStock: boolean }[];
+};
+
 export type GroundedContext = {
   /** The commerce provider's searchable schema (categories, attributes, variant options, currency). */
   catalog?: CatalogSchema;
   /** What the business's connected providers can actually do. */
   profiles?: CapabilityProfiles;
-  shownResults?: { index: number; title: string; options: { options: Record<string, string>; price: string; inStock: boolean }[] }[];
-  cart?: { index: number; title: string; options: Record<string, string>; quantity: number }[];
+  /**
+   * What BARRY last showed the customer, numbered exactly as they saw it
+   * (position 1 = the first card). The model refers to items by position;
+   * it never sees or supplies product ids.
+   */
+  shownResults?: ShownResult[];
+  /** Internal (never given to the model): the same list with real ids, re-read from the provider. */
+  shownProducts?: (ShownResult & { id: string })[];
+  cart?: { position: number; title: string; options: Record<string, string>; quantity: number }[];
   cartTotal?: string;
 };
 
@@ -84,6 +97,8 @@ export interface Reasoner {
   readonly name: "mock" | "llm";
   understand(ctx: ReasonerContext): Promise<BarryIR>;
   composeResponse(ctx: ReasonerContext, input: ComposeResponseInput): Promise<string>;
-  /** The underlying model id, when there is one (recorded in turn traces). */
+  /** The underlying understanding model id, when there is one (recorded in turn traces). */
   readonly model?: string;
+  /** The model that words replies, when different. */
+  readonly composerModel?: string;
 }

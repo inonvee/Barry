@@ -4,6 +4,7 @@ import { findOffer } from "@/lib/business-graph";
 import { LlmIRSchema, irJsonSchema, type LlmCommerce, type LlmIR, type LlmSchedulingWindow, type KeyValuePair } from "./schemas";
 import { catalogForModel } from "@/lib/commerce/catalog";
 import { profilesForModel } from "@/lib/capabilities/model";
+import { createCompletion, modelFor, samplingParams } from "./model-config";
 import { BARRY_CONSTITUTION } from "./constitution";
 import type { CommerceSemantics } from "./ir";
 import { composeDeterministic } from "./deterministic-compose";
@@ -65,6 +66,13 @@ export function authorityForModel(graph: BusinessGraph) {
     refundsNeedOwner: rule("refund_requires_approval")?.value !== false,
     bookingsAutomatic: rule("bookings_auto_allowed")?.value !== false,
   };
+}
+
+/** The shown item BARRY is waiting on a variant choice for — by position and title, never by id. */
+function pendingItem(ctx: ReasonerContext): { position: number; title: string } | null {
+  const pending = ctx.state.knownFields.__commercePendingProductId;
+  const item = pending ? ctx.grounded?.shownProducts?.find((p) => p.id === pending) : undefined;
+  return item ? { position: item.position, title: item.title } : null;
 }
 
 export function buildUnderstandingContext(ctx: ReasonerContext) {
@@ -138,7 +146,7 @@ export function buildUnderstandingContext(ctx: ReasonerContext) {
     catalog: ctx.grounded?.catalog ? catalogForModel(ctx.grounded.catalog) : null,
     shownResults: ctx.grounded?.shownResults ?? [],
     // BARRY just asked which option the customer wants for this shown item.
-    awaitingVariantChoiceForProductId: state.knownFields.__commercePendingProductId ?? null,
+    awaitingVariantChoiceFor: pendingItem(ctx),
     cart: ctx.grounded?.cart ?? [],
     cartTotal: ctx.grounded?.cartTotal ?? null,
     recentMessages,
@@ -157,14 +165,22 @@ YOUR TASK NOW: understand the customer's latest message in context and describe 
     - variant: requirements on catalog.variantOptions keys (e.g. a size), values copied exactly from the listed values.
     - budgetAmount + budgetCurrency: a stated maximum price. budgetCurrency is an ISO 4217 code (the customer's shekel/₪/NIS is "ILS"); null when they named no currency.
     - queryText: the customer's own descriptive words, for ranking only.
-  - select: they chose something BARRY already showed. Use referenceType "previous_result" + referenceIndex (0-based position in shownResults). Put requested options in variant (e.g. size -> "M"). Never invent an index outside shownResults.
-  - replace: the cart already has an item and they want a DIFFERENT shown result instead of it ("actually switch to the first one"). referenceType "previous_result" + referenceIndex for the new item; variant if stated.
-  - change_variant / change_quantity / remove: they changed an item in the cart (referenceType "cart_line"). If awaitingVariantChoiceForProductId is set and they just name an option ("M"), that answers BARRY's question: use select with that variant and no reference.
-  - checkout: they want to pay / complete the purchase.
+  - select: the customer chooses an item BARRY showed — including when they decide to buy it right away ("I'll take it", "give me that one in M"). Record the decision in purchaseDecision, not as checkout.
+  - inquire: a question about a shown item ("do you have it in M?", "how much is the second?"). BARRY answers from live stock; it is not a choice.
+  - replace: the cart already has an item and they want a DIFFERENT shown item instead.
+  - change_variant / change_quantity / remove: they change what is already in the cart (referenceType "cart_line").
+  - checkout: the cart already has items (transaction.cartOpen) and they want to pay / finish.
   - negotiate_price: they ask for a different price (requestedPriceAmount).
+  REFERENCES — which item they mean:
+  - referenceType "previous_result" + referencePosition = the item's "position" in shownResults (1 = first, as numbered to the customer; "the last one" = the highest position), when their words identify it (ordinal, name, description).
+  - If they just say "it" / "that one" / "אותה" / "זה" without saying which, set referenceType and referencePosition to null. BARRY resolves it only when exactly one item could be meant, and asks otherwise — so never guess a position.
+  - If awaitingVariantChoiceFor is set and they only name an option ("M"), that answers BARRY's question: select, no reference, the option in variant.
+  - Options they ask for (size, color, ...) go in variant, as catalog values.
+  EXAMPLES (shownResults with 1 item): "אני אקח אותה במדיום" -> select, reference null, variant {size: M}, purchaseDecision true. "יש אותה ב-L?" -> inquire, reference null, variant {size: L}, purchaseDecision false.
+  EXAMPLES (shownResults with 3 items): "אני אקח את השנייה" -> select, previous_result position 2, purchaseDecision true. "עזוב, תביא את האחרונה" -> select, position 3. "אני אקח אותה" with nothing singling one out -> select, reference null (BARRY will ask). "תוסיף אותה לעגלה אבל אני עוד מסתכלת" -> select, purchaseDecision false. "היא יפה" -> commerce null.
 - customerInfo: ONLY identity/contact details the customer states about THEMSELVES in this message (name, phone, email, ...). For each one, add an evidence pair { key: "customerInfo.<field>", value: <exact quote from the message> }. A verb, a product, a relationship word ("my wife") or anything that isn't their own name is never a name. Omit fields not given this turn — never use placeholder values.
 - customerClaimsPaymentCompleted: true when the customer says they paid. It is only a claim; BARRY verifies it with the provider.
-- purchaseDecision: true when the customer has DECIDED to buy what's being discussed ("I'll take it", "let's do it", "that one, yalla"); false when they are asking, comparing, or adding while still browsing ("do you have it?", "add it too and show me more"); null if unclear. It is consent for BARRY to move the purchase forward per the business playbook — never a payment or an order.
+- purchaseDecision: true when the customer has DECIDED to buy what's being discussed ("I'll take it", "yalla, I'm taking it"); false when they are asking, admiring, comparing, or adding while still browsing; null if unclear. It is consent for BARRY to move the purchase forward per the business playbook — never a payment or an order.
 - knowledgeTopic: when they ask about something covered by one of knowledgeTopics, that exact topic string.
 - Scheduling: describe what they said, never compute timestamps. schedulingWindow fields: dateKind (explicitDate|relativeDay|weekday), isoDate (YYYY-MM-DD, resolve using business.currentDate), relativeDays, weekday (0=Sun..6=Sat), weekdayQualifier (this|next), timeKind (explicitTime|partOfDay), hour/minute (24h, as the customer meant it locally), partOfDay. Keep a day/time stated earlier unless they changed it.
 - slotAccepted / slotDeclined: only when awaitingSlotConfirmation is true and they accept or decline the offered time.
@@ -289,7 +305,10 @@ function unflattenCommerce(raw: LlmCommerce): CommerceSemantics {
           }
         : undefined,
     reference:
-      raw.referenceType && raw.referenceIndex !== null ? { type: raw.referenceType, index: raw.referenceIndex } : undefined,
+      // The model speaks in the positions the customer saw (1-based); BARRY's
+      // IR is 0-based. A non-integer or < 1 position becomes an invalid index
+      // that grounding rejects — it is never repaired.
+      raw.referenceType && raw.referencePosition !== null ? { type: raw.referenceType, index: raw.referencePosition - 1 } : undefined,
     variant: nonEmptyRecord(raw.variant),
     quantity: raw.quantity ?? undefined,
     requestedPrice: raw.requestedPriceAmount ? { amount: raw.requestedPriceAmount, currency: raw.requestedPriceCurrency ?? undefined } : undefined,
@@ -425,6 +444,17 @@ export function parseIRResponse(graph: BusinessGraph, raw: string): ParseIRResul
   return { ok: true, ir: sanitizeIR(graph, parsed.data) };
 }
 
+export type UnderstandingResult = {
+  ir: BarryIR;
+  /** Whether the model produced schema-valid structured output (after at most one retry). */
+  valid: boolean;
+  attempts: number;
+  failure?: string;
+  latencyMs: number;
+  usage: { promptTokens: number; completionTokens: number; reasoningTokens: number };
+  model: string;
+};
+
 function emptyIR(intent: string): BarryIR {
   return { intent, entities: {}, constraints: {}, customerInfo: {} };
 }
@@ -432,22 +462,38 @@ function emptyIR(intent: string): BarryIR {
 export class OpenAIReasoner implements Reasoner {
   readonly name = "llm" as const;
   private client: OpenAI;
+  /** The understanding model (recorded in every turn trace). */
   readonly model: string;
+  readonly composerModel: string;
+  private readonly reasoningEffort?: string;
 
-  constructor() {
+  constructor(options: { model?: string; composerModel?: string; reasoningEffort?: string } = {}) {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) throw new Error("OPENAI_API_KEY is not set — cannot construct OpenAIReasoner.");
     this.client = new OpenAI({ apiKey });
-    this.model = process.env.BARRY_MODEL || "gpt-4o-mini";
+    this.model = options.model ?? modelFor("reasoner");
+    this.composerModel = options.composerModel ?? options.model ?? modelFor("composer");
+    this.reasoningEffort = options.reasoningEffort;
   }
 
   async understand(ctx: ReasonerContext): Promise<BarryIR> {
+    return (await this.understandDetailed(ctx)).ir;
+  }
+
+  /**
+   * understand() plus telemetry, for traces and model evaluation:
+   * whether structured output was valid, attempts used, latency and tokens.
+   */
+  async understandDetailed(ctx: ReasonerContext): Promise<UnderstandingResult> {
     const context = buildUnderstandingContext(ctx);
+    const started = Date.now();
+    const usage = { promptTokens: 0, completionTokens: 0, reasoningTokens: 0 };
+    let lastFailure: string | undefined;
 
     const attempt = async (correction?: string): Promise<BarryIR | null> => {
       let raw: string | null | undefined;
       try {
-        const completion = await this.client.chat.completions.create({
+        const completion = await createCompletion(this.client, {
           model: this.model,
           messages: [
             { role: "system", content: UNDERSTAND_SYSTEM_PROMPT },
@@ -455,21 +501,27 @@ export class OpenAIReasoner implements Reasoner {
             ...(correction ? [{ role: "system" as const, content: correction }] : []),
           ],
           response_format: { type: "json_schema", json_schema: irJsonSchema() },
-          temperature: 0.2,
+          ...samplingParams(this.model, "reasoner", 0.2, this.reasoningEffort),
         });
+        usage.promptTokens += completion.usage?.prompt_tokens ?? 0;
+        usage.completionTokens += completion.usage?.completion_tokens ?? 0;
+        usage.reasoningTokens += completion.usage?.completion_tokens_details?.reasoning_tokens ?? 0;
         raw = completion.choices[0]?.message?.content;
       } catch (err) {
+        lastFailure = "openai_api_error";
         logReasonerFailure("openai_api_error", { message: err instanceof Error ? err.message : String(err) });
         return null;
       }
 
       if (!raw) {
+        lastFailure = "empty_completion";
         logReasonerFailure("openai_api_error", { message: "empty completion content" });
         return null;
       }
 
       const result = parseIRResponse(ctx.graph, raw);
       if (!result.ok) {
+        lastFailure = result.kind;
         logReasonerFailure(result.kind, { detail: result.detail });
         return null;
       }
@@ -477,17 +529,17 @@ export class OpenAIReasoner implements Reasoner {
     };
 
     const first = await attempt();
-    if (first) return first;
+    if (first) return { ir: first, valid: true, attempts: 1, latencyMs: Date.now() - started, usage, model: this.model };
 
     const retried = await attempt(
       "Your previous response was invalid. Respond again with ONLY strict JSON matching the schema."
     );
-    if (retried) return retried;
+    if (retried) return { ir: retried, valid: true, attempts: 2, latencyMs: Date.now() - started, usage, model: this.model };
 
     logReasonerFailure("semantic_validation_error", {
       message: "both understanding attempts failed; falling back to empty IR",
     });
-    return emptyIR("understanding_failed");
+    return { ir: emptyIR("understanding_failed"), valid: false, attempts: 2, failure: lastFailure, latencyMs: Date.now() - started, usage, model: this.model };
   }
 
   async composeResponse(ctx: ReasonerContext, input: ComposeResponseInput): Promise<string> {
@@ -504,13 +556,13 @@ export class OpenAIReasoner implements Reasoner {
     );
 
     try {
-      const completion = await this.client.chat.completions.create({
-        model: this.model,
+      const completion = await createCompletion(this.client, {
+        model: this.composerModel,
         messages: [
           { role: "system", content: COMPOSE_SYSTEM_PROMPT },
           { role: "user", content: JSON.stringify(summary) },
         ],
-        temperature: 0.4,
+        ...samplingParams(this.composerModel, "composer", 0.4),
       });
       const text = completion.choices[0]?.message?.content?.trim();
       if (text) return enforceComposeGrounding(toPlainText(text), ctx, input);
