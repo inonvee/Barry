@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import type { BusinessGraph } from "@/lib/business-graph";
 import { findOffer } from "@/lib/business-graph";
-import { LlmIRSchema, irJsonSchema, type LlmCommerce, type LlmIR, type LlmSchedulingWindow, type KeyValuePair } from "./schemas";
+import { LlmIRSchema, irJsonSchema, type CustomerFact, type LlmCommerce, type LlmIR, type LlmSchedulingWindow, type KeyValuePair } from "./schemas";
 import { catalogForModel } from "@/lib/commerce/catalog";
 import { profilesForModel } from "@/lib/capabilities/model";
 import { createCompletion, modelFor, samplingParams } from "./model-config";
@@ -137,6 +137,8 @@ export function buildUnderstandingContext(ctx: ReasonerContext) {
     offers,
     knowledgeTopics: graph.knowledge.map((k) => k.topic),
     knownCustomerFields: customerFields,
+    // The exact customer fields BARRY's last reply asked for (the compiler's truth).
+    askedFor: state.missingFields,
     previousMissingFields: state.missingFields,
     selectedOfferId: state.selectedOfferId ?? null,
     stage: state.stage,
@@ -178,7 +180,10 @@ YOUR TASK NOW: understand the customer's latest message in context and describe 
   - Options they ask for (size, color, ...) go in variant, as catalog values.
   EXAMPLES (shownResults with 1 item): "אני אקח אותה במדיום" -> select, reference null, variant {size: M}, purchaseDecision true. "יש אותה ב-L?" -> inquire, reference null, variant {size: L}, purchaseDecision false.
   EXAMPLES (shownResults with 3 items): "אני אקח את השנייה" -> select, previous_result position 2, purchaseDecision true. "עזוב, תביא את האחרונה" -> select, position 3. "אני אקח אותה" with nothing singling one out -> select, reference null (BARRY will ask). "תוסיף אותה לעגלה אבל אני עוד מסתכלת" -> select, purchaseDecision false. "היא יפה" -> commerce null.
-- customerInfo: ONLY identity/contact details the customer states about THEMSELVES in this message (name, phone, email, ...). For each one, add an evidence pair { key: "customerInfo.<field>", value: <exact quote from the message> }. A verb, a product, a relationship word ("my wife") or anything that isn't their own name is never a name. Omit fields not given this turn — never use placeholder values.
+- customerFacts: details the customer states about THEMSELVES in this message. One item per detail: { field, value, evidence }.
+  - field: a plain lowercase field name. When they are answering BARRY's question, use the names in askedFor exactly (e.g. "name", "phone"); otherwise a clear name ("email", "address").
+  - value: the detail as they gave it. evidence: the exact text from THIS message that contains it (for a message that is only the detail, the whole message).
+  - A verb, a product, a relationship word ("my wife") or anything that isn't their own detail is never a fact. Omit anything not given this turn — never placeholders.
 - customerClaimsPaymentCompleted: true when the customer says they paid. It is only a claim; BARRY verifies it with the provider.
 - purchaseDecision: true when the customer has DECIDED to buy what's being discussed ("I'll take it", "yalla, I'm taking it"); false when they are asking, admiring, comparing, or adding while still browsing; null if unclear. It is consent for BARRY to move the purchase forward per the business playbook — never a payment or an order.
 - knowledgeTopic: when they ask about something covered by one of knowledgeTopics, that exact topic string.
@@ -198,7 +203,8 @@ YOUR TASK NOW: understand the customer's latest message in context and describe 
  */
 export const COMPOSE_SYSTEM_PROMPT =
   `${BARRY_CONSTITUTION}\n\nYOUR TASK NOW: write BARRY's reply to the customer. ` +
-  "Use the business's tone. Reply in the same language as their last message. " +
+  "Use the business's tone. Reply in the language given by `replyLanguage` (mirror the language of replyLanguage.basedOn when present; code is a hint). " +
+  "A customer message that is only a phone number, email, code, link or emoji never changes the language. " +
   "The JSON summary below is the ONLY source of truth for what happened — " +
   "describe exactly that, never inventing a price, availability, or outcome beyond it. " +
   "If policyReason is set, explain briefly and warmly that you're checking with the owner. " +
@@ -212,7 +218,7 @@ export const COMPOSE_SYSTEM_PROMPT =
   "formatted for the reply language (24-hour for Hebrew, 12-hour for English). Never " +
   "choose another time format, and never compute, convert, or reinterpret a time yourself from any raw ISO " +
   "timestamp elsewhere in this JSON (that is always UTC, not the customer's local time). " +
-  "When outcome.kind is \"needs_info\", ask for EXACTLY the fields listed in " +
+  "When outcome.kind (or next.kind) is \"needs_info\" or \"checkout_needs_info\", ask for EXACTLY the fields listed in " +
   "outcome.missingFields — one per field (\"your name\", \"your phone number\"), never more, " +
   "never pluralized or duplicated because of partySize or any other constraint. Only ask " +
   "for a field the Business Graph actually lists as missing; never invent an additional " +
@@ -224,6 +230,18 @@ export const COMPOSE_SYSTEM_PROMPT =
   "When outcome.kind is \"checkout_needs_info\", the customer has decided to buy: ask only for those details so BARRY can send the payment link — never ask whether they want to continue. " +
   "Follow `playbook.salesStyle` when present; mention at most one genuinely relevant suggestion and only if playbook.suggestions is \"one_relevant\". " +
   "Keep it to 1-3 sentences, no headers, no JSON.";
+
+function factsToCustomerInfo(facts: CustomerFact[]): { customerInfo: Record<string, string>; evidence: Record<string, string> } {
+  const customerInfo: Record<string, string> = {};
+  const evidence: Record<string, string> = {};
+  for (const fact of facts) {
+    const field = fact.field.trim();
+    if (!field) continue;
+    customerInfo[field] = fact.value;
+    evidence[`customerInfo.${field}`] = fact.evidence;
+  }
+  return { customerInfo, evidence };
+}
 
 function kvArrayToRecord(pairs: KeyValuePair[]): Record<string, string> {
   return Object.fromEntries(pairs.map((p) => [p.key, p.value]));
@@ -275,13 +293,15 @@ export function sanitizeIR(graph: BusinessGraph, raw: LlmIR): BarryIR {
       slotAccepted: raw.constraints.slotAccepted ?? undefined,
       slotDeclined: raw.constraints.slotDeclined ?? undefined,
     },
-    customerInfo: kvArrayToRecord(raw.customerInfo),
+    // One fact = field + value + its own quote. Mapped into BARRY's internal
+    // shape unchanged; field NAMES are validated by grounding (verifyIR),
+    // which rejects — never rewrites — anything that isn't a plain field.
+    ...factsToCustomerInfo(raw.customerFacts),
     requestedCapability: raw.requestedCapability ?? undefined,
     goal: raw.goal ?? undefined,
     commerce: raw.commerce ? unflattenCommerce(raw.commerce) : undefined,
     customerClaims: raw.customerClaimsPaymentCompleted ? { paymentCompleted: true } : undefined,
     purchaseDecision: raw.purchaseDecision ?? undefined,
-    evidence: kvArrayToRecord(raw.evidence),
     knowledgeTopic: raw.knowledgeTopic ?? undefined,
   };
 }
@@ -403,6 +423,9 @@ export function buildComposeSummary(context: ComposeSummaryContext, input: Compo
     // nothing scheduling-related to phrase.
     scheduling: sanitizedInput.scheduling ?? null,
     playbook: context.playbook ?? null,
+    // The conversation's language, resolved by BARRY from the latest customer
+    // message that contains words — never from a number/email/code/emoji.
+    replyLanguage: sanitizedInput.language ? { code: sanitizedInput.language.code, basedOn: sanitizedInput.language.sample ?? null } : null,
     // Everything BARRY already did this turn, in order — all of it has happened.
     steps: sanitizedInput.steps
       ? sanitizedInput.steps.map((st) => ({

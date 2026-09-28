@@ -1,3 +1,4 @@
+import type { ReplyLanguage } from "./language";
 import type { CapabilityProfiles } from "@/lib/capabilities/model";
 import type { CatalogSchema } from "@/lib/commerce/catalog";
 import type { BusinessGraph } from "@/lib/business-graph";
@@ -83,6 +84,8 @@ export type ComposeResponseInput = {
   steps?: ComposeStep[];
   /** The one thing still needed from the customer after those steps, if any. */
   next?: CompileOutcome;
+  /** The conversation's reply language (resolved by the runtime; never from a digits-only message). */
+  language?: ReplyLanguage;
 };
 
 /**

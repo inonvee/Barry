@@ -93,7 +93,8 @@ describe("the target live flow (Rina Studio playbook: name + phone before checko
       const cart = await adapter.getCart(take.state.knownFields.__commerceCartId);
       expect(cart?.lines.map((l) => [l.title, l.options.size, l.unitPrice.amount])).toEqual([["Onyx Slip Dress", "M", 390]]);
       expect(take.response).not.toMatch(/which (item|one)|איזה פריט/i);
-      expect(take.response).toMatch(/name/i);
+      expect(take.response).toMatch(/שם/);
+      expect(take.response).toMatch(/טלפון/);
 
       const pay = await handleCustomerMessage(graph, conv, "c", DETAILS);
       expect(pay.turn.trace?.steps.map((s) => s.action)).toEqual(["createCommerceCheckout"]);

@@ -27,6 +27,9 @@ import { z } from "zod";
 export const KeyValuePairSchema = z.object({ key: z.string(), value: z.string() });
 export type KeyValuePair = z.infer<typeof KeyValuePairSchema>;
 
+export const CustomerFactSchema = z.object({ field: z.string(), value: z.string(), evidence: z.string() });
+export type CustomerFact = z.infer<typeof CustomerFactSchema>;
+
 /**
  * Flattened, strict-mode-compatible representation of a semantic
  * scheduling constraint. The model describes WHAT the customer said
@@ -87,13 +90,13 @@ export const LlmIRSchema = z.object({
     slotDeclined: z.boolean().nullable(),
   }),
   /**
-   * THE single authoritative channel for customer-provided identity/
-   * contact fields (name, phone, email, ...) this turn — never
-   * duplicated into `entities`, which is debug-only and never reaches
-   * persistent state. See sanitizeIR/verifyIR for how this becomes
-   * `BarryIR.customerInfo`.
+   * THE single authoritative channel for details the customer states about
+   * THEMSELVES this turn. Each fact carries its own field, value and the
+   * exact quote supporting it, bound together — no parallel arrays, no key
+   * namespaces for the model to get wrong. `field` is a plain business field
+   * name (name, phone, email, or any field the business asks for).
    */
-  customerInfo: z.array(KeyValuePairSchema),
+  customerFacts: z.array(CustomerFactSchema),
   requestedCapability: z.string().nullable(),
   goal: z
     .enum(["completePurchase", "bookAppointment", "collectDeposit", "qualifyLead", "requestQuote"])
@@ -101,8 +104,6 @@ export const LlmIRSchema = z.object({
   commerce: LlmCommerceSchema.nullable(),
   customerClaimsPaymentCompleted: z.boolean().nullable(),
   purchaseDecision: z.boolean().nullable(),
-  /** Claim path (e.g. "customerInfo.name") -> exact quote from the customer's message supporting it. */
-  evidence: z.array(KeyValuePairSchema),
   knowledgeTopic: z.string().nullable(),
 });
 export type LlmIR = z.infer<typeof LlmIRSchema>;
@@ -172,7 +173,15 @@ export function irJsonSchema() {
           },
           required: ["schedulingWindow", "partySize", "discountPct", "slotAccepted", "slotDeclined"],
         },
-        customerInfo: { type: "array", items: kvSchema() },
+        customerFacts: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: { field: { type: "string" }, value: { type: "string" }, evidence: { type: "string" } },
+            required: ["field", "value", "evidence"],
+          },
+        },
         requestedCapability: { type: ["string", "null"] },
         goal: {
           type: ["string", "null"],
@@ -212,7 +221,6 @@ export function irJsonSchema() {
         },
         customerClaimsPaymentCompleted: { type: ["boolean", "null"] },
         purchaseDecision: { type: ["boolean", "null"] },
-        evidence: { type: "array", items: kvSchema() },
         knowledgeTopic: { type: ["string", "null"] },
       },
       required: [
@@ -222,13 +230,12 @@ export function irJsonSchema() {
         "offerChangeRequested",
         "entities",
         "constraints",
-        "customerInfo",
+        "customerFacts",
         "requestedCapability",
         "goal",
         "commerce",
         "customerClaimsPaymentCompleted",
         "purchaseDecision",
-        "evidence",
         "knowledgeTopic",
       ],
     },

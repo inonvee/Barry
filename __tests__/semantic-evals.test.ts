@@ -79,7 +79,7 @@ const EXPECT: Record<string, (c: Case) => Promise<void> | void> = {
   negotiate_350: ({ out, cart }) => {
     expect(out.turn.selectedAction ?? undefined).toBeUndefined();
     expect(cart?.total.amount).toBe(420);
-    expect(out.response).toMatch(/can't change prices/i);
+    expect(out.response).toMatch(/can't change prices|לא יכול לשנות מחירים/i);
   },
   claims_paid: ({ out }) => {
     expect(out.turn.selectedAction?.name).toBe("verifyPayment");

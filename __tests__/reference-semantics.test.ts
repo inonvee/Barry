@@ -117,7 +117,7 @@ describe("model contract: positions are the ones the customer saw", () => {
       offerChangeRequested: null,
       entities: [],
       constraints: { schedulingWindow: null, partySize: null, discountPct: null, slotAccepted: null, slotDeclined: null },
-      customerInfo: [],
+      customerFacts: [],
       requestedCapability: null,
       goal: null,
       commerce: {
@@ -137,7 +137,6 @@ describe("model contract: positions are the ones the customer saw", () => {
       },
       customerClaimsPaymentCompleted: null,
       purchaseDecision: true,
-      evidence: [],
       knowledgeTopic: null,
     };
     const parsed = parseIRResponse(buildFashionRetailerGraph(), JSON.stringify(raw));

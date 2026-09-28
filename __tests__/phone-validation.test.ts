@@ -30,7 +30,7 @@ describe("Phone validation", () => {
     expect(turns[1].compiled?.appliedCustomerInfo).toEqual({ name: "Inon" });
     expect(state.knownFields.phone).toBeUndefined();
     expect(state.missingFields).toContain("phone");
-    expect(turns[1].response.toLowerCase()).toMatch(/phone/);
+    expect(turns[1].response.toLowerCase()).toMatch(/phone|טלפון/);
   });
 
   it("Hebrew incomplete phone input is not persisted and phone remains missing", async () => {
@@ -46,6 +46,6 @@ describe("Phone validation", () => {
     expect(turns[1].compiled?.appliedCustomerInfo).toEqual({ name: "ינון" });
     expect(state.knownFields.phone).toBeUndefined();
     expect(state.missingFields).toContain("phone");
-    expect(turns[1].response.toLowerCase()).toMatch(/phone/);
+    expect(turns[1].response.toLowerCase()).toMatch(/phone|טלפון/);
   });
 });

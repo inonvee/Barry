@@ -49,6 +49,10 @@ export type TurnTrace = {
   rejectedClaims: { claim: string; reason: string }[];
   steps: TurnStep[];
   stop: { reason: string; outcome: string };
+  /** Reply language and why; `fallback` when the model's reply broke a contract and the deterministic reply was used. */
+  reply?: { language: string; basis: string; fallback?: string };
+  /** The customer fields still missing after this turn (the compiler's truth). */
+  missingFields?: string[];
 };
 
 /** One full Observe→Update runtime turn, kept for explainability/debugging. */

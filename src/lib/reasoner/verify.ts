@@ -32,7 +32,25 @@ export type IRVerification = {
   /** The reasoner's raw customerInfo proposal, before grounding. */
   llmCustomerInfo?: Record<string, string>;
   rejected: IRRejection[];
+  /** Per proposed customer fact: what the model said, the quote it cited, and what grounding decided. */
+  customerFacts?: CustomerFactCheck[];
 };
+
+export type CustomerFactCheck = {
+  field: string;
+  value: string;
+  evidence: string | null;
+  status: "accepted" | "rejected";
+  reason?: string;
+};
+
+/**
+ * A customer field name is a plain business field ("phone", "name",
+ * "shoe_size"): lowercase letters, digits, underscores. Namespaced keys
+ * ("customerInfo.phone") and BARRY's internal "__" state keys are never
+ * customer fields — they are rejected, never rewritten.
+ */
+const CUSTOMER_FIELD = /^[a-z][a-z0-9_]{0,39}$/;
 
 const OFFERED_SLOT_START_KEY = "__offeredSlotStart";
 const SLOT_ACCEPTED_KEY = "__slotAccepted";
@@ -51,7 +69,9 @@ export function evidenceSupports(message: string, evidence: string | undefined, 
   const text = normalizeText(message);
   const quote = normalizeText(evidence);
   if (!text.includes(quote)) return false;
-  if (field === "phone") {
+  // Numeric values (phone numbers, ids) are compared by their digits, so
+  // "055-883 2177" in the message supports "0558832177".
+  if (field === "phone" || /^[\d\s()+\-./]+$/.test(value)) {
     const digits = digitsOnly(value);
     return digits.length > 0 && digitsOnly(quote).includes(digits);
   }
@@ -166,17 +186,20 @@ export function verifyIR(
   // Customer facts persist, so each one must be backed by evidence the
   // model cited from THIS message. Nothing is ever added here.
   const customerInfo: Record<string, string> = {};
+  const customerFacts: CustomerFactCheck[] = [];
   for (const [field, value] of Object.entries(ir.customerInfo)) {
     const evidence = ir.evidence?.[`customerInfo.${field}`];
-    if (evidenceSupports(customerMessage, evidence, value, field)) {
-      customerInfo[field] = value;
-    } else {
-      rejected.push({
-        claim: `customerInfo.${field}`,
-        value,
-        reason: evidence ? "evidence not found in message" : "no evidence cited",
-      });
+    let reason: string | undefined;
+    if (!CUSTOMER_FIELD.test(field)) {
+      reason = field.startsWith("__") ? "internal state key — never a customer field" : "not a plain field name";
+    } else if (!evidence) {
+      reason = "no evidence cited";
+    } else if (!evidenceSupports(customerMessage, evidence, value, field)) {
+      reason = normalizeText(customerMessage).includes(normalizeText(evidence)) ? "evidence does not contain the value" : "evidence not found in this message";
     }
+    customerFacts.push({ field, value, evidence: evidence ?? null, status: reason ? "rejected" : "accepted", ...(reason ? { reason } : {}) });
+    if (reason) rejected.push({ claim: CUSTOMER_FIELD.test(field) ? `customerInfo.${field}` : `customerInfo[${JSON.stringify(field)}]`, value, reason });
+    else customerInfo[field] = value;
   }
 
   const selectedOfferId = ir.selectedOfferId && findOffer(graph, ir.selectedOfferId) ? ir.selectedOfferId : undefined;
@@ -209,5 +232,5 @@ export function verifyIR(
     customerInfo,
   };
 
-  return { verified, verification: { llmCustomerInfo: ir.customerInfo, rejected } };
+  return { verified, verification: { llmCustomerInfo: ir.customerInfo, rejected, customerFacts } };
 }

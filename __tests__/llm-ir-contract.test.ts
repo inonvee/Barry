@@ -37,13 +37,12 @@ function validRawIR(overrides: Record<string, unknown> = {}) {
     offerChangeRequested: null,
     entities: [],
     constraints: { schedulingWindow: NULL_SCHEDULING_WINDOW, partySize: null, discountPct: null, slotAccepted: null, slotDeclined: null },
-    customerInfo: [],
+    customerFacts: [],
     requestedCapability: null,
     goal: null,
     commerce: null,
     customerClaimsPaymentCompleted: null,
     purchaseDecision: null,
-    evidence: [],
     knowledgeTopic: null,
     ...overrides,
   };
@@ -71,7 +70,7 @@ describe("LLM IR contract: parseIRResponse", () => {
           slotAccepted: null,
           slotDeclined: null,
         },
-        customerInfo: [{ key: "name", value: "Jordan Lee" }],
+        customerFacts: [{ field: "name", value: "Jordan Lee", evidence: "Jordan Lee" }],
       })
     );
 
@@ -103,10 +102,10 @@ describe("LLM IR contract: parseIRResponse", () => {
     if (!result.ok) expect(result.kind).toBe("schema_validation_error");
   });
 
-  it("rejects a response where entities/customerInfo are omitted entirely, not just empty", () => {
+  it("rejects a response where entities/customerFacts are omitted entirely, not just empty", () => {
     const graph = buildSpaGraph();
     const raw = validRawIR();
-    delete (raw as Record<string, unknown>).customerInfo;
+    delete (raw as Record<string, unknown>).customerFacts;
     const result = parseIRResponse(graph, JSON.stringify(raw));
     expect(result.ok).toBe(false);
   });

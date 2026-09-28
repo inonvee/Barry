@@ -139,8 +139,9 @@ describe("a decided customer is carried to checkout", () => {
     expect(take.turn.trace?.steps.map((s) => s.action)).toEqual(["addToCart"]);
     expect(take.turn.trace?.stop).toEqual({ reason: "needs_customer", outcome: "checkout_needs_info" });
     expect(take.state.missingFields).toEqual(["name", "phone"]);
-    expect(take.response).toMatch(/name/i);
-    expect(take.response).toMatch(/phone/i);
+    // Hebrew conversation -> Hebrew request, for exactly the business's fields.
+    expect(take.response).toMatch(/שם/);
+    expect(take.response).toMatch(/טלפון/);
 
     expect(last.turn.trace?.steps.map((s) => [s.action, s.trigger])).toEqual([["createCommerceCheckout", "customer"]]);
     expect(last.rich?.paymentUrl).toBeTruthy();
@@ -216,7 +217,7 @@ describe("the customer and the business stay in control", () => {
       const { last } = await converse(graph, [SEARCH, TAKE], { freshCatalog: false });
       expect(last.turn.trace?.steps.map((s) => s.action)).toEqual(["addToCart"]);
       expect(last.turn.trace?.stop).toEqual({ reason: "needs_customer", outcome: "capability_unavailable" });
-      expect(last.response).toMatch(/follow up/i);
+      expect(last.response).toMatch(/follow up|יחזור אלייך/i);
     } finally {
       registerCommerceAdapterFactoryForTests(id, undefined);
     }
@@ -343,7 +344,7 @@ describe("capability gate applies to customer-triggered actions too", () => {
       expect(take.turn.selectedAction ?? undefined).toBeUndefined();
       expect(take.state.knownFields.__commerceCartId).toBeUndefined();
       expect(addCalls).toBe(0);
-      expect(take.response).toMatch(/follow up/i);
+      expect(take.response).toMatch(/follow up|יחזור אלייך/i);
     } finally {
       registerCommerceAdapterFactoryForTests(id, undefined);
     }

@@ -65,19 +65,15 @@ describe("Regression 2: customerInfo is the model's evidence-cited claim — BAR
       offerChangeRequested: null,
       entities: [],
       constraints: { schedulingWindow: null, partySize: null, discountPct: null, slotAccepted: null, slotDeclined: null },
-      customerInfo: [
-        { key: "name", value: "Inon" },
-        { key: "phone", value: "057484848" },
+      customerFacts: [
+        { field: "name", value: "Inon", evidence: "My name is Inon" },
+        { field: "phone", value: "057484848", evidence: "my phone number is 057484848" },
       ],
       requestedCapability: null,
       goal: null,
       commerce: null,
       customerClaimsPaymentCompleted: null,
     purchaseDecision: null,
-      evidence: [
-        { key: "customerInfo.name", value: "My name is Inon" },
-        { key: "customerInfo.phone", value: "my phone number is 057484848" },
-      ],
       knowledgeTopic: null,
     });
 

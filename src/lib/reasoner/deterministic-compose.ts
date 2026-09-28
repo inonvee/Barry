@@ -1,24 +1,18 @@
 import type { ComposeResponseInput } from "./types";
+import { fieldLabel } from "./reply-contract";
 
 /**
- * Friendly singular labels for known customer-info field keys — a
- * "needs_info" reply must ask for EXACTLY what `missingFields` names,
- * one per real-world field, never invented or pluralized based on
- * unrelated context (a live bug: partySize=2 made BARRY ask for "names
- * and phone numbers" — plural, as if collecting two people's contact
- * info — when only ONE customer's info was actually missing).
+ * A "needs_info" reply asks for EXACTLY what `missingFields` names, one
+ * per real-world field, never invented or pluralized based on unrelated
+ * context (a live bug: partySize=2 made BARRY ask for "names and phone
+ * numbers" when only ONE customer's info was missing).
  */
-const FIELD_LABELS: Record<string, string> = {
-  name: "name",
-  phone: "phone number",
-  email: "email address",
-};
-
-function formatMissingFieldsList(missingFields: string[]): string {
-  const labels = missingFields.map((f) => FIELD_LABELS[f] ?? f);
+function formatMissingFieldsList(missingFields: string[], lang = "en"): string {
+  const labels = missingFields.map((f) => fieldLabel(f, lang));
+  const and = lang === "he" ? " ו" : " and ";
   if (labels.length === 1) return labels[0];
-  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
-  return `${labels.slice(0, -1).join(", ")}, and ${labels[labels.length - 1]}`;
+  if (labels.length === 2) return `${labels[0]}${and}${labels[1]}`;
+  return `${labels.slice(0, -1).join(", ")},${and}${labels[labels.length - 1]}`;
 }
 
 /**
@@ -38,16 +32,132 @@ function askVariantText(title: string, requested: Record<string, string> | undef
 }
 
 export function composeDeterministic(input: ComposeResponseInput): string {
+  const language = input.language;
+  const one = (part: ComposeResponseInput) => composeLocalized({ ...part, language });
   if (input.steps && input.steps.length > 0) {
     // Several things happened: say each in order, then the one thing still needed.
     const parts = input.steps.map((st, i) =>
-      composeSingle({ outcome: st.outcome, toolResult: st.toolResult, policyReason: st.policyReason, scheduling: i === input.steps!.length - 1 ? input.scheduling : undefined })
+      one({ outcome: st.outcome, toolResult: st.toolResult, policyReason: st.policyReason, scheduling: i === input.steps!.length - 1 ? input.scheduling : undefined })
     );
-    if (input.next) parts.push(composeSingle({ outcome: input.next }));
+    if (input.next) parts.push(one({ outcome: input.next }));
     return parts.join(" ");
   }
-  if (input.next) return `${composeSingle(input)} ${composeSingle({ outcome: input.next })}`;
+  if (input.next) return `${one(input)} ${one({ outcome: input.next })}`;
+  return one(input);
+}
+
+/** A policy refusal, in the conversation's language. */
+export function deniedText(reason: string, language?: { code: string }): string {
+  return language?.code === "he" ? `אני לא יכול לעשות את זה: ${reason}` : `I'm not able to do that: ${reason}`;
+}
+
+/** The conversation's language when BARRY has strings for it; otherwise English. */
+function composeLocalized(input: ComposeResponseInput): string {
+  if (input.language?.code === "he") {
+    const he = composeHebrew(input);
+    if (he !== undefined) return he;
+  }
   return composeSingle(input);
+}
+
+const optionLabel = (o: Record<string, string>) => Object.values(o).join(" / ");
+
+/** Hebrew for the operator-critical path (selection, cart, checkout, details, payment, order). */
+function composeHebrew(input: ComposeResponseInput): string | undefined {
+  const { outcome, toolResult, policyReason } = input;
+  if (policyReason) return `זה דורש אישור קצר של בעל העסק — ${policyReason} שלחתי לו ואחזור אלייך ברגע שיאושר.`;
+  switch (outcome.kind) {
+    case "needs_info":
+      return `מעולה — ${outcome.offerName}. אפשר ${formatMissingFieldsList(outcome.missingFields, "he")}?`;
+    case "checkout_needs_info":
+      return `כדי לשלוח קישור מאובטח לתשלום, אפשר ${formatMissingFieldsList(outcome.missingFields, "he")}?`;
+    case "confirm_purchase":
+      return `לשלוח לך קישור מאובטח לתשלום עבור ${outcome.offerName}?`;
+    case "clarify_reference":
+      return outcome.available > 0 ? `לאיזה מהם התכוונת? הצגתי ${outcome.available} אפשרויות.` : `מה את/ה מחפש/ת? אחפש בקטלוג.`;
+    case "capability_unavailable":
+      return `את השלב הזה אני עוד לא יכול להשלים כאן — רשמתי את הבחירה שלך והצוות יחזור אלייך כדי לסיים.`;
+    case "no_payment_to_verify":
+      return `אני לא רואה בקשת תשלום פתוחה בשיחה הזו, אז אין עדיין מה לאמת.`;
+    case "price_request":
+      return outcome.current
+        ? `הסכום הנוכחי הוא ${outcome.current.amount} ${outcome.current.currency}. אני לא יכול לשנות מחירים בעצמי.`
+        : `אני לא יכול לשנות מחירים בעצמי — זה המחיר שאני יכול להציע.`;
+    case "product_info": {
+      const inStock = outcome.variants.filter((v) => v.inStock);
+      if (outcome.asked && Object.keys(outcome.asked).length > 0) {
+        const hit = outcome.variants.find(
+          (v) => v.inStock && Object.entries(outcome.asked!).every(([k, val]) => Object.entries(v.options).some(([ok, ov]) => ok.toLowerCase() === k.toLowerCase() && ov.toLowerCase() === val.toLowerCase()))
+        );
+        if (hit) return `כן — ${outcome.productTitle} במלאי במידה ${optionLabel(outcome.asked)} (${hit.price}).`;
+        return `${outcome.productTitle} לא זמינה כרגע ב-${optionLabel(outcome.asked)}.${inStock.length ? ` במלאי: ${inStock.map((v) => optionLabel(v.options)).join(", ")}.` : ""}`;
+      }
+      return inStock.length ? `${outcome.productTitle} במלאי ב-${inStock.map((v) => `${optionLabel(v.options)} (${v.price})`).join(", ")}.` : `${outcome.productTitle} אזלה מהמלאי כרגע.`;
+    }
+    case "action": {
+      if (!toolResult) return undefined;
+      if (!toolResult.ok) return `מצטער — משהו השתבש (${toolResult.error}). ננסה אפשרות אחרת?`;
+      const output = toolResult.output as Record<string, unknown>;
+      switch (outcome.action.name) {
+        case "addToCart":
+        case "updateCartLine": {
+          const o = output as {
+            added: boolean;
+            cart?: { lines: { id: string; title: string; options: Record<string, string> }[]; total: { amount: number; currency: string } };
+            lineId?: string;
+            replacedLineId?: string;
+            notAdded?: { productTitle: string; requested?: Record<string, string>; availableOptions: Record<string, string>[] };
+          };
+          if (!o.added && o.notAdded) {
+            const options = [...new Set(o.notAdded.availableOptions.map(optionLabel))];
+            const asked = o.notAdded.requested && Object.keys(o.notAdded.requested).length ? optionLabel(o.notAdded.requested) : undefined;
+            if (options.length === 0) return `${o.notAdded.productTitle} לא זמינה כרגע${asked ? ` ב-${asked}` : ""}.`;
+            return asked
+              ? `${o.notAdded.productTitle} לא זמינה ב-${asked}. זמין: ${options.join(", ")}. מה מתאים לך?`
+              : `איזו אפשרות של ${o.notAdded.productTitle}? זמין: ${options.join(", ")}.`;
+          }
+          if (!o.cart) return "בוצע.";
+          const line = o.cart.lines.find((l) => l.id === o.lineId);
+          const what = line ? `${line.title}${Object.keys(line.options).length ? ` (${optionLabel(line.options)})` : ""}` : "הפריט";
+          const total = `סה״כ בעגלה: ${o.cart.total.amount} ${o.cart.total.currency}.`;
+          if (outcome.action.name === "addToCart") return o.replacedLineId ? `החלפתי ל-${what}. ${total}` : `שמתי לך בעגלה את ${what}. ${total}`;
+          return line ? `עדכנתי: ${what}. ${total}` : `הסרתי את הפריט מהעגלה. ${total}`;
+        }
+        case "createCommerceCheckout": {
+          const o = output as { checkoutUrl?: string; amount: { amount: number; currency: string } };
+          return o.checkoutUrl
+            ? `העגלה מוכנה: ${o.amount.amount} ${o.amount.currency}. הנה קישור מאובטח לתשלום — ההזמנה תיווצר רק אחרי שספק התשלומים יאשר את התשלום.`
+            : `העגלה מוכנה: ${o.amount.amount} ${o.amount.currency}. ההזמנה תיווצר רק אחרי שספק התשלומים יאשר את התשלום.`;
+        }
+        case "verifyPayment": {
+          const status = (output as { status: string }).status;
+          return status === "paid"
+            ? `התשלום אומת.`
+            : status === "pending"
+              ? `בדקתי מול ספק התשלומים — התשלום עוד לא התקבל. ברגע שיאושר שם, אסיים את ההזמנה.`
+              : `ספק התשלומים מדווח שהתשלום לא עבר. לנסות שוב?`;
+        }
+        case "createCommerceOrder":
+          return `התשלום אומת וההזמנה שלך אושרה (${(output as { orderId: string }).orderId}).`;
+        case "searchProducts": {
+          const o = output as { products: { title: string; variants: { price: { amount: number; currency: string }; options: Record<string, string>; inventory: { available: number } }[] }[]; requestedOptions?: Record<string, string> };
+          if (o.products.length === 0) return `לא מצאתי התאמה בקטלוג. רוצה לשנות משהו בחיפוש?`;
+          const wanted = o.requestedOptions ?? {};
+          const lines = o.products.slice(0, 3).map((product, index) => {
+            const matching = product.variants.filter((v) => Object.entries(wanted).every(([k, val]) => v.options[k]?.toLowerCase() === val.toLowerCase()));
+            const variant = matching.find((v) => v.inventory.available > 0) ?? matching[0] ?? product.variants[0];
+            const stock = Object.keys(wanted).length ? ` (${optionLabel(wanted)}${matching.some((v) => v.inventory.available > 0) ? " במלאי" : " לא במלאי"})` : "";
+            return `${index + 1}. ${product.title} - ${variant ? `${variant.price.amount} ${variant.price.currency}` : "מחיר לא זמין"}${stock}`;
+          });
+          return `הנה מה שמצאתי:\n${lines.join("\n")}`;
+        }
+        default:
+          return undefined;
+      }
+    }
+    default:
+      return undefined;
+  }
 }
 
 function composeSingle(input: ComposeResponseInput): string {
@@ -65,7 +175,7 @@ function composeSingle(input: ComposeResponseInput): string {
     case "knowledge_answer":
       return outcome.answer;
     case "needs_info":
-      return `Great choice — ${outcome.offerName}. Could you share your ${formatMissingFieldsList(outcome.missingFields)}?`;
+      return `Great choice — ${outcome.offerName}. Could you share your ${formatMissingFieldsList(outcome.missingFields, "en")}?`;
     case "ask_datetime":
       return `When would you like to come in for your ${outcome.offerName}?`;
     case "ask_slot_confirm":
@@ -125,7 +235,7 @@ function composeSingle(input: ComposeResponseInput): string {
     case "confirm_purchase":
       return `Shall I send you a secure payment link for the ${outcome.offerName}?`;
     case "checkout_needs_info":
-      return `To send you a secure payment link, could you share your ${formatMissingFieldsList(outcome.missingFields)}?`;
+      return `To send you a secure payment link, could you share your ${formatMissingFieldsList(outcome.missingFields, "en")}?`;
     case "capability_unavailable":
       return `I can't complete that step here yet — I've noted your choice and the team will follow up to finish it with you.`;
     case "no_payment_to_verify":

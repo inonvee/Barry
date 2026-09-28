@@ -13,6 +13,10 @@ import type { CustomerFacingLocalDisplay, GroundedContext, ReasonerContext, Sche
 import { resolveCapabilityProfiles, actionSupported, ACTION_REQUIREMENTS, type CapabilityProfiles } from "@/lib/capabilities";
 import type { TurnStep, TurnTrace } from "@/lib/state";
 import { CONSTITUTION_VERSION } from "@/lib/reasoner/constitution";
+import { resolveReplyLanguage, type ReplyLanguage } from "@/lib/reasoner/language";
+import { checkInfoRequest, infoRequestFields } from "@/lib/reasoner/reply-contract";
+import { composeDeterministic, deniedText } from "@/lib/reasoner/deterministic-compose";
+import type { ComposeResponseInput } from "@/lib/reasoner/types";
 import { BARRY_RUNTIME_VERSION, runtimeCommit } from "./version";
 import { getCatalogSchema, getCommerceProduct, getOwnedCart } from "@/lib/commerce/capability";
 import { sanitizeComposeInput } from "@/lib/reasoner/compose-sanitization";
@@ -242,7 +246,8 @@ export type TurnOutcome = {
 
 const HEBREW_LETTERS = /[\u0590-\u05ff]/;
 
-function prefersTwentyFourHourDisplay(customerMessage: string, businessLocale: string): boolean {
+function prefersTwentyFourHourDisplay(customerMessage: string, businessLocale: string, language?: ReplyLanguage): boolean {
+  if (language) return language.code === "he";
   return HEBREW_LETTERS.test(customerMessage) || /^he(?:-|$)/i.test(businessLocale);
 }
 
@@ -271,10 +276,11 @@ function buildSchedulingDisplay(
   graph: BusinessGraph,
   outcome: CompileOutcome,
   toolResult: ToolCallResult | null,
-  customerMessage: string
+  customerMessage: string,
+  language?: ReplyLanguage
 ): SchedulingDisplayFacts | undefined {
   const timeZone = graph.business.timezone;
-  const useTwentyFourHour = prefersTwentyFourHourDisplay(customerMessage, graph.business.locale);
+  const useTwentyFourHour = prefersTwentyFourHourDisplay(customerMessage, graph.business.locale, language);
 
   if (outcome.kind === "ask_slot_confirm") {
     return { offeredSlot: customerFacingDisplay(outcome.offeredStart, timeZone, useTwentyFourHour) };
@@ -298,6 +304,15 @@ export async function handleCustomerMessage(
   const state = await store.getOrCreate(conversationId, graph.business.id, customerId);
   const now = new Date().toISOString();
   state.messages.push({ role: "customer", content: message, at: now });
+  // Reply language: from the latest customer message that has WORDS (a
+  // phone number, email, code or emoji never switches it), then what this
+  // conversation already used, then the business locale.
+  const language = resolveReplyLanguage({
+    customerMessages: state.messages.filter((m) => m.role === "customer").map((m) => m.content),
+    stored: state.knownFields[SCRATCH_KEYS.conversationLanguage],
+    businessLocale: graph.business.locale,
+  });
+  if (language.basis === "current_turn" || language.basis === "recent_turn") state.knownFields[SCRATCH_KEYS.conversationLanguage] = language.code;
 
   const reasoner = getReasoner();
   const ctx: ToolContext = { graph, conversationId, customerId };
@@ -319,7 +334,7 @@ export async function handleCustomerMessage(
   // Non-action outcomes describe where the conversation now is. An
   // action's stage only applies once its tool actually succeeds.
   if (outcome.kind !== "action") state.stage = outcome.stage;
-  state.missingFields = outcome.kind === "needs_info" ? outcome.missingFields : [];
+  state.missingFields = outcome.kind === "needs_info" || outcome.kind === "checkout_needs_info" ? outcome.missingFields : [];
 
   // ── Goal-driven operator loop ─────────────────────────────────────────
   // The customer's message yields at most ONE customer-triggered action.
@@ -400,7 +415,8 @@ export async function handleCustomerMessage(
   const last = steps[steps.length - 1];
   const policyDecision: PolicyDecision | undefined = last?.policyDecision;
   const toolResult: ToolCallResult | null = last?.toolResult ?? null;
-  const response = await composeTurn(reasoner, { graph, state, customerMessage: message }, outcome, steps, next, message);
+  const composed = await composeTurn(reasoner, { graph, state, customerMessage: message }, outcome, steps, next, message, language);
+  const response = composed.text;
   const rich = mergeRich(steps.map((st) => buildRichPayload(st.outcome, st.toolResult)));
   state.messages.push({ role: "barry", content: response, at: new Date().toISOString(), ...(rich ? { rich } : {}) });
 
@@ -409,7 +425,7 @@ export async function handleCustomerMessage(
   // Recomputed (not reused from above) since it's cheap, pure, and the two
   // call sites above are in different branches — this is the single
   // source of truth for what the Inspector's "Response facts" show.
-  const schedulingDisplay = buildSchedulingDisplay(graph, outcome, toolResult, message);
+  const schedulingDisplay = buildSchedulingDisplay(graph, outcome, toolResult, message, language);
 
   const turn: TurnLog = {
     id: turnId(),
@@ -450,6 +466,8 @@ export async function handleCustomerMessage(
       rejectedClaims: verification.rejected.map((r) => ({ claim: r.claim, reason: r.reason })),
       steps: steps.map((st) => st.trace),
       stop,
+      reply: { language: language.code, basis: language.basis, ...(composed.fallback ? { fallback: composed.fallback } : {}) },
+      missingFields: state.missingFields,
     },
   };
   state.turns.push(turn);
@@ -575,34 +593,45 @@ async function composeTurn(
   outcome: CompileOutcome,
   steps: ExecutedStep[],
   next: CompileOutcome | undefined,
-  message: string
-): Promise<string> {
+  message: string,
+  language: ReplyLanguage
+): Promise<{ text: string; fallback?: string }> {
   const graph = rctx.graph;
   const last = steps[steps.length - 1];
+  let input: ComposeResponseInput;
   if (steps.length <= 1 && !next) {
-    if (last?.policyDecision.status === "denied") return `I'm not able to do that: ${last.policyDecision.reason}`;
-    if (last?.policyDecision.status === "requires_approval") {
-      return reasoner.composeResponse(rctx, { outcome, toolResult: null, policyReason: last.policyDecision.reason });
+    if (last?.policyDecision.status === "denied") {
+      return { text: deniedText(last.policyDecision.reason, language) };
     }
-    const scheduling = buildSchedulingDisplay(graph, outcome, last?.toolResult ?? null, message);
-    return reasoner.composeResponse(rctx, sanitizeComposeInput({ outcome, toolResult: last?.toolResult ?? null, scheduling }));
-  }
-  const scheduling = buildSchedulingDisplay(graph, outcome, last?.toolResult ?? null, message);
-  return reasoner.composeResponse(
-    rctx,
-    sanitizeComposeInput({
+    if (last?.policyDecision.status === "requires_approval") {
+      return { text: await reasoner.composeResponse(rctx, { outcome, toolResult: null, policyReason: last.policyDecision.reason, language }) };
+    }
+    input = sanitizeComposeInput({ outcome, toolResult: last?.toolResult ?? null, scheduling: buildSchedulingDisplay(graph, outcome, last?.toolResult ?? null, message, language), language });
+  } else {
+    input = sanitizeComposeInput({
       outcome,
       toolResult: last?.toolResult ?? null,
       policyReason: last?.policyDecision.status === "requires_approval" ? last.policyDecision.reason : undefined,
-      scheduling,
+      scheduling: buildSchedulingDisplay(graph, outcome, last?.toolResult ?? null, message, language),
       steps: steps.map((st) => ({
         outcome: st.outcome,
         toolResult: st.toolResult,
         policyReason: st.policyDecision.status !== "allowed" ? st.policyDecision.reason : undefined,
       })),
       next,
-    })
-  );
+      language,
+    });
+  }
+  const text = await reasoner.composeResponse(rctx, input);
+  // The details BARRY asks for are the compiler's truth. A reply that asks
+  // for anything else (or something stricter, or drops one) is replaced by
+  // the localized deterministic request — correct, just plainer.
+  const fields = infoRequestFields(next ?? outcome);
+  if (fields && reasoner.name === "llm") {
+    const violation = checkInfoRequest(text, fields, language.code);
+    if (violation) return { text: composeDeterministic(input), fallback: `missing-field contract: ${violation.reason}` };
+  }
+  return { text };
 }
 
 function mergeRich(parts: (NormalizedOutboundMessage["rich"] | undefined)[]): NormalizedOutboundMessage["rich"] | undefined {

@@ -48,6 +48,8 @@ export const SCRATCH_KEYS = {
   commerceCheckoutOnSuccess: "__commerceCheckoutOnSuccess",
   /** The customer decided to buy the selected offer (consent to send a payment link). */
   purchaseDecided: "__purchaseDecided",
+  /** The language this conversation is held in (from the latest customer message with words). */
+  conversationLanguage: "__conversationLanguage",
 };
 
 /**
