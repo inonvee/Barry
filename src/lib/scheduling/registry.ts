@@ -1,4 +1,4 @@
-import { resolveEnvCredentials } from "@/lib/connections/credentials";
+import { resolveConnectionCredentials } from "@/lib/connections/credentials";
 import { resolveConnection } from "@/lib/connections/registry";
 import { getBackend } from "@/lib/store";
 import type { ConnectionRecord } from "@/lib/store";
@@ -12,7 +12,7 @@ type SchedulingAdapterFactory = (connection: ConnectionRecord) => SchedulingAdap
 const factories = new Map<SchedulingProvider, SchedulingAdapterFactory>([
   ["memory", () => new MemorySchedulingAdapter(getBackend())],
   ["google-calendar", (connection) => {
-    const credentials = resolveEnvCredentials(connection);
+    const credentials = resolveConnectionCredentials(connection);
     const calendarId = String(connection.config.calendarId ?? credentials.calendarId ?? "");
     if (!calendarId) throw new Error("Google Calendar auth invalid");
     return new GoogleCalendarAdapter({ calendarId, backend: getBackend() });

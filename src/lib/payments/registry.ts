@@ -1,4 +1,4 @@
-import { resolveEnvCredentials } from "@/lib/connections/credentials";
+import { resolveConnectionCredentials } from "@/lib/connections/credentials";
 import { resolveConnection } from "@/lib/connections/registry";
 import type { ConnectionRecord } from "@/lib/store";
 import { MemoryPaymentAdapter } from "./adapters/memory";
@@ -11,7 +11,7 @@ type PaymentAdapterFactory = (connection: ConnectionRecord) => PaymentAdapter;
 const factories = new Map<PaymentProvider, PaymentAdapterFactory>([
   ["memory", () => new MemoryPaymentAdapter()],
   ["stripe", (connection) => {
-    const credentials = resolveEnvCredentials(connection);
+    const credentials = resolveConnectionCredentials(connection);
     return new StripePaymentAdapter({
       secretKey: credentials.secretKey,
       webhookSecret: credentials.webhookSecret,
@@ -20,7 +20,7 @@ const factories = new Map<PaymentProvider, PaymentAdapterFactory>([
     });
   }],
   ["payplus", (connection) => {
-    const credentials = resolveEnvCredentials(connection);
+    const credentials = resolveConnectionCredentials(connection);
     return new PayPlusPaymentAdapter({
       apiKey: credentials.apiKey,
       secretKey: credentials.secretKey,
@@ -71,8 +71,8 @@ export async function resolvePaymentAdapterForWebhook(
 
   const userAgent = headers["user-agent"] ?? headers["User-Agent"];
   if ((Array.isArray(userAgent) ? userAgent[0] : userAgent) === "PayPlus") {
-    const parsed = JSON.parse(rawBody) as { businessId?: string; more_info?: string };
-    const businessId = parsed.businessId ?? parsed.more_info?.split(":")[0];
+    const parsed = JSON.parse(rawBody) as { businessId?: string; more_info_1?: string; more_info?: string };
+    const businessId = parsed.businessId ?? parsed.more_info_1 ?? parsed.more_info?.split(":")[0];
     if (!businessId) throw new Error("Payment webhook business missing");
     return resolvePaymentAdapterForBusiness(businessId);
   }

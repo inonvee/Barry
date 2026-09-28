@@ -125,6 +125,9 @@ export async function processPaymentWebhook(
     verified.providerPaymentId
   );
   if (!payment) throw new Error("Unknown payment request");
+  if (verified.businessId && verified.businessId !== payment.businessId) {
+    throw new Error("Payment webhook business mismatch");
+  }
   if (verified.conversationId && verified.conversationId !== payment.conversationId) {
     throw new Error("Payment webhook conversation mismatch");
   }

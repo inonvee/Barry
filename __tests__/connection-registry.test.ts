@@ -8,8 +8,10 @@ import { getBackend } from "@/lib/store";
 import { setPaymentAdapterForTests } from "@/lib/payments/capability";
 import { setSchedulingAdapterForTests } from "@/lib/scheduling/capability";
 import { registerPaymentAdapterFactoryForTests, resolvePaymentAdapterForBusiness } from "@/lib/payments/registry";
+import { resolvePaymentAdapterForWebhook } from "@/lib/payments/registry";
 import { resolveSchedulingAdapterForBusiness } from "@/lib/scheduling/registry";
 import { PayPlusPaymentAdapter } from "@/lib/payments/adapters/payplus";
+import { resolveCredentials } from "@/lib/connections/credentials";
 import { resolveConnection } from "@/lib/connections/registry";
 import type { CreatePaymentLinkInput, PaymentAdapter, ProviderPayment, VerifiedPaymentWebhook } from "@/lib/payments/adapters/types";
 
@@ -65,6 +67,10 @@ afterEach(() => {
   registerPaymentAdapterFactoryForTests("stripe", undefined);
   registerPaymentAdapterFactoryForTests("payplus", undefined);
   delete process.env.BARRY_REQUIRE_BUSINESS_CONNECTIONS;
+  delete process.env.STRIPE_BUSINESS_A_SECRET_KEY;
+  delete process.env.STRIPE_BUSINESS_A_WEBHOOK_SECRET;
+  delete process.env.STRIPE_BUSINESS_B_SECRET_KEY;
+  delete process.env.STRIPE_BUSINESS_B_WEBHOOK_SECRET;
 });
 
 describe("per-business connection registry", () => {
@@ -188,6 +194,21 @@ describe("per-business connection registry", () => {
 
     expect(adapter.name).toBe("google-calendar");
   });
+
+  it("uses credentialsRef to resolve distinct credential sets for two businesses on the same provider", () => {
+    process.env.STRIPE_BUSINESS_A_SECRET_KEY = "sk_a";
+    process.env.STRIPE_BUSINESS_A_WEBHOOK_SECRET = "whsec_a";
+    process.env.STRIPE_BUSINESS_B_SECRET_KEY = "sk_b";
+    process.env.STRIPE_BUSINESS_B_WEBHOOK_SECRET = "whsec_b";
+
+    const businessA = resolveCredentials("env:stripe:business-a", "stripe");
+    const businessB = resolveCredentials("env:stripe:business-b", "stripe");
+
+    expect(businessA.secretKey).toBe("sk_a");
+    expect(businessA.webhookSecret).toBe("whsec_a");
+    expect(businessB.secretKey).toBe("sk_b");
+    expect(businessB.webhookSecret).toBe("whsec_b");
+  });
 });
 
 describe("PayPlus adapter", () => {
@@ -237,6 +258,43 @@ describe("PayPlus adapter", () => {
     });
   });
 
+  it("routes PayPlus webhooks by more_info_1 before falling back to idempotency key parsing", async () => {
+    const routedBusinessIds: string[] = [];
+    registerPaymentAdapterFactoryForTests("payplus", (connection) => {
+      routedBusinessIds.push(connection.businessId);
+      return new RecordingPaymentAdapter("payplus");
+    });
+    await getBackend().upsertBusinessConnection({
+      businessId: "payplus-business-a",
+      capability: "payments",
+      provider: "payplus",
+      status: "connected",
+      config: {},
+      credentialsRef: "env:payplus:a",
+      permissions: ["verifyWebhook"],
+    });
+
+    const body = JSON.stringify({
+      more_info_1: "payplus-business-a",
+      more_info: "legacy-business-id:conv:cust:50.00:ILS:Deposit",
+    });
+    await resolvePaymentAdapterForWebhook(body, { "user-agent": "PayPlus", hash: "hash" });
+
+    expect(routedBusinessIds).toEqual(["payplus-business-a"]);
+  });
+
+  it("fails PayPlus webhook routing when more_info_1 points at the wrong business", async () => {
+    process.env.BARRY_REQUIRE_BUSINESS_CONNECTIONS = "1";
+    const body = JSON.stringify({
+      more_info_1: "unknown-payplus-business",
+      more_info: "spa:conv:cust:50.00:ILS:Deposit",
+    });
+
+    await expect(
+      resolvePaymentAdapterForWebhook(body, { "user-agent": "PayPlus", hash: "hash" })
+    ).rejects.toThrow(/connection/i);
+  });
+
   it("rejects a PayPlus callback unless provider transaction verification succeeds", async () => {
     const body = JSON.stringify({ payment_request_uid: "ppr_123", transaction_uid: "txn_123", more_info: "idem-payplus" });
     const adapter = new PayPlusPaymentAdapter({
@@ -249,6 +307,27 @@ describe("PayPlus adapter", () => {
     await expect(
       adapter.verifyWebhook(body, { "user-agent": "PayPlus", hash: payPlusSignature(body, "secret") })
     ).rejects.toThrow(/verification/i);
+  });
+
+  it("uses documented transaction_uid lookup for PayPlus getPaymentStatus", async () => {
+    const calls: Record<string, unknown>[] = [];
+    const adapter = new PayPlusPaymentAdapter({
+      apiKey: "api",
+      secretKey: "secret",
+      paymentPageUid: "page",
+      fetcher: (async (_url: RequestInfo | URL, init?: RequestInit) => {
+        calls.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return Response.json({
+          results: { status: "success" },
+          data: { transactions: [{ transaction_uid: "txn_123", status: "success", more_info: "idem" }] },
+        });
+      }) as typeof fetch,
+    });
+
+    const status = await adapter.getPaymentStatus("txn_123");
+
+    expect(calls).toEqual([{ transaction_uid: "txn_123" }]);
+    expect(status?.status).toBe("paid");
   });
 
   it.each([
@@ -308,5 +387,35 @@ describe("PayPlus adapter", () => {
     await handlePaymentWebhook(callback, {});
 
     expect((await backend.listBookings(graph.business.id)).filter((b) => b.conversationId === conv)).toHaveLength(1);
+  });
+
+  it("rejects PayPlus callback with the wrong conversation correlation", async () => {
+    const adapter = new RecordingPaymentAdapter("payplus");
+    registerPaymentAdapterFactoryForTests("payplus", () => adapter);
+    const backend = getBackend();
+    await backend.upsertBusinessConnection({
+      businessId: "spa",
+      capability: "payments",
+      provider: "payplus",
+      status: "connected",
+      config: {},
+      credentialsRef: "env:payplus",
+      permissions: ["createPaymentLink", "verifyWebhook"],
+    });
+    const graph = buildSpaGraph();
+    const conv = `payplus-wrong-conv-${Date.now()}`;
+    await handleCustomerMessage(graph, conv, "cust-payplus-wrong", "Couples massage Tuesday at 3pm. My name is Inon and my phone is 0501234567");
+    await handleCustomerMessage(graph, conv, "cust-payplus-wrong", "Yes");
+    const payment = (await backend.listPaymentRequests(graph.business.id)).find((p) => p.conversationId === conv)!;
+
+    const callback = JSON.stringify({
+      provider: "payplus",
+      eventId: "evt_payplus_wrong_conv",
+      providerPaymentId: payment.providerPaymentId,
+      conversationId: "different-conversation",
+      status: "paid",
+    });
+
+    await expect(handlePaymentWebhook(callback, {})).rejects.toThrow(/conversation/i);
   });
 });

@@ -33,7 +33,7 @@ function headerValue(headers: PaymentWebhookHeaders, name: string): string | und
 
 function paymentStatusFromTransaction(transaction: Record<string, unknown>): "pending" | "paid" | "failed" | "cancelled" {
   const status = String(transaction.status ?? transaction.transaction_status ?? "").toLowerCase();
-  if (["success", "paid", "approved", "charged"].includes(status)) return "paid";
+  if (status === "success") return "paid";
   if (["failed", "failure", "rejected", "error"].includes(status)) return "failed";
   if (["cancelled", "canceled", "cancel"].includes(status)) return "cancelled";
   return "pending";
@@ -132,7 +132,7 @@ export class PayPlusPaymentAdapter implements PaymentAdapter {
   }
 
   async getPaymentStatus(providerPaymentId: string): Promise<ProviderPayment | undefined> {
-    const json = await this.request("Transactions/View", { more_info: providerPaymentId });
+    const json = await this.request("Transactions/View", { transaction_uid: providerPaymentId });
     const transaction = firstTransaction(json);
     if (!transaction) return undefined;
     return {
@@ -189,6 +189,7 @@ export class PayPlusPaymentAdapter implements PaymentAdapter {
       providerPaymentId: providerPaymentId || verifiedPaymentId,
       status: paymentStatusFromTransaction(transaction),
       verifiedAt: new Date().toISOString(),
+      businessId: String(body.more_info_1 ?? transaction.more_info_1 ?? "") || undefined,
       conversationId: String(body.more_info_2 ?? transaction.more_info_2 ?? "") || undefined,
       idempotencyKey: idempotencyKey || String(transaction.more_info ?? "") || undefined,
       amount: verifiedAmount ?? callbackAmount,

@@ -31,6 +31,7 @@ export type VerifiedPaymentWebhook = {
   status: PaymentStatus;
   verifiedAt: string;
   conversationId?: string;
+  businessId?: string;
   idempotencyKey?: string;
   amount?: number;
   currency?: string;
