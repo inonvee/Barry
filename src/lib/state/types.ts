@@ -45,7 +45,18 @@ export type TurnStep = {
  * result, and why the turn stopped.
  */
 export type TurnTrace = {
-  runtime: { barryVersion: string; commit: string | null; constitutionVersion: string; reasoner: "mock" | "llm"; model: string | null; composerModel?: string | null };
+  runtime: {
+    barryVersion: string;
+    commit: string | null;
+    constitutionVersion: string;
+    reasoner: "mock" | "llm";
+    model: string | null;
+    composerModel?: string | null;
+    /** Reasoning effort actually sent (null: not a reasoning model, or provider default). */
+    reasoningEffort?: string | null;
+    composerReasoningEffort?: string | null;
+    configError?: string;
+  };
   rejectedClaims: { claim: string; reason: string }[];
   steps: TurnStep[];
   stop: { reason: string; outcome: string };

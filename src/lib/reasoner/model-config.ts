@@ -21,7 +21,8 @@ export type ModelRole = "reasoner" | "composer" | "learner";
 
 export const BASELINE_MODEL = "gpt-4o-mini";
 
-const EFFORTS = new Set(["none", "minimal", "low", "medium", "high"]);
+export const VALID_REASONING_EFFORTS: ReadonlySet<string> = new Set(["none", "minimal", "low", "medium", "high"]);
+const EFFORTS = VALID_REASONING_EFFORTS;
 
 function env(name: string): string | undefined {
   const value = process.env[name]?.trim();

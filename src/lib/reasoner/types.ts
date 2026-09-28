@@ -104,4 +104,9 @@ export interface Reasoner {
   readonly model?: string;
   /** The model that words replies, when different. */
   readonly composerModel?: string;
+  /** Reasoning effort actually sent with understanding / composition calls (reasoning models only). */
+  readonly reasoningEffort?: string;
+  readonly composerReasoningEffort?: string;
+  /** A model configuration error (e.g. an invalid effort). Understanding then fails closed; replies are deterministic. */
+  readonly configError?: string;
 }

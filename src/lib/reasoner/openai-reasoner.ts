@@ -4,7 +4,7 @@ import { findOffer } from "@/lib/business-graph";
 import { LlmIRSchema, irJsonSchema, type CustomerFact, type LlmCommerce, type LlmIR, type LlmSchedulingWindow, type KeyValuePair } from "./schemas";
 import { catalogForModel } from "@/lib/commerce/catalog";
 import { profilesForModel } from "@/lib/capabilities/model";
-import { createCompletion, modelFor, samplingParams } from "./model-config";
+import { createCompletion, isReasoningModel, modelFor, reasoningEffortFor, samplingParams, VALID_REASONING_EFFORTS } from "./model-config";
 import { BARRY_CONSTITUTION } from "./constitution";
 import type { CommerceSemantics } from "./ir";
 import { composeDeterministic } from "./deterministic-compose";
@@ -488,7 +488,15 @@ export class OpenAIReasoner implements Reasoner {
   /** The understanding model (recorded in every turn trace). */
   readonly model: string;
   readonly composerModel: string;
-  private readonly reasoningEffort?: string;
+  /** Effort sent with each call (reasoning models only; undefined = provider default / not applicable). */
+  readonly reasoningEffort?: string;
+  readonly composerReasoningEffort?: string;
+  /**
+   * An invalid model configuration is not guessed around: understanding
+   * fails closed (no action can be compiled from it) and replies fall back
+   * to the deterministic composer, with the error in every turn trace.
+   */
+  readonly configError?: string;
 
   constructor(options: { model?: string; composerModel?: string; reasoningEffort?: string } = {}) {
     const apiKey = process.env.OPENAI_API_KEY;
@@ -496,7 +504,18 @@ export class OpenAIReasoner implements Reasoner {
     this.client = new OpenAI({ apiKey });
     this.model = options.model ?? modelFor("reasoner");
     this.composerModel = options.composerModel ?? options.model ?? modelFor("composer");
-    this.reasoningEffort = options.reasoningEffort;
+    try {
+      if (options.reasoningEffort !== undefined && !VALID_REASONING_EFFORTS.has(options.reasoningEffort)) {
+        throw new Error(`Invalid reasoning effort "${options.reasoningEffort}" for reasoner`);
+      }
+      const reasonerEffort = options.reasoningEffort ?? reasoningEffortFor("reasoner");
+      const composerEffort = reasoningEffortFor("composer");
+      this.reasoningEffort = isReasoningModel(this.model) ? reasonerEffort : undefined;
+      this.composerReasoningEffort = isReasoningModel(this.composerModel) ? composerEffort : undefined;
+    } catch (err) {
+      this.configError = err instanceof Error ? err.message : String(err);
+      logReasonerFailure("openai_api_error", { message: `model configuration: ${this.configError}` });
+    }
   }
 
   async understand(ctx: ReasonerContext): Promise<BarryIR> {
@@ -512,6 +531,10 @@ export class OpenAIReasoner implements Reasoner {
     const started = Date.now();
     const usage = { promptTokens: 0, completionTokens: 0, reasoningTokens: 0 };
     let lastFailure: string | undefined;
+
+    if (this.configError) {
+      return { ir: emptyIR("understanding_failed"), valid: false, attempts: 0, failure: "invalid_model_config", latencyMs: 0, usage, model: this.model };
+    }
 
     const attempt = async (correction?: string): Promise<BarryIR | null> => {
       let raw: string | null | undefined;
@@ -566,6 +589,7 @@ export class OpenAIReasoner implements Reasoner {
   }
 
   async composeResponse(ctx: ReasonerContext, input: ComposeResponseInput): Promise<string> {
+    if (this.configError) return composeDeterministic(input);
     const lastCustomerMessage = ctx.state.messages.filter((m) => m.role === "customer").at(-1)?.content ?? "";
 
     const summary = buildComposeSummary(
@@ -585,7 +609,7 @@ export class OpenAIReasoner implements Reasoner {
           { role: "system", content: COMPOSE_SYSTEM_PROMPT },
           { role: "user", content: JSON.stringify(summary) },
         ],
-        ...samplingParams(this.composerModel, "composer", 0.4),
+        ...samplingParams(this.composerModel, "composer", 0.4, this.composerReasoningEffort),
       });
       const text = completion.choices[0]?.message?.content?.trim();
       if (text) return enforceComposeGrounding(toPlainText(text), ctx, input);

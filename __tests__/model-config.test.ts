@@ -9,6 +9,9 @@ import { MemoryCommerceAdapter } from "@/lib/commerce/adapters/memory";
 import { setPaymentAdapterForTests } from "@/lib/payments/capability";
 import { MemoryPaymentAdapter } from "@/lib/payments/adapters/memory";
 import { ScriptedReasoner } from "./support/semantic-corpus";
+import { OpenAIReasoner } from "@/lib/reasoner/openai-reasoner";
+import { buildSpaGraph } from "@/lib/fixtures/spa";
+import { createInitialConversationState } from "@/lib/state";
 
 const KEYS = ["BARRY_MODEL", "BARRY_REASONER_MODEL", "BARRY_COMPOSER_MODEL", "BARRY_LEARNER_MODEL", "BARRY_REASONER_REASONING_EFFORT", "BARRY_COMPOSER_REASONING_EFFORT"];
 afterEach(() => {
@@ -61,6 +64,45 @@ describe("model selection per job", () => {
     await createCompletion(client, { model: "new-model", messages: [{ role: "user", content: "x" }], temperature: 0.2 });
     expect(calls).toHaveLength(2);
     expect(calls[1]).toEqual({ model: "new-model", messages: [{ role: "user", content: "x" }] });
+  });
+});
+
+describe("the configured models are what runs, and a bad configuration fails closed", () => {
+  const withKey = <T,>(fn: () => T): T => {
+    const prev = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "sk-test-not-used";
+    try {
+      return fn();
+    } finally {
+      if (prev === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = prev;
+    }
+  };
+
+  it("the preview configuration: a reasoning model for understanding (with its effort), a separate composer", () => {
+    process.env.BARRY_REASONER_MODEL = "gpt-5.6-sol";
+    process.env.BARRY_REASONER_REASONING_EFFORT = "low";
+    process.env.BARRY_COMPOSER_MODEL = "gpt-4o-mini";
+    const r = withKey(() => new OpenAIReasoner());
+    expect(r.model).toBe("gpt-5.6-sol");
+    expect(r.reasoningEffort).toBe("low");
+    expect(r.composerModel).toBe("gpt-4o-mini");
+    expect(r.composerReasoningEffort).toBeUndefined(); // not a reasoning model: temperature, no effort
+    expect(r.configError).toBeUndefined();
+  });
+
+  it("an invalid effort never reaches the provider: understanding fails closed and replies are deterministic", async () => {
+    process.env.BARRY_REASONER_MODEL = "gpt-5.6-sol";
+    process.env.BARRY_REASONER_REASONING_EFFORT = "turbo";
+    const r = withKey(() => new OpenAIReasoner());
+    expect(r.configError).toMatch(/Invalid reasoning effort "turbo"/);
+    const graph = buildSpaGraph();
+    const ctx = { graph, state: createInitialConversationState("c", graph.business.id, "cust"), customerMessage: "hello" };
+    const result = await r.understandDetailed(ctx);
+    expect(result).toMatchObject({ valid: false, attempts: 0, failure: "invalid_model_config" });
+    expect(result.ir.intent).toBe("understanding_failed");
+    const text = await r.composeResponse(ctx, { outcome: { kind: "ask_general", stage: "discovery", offerNames: [] } });
+    expect(typeof text).toBe("string");
   });
 });
 
