@@ -23,6 +23,8 @@ Project Settings → Environment Variables, for the environments you want
 | `BARRY_COMPOSER_REASONING_EFFORT` | optional | as above, for composition |
 | `BARRY_LEARNER_MODEL` | optional | Learn Business extraction; defaults to the reasoner model |
 | `BARRY_MODEL` | e.g. `gpt-4o-mini` | legacy single-model setting, still honoured as the fallback |
+| `BARRY_OWNER_TOKEN` | long random string | owner routes (Learn Business, Connections); required in deployments |
+| `BARRY_FOUNDER_TOKEN` | long random string, >= 32 chars, different from the owner token | BARRY HQ (`/hq`). Unset => HQ does not exist (404) in every environment |
 
 Choose the launch reasoner with the semantic evals, not by cost: run
 `npm run eval:models` (needs `OPENAI_API_KEY`; see `__tests__/live-model-comparison.test.ts`)

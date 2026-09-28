@@ -207,6 +207,98 @@ the conversation is and asks whatever's actually next.
 language; on failure it falls back to `composeDeterministic()` (the same
 canned phrasing `MockReasoner` uses) rather than losing the reply.
 
+## Model roles
+
+Three jobs, configured independently (`src/lib/reasoner/model-config.ts`):
+
+| Role | Env | Job | Risk |
+|---|---|---|---|
+| reasoner | `BARRY_REASONER_MODEL` (+ `BARRY_REASONER_REASONING_EFFORT`) | customer message -> BARRY IR | highest: a misunderstanding picks the wrong operation |
+| composer | `BARRY_COMPOSER_MODEL` (+ `BARRY_COMPOSER_REASONING_EFFORT`) | verified outcome -> reply wording | lower: it only phrases facts BARRY already decided |
+| learner | `BARRY_LEARNER_MODEL` | business pages -> candidate facts | owner verifies everything |
+
+Composer and learner default to the reasoner model; the reasoner defaults to
+`BARRY_MODEL`, then the historical baseline. Reasoning models (GPT-5 family,
+o-series) get `reasoning_effort` and never `temperature`; others get
+`temperature`. A model that rejects a sampling parameter is retried once
+without it. An **invalid** configuration (e.g. an unknown effort) is not
+guessed around: understanding fails closed (`understanding_failed`, no
+provider call, so no action can be compiled) and replies use the
+deterministic composer. Every trace records the reasoner model, composer
+model, the effort actually sent to each, and any config error.
+
+## Customer facts: field + value + evidence, bound
+
+The model reports customer details as one list, each item bound to its own
+proof: `customerFacts: [{ field, value, evidence }]`. `evidence` is the
+exact span of THIS customer message that states the value. There is no
+separate evidence map and no key namespace for the model to reproduce —
+the live bug this replaced was a model emitting the key `customerInfo.phone`,
+whose evidence was then looked up at `customerInfo.customerInfo.phone` and
+the (correct) phone rejected.
+
+`verifyIR()` decides each fact, and the verdict is recorded per fact
+(`turn.verification.customerFacts`: proposed value, evidence, accepted /
+rejected + reason):
+
+- the field must be a plain business field name: `^[a-z][a-z0-9_]{0,39}$`.
+  Any name the business defines works (`shoe_size`, `company`), not a fixed
+  list. Namespaced keys (`customerInfo.phone`) and BARRY's internal `__`
+  state keys (`__paid`, `__commerceCartId`) are rejected, never rewritten;
+- the evidence must occur in this message and contain the value. Numbers
+  (phones, sizes, codes) compare by digits, so `055-883-2177` supports
+  `0558832177` — deterministic normalization, not interpretation.
+
+Accepted facts are applied to state; only then are missing fields computed.
+When BARRY has asked for fields, the model is told their names
+(`askedFor`) so an answer maps to the business's own field names.
+
+## Reply language
+
+A message that is only a phone number, an email, a code, a link, a price
+or an emoji carries no language and never switches the conversation
+(`src/lib/reasoner/language.ts`). Resolution, per turn:
+
+1. the current customer message, if it has words (>= 3 letters after
+   removing links, emails and digit-bearing tokens);
+2. the most recent earlier customer message that does;
+3. the language stored for the conversation (`__conversationLanguage`);
+4. the business locale;
+5. English.
+
+This is the Unicode *script* of the words — a general signal, not a phrase
+table. A non-Latin script with real words wins over Latin fragments inside
+it ("Onyx", "M" in a Hebrew sentence). The composer receives the chosen
+language and the text it was based on (so Spanish vs English, both Latin,
+is still mirrored); the deterministic composer has Hebrew and English
+strings. `trace.reply` records the language and its basis.
+
+## Missing fields are deterministic truth
+
+What BARRY asks the customer for is exactly `state.missingFields`, computed
+by the compiler from the Business Genome / playbook (`checkoutRequires`,
+offer requirements) after applying accepted facts. The model may phrase the
+request, not change it. For `needs_info` / `checkout_needs_info` replies,
+`checkInfoRequest()` (`src/lib/reasoner/reply-contract.ts`) verifies the
+composed text asks for every missing contact field, for no other contact
+field, and for no stricter variant ("full name" when the business needs
+"name"). A violation replaces the reply with the localized deterministic
+request and is recorded in `trace.reply.fallback`. Custom business fields
+can't be checked generically; they are still only ever requested when
+missing.
+
+## Grounding rules (summary)
+
+- The model's understanding is used as-is except where it is unsupported:
+  customer facts need evidence in this message; references must resolve to
+  a product BARRY actually showed (1-based position -> real id); a claimed
+  payment is only a reason to ask the provider (`verifyPayment`).
+- Prices, stock, availability, policies and payment status come only from
+  providers or verified knowledge, never from the model.
+- Nothing the model outputs is a tool call. The compiler derives actions
+  from grounded understanding + state; policy and capability gates decide
+  whether they run.
+
 ## The operator loop (goal-driven, bounded)
 
 BARRY is goal-driven, not request-driven. A customer message yields at most
@@ -247,11 +339,31 @@ the model's context, readiness, Learn Stack and the Connections page all use.
 
 ## Turn traces (HQ-ready)
 
-Every `TurnLog.trace` records the runtime version, constitution version and
-model; grounding rejections; each step with trigger, capability, provider,
-policy decision, result and the *names* of changed state keys; and why the
-turn stopped. Persisted in `turn_logs.trace` (migration 0011; turns still
-save without it, the explanation is dropped with a logged warning).
+Every `TurnLog.trace` records the runtime version, commit, constitution
+version, reasoner and composer models and the reasoning effort sent to each;
+grounding rejections; each step with trigger, capability, provider, policy
+decision, result, stage change and the *names* of changed state keys; why
+the turn stopped; the missing fields; the reply language, its basis and any
+deterministic fallback; and the numbered products and cart BARRY saw
+(catalog data only). The trace never contains customer values — those stay
+in messages, state and `verification`. Persisted in `turn_logs.trace`
+(migration 0011; turns still save without it, the explanation is dropped
+with a logged warning). The simulator Inspector and BARRY HQ render it.
+
+## Readiness semantics
+
+One computation, used by Learn Business, Connections and BARRY HQ
+(`buildReadiness` + `buildCapabilityReport` over `resolveCapabilityProfiles`):
+
+- **understanding**: `not_started` / `partial` / `needs_review` / `verified`
+  from owner-approved facts against what each enabled capability needs;
+- **operational**: `ready` only with no blockers. Blockers: unanswered
+  owner questions, unverified learned facts, a needed capability without a
+  working connection, a capability running on a simulated provider, a
+  connection never verified, no customer messaging channel.
+
+A simulated provider is never "ready". Nothing is "live" unless a real
+provider completed it and the provider verified it (see `docs/HQ.md`).
 
 ## Asynchronous events
 
