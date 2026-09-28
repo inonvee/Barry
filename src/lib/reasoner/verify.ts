@@ -1,3 +1,4 @@
+import { groundStructuredSearch, normalizeCurrency, type CatalogSchema } from "@/lib/commerce/catalog";
 import type { BusinessGraph } from "@/lib/business-graph";
 import { findOffer } from "@/lib/business-graph";
 import type { ConversationState } from "@/lib/state";
@@ -84,9 +85,9 @@ function groundScheduling(window: SchedulingConstraint | undefined, rejected: IR
   return date || time ? { date, time } : undefined;
 }
 
-function groundCommerce(commerce: CommerceSemantics | undefined, rejected: IRRejection[]): CommerceSemantics | undefined {
+function groundCommerce(commerce: CommerceSemantics | undefined, rejected: IRRejection[], catalog?: CatalogSchema): CommerceSemantics | undefined {
   if (!commerce) return undefined;
-  const grounded: CommerceSemantics = { ...commerce };
+  const grounded: CommerceSemantics = { ...commerce, query: commerce.query ? { ...commerce.query } : undefined };
   if (grounded.reference && (!Number.isInteger(grounded.reference.index) || grounded.reference.index < 0)) {
     rejected.push({ claim: "commerce.reference", value: grounded.reference, reason: "invalid index" });
     grounded.reference = undefined;
@@ -99,15 +100,40 @@ function groundCommerce(commerce: CommerceSemantics | undefined, rejected: IRRej
     rejected.push({ claim: "commerce.requestedPrice", value: grounded.requestedPrice, reason: "not a positive amount" });
     grounded.requestedPrice = undefined;
   }
-  if (grounded.query?.budget && !(grounded.query.budget.amount > 0)) {
-    rejected.push({ claim: "commerce.query.budget", value: grounded.query.budget, reason: "not a positive amount" });
-    grounded.query = { ...grounded.query, budget: undefined };
-  }
   if (grounded.variant) {
     const clean = Object.fromEntries(
       Object.entries(grounded.variant).filter(([k, v]) => typeof k === "string" && k.trim() && typeof v === "string" && v.trim())
     );
     grounded.variant = Object.keys(clean).length > 0 ? clean : undefined;
+  }
+
+  if (catalog) {
+    // Structured fields must exist in THIS provider's catalog. Canonicalise
+    // what does, move a variant-option key the model filed as an attribute,
+    // reject the rest — the customer's words stay in queryText for ranking.
+    const { search, rejected: catalogRejections } = groundStructuredSearch(catalog, {
+      category: grounded.query?.category,
+      attributes: grounded.query?.attributes,
+      options: grounded.variant,
+      budget: grounded.query?.budget,
+    });
+    for (const r of catalogRejections) {
+      const claim = r.field.startsWith("options.") ? `commerce.variant.${r.field.slice(8)}` : `commerce.query.${r.field}`;
+      rejected.push({ claim, value: r.value, reason: r.reason });
+    }
+    if (grounded.query) {
+      grounded.query = { ...grounded.query, category: search.category, attributes: search.attributes, budget: search.budget };
+    }
+    grounded.variant = search.options;
+  } else if (grounded.query?.budget) {
+    const { budget } = grounded.query;
+    const currency = budget.currency === undefined ? undefined : normalizeCurrency(budget.currency);
+    if (!(budget.amount > 0) || (budget.currency !== undefined && !currency)) {
+      rejected.push({ claim: "commerce.query.budget", value: budget, reason: !(budget.amount > 0) ? "not a positive amount" : "unrecognised currency" });
+      grounded.query = { ...grounded.query, budget: undefined };
+    } else {
+      grounded.query = { ...grounded.query, budget: { amount: budget.amount, currency } };
+    }
   }
   return grounded;
 }
@@ -116,7 +142,8 @@ export function verifyIR(
   graph: BusinessGraph,
   customerMessage: string,
   ir: BarryIR,
-  state?: ConversationState
+  state?: ConversationState,
+  context: { catalog?: CatalogSchema } = {}
 ): { verified: BarryIR; verification: IRVerification } {
   const rejected: IRRejection[] = [];
 
@@ -162,7 +189,7 @@ export function verifyIR(
       slotAccepted,
       slotDeclined,
     },
-    commerce: groundCommerce(ir.commerce, rejected),
+    commerce: groundCommerce(ir.commerce, rejected, context.catalog),
     customerInfo,
   };
 

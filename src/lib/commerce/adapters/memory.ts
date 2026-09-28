@@ -1,4 +1,5 @@
 import type { Cart, CartLine, Checkout, CommerceAdapter, Money, Order, Product, ProductSearchQuery } from "../types";
+import { deriveCatalogSchema, type CatalogSchema } from "../catalog";
 
 function id(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
@@ -28,10 +29,11 @@ function tokenize(text: string): Set<string> {
   return out;
 }
 
-function textIncludes(value: unknown, needle: string): boolean {
-  if (!needle) return true;
-  if (Array.isArray(value)) return value.some((v) => String(v).toLowerCase().includes(needle));
-  return String(value ?? "").toLowerCase().includes(needle);
+/** Exact (case-insensitive) match of a structured value against a scalar or multi-valued attribute. */
+function valueMatches(value: unknown, wanted: string): boolean {
+  const w = wanted.toLowerCase();
+  if (Array.isArray(value)) return value.some((v) => String(v).toLowerCase() === w);
+  return String(value ?? "").toLowerCase() === w;
 }
 
 export class MemoryCommerceAdapter implements CommerceAdapter {
@@ -41,36 +43,47 @@ export class MemoryCommerceAdapter implements CommerceAdapter {
 
   constructor(private readonly products: Product[]) {}
 
+  async describeCatalog(): Promise<CatalogSchema> {
+    return deriveCatalogSchema(this.products);
+  }
+
   /**
-   * Generic catalog search: structured attribute/option/budget filters
-   * are exact (case-insensitive) and must all hold; free text is scored
-   * by Unicode-aware token overlap against everything the catalog says
-   * about a product (title, description, category, attribute values —
-   * including any multilingual keywords the business itself provides).
-   * Nothing here knows what kind of products these are.
+   * Generic catalog search. Structured filters (category, attributes,
+   * variant options, budget) are exact and must all hold. Free text only
+   * RANKS when any structured filter is present — a customer's extra
+   * words must never veto an otherwise valid structured match; with no
+   * structured filter at all, free text is the only signal and must
+   * overlap. Nothing here knows what kind of products these are.
    */
   async searchProducts(query: ProductSearchQuery): Promise<{ products: Product[] }> {
     const queryTokens = tokenize([query.text, query.category, ...Object.values(query.attributes ?? {})].filter(Boolean).join(" "));
-    const matchesOptions = (v: Product["variants"][number]) =>
-      Object.entries(query.options ?? {}).every(([key, value]) => v.options[key]?.toLowerCase() === value.toLowerCase());
+    const structured =
+      Boolean(query.category) ||
+      Object.keys(query.attributes ?? {}).length > 0 ||
+      Object.keys(query.options ?? {}).length > 0 ||
+      Boolean(query.budget);
+    const optionsMatch = (v: Product["variants"][number]) =>
+      Object.entries(query.options ?? {}).every(([key, value]) => valueMatches(v.options[key], value));
+    const withinBudget = (v: Product["variants"][number]) =>
+      !query.budget || (v.price.currency.toUpperCase() === query.budget.currency.toUpperCase() && v.price.amount <= query.budget.amount);
+    // A variant qualifies only if it satisfies options AND budget together.
+    const qualifying = (v: Product["variants"][number]) => optionsMatch(v) && withinBudget(v);
 
     const scored = this.products
       .filter((product) => {
         if (query.category && product.category.toLowerCase() !== query.category.toLowerCase()) return false;
         for (const [key, value] of Object.entries(query.attributes ?? {})) {
-          if (!textIncludes(product.attributes[key], value.toLowerCase())) return false;
+          if (!valueMatches(product.attributes[key], value)) return false;
         }
-        if (query.options && !product.variants.some(matchesOptions)) return false;
-        if (query.budget && !product.variants.some((v) => v.price.currency === query.budget!.currency && v.price.amount <= query.budget!.amount)) return false;
-        return true;
+        return product.variants.some(qualifying);
       })
       .map((product) => {
         const haystack = tokenize([product.title, product.description, product.category, Object.values(product.attributes).flat().join(" ")].join(" "));
         const score = [...queryTokens].filter((t) => haystack.has(t)).length;
-        const available = product.variants.some((v) => v.inventory.available > 0 && matchesOptions(v));
+        const available = product.variants.some((v) => v.inventory.available > 0 && qualifying(v));
         return { product, score, available };
       })
-      .filter(({ score }) => queryTokens.size === 0 || score > 0);
+      .filter(({ score }) => structured || queryTokens.size === 0 || score > 0);
 
     scored.sort((a, b) => Number(b.available) - Number(a.available) || b.score - a.score);
     return { products: scored.slice(0, 5).map(({ product }) => clone(product)) };

@@ -3,7 +3,8 @@ import type { BusinessGraph } from "@/lib/business-graph";
 import { getBackend } from "@/lib/store";
 import type { PaymentRequestRecord } from "@/lib/store";
 import { resolveCommerceAdapterForBusiness } from "./registry";
-import type { Cart, CommerceAdapter, Order, Product, ProductSearchQuery, ProductVariant } from "./types";
+import { groundSearchQuery, type CatalogSchema, type SearchRequest } from "./catalog";
+import type { Cart, CommerceAdapter, Order, Product, ProductVariant } from "./types";
 
 /**
  * Commerce capability. Two rules hold everywhere in this module:
@@ -21,9 +22,30 @@ type Ctx = { graph: BusinessGraph; customerId: string; conversationId: string };
 
 export class CommerceError extends Error {}
 
-export async function searchCommerceProducts(graph: BusinessGraph, query: ProductSearchQuery) {
+const SCHEMA_TTL_MS = 5 * 60 * 1000;
+const schemaCache = new Map<string, { schema: CatalogSchema; at: number; adapter: CommerceAdapter }>();
+
+/** The provider's searchable catalog schema, cached briefly per business (and per adapter instance). */
+export async function getCatalogSchema(graph: BusinessGraph): Promise<CatalogSchema> {
   const adapter = await resolveCommerceAdapterForBusiness(graph.business.id);
-  return adapter.searchProducts(query);
+  const cached = schemaCache.get(graph.business.id);
+  if (cached && cached.adapter === adapter && Date.now() - cached.at < SCHEMA_TTL_MS) return cached.schema;
+  const schema = await adapter.describeCatalog();
+  schemaCache.set(graph.business.id, { schema, at: Date.now(), adapter });
+  return schema;
+}
+
+/**
+ * Search through the provider. The query is re-grounded against the
+ * provider's own schema first, whoever the caller is: the provider only
+ * ever receives fields its catalog actually has.
+ */
+export async function searchCommerceProducts(graph: BusinessGraph, query: SearchRequest) {
+  const adapter = await resolveCommerceAdapterForBusiness(graph.business.id);
+  const schema = await getCatalogSchema(graph);
+  const grounded = groundSearchQuery(schema, query);
+  const result = await adapter.searchProducts(grounded.query);
+  return { ...result, query: grounded.query, dropped: grounded.rejected };
 }
 
 export async function getCommerceProduct(graph: BusinessGraph, productId: string) {

@@ -202,9 +202,10 @@ export const searchProducts = defineTool({
       category: input.category,
       attributes: input.attributes,
       options: input.options,
-      budget: input.budgetAmount ? { amount: input.budgetAmount, currency: input.currency ?? "ILS" } : undefined,
+      // A missing currency is the catalog's own (grounded in the capability layer).
+      budget: input.budgetAmount ? { amount: input.budgetAmount, currency: input.currency } : undefined,
     });
-    return { products: result.products, requestedOptions: input.options };
+    return { products: result.products, requestedOptions: result.query.options };
   },
 });
 

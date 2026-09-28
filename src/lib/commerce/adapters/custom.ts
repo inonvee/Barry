@@ -1,4 +1,16 @@
+import { z } from "zod";
 import type { Cart, Checkout, CommerceAdapter, Order, Product, ProductSearchQuery } from "../types";
+import { normalizeCurrency, type CatalogSchema } from "../catalog";
+
+const FacetSchema = z.object({ key: z.string().min(1).max(64), values: z.array(z.string().max(200)).max(500) });
+/** The provider's self-description, validated: BARRY never trusts an unshaped schema. */
+const CatalogSchemaSchema = z.object({
+  categories: z.array(z.string().max(200)).max(500),
+  attributes: z.array(FacetSchema).max(100),
+  variantOptions: z.array(FacetSchema).max(50),
+  currency: z.string(),
+  priceRange: z.object({ min: z.number(), max: z.number() }).optional(),
+});
 
 type Fetcher = typeof fetch;
 
@@ -44,6 +56,15 @@ export class CustomCommerceAdapter implements CommerceAdapter {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  /** GET /catalog/schema — required by the custom-commerce contract. */
+  async describeCatalog(): Promise<CatalogSchema> {
+    const parsed = CatalogSchemaSchema.safeParse(await this.request<unknown>("/catalog/schema"));
+    if (!parsed.success) throw new Error("Commerce provider returned an invalid catalog schema");
+    const currency = normalizeCurrency(parsed.data.currency);
+    if (!currency) throw new Error("Commerce provider catalog currency is not an ISO 4217 code");
+    return { ...parsed.data, currency };
   }
 
   searchProducts(query: ProductSearchQuery): Promise<{ products: Product[] }> {

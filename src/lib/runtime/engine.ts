@@ -1,5 +1,5 @@
 import type { BusinessGraph } from "@/lib/business-graph";
-import { knowledgeSearch } from "@/lib/business-graph";
+import { isActionAvailable, knowledgeSearch } from "@/lib/business-graph";
 import { resolveBusinessGraph } from "@/lib/business-graph-repository";
 import { decide, type PolicyDecision } from "@/lib/policy";
 import { getReasoner } from "@/lib/reasoner";
@@ -10,7 +10,7 @@ import type { ConversationState, TurnLog } from "@/lib/state";
 import { getBackend } from "@/lib/store";
 import { formatLocalDateTime } from "@/lib/scheduling/resolver";
 import type { CustomerFacingLocalDisplay, GroundedContext, SchedulingDisplayFacts } from "@/lib/reasoner/types";
-import { getCommerceProduct, getOwnedCart } from "@/lib/commerce/capability";
+import { getCatalogSchema, getCommerceProduct, getOwnedCart } from "@/lib/commerce/capability";
 import { sanitizeComposeInput } from "@/lib/reasoner/compose-sanitization";
 import { verifyIR } from "@/lib/reasoner/verify";
 import {
@@ -293,7 +293,7 @@ export async function handleCustomerMessage(
   // The model owns understanding; verifyIR() only GROUNDS it — evidence
   // for persisted facts, consistency with current state, structural
   // ranges. It never adds a semantic value of its own.
-  const { verified: ir, verification } = verifyIR(graph, message, rawIr, state);
+  const { verified: ir, verification } = verifyIR(graph, message, rawIr, state, { catalog: grounded?.catalog });
   const prevStage = state.stage;
   let outcome = compile(graph, state, ir);
 
@@ -397,8 +397,16 @@ export async function handleCustomerMessage(
 async function buildGroundedContext(graph: BusinessGraph, state: ConversationState, ctx: ToolContext): Promise<GroundedContext | undefined> {
   const lastIds = state.knownFields[SCRATCH_KEYS.commerceLastProductIds]?.split(",").filter(Boolean) ?? [];
   const cartId = state.knownFields[SCRATCH_KEYS.commerceCartId];
-  if (lastIds.length === 0 && !cartId) return undefined;
+  const canSearch = isActionAvailable(graph, "searchProducts");
+  if (lastIds.length === 0 && !cartId && !canSearch) return undefined;
   const grounded: GroundedContext = {};
+  if (canSearch) {
+    try {
+      grounded.catalog = await getCatalogSchema(graph);
+    } catch (err) {
+      console.error("[barry:engine] catalog schema unavailable", err instanceof Error ? err.message : err);
+    }
+  }
   try {
     const products = await Promise.all(lastIds.map((id) => getCommerceProduct(graph, id)));
     grounded.shownResults = products.flatMap((product, index) =>

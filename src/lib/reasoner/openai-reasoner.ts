@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import type { BusinessGraph } from "@/lib/business-graph";
 import { findOffer } from "@/lib/business-graph";
 import { LlmIRSchema, irJsonSchema, type LlmCommerce, type LlmIR, type LlmSchedulingWindow, type KeyValuePair } from "./schemas";
+import { catalogForModel } from "@/lib/commerce/catalog";
 import { BARRY_CONSTITUTION } from "./constitution";
 import type { CommerceSemantics } from "./ir";
 import { composeDeterministic } from "./deterministic-compose";
@@ -104,6 +105,8 @@ function buildUnderstandingContext(ctx: ReasonerContext) {
     stage: state.stage,
     awaitingSlotConfirmation: Boolean(state.knownFields.__offeredSlotStart && !state.knownFields.__slotAccepted),
     openPaymentRequest: Boolean(state.knownFields.__paymentRequestId && !state.knownFields.__paid),
+    // What this business's catalog can be searched by — map the customer's words onto these values.
+    catalog: ctx.grounded?.catalog ? catalogForModel(ctx.grounded.catalog) : null,
     shownResults: ctx.grounded?.shownResults ?? [],
     // BARRY just asked which option the customer wants for this shown item.
     awaitingVariantChoiceForProductId: state.knownFields.__commercePendingProductId ?? null,
@@ -119,7 +122,12 @@ YOUR TASK NOW: understand the customer's latest message in context and describe 
 
 - intent: a short label for what the customer wants.
 - commerce (null unless the business has commerce capabilities and the message is about products):
-  - search: describe what they want (queryText in their words, category/attributes/budget if stated; variant for option requirements such as size).
+  - search: describe what they want, using the catalog's own vocabulary:
+    - category: one of catalog.categories that fits, else null.
+    - attributes: ONLY keys from catalog.attributes, with values copied exactly from that key's listed values (translate/normalise the customer's words, slang or typos onto them — e.g. a color word in any language -> the catalog's color value). If nothing listed fits, leave it out. Never put price, budget or size in attributes.
+    - variant: requirements on catalog.variantOptions keys (e.g. a size), values copied exactly from the listed values.
+    - budgetAmount + budgetCurrency: a stated maximum price. budgetCurrency is an ISO 4217 code (the customer's shekel/₪/NIS is "ILS"); null when they named no currency.
+    - queryText: the customer's own descriptive words, for ranking only.
   - select: they chose something BARRY already showed. Use referenceType "previous_result" + referenceIndex (0-based position in shownResults). Put requested options in variant (e.g. size -> "M"). Never invent an index outside shownResults.
   - replace: the cart already has an item and they want a DIFFERENT shown result instead of it ("actually switch to the first one"). referenceType "previous_result" + referenceIndex for the new item; variant if stated.
   - change_variant / change_quantity / remove: they changed an item in the cart (referenceType "cart_line"). If awaitingVariantChoiceForProductId is set and they just name an option ("M"), that answers BARRY's question: use select with that variant and no reference.

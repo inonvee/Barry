@@ -1,3 +1,5 @@
+import type { CatalogSchema } from "./catalog";
+
 export type Money = { amount: number; currency: string };
 
 export type ProductVariant = {
@@ -81,6 +83,8 @@ export type Order = {
 
 export type CommerceAdapter = {
   readonly name: "memory" | "custom-commerce";
+  /** What this catalog can be searched by: categories, attributes, variant options, currency. */
+  describeCatalog(): Promise<CatalogSchema>;
   searchProducts(query: ProductSearchQuery): Promise<{ products: Product[] }>;
   getProduct(productId: string): Promise<Product | undefined>;
   createCart(input: { businessId: string; customerId: string; conversationId: string }): Promise<Cart>;

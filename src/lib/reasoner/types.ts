@@ -1,3 +1,4 @@
+import type { CatalogSchema } from "@/lib/commerce/catalog";
 import type { BusinessGraph } from "@/lib/business-graph";
 import type { ConversationState } from "@/lib/state";
 import type { BarryIR, CompileOutcome } from "./ir";
@@ -10,6 +11,8 @@ export type { BarryIR, BarryIRConstraints, RequestedCapability, CompileOutcome, 
  * one" against THIS list; BARRY resolves the index back to real ids.
  */
 export type GroundedContext = {
+  /** The commerce provider's searchable schema (categories, attributes, variant options, currency). */
+  catalog?: CatalogSchema;
   shownResults?: { index: number; title: string; options: { options: Record<string, string>; price: string; inStock: boolean }[] }[];
   cart?: { index: number; title: string; options: Record<string, string>; quantity: number }[];
   cartTotal?: string;
