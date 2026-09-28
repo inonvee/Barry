@@ -22,8 +22,19 @@ function parseStripeSignature(header: string): { timestamp: string; signatures: 
   return { timestamp, signatures };
 }
 
-function verifyStripeSignature(rawBody: string, signatureHeader: string, secret: string): void {
+function verifyStripeSignature(
+  rawBody: string,
+  signatureHeader: string,
+  secret: string,
+  now: () => number,
+  toleranceSeconds: number
+): void {
   const { timestamp, signatures } = parseStripeSignature(signatureHeader);
+  const eventTime = Number(timestamp);
+  if (!Number.isFinite(eventTime)) throw new Error("Payment webhook signature invalid");
+  if (Math.abs(Math.floor(now() / 1000) - eventTime) > toleranceSeconds) {
+    throw new Error("Payment webhook signature invalid");
+  }
   const expected = crypto.createHmac("sha256", secret).update(`${timestamp}.${rawBody}`).digest("hex");
   if (
     !signatures.some((sig) => {
@@ -37,7 +48,7 @@ function verifyStripeSignature(rawBody: string, signatureHeader: string, secret:
 }
 
 function stripeStatus(session: Record<string, unknown>): "pending" | "paid" | "failed" | "cancelled" {
-  if (session.payment_status === "paid" || session.status === "complete") return "paid";
+  if (session.payment_status === "paid") return "paid";
   if (session.status === "expired") return "cancelled";
   return "pending";
 }
@@ -47,11 +58,21 @@ export class StripePaymentAdapter implements PaymentAdapter {
   private readonly fetcher: typeof fetch;
   private readonly secretKey: string;
   private readonly webhookSecret: string;
+  private readonly now: () => number;
+  private readonly webhookToleranceSeconds: number;
 
-  constructor(options: { secretKey?: string; webhookSecret?: string; fetcher?: typeof fetch } = {}) {
+  constructor(options: {
+    secretKey?: string;
+    webhookSecret?: string;
+    fetcher?: typeof fetch;
+    now?: () => number;
+    webhookToleranceSeconds?: number;
+  } = {}) {
     this.secretKey = options.secretKey ?? process.env.STRIPE_SECRET_KEY ?? "";
     this.webhookSecret = options.webhookSecret ?? process.env.STRIPE_WEBHOOK_SECRET ?? "";
     this.fetcher = options.fetcher ?? fetch;
+    this.now = options.now ?? Date.now;
+    this.webhookToleranceSeconds = options.webhookToleranceSeconds ?? 300;
     if (!this.secretKey) throw new Error("Stripe payment provider is not configured");
   }
 
@@ -68,9 +89,6 @@ export class StripePaymentAdapter implements PaymentAdapter {
   }
 
   async createPaymentLink(input: CreatePaymentLinkInput): Promise<ProviderPayment> {
-    const found = await this.findPaymentByIdempotencyKey(input.idempotencyKey);
-    if (found) return found;
-
     const body = new URLSearchParams({
       mode: "payment",
       "line_items[0][quantity]": "1",
@@ -102,18 +120,11 @@ export class StripePaymentAdapter implements PaymentAdapter {
     return this.sessionToPayment(session, String(session.client_reference_id ?? ""));
   }
 
-  async findPaymentByIdempotencyKey(idempotencyKey: string): Promise<ProviderPayment | undefined> {
-    const result = await this.request(`/checkout/sessions?limit=1&client_reference_id=${encodeURIComponent(idempotencyKey)}`);
-    const sessions = result.data as Record<string, unknown>[] | undefined;
-    const session = sessions?.[0];
-    return session ? this.sessionToPayment(session, idempotencyKey) : undefined;
-  }
-
   async verifyWebhook(rawBody: string, headers: PaymentWebhookHeaders): Promise<VerifiedPaymentWebhook> {
     if (!this.webhookSecret) throw new Error("Stripe webhook secret is not configured");
     const signature = headerValue(headers, "stripe-signature");
     if (!signature) throw new Error("Payment webhook signature invalid");
-    verifyStripeSignature(rawBody, signature, this.webhookSecret);
+    verifyStripeSignature(rawBody, signature, this.webhookSecret, this.now, this.webhookToleranceSeconds);
     const event = JSON.parse(rawBody) as {
       id: string;
       type: string;
@@ -121,7 +132,7 @@ export class StripePaymentAdapter implements PaymentAdapter {
     };
     const session = event.data.object;
     const status =
-      event.type === "checkout.session.completed"
+      event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded"
         ? stripeStatus(session)
         : event.type === "checkout.session.expired"
           ? "cancelled"

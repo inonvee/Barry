@@ -44,6 +44,19 @@ export type PaymentRequestRecord = {
   providerEventId?: string;
 };
 
+export type PaymentWebhookEventStatus = "received" | "processing" | "completed" | "failed";
+
+export type PaymentWebhookEventRecord = {
+  provider: string;
+  providerEventId: string;
+  paymentRequestId: string;
+  status: PaymentWebhookEventStatus;
+  attempts: number;
+  receivedAt: string;
+  processedAt?: string;
+  lastError?: string;
+};
+
 export type ApprovalRecord = {
   id: string;
   businessId: string;
@@ -104,7 +117,22 @@ export interface BarryBackend {
     status: PaymentRequestRecord["status"],
     metadata?: { verifiedAt?: string; providerEventId?: string }
   ): Promise<PaymentRequestRecord>;
-  recordPaymentWebhookEvent(provider: string, providerEventId: string, paymentRequestId: string): Promise<boolean>;
+  recordPaymentWebhookEvent(
+    provider: string,
+    providerEventId: string,
+    paymentRequestId: string
+  ): Promise<PaymentWebhookEventRecord>;
+  markPaymentWebhookEventCompleted(
+    provider: string,
+    providerEventId: string,
+    paymentRequestId: string
+  ): Promise<PaymentWebhookEventRecord>;
+  markPaymentWebhookEventFailed(
+    provider: string,
+    providerEventId: string,
+    paymentRequestId: string,
+    error: string
+  ): Promise<PaymentWebhookEventRecord>;
   simulatePaymentOutcome(id: string, outcome: "paid" | "failed"): Promise<PaymentRequestRecord>;
 
   // Approvals

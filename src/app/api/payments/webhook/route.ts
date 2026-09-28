@@ -8,9 +8,7 @@ export async function POST(req: NextRequest) {
     const result = await handlePaymentWebhook(rawBody, headers);
     return NextResponse.json({ ok: true, duplicate: result.duplicate });
   } catch (err) {
-    return NextResponse.json(
-      { ok: false, error: err instanceof Error ? err.message : "Payment webhook failed" },
-      { status: 400 }
-    );
+    console.error("[payments:webhook]", err);
+    return NextResponse.json({ ok: false, error: "Payment webhook rejected" }, { status: 400 });
   }
 }

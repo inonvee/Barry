@@ -1,6 +1,6 @@
 import type { BusinessGraph } from "@/lib/business-graph";
 import { knowledgeSearch } from "@/lib/business-graph";
-import { getBusinessGraph } from "@/lib/fixtures";
+import { resolveBusinessGraph } from "@/lib/business-graph-repository";
 import { decide, type PolicyDecision } from "@/lib/policy";
 import { getReasoner } from "@/lib/reasoner";
 import { callTool } from "@/lib/tools";
@@ -12,7 +12,12 @@ import { formatLocalDateTime } from "@/lib/scheduling/resolver";
 import type { CustomerFacingLocalDisplay, SchedulingDisplayFacts } from "@/lib/reasoner/types";
 import { sanitizeComposeInput } from "@/lib/reasoner/compose-sanitization";
 import { verifyIR } from "@/lib/reasoner/verify";
-import { processPaymentWebhook, type PaymentWebhookResult } from "@/lib/payments/capability";
+import {
+  markPaymentWebhookCompleted,
+  markPaymentWebhookFailed,
+  processPaymentWebhook,
+  type PaymentWebhookResult,
+} from "@/lib/payments/capability";
 import type { PaymentWebhookHeaders } from "@/lib/payments/adapters/types";
 import { compile, SCRATCH_KEYS, type CompileOutcome } from "./compiler";
 
@@ -312,14 +317,26 @@ export async function handlePaymentWebhook(
 ): Promise<PaymentWebhookResult & { result?: TurnOutcome }> {
   const processed = await processPaymentWebhook(rawBody, headers);
   if (processed.duplicate || processed.payment?.status !== "paid") return processed;
-  const graph = getBusinessGraph(processed.payment.businessId);
-  const result = await handleCustomerMessage(
-    graph,
-    processed.payment.conversationId,
-    processed.payment.customerId,
-    "(payment received)"
-  );
-  return { ...processed, result };
+  try {
+    const graph = resolveBusinessGraph(processed.payment.businessId);
+    const result = await handleCustomerMessage(
+      graph,
+      processed.payment.conversationId,
+      processed.payment.customerId,
+      "(payment received)"
+    );
+    if (result.turn.toolResult && !result.turn.toolResult.ok) {
+      throw new Error(result.turn.toolResult.error ?? "Payment webhook resume failed");
+    }
+    if (result.state.outcome !== "won" || result.state.stage !== "closed") {
+      throw new Error("Payment webhook resume did not complete the transaction");
+    }
+    await markPaymentWebhookCompleted(processed);
+    return { ...processed, result };
+  } catch (err) {
+    await markPaymentWebhookFailed(processed, err);
+    throw new Error("Payment webhook resume failed");
+  }
 }
 
 /** Owner resolves a pending approval; BARRY resumes the conversation with the decision. */

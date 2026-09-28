@@ -5,6 +5,7 @@ import type {
   BookingRecord,
   FollowUpRecord,
   PaymentRequestRecord,
+  PaymentWebhookEventRecord,
 } from "./types";
 
 function id(prefix: string): string {
@@ -48,6 +49,19 @@ function paymentFromRow(row: Record<string, unknown>): PaymentRequestRecord {
     idempotencyKey: row.idempotency_key as string | undefined,
     verifiedAt: row.verified_at as string | undefined,
     providerEventId: row.provider_event_id as string | undefined,
+  };
+}
+
+function webhookEventFromRow(row: Record<string, unknown>): PaymentWebhookEventRecord {
+  return {
+    provider: row.provider as string,
+    providerEventId: row.provider_event_id as string,
+    paymentRequestId: row.payment_request_id as string,
+    status: row.processing_status as PaymentWebhookEventRecord["status"],
+    attempts: row.attempts as number,
+    receivedAt: row.received_at as string,
+    processedAt: row.processed_at as string | undefined,
+    lastError: row.last_error as string | undefined,
   };
 }
 
@@ -263,16 +277,89 @@ export class SupabaseBackend implements BarryBackend {
     provider: string,
     providerEventId: string,
     paymentRequestId: string
-  ): Promise<boolean> {
+  ): Promise<PaymentWebhookEventRecord> {
     const client = getSupabaseClient();
-    const { error } = await client.from("payment_webhook_events").insert({
-      provider,
-      provider_event_id: providerEventId,
-      payment_request_id: paymentRequestId,
-    });
-    if (!error) return true;
-    if (error.code === "23505") return false;
-    throw new Error(`Failed to record payment webhook event: ${error.message}`);
+    const { data, error } = await client
+      .from("payment_webhook_events")
+      .insert({
+        provider,
+        provider_event_id: providerEventId,
+        payment_request_id: paymentRequestId,
+        processing_status: "processing",
+      })
+      .select("*")
+      .single();
+    if (!error && data) return webhookEventFromRow(data);
+    if (error && error.code !== "23505") {
+      throw new Error(`Failed to record payment webhook event: ${error.message}`);
+    }
+
+    const { data: existing, error: loadError } = await client
+      .from("payment_webhook_events")
+      .select("*")
+      .eq("provider", provider)
+      .eq("provider_event_id", providerEventId)
+      .single();
+    if (loadError) throw new Error(`Failed to load payment webhook event: ${loadError.message}`);
+    if (existing.payment_request_id !== paymentRequestId) throw new Error("Payment webhook event/payment mismatch");
+    if (existing.processing_status === "completed") return webhookEventFromRow(existing);
+
+    const { data: updated, error: updateError } = await client
+      .from("payment_webhook_events")
+      .update({
+        processing_status: "processing",
+        attempts: (existing.attempts as number) + 1,
+      })
+      .eq("provider", provider)
+      .eq("provider_event_id", providerEventId)
+      .select("*")
+      .single();
+    if (updateError) throw new Error(`Failed to update payment webhook event: ${updateError.message}`);
+    return webhookEventFromRow(updated);
+  }
+
+  async markPaymentWebhookEventCompleted(
+    provider: string,
+    providerEventId: string,
+    paymentRequestId: string
+  ): Promise<PaymentWebhookEventRecord> {
+    const client = getSupabaseClient();
+    const { data, error } = await client
+      .from("payment_webhook_events")
+      .update({
+        processing_status: "completed",
+        processed_at: new Date().toISOString(),
+        last_error: null,
+      })
+      .eq("provider", provider)
+      .eq("provider_event_id", providerEventId)
+      .eq("payment_request_id", paymentRequestId)
+      .select("*")
+      .single();
+    if (error) throw new Error(`Failed to complete payment webhook event: ${error.message}`);
+    return webhookEventFromRow(data);
+  }
+
+  async markPaymentWebhookEventFailed(
+    provider: string,
+    providerEventId: string,
+    paymentRequestId: string,
+    errorMessage: string
+  ): Promise<PaymentWebhookEventRecord> {
+    const client = getSupabaseClient();
+    const { data, error } = await client
+      .from("payment_webhook_events")
+      .update({
+        processing_status: "failed",
+        last_error: errorMessage.slice(0, 500),
+      })
+      .eq("provider", provider)
+      .eq("provider_event_id", providerEventId)
+      .eq("payment_request_id", paymentRequestId)
+      .select("*")
+      .single();
+    if (error) throw new Error(`Failed to fail payment webhook event: ${error.message}`);
+    return webhookEventFromRow(data);
   }
 
   async simulatePaymentOutcome(

@@ -248,6 +248,8 @@ const BOOKING_SUCCESS_LANGUAGE =
   /\b(successfully\s+booked|booked|reserved|reservation\s+confirmed|booking\s+confirmed|confirmed\s+(?:your\s+)?appointment|appointment\s+(?:is\s+)?confirmed)\b/i;
 const PAYMENT_SUCCESS_LANGUAGE =
   /\b(successfully\s+paid|payment\s+(?:is\s+)?(?:complete|completed|received|successful|verified)|paid\s+(?:successfully|confirmed))\b/i;
+const INVENTED_CUSTOMER_INFO_REQUEST =
+  /\b(phone|phone\s+number|email|email\s+address|name|full\s+name)\b|טלפון|אימייל|מייל|שם/i;
 
 function composeResponseStatus(ctx: ReasonerContext, input: ComposeResponseInput): ComposeResponseStatus {
   const { outcome, toolResult } = input;
@@ -267,6 +269,13 @@ export function enforceComposeGrounding(text: string, ctx: ReasonerContext, inpu
     return composeDeterministic(input);
   }
   if (ctx.state.knownFields.__paid !== "1" && PAYMENT_SUCCESS_LANGUAGE.test(text)) {
+    return composeDeterministic(input);
+  }
+  if (
+    status === "availability_checked" &&
+    ctx.state.missingFields.length === 0 &&
+    INVENTED_CUSTOMER_INFO_REQUEST.test(text)
+  ) {
     return composeDeterministic(input);
   }
   return text;

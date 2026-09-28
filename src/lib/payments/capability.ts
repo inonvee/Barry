@@ -83,13 +83,10 @@ export async function createPaymentLink(input: CreatePaymentLinkRequest): Promis
   const existing = await backend.findPaymentRequestByIdempotencyKey(input.businessId, idempotencyKey);
   if (existing && (existing.status === "pending" || existing.status === "paid")) return recordToPayment(existing);
 
-  const providerExisting = await adapter.findPaymentByIdempotencyKey(idempotencyKey);
-  const providerPayment =
-    providerExisting ??
-    (await adapter.createPaymentLink({
-      ...input,
-      idempotencyKey,
-    }));
+  const providerPayment = await adapter.createPaymentLink({
+    ...input,
+    idempotencyKey,
+  });
 
   const record = await backend.createPaymentRequest({
     businessId: input.businessId,
@@ -109,6 +106,8 @@ export async function createPaymentLink(input: CreatePaymentLinkRequest): Promis
 export type PaymentWebhookResult = {
   duplicate: boolean;
   payment?: PaymentRequestRecord;
+  provider?: string;
+  providerEventId?: string;
 };
 
 export async function processPaymentWebhook(
@@ -127,8 +126,13 @@ export async function processPaymentWebhook(
     throw new Error("Payment webhook conversation mismatch");
   }
 
-  const firstEvent = await backend.recordPaymentWebhookEvent(verified.provider, verified.providerEventId, payment.id);
-  if (!firstEvent) return { duplicate: true, payment };
+  const event = await backend.recordPaymentWebhookEvent(verified.provider, verified.providerEventId, payment.id);
+  if (event.status === "completed") {
+    const state = await getConversationStore().get(payment.conversationId);
+    if (!state || payment.status !== "paid" || state.stage === "closed") {
+      return { duplicate: true, payment, provider: verified.provider, providerEventId: verified.providerEventId };
+    }
+  }
 
   const updated = await backend.updatePaymentRequestStatus(payment.id, verified.status, {
     verifiedAt: verified.verifiedAt,
@@ -143,7 +147,7 @@ export async function processPaymentWebhook(
     if (state.knownFields.__paymentRequestId !== payment.id) throw new Error("Payment request does not belong to conversation");
     state.knownFields.__paid = "1";
     await store.save(state);
-    return { duplicate: false, payment: updated };
+    return { duplicate: false, payment: updated, provider: verified.provider, providerEventId: verified.providerEventId };
   }
 
   if (verified.status === "failed" || verified.status === "cancelled") {
@@ -160,7 +164,19 @@ export async function processPaymentWebhook(
       });
       await store.save(state);
     }
+    await backend.markPaymentWebhookEventCompleted(verified.provider, verified.providerEventId, payment.id);
   }
 
-  return { duplicate: false, payment: updated };
+  return { duplicate: false, payment: updated, provider: verified.provider, providerEventId: verified.providerEventId };
+}
+
+export async function markPaymentWebhookCompleted(result: PaymentWebhookResult): Promise<void> {
+  if (!result.payment || !result.provider || !result.providerEventId) return;
+  await getBackend().markPaymentWebhookEventCompleted(result.provider, result.providerEventId, result.payment.id);
+}
+
+export async function markPaymentWebhookFailed(result: PaymentWebhookResult, error: unknown): Promise<void> {
+  if (!result.payment || !result.provider || !result.providerEventId) return;
+  const message = error instanceof Error ? error.message : String(error);
+  await getBackend().markPaymentWebhookEventFailed(result.provider, result.providerEventId, result.payment.id, message);
 }

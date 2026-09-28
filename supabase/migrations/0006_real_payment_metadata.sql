@@ -23,7 +23,12 @@ create table if not exists payment_webhook_events (
   provider text not null,
   provider_event_id text not null,
   payment_request_id text not null references payment_requests (id) on delete cascade,
-  processed_at timestamptz not null default now(),
+  processing_status text not null default 'received'
+    check (processing_status in ('received', 'processing', 'completed', 'failed')),
+  attempts integer not null default 1,
+  received_at timestamptz not null default now(),
+  processed_at timestamptz,
+  last_error text,
   unique (provider, provider_event_id)
 );
 

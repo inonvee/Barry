@@ -29,7 +29,7 @@ export class MemoryPaymentAdapter implements PaymentAdapter {
   createdCount = 0;
 
   async createPaymentLink(input: CreatePaymentLinkInput): Promise<ProviderPayment> {
-    const existing = await this.findPaymentByIdempotencyKey(input.idempotencyKey);
+    const existing = [...this.payments.values()].find((payment) => payment.idempotencyKey === input.idempotencyKey);
     if (existing) return existing;
     this.createdCount += 1;
     const providerPaymentId = `mem_pay_${crypto.createHash("sha256").update(input.idempotencyKey).digest("hex").slice(0, 16)}`;
@@ -47,10 +47,6 @@ export class MemoryPaymentAdapter implements PaymentAdapter {
 
   async getPaymentStatus(providerPaymentId: string): Promise<ProviderPayment | undefined> {
     return this.payments.get(providerPaymentId);
-  }
-
-  async findPaymentByIdempotencyKey(idempotencyKey: string): Promise<ProviderPayment | undefined> {
-    return [...this.payments.values()].find((payment) => payment.idempotencyKey === idempotencyKey);
   }
 
   async verifyWebhook(rawBody: string, headers: PaymentWebhookHeaders): Promise<VerifiedPaymentWebhook> {

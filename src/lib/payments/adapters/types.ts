@@ -41,5 +41,4 @@ export interface PaymentAdapter {
   createPaymentLink(input: CreatePaymentLinkInput): Promise<ProviderPayment>;
   getPaymentStatus(providerPaymentId: string): Promise<ProviderPayment | undefined>;
   verifyWebhook(rawBody: string, headers: PaymentWebhookHeaders): Promise<VerifiedPaymentWebhook>;
-  findPaymentByIdempotencyKey(idempotencyKey: string): Promise<ProviderPayment | undefined>;
 }

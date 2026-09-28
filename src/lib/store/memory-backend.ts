@@ -3,6 +3,7 @@ import type {
   BarryBackend,
   BookingRecord,
   FollowUpRecord,
+  PaymentWebhookEventRecord,
   PaymentRequestRecord,
 } from "./types";
 
@@ -20,7 +21,7 @@ export class MemoryBackend implements BarryBackend {
   private bookings: BookingRecord[] = [];
   private inventoryDeltas = new Map<string, number>(); // `${businessId}:${sku}` -> consumed qty
   private paymentRequests = new Map<string, PaymentRequestRecord>();
-  private paymentWebhookEvents = new Set<string>();
+  private paymentWebhookEvents = new Map<string, PaymentWebhookEventRecord>();
   private approvals = new Map<string, ApprovalRecord>();
   private followUps: FollowUpRecord[] = [];
 
@@ -98,11 +99,70 @@ export class MemoryBackend implements BarryBackend {
     return pr;
   }
 
-  async recordPaymentWebhookEvent(provider: string, providerEventId: string) {
+  async recordPaymentWebhookEvent(provider: string, providerEventId: string, paymentRequestId: string) {
     const key = `${provider}:${providerEventId}`;
-    if (this.paymentWebhookEvents.has(key)) return false;
-    this.paymentWebhookEvents.add(key);
-    return true;
+    const existing = this.paymentWebhookEvents.get(key);
+    if (existing) {
+      if (existing.paymentRequestId !== paymentRequestId) throw new Error("Payment webhook event/payment mismatch");
+      existing.attempts += 1;
+      if (existing.status !== "completed") existing.status = "processing";
+      this.paymentWebhookEvents.set(key, existing);
+      return existing;
+    }
+    const event: PaymentWebhookEventRecord = {
+      provider,
+      providerEventId,
+      paymentRequestId,
+      status: "processing",
+      attempts: 1,
+      receivedAt: new Date().toISOString(),
+    };
+    this.paymentWebhookEvents.set(key, event);
+    return event;
+  }
+
+  async markPaymentWebhookEventCompleted(provider: string, providerEventId: string, paymentRequestId: string) {
+    const key = `${provider}:${providerEventId}`;
+    const event =
+      this.paymentWebhookEvents.get(key) ??
+      ({
+        provider,
+        providerEventId,
+        paymentRequestId,
+        status: "received",
+        attempts: 0,
+        receivedAt: new Date().toISOString(),
+      } satisfies PaymentWebhookEventRecord);
+    if (event.paymentRequestId !== paymentRequestId) throw new Error("Payment webhook event/payment mismatch");
+    event.status = "completed";
+    event.processedAt = new Date().toISOString();
+    event.lastError = undefined;
+    this.paymentWebhookEvents.set(key, event);
+    return event;
+  }
+
+  async markPaymentWebhookEventFailed(
+    provider: string,
+    providerEventId: string,
+    paymentRequestId: string,
+    error: string
+  ) {
+    const key = `${provider}:${providerEventId}`;
+    const event =
+      this.paymentWebhookEvents.get(key) ??
+      ({
+        provider,
+        providerEventId,
+        paymentRequestId,
+        status: "received",
+        attempts: 0,
+        receivedAt: new Date().toISOString(),
+      } satisfies PaymentWebhookEventRecord);
+    if (event.paymentRequestId !== paymentRequestId) throw new Error("Payment webhook event/payment mismatch");
+    event.status = "failed";
+    event.lastError = error;
+    this.paymentWebhookEvents.set(key, event);
+    return event;
   }
 
   async simulatePaymentOutcome(paymentId: string, outcome: "paid" | "failed") {
