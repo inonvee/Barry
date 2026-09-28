@@ -72,6 +72,7 @@ describe("Rina E2E: search → take → name → phone → checkout → payment 
     expect(take.turn.trace?.steps.map((s) => [s.action, s.result?.ok])).toEqual([["addToCart", true]]);
     expect(take.turn.trace?.stop).toEqual({ reason: "needs_customer", outcome: "checkout_needs_info" });
     expect(take.state.missingFields).toEqual(["name", "phone"]);
+    expect(take.turn.trace?.context?.shown).toEqual([{ position: 1, title: "Onyx Slip Dress" }]);
     const cart = await commerce.getCart(take.state.knownFields.__commerceCartId);
     expect(cart?.lines.map((l) => [l.title, l.options.size])).toEqual([["Onyx Slip Dress", "M"]]);
     expect(take.response).toMatch(ASKS_NAME);

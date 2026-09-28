@@ -471,6 +471,14 @@ export async function handleCustomerMessage(
       stop,
       reply: { language: language.code, basis: language.basis, ...(composed.fallback ? { fallback: composed.fallback } : {}) },
       missingFields: state.missingFields,
+      ...(grounded?.shownResults?.length || grounded?.cart
+        ? {
+            context: {
+              shown: (grounded.shownResults ?? []).map((p) => ({ position: p.position, title: p.title })),
+              ...(grounded.cart ? { cart: { lines: grounded.cart, total: grounded.cartTotal ?? null } } : {}),
+            },
+          }
+        : {}),
     },
   };
   state.turns.push(turn);

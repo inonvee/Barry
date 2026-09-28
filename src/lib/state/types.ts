@@ -64,6 +64,15 @@ export type TurnTrace = {
   reply?: { language: string; basis: string; fallback?: string };
   /** The customer fields still missing after this turn (the compiler's truth). */
   missingFields?: string[];
+  /**
+   * What BARRY showed / held when it understood this turn, re-read from the
+   * provider: the numbered products a reference resolves against, and the
+   * cart. Catalog data only — never customer details.
+   */
+  context?: {
+    shown: { position: number; title: string }[];
+    cart?: { lines: { position: number; title: string; options: Record<string, string>; quantity: number }[]; total: string | null };
+  };
 };
 
 /** One full Observe→Update runtime turn, kept for explainability/debugging. */
