@@ -7,7 +7,7 @@ import type { SystemDescriptor } from "./system";
  *
  *   contract -> input validation -> idempotency key (consequential)
  *   -> resolution (business's active, healthy, authorized system)
- *   -> authority (policy decides consequential calls; no decision = no call)
+ *   -> authority (the caller's authority decision; no decision = no call — reads included)
  *   -> connector execution
  *   -> output validation against the contract
  *   -> verification (a consequential call succeeded only if the system confirmed it)
@@ -43,7 +43,7 @@ export type CapabilityResult =
 export type AuthorityDecision = { status: "allowed" | "requires_approval" | "denied"; reason: string };
 
 /**
- * Decides whether a consequential call may run. Supplied by the caller
+ * Decides whether a call may run (reads and writes alike). Supplied by the caller
  * (the runtime's Policy Engine for this business). There is deliberately no
  * default: without an authority decision a consequential call does not run.
  */
@@ -74,12 +74,12 @@ export async function executeCapability(
   const { descriptor, connector, mapping } = resolution;
   const provenance = provenanceOf(capabilityId, mapping.version, descriptor);
 
-  if (contract.authority === "policy_gated") {
-    if (!options.authorize) return { ok: false, code: "not_authorized", reason: `${capabilityId} changes the world and no authority decision was made`, provenance };
-    const decision = await options.authorize({ capability: capabilityId, input, system: descriptor });
-    if (decision.status === "denied") return { ok: false, code: "not_authorized", reason: decision.reason, provenance };
-    if (decision.status === "requires_approval") return { ok: false, code: "requires_approval", reason: decision.reason, provenance };
-  }
+  // Every call needs an explicit authority decision — reads included. A read changes nothing
+  // externally, but the business must still have authorized BARRY to access that information.
+  if (!options.authorize) return { ok: false, code: "not_authorized", reason: `No authority decision was made for ${capabilityId}`, provenance };
+  const decision = await options.authorize({ capability: capabilityId, input, system: descriptor });
+  if (decision.status === "denied") return { ok: false, code: "not_authorized", reason: decision.reason, provenance };
+  if (decision.status === "requires_approval") return { ok: false, code: "requires_approval", reason: decision.reason, provenance };
 
   return invokeConnector(contract, descriptor, connector, input, ctx, provenance);
 }

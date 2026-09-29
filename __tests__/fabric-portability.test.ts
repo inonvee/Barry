@@ -90,8 +90,8 @@ describe("A. the SAME capability, two different implementations, one runtime con
     const custom = biz("shopfront");
     await connect(custom, "shopfront", "commerce", "Shopfront", shopfrontManifest);
 
-    const a = await executeCapability({ businessId: "fashion-retailer" }, "commerce.catalog.search", { text: "slip" });
-    const b = await executeCapability({ businessId: custom }, "commerce.catalog.search", { text: "slip", maxPrice: 200 });
+    const a = await executeCapability({ businessId: "fashion-retailer" }, "commerce.catalog.search", { text: "slip" }, { authorize: allow });
+    const b = await executeCapability({ businessId: custom }, "commerce.catalog.search", { text: "slip", maxPrice: 200 }, { authorize: allow });
     expect(a).toMatchObject({ ok: true, provenance: { connector: "commerce/memory", simulated: true } });
     expect(b).toMatchObject({ ok: true, provenance: { connector: "http-manifest", system: "shopfront", simulated: false } });
     // Same normalized shape from both.
@@ -114,8 +114,8 @@ describe("A. the SAME capability, two different implementations, one runtime con
     const b2 = biz("courier");
     await connect(b1, "parcel-co", "shipping", "Parcel Co", parcelManifest);
     await connect(b2, "courier", "shipping", "Courier", courierManifest);
-    const r1 = await executeCapability({ businessId: b1 }, "shipping.track", { trackingNumber: "TRK-1" });
-    const r2 = await executeCapability({ businessId: b2 }, "shipping.track", { trackingNumber: "TRK-1" });
+    const r1 = await executeCapability({ businessId: b1 }, "shipping.track", { trackingNumber: "TRK-1" }, { authorize: allow });
+    const r2 = await executeCapability({ businessId: b2 }, "shipping.track", { trackingNumber: "TRK-1" }, { authorize: allow });
     expect(r1).toMatchObject({ ok: true, output: { trackingNumber: "TRK-1", status: "in_transit" }, provenance: { system: "parcel-co" } });
     expect(r2).toMatchObject({ ok: true, output: { trackingNumber: "TRK-1", status: "out_for_delivery" }, provenance: { system: "courier" } });
     expect(courier.calls[0].headers["x-api-token"]).toBe("courier-token");
@@ -152,9 +152,9 @@ describe("D. which system is used is tenant STATE, not code", () => {
     setHttpTransportForTests(route(parcelSystem().transport, courierSystem().transport));
     const id = biz("switch");
     await connect(id, "parcel-co", "shipping", "Parcel Co", parcelManifest);
-    expect(await executeCapability({ businessId: id }, "shipping.track", { trackingNumber: "TRK-2" })).toMatchObject({ ok: true, provenance: { system: "parcel-co" } });
+    expect(await executeCapability({ businessId: id }, "shipping.track", { trackingNumber: "TRK-2" }, { authorize: allow })).toMatchObject({ ok: true, provenance: { system: "parcel-co" } });
     await connect(id, "courier", "shipping", "Courier", courierManifest);
-    expect(await executeCapability({ businessId: id }, "shipping.track", { trackingNumber: "TRK-2" })).toMatchObject({ ok: true, provenance: { system: "courier" }, output: { status: "out_for_delivery" } });
+    expect(await executeCapability({ businessId: id }, "shipping.track", { trackingNumber: "TRK-2" }, { authorize: allow })).toMatchObject({ ok: true, provenance: { system: "courier" }, output: { status: "out_for_delivery" } });
     // The new system doesn't implement shipment creation: that capability is now simply unavailable.
     expect(await executeCapability({ businessId: id }, "shipping.create_shipment", { orderRef: "O-1", address: "1 Harbour Road", idempotencyKey: "shp-000002" }, { authorize: allow })).toMatchObject({ ok: false, code: "no_system" });
   });
@@ -219,7 +219,7 @@ describe("E. missing, errored or disconnected systems fail closed — in the fab
     const base = buildFashionRetailerGraph();
     const profiles = await resolveCapabilityProfiles({ ...base, business: { ...base.business, id } });
     expect(profiles.commerce).toMatchObject({ status: "not_configured", capabilities: [] });
-    expect(await executeCapability({ businessId: id }, "commerce.catalog.search", { text: "x" })).toMatchObject({ ok: false, code: "system_inactive" });
+    expect(await executeCapability({ businessId: id }, "commerce.catalog.search", { text: "x" }, { authorize: allow })).toMatchObject({ ok: false, code: "system_inactive" });
   });
 
   it("a generic-only system in a planner domain is not half-used by the typed conversation tools", async () => {

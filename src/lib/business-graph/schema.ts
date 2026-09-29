@@ -212,7 +212,7 @@ export type Playbook = z.infer<typeof PlaybookSchema>;
  *   when        ALL conditions must hold; each compares ONE top-level input field
  *               of the capability call with a literal (lte/lt/gte/gt/eq/neq/in/exists)
  * Among matching rules the most restrictive wins (deny > require_approval > allow).
- * A consequential capability no rule allows is DENIED — authority is never assumed.
+ * A capability no rule allows is DENIED — reads included; authority is never assumed from effect=read.
  */
 export const AuthorityConditionSchema = z.object({
   field: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/),

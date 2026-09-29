@@ -232,7 +232,8 @@ order:
    - missing required inputs become `capability_needs_input`, so BARRY asks
      for exactly those fields;
    - the input is validated against the capability's schema.
-3. **Authority**: see below. It is checked before execution, for reads too.
+3. **Authority**: see below. It is checked before execution, and a read needs
+   an explicit rule just like a write.
 4. **Idempotency**: BARRY derives the key from the business, the
    conversation, the capability and the canonical input. The model never
    supplies it, and repeating a plan repeats the same call.
@@ -278,9 +279,13 @@ Rules are bounded data, not code:
 
 Among matching rules the most restrictive wins: deny, then require_approval,
 then allow. A condition that can't be evaluated never grants authority, and
-it always counts toward a restriction. With no matching rule, a read is
-allowed and a **consequential capability is denied**: authority is never
-assumed. Every decision names its rule.
+it always counts toward a restriction. **With no matching rule the call is
+denied — reads included.** A read changes nothing in an external system, but
+reading a customer record, an invoice, a contract or an internal cost is
+still something the business must have authorized. Authority is never
+assumed from a contract's `effect`. The fabric executor enforces the same
+rule one level down: no authority decision, no call. Every decision names its
+rule.
 
 Example:
 

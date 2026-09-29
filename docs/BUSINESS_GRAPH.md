@@ -83,6 +83,6 @@ the future.
 `authority` lists per-capability rules: what BARRY may do on its own for
 this business. Each rule has a capability (an exact id or `domain.*`), an
 effect (`allow`, `require_approval` or `deny`), and ALL-of conditions on
-single input fields. The most restrictive matching rule wins. A consequential
-capability that no rule allows is refused. See
+single input fields. The most restrictive matching rule wins. Any capability
+that no rule allows is refused, reads included. See
 `docs/INTEGRATION_FABRIC.md` §9.

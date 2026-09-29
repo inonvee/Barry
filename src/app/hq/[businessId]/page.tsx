@@ -157,7 +157,7 @@ export default async function HqBusinessPage({ params }: { params: Promise<{ bus
 
         <Card title="Capabilities the model may propose · authority">
           <p className="mb-2 text-xs text-neutral-500">
-            Beyond the typed flows: what this business&apos;s own systems can execute now, and how the business governs each. The model proposes; these rules decide. A consequential capability no rule allows is refused.
+            Beyond the typed flows: what this business&apos;s own systems can execute now, and how the business governs each. The model proposes; these rules decide. A capability no rule allows is refused — reads included.
           </p>
           <WithSource value={b.capabilitySurface}>
             {(caps) =>
@@ -180,7 +180,7 @@ export default async function HqBusinessPage({ params }: { params: Promise<{ bus
           <div className="mt-3">
             <p className="text-xs font-medium text-neutral-500">Authority rules</p>
             {b.authorityRules.length === 0 ? (
-              <p className="text-sm text-neutral-500">No rules — every consequential capability is refused.</p>
+              <p className="text-sm text-neutral-500">No rules — every capability call is refused.</p>
             ) : (
               <ul className="mt-1 space-y-0.5 text-xs">
                 {b.authorityRules.map((r) => (

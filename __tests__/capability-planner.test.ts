@@ -149,7 +149,7 @@ describe("authority is per capability, per business, deterministic — and never
     ["billing.credit.issue", { account: "C-7", amount: 80 }, "requires_approval", "credit-large"],
     ["billing.credit.issue", { account: "C-7" }, "requires_approval", "credit-large"], // unevaluable -> restriction holds, allow doesn't
     ["shipping.create_shipment", { orderRef: "O", address: "1 Road St" }, "denied", "no-shipments"],
-    ["shipping.track", { trackingNumber: "ABC" }, "allowed", undefined], // a read nothing restricts
+    ["shipping.track", { trackingNumber: "ABC" }, "denied", undefined], // a READ with no rule is denied too — never assumed from effect=read
     ["support.ticket.create", { subject: "x" }, "denied", undefined], // consequential, no rule -> fail closed
     ["no.such.capability", {}, "denied", undefined],
   ])("%s %j -> %s", (capability, input, status, ruleId) => {
@@ -157,12 +157,18 @@ describe("authority is per capability, per business, deterministic — and never
     expect(d.status).toBe(status);
     expect(d.ruleId).toBe(ruleId);
   });
+
+  it("a read is allowed only by an explicit rule, and a sensitive read can be conditioned or denied like a write", () => {
+    const tracking = business("read-rules", [rule("track", "shipping.track", "allow"), rule("crm-own", "crm.customer.find", "allow", [{ field: "scope", op: "eq", value: "own" }])]);
+    expect(decideCapability(tracking, "shipping.track", { trackingNumber: "ABC" })).toMatchObject({ status: "allowed", ruleId: "track" });
+    expect(decideCapability(business("no-read-rule", []), "shipping.track", { trackingNumber: "ABC" }).status).toBe("denied");
+  });
 });
 
 describe("PROOF A — a read capability chosen from conversation, no domain planner code", () => {
   it("'Where is order ABC?' -> shipping.track on this tenant's system -> the tracking state is the answer", async () => {
     credentials();
-    const g = business("track", []);
+    const g = business("track", [rule("track", "shipping.track", "allow")]);
     await connect(g, "parcel-co", "shipping", parcelManifest);
     const sys = createMockHttpSystem(PARCEL_ORIGIN, { "GET /v2/tracking/{trackingNumber}": ({ params }) => ({ json: { tracking: { number: params.trackingNumber, state: "out_for_delivery", eta: "2026-10-02" } } }) }, { requireAuth: { header: "authorization", value: "Bearer parcel-secret" } });
     setHttpTransportForTests(sys.transport);
@@ -178,7 +184,7 @@ describe("PROOF A — a read capability chosen from conversation, no domain plan
 
     // The model saw a business-specific, secret-free surface.
     const surface = reasoner.seen[0].surface;
-    expect(surface.map((c) => [c.id, c.available, c.authority])).toEqual(expect.arrayContaining([["shipping.track", true, "read_only"], ["shipping.create_shipment", true, "not_permitted"]]));
+    expect(surface.map((c) => [c.id, c.available, c.authority])).toEqual(expect.arrayContaining([["shipping.track", true, "automatic"], ["shipping.create_shipment", true, "not_permitted"]]));
     const seen = JSON.stringify(surface);
     for (const secret of ["parcel-secret", "api.parcel-co", "/tracking/", "http-manifest", "parcel-co"]) expect(seen).not.toContain(secret);
     // Result is kept for the next reasoning step, with provenance-free facts only.
@@ -212,6 +218,24 @@ describe("PROOF A — a read capability chosen from conversation, no domain plan
     expect(out.turn.trace!.steps).toEqual([]);
     expect(out.state.missingFields).toEqual(["trackingNumber"]);
     expect(out.response).toMatch(/tracking number/);
+  });
+});
+
+describe("PROOF A' — a READ with no authority rule is refused end to end", () => {
+  it("the tenant's system is never contacted and nothing is answered from it", async () => {
+    credentials();
+    const g = business("read-denied", []);
+    await connect(g, "parcel-co", "shipping", parcelManifest);
+    const sys = createMockHttpSystem(PARCEL_ORIGIN, { "GET /v2/tracking/{trackingNumber}": () => ({ json: { tracking: { number: "ABC", state: "in_transit" } } }) });
+    setHttpTransportForTests(sys.transport);
+    setReasonerForTests(new PlanningReasoner(() => ask("shipping.track", { trackingNumber: "ABC" })));
+    const out = await say(g, `a5-${n}`, "Where is order ABC?");
+    expect(out.turn.trace!.steps[0]).toMatchObject({ generic: { capability: "shipping.track", authority: { status: "denied" }, executed: false } });
+    expect(out.turn.trace!.stop.reason).toBe("policy_denied");
+    expect(out.response).not.toMatch(/in_transit/);
+    expect(sys.calls).toHaveLength(0);
+    // The model is told it is not permitted, rather than being offered it as available authority.
+    expect((await buildCapabilitySurface(g)).find((c) => c.id === "shipping.track")?.authority).toBe("not_permitted");
   });
 });
 
@@ -311,7 +335,7 @@ describe("PROOF D — an active system and mapping, but no authority: fail close
 describe("PROOF E — one conversation, two domains, the next step chosen from the first result", () => {
   it("shipping.track says delayed -> support.ticket.create -> verified ticket, in one bounded turn", async () => {
     credentials();
-    const g = business("cross", [rule("tickets", "support.ticket.create", "allow")]);
+    const g = business("cross", [rule("track", "shipping.track", "allow"), rule("tickets", "support.ticket.create", "allow")]);
     await connect(g, "parcel-co", "shipping", parcelManifest);
     await connect(g, "helpdesk", "support", helpdeskManifest);
     const parcel = delayedParcelSystem();
@@ -339,7 +363,7 @@ describe("PROOF E — one conversation, two domains, the next step chosen from t
 
   it("the continuation is bounded: the same call is never repeated and the step budget holds", async () => {
     credentials();
-    const g = business("loop", []);
+    const g = business("loop", [rule("track", "shipping.track", "allow")]);
     await connect(g, "parcel-co", "shipping", parcelManifest);
     const parcel = delayedParcelSystem();
     setHttpTransportForTests(parcel.transport);
@@ -354,8 +378,8 @@ describe("PROOF E — one conversation, two domains, the next step chosen from t
 describe("PROOF F — same runtime, same words, different tenants -> different systems and authority", () => {
   it("each business's own system and rules decide", async () => {
     credentials();
-    const allowShip = business("tenant-1", [rule("ship-ok", "shipping.create_shipment", "allow")]);
-    const approveShip = business("tenant-2", [rule("ship-approve", "shipping.create_shipment", "require_approval")]);
+    const allowShip = business("tenant-1", [rule("track", "shipping.track", "allow"), rule("ship-ok", "shipping.create_shipment", "allow")]);
+    const approveShip = business("tenant-2", [rule("track", "shipping.track", "allow"), rule("ship-approve", "shipping.create_shipment", "require_approval")]);
     await connect(allowShip, "parcel-co", "shipping", parcelManifest);
     await connect(approveShip, "courier", "shipping", { ...courierManifest, operations: [...courierManifest.operations, { ...parcelManifest.operations[1], path: "/api/shipments" }] });
     const parcel = createMockHttpSystem(PARCEL_ORIGIN, { "GET /v2/tracking/{trackingNumber}": ({ params }) => ({ json: { tracking: { number: params.trackingNumber, state: "in_transit" } } }) }, { requireAuth: { header: "authorization", value: "Bearer parcel-secret" } });
@@ -413,15 +437,18 @@ describe("HQ shows effective capabilities, authority and generic executions", ()
     credentials();
     const { getBusinessGraph } = await import("@/lib/fixtures");
     const { getHqBusiness } = await import("@/lib/hq/service");
-    const g = getBusinessGraph("spa");
+    const { setBusinessGraphResolverForTests } = await import("@/lib/business-graph-repository");
+    const g: BusinessGraph = { ...getBusinessGraph("spa"), authority: [rule("track", "shipping.track", "allow")] };
+    setBusinessGraphResolverForTests((id) => (id === "spa" ? g : getBusinessGraph(id)));
     await connect(g, "parcel-co", "shipping", parcelManifest);
     setHttpTransportForTests(createMockHttpSystem(PARCEL_ORIGIN, { "GET /v2/tracking/{trackingNumber}": ({ params }) => ({ json: { tracking: { number: params.trackingNumber, state: "in_transit" } } }) }, { requireAuth: { header: "authorization", value: "Bearer parcel-secret" } }).transport);
     setReasonerForTests(new PlanningReasoner((ctx) => (thisTurn(ctx).length ? undefined : ask("shipping.track", { trackingNumber: "ABC123" }))));
     await say(g, `hq-${n}`, "Where is order ABC123?");
 
     const hq = await getHqBusiness("spa");
-    expect(hq!.capabilitySurface).toMatchObject({ ok: true, value: expect.arrayContaining([expect.objectContaining({ id: "shipping.track", authority: "read_only" })]) });
-    expect(hq!.authorityRules).toEqual([]);
+    expect(hq!.capabilitySurface).toMatchObject({ ok: true, value: expect.arrayContaining([expect.objectContaining({ id: "shipping.track", authority: "automatic" })]) });
+    expect(hq!.authorityRules).toEqual([expect.objectContaining({ id: "track", capability: "shipping.track", effect: "allow" })]);
+    setBusinessGraphResolverForTests(undefined);
     const turns = hq!.recentTurns.ok ? hq!.recentTurns.value : [];
     expect(turns.flatMap((t) => t.capabilities)).toContainEqual(expect.objectContaining({ capability: "shipping.track", authority: "allowed", system: "parcel-co", executed: true }));
     expect(hq!.health).toMatchObject({ ok: true, value: expect.objectContaining({ capabilityCalls: 1, capabilityRefused: 0 }) });

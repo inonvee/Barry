@@ -114,7 +114,7 @@ export const invokeCapability = defineTool({
     const input: Record<string, unknown> = semanticInput(call.input);
     if (contract?.idempotency === "key_required") input.idempotencyKey = capabilityIdempotencyKey({ businessId, conversationId: ctx.conversationId }, call.capability, input);
 
-    // Authority first — for reads too (a business may restrict them). Nothing runs without "allowed".
+    // Authority first — reads included: no rule, no call. Nothing runs without "allowed".
     const authority = await authorizeCapabilityCall(ctx.graph, ctx, call.capability, input, call.approvalId);
     if (authority.status !== "allowed") {
       return { capability: call.capability, executed: false, ok: false, code: authority.status === "denied" ? "not_authorized" : "requires_approval", reason: authority.reason, verified: false, authority };

@@ -163,7 +163,7 @@ describe("executor: one contract for every system", () => {
     await connectParcel(id);
     const sys = parcelSystem();
     setHttpTransportForTests(sys.transport);
-    const r = await executeCapability({ businessId: id }, "shipping.track", { trackingNumber: "TRK 1/2" });
+    const r = await executeCapability({ businessId: id }, "shipping.track", { trackingNumber: "TRK 1/2" }, { authorize: allow });
     expect(r).toMatchObject({ ok: true, output: { trackingNumber: "TRK 1/2", status: "in_transit", eta: "2026-10-02" }, provenance: { system: "parcel-co", connector: "http-manifest", capability: "shipping.track", version: "1.0.0", simulated: false } });
     expect(sys.calls[0].url.toString()).toBe("https://api.parcel-co.example/v2/tracking/TRK%201%2F2");
     expect(JSON.stringify(r)).not.toContain("parcel-secret");
@@ -190,12 +190,22 @@ describe("executor: one contract for every system", () => {
     await expect(safeHttpTransport({ url: new URL("http://localhost:9/x"), method: "GET", headers: {}, timeoutMs: 2000, maxBytes: 1000 })).rejects.toThrow(/Blocked private/);
   });
 
+  it("a READ without an authority decision is refused before the system is contacted", async () => {
+    const id = biz("read-noauth");
+    await connectParcel(id);
+    const sys = parcelSystem();
+    setHttpTransportForTests(sys.transport);
+    expect(await executeCapability({ businessId: id }, "shipping.track", { trackingNumber: "TRK-1" })).toMatchObject({ ok: false, code: "not_authorized" });
+    expect(await executeCapability({ businessId: id }, "shipping.track", { trackingNumber: "TRK-1" }, { authorize: () => ({ status: "denied", reason: "no" }) })).toMatchObject({ ok: false, code: "not_authorized" });
+    expect(sys.calls).toHaveLength(0);
+  });
+
   it("invalid input and missing idempotency keys never reach the system", async () => {
     const id = biz("input");
     await connectParcel(id);
     const sys = parcelSystem();
     setHttpTransportForTests(sys.transport);
-    expect(await executeCapability({ businessId: id }, "shipping.track", { trackingNumber: 42 })).toMatchObject({ ok: false, code: "invalid_input" });
+    expect(await executeCapability({ businessId: id }, "shipping.track", { trackingNumber: 42 }, { authorize: allow })).toMatchObject({ ok: false, code: "invalid_input" });
     expect(await executeCapability({ businessId: id }, "shipping.create_shipment", { orderRef: "O", address: "1 Harbour Road" }, { authorize: allow })).toMatchObject({ ok: false, code: "invalid_input" });
     expect(sys.calls).toHaveLength(0);
   });

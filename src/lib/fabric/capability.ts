@@ -45,7 +45,11 @@ export type CapabilityContract<I extends z.ZodType = z.ZodType, O extends z.ZodT
    * must return the same result for the same key (checked by conformance).
    */
   idempotency: "none" | "key_required";
-  /** Consequential capabilities are policy-gated: the Policy Engine and the business's authority decide, never the model. */
+  /**
+   * Consequential capabilities must be "policy_gated". This field does NOT
+   * make a read free: at runtime EVERY call — read or write — needs an
+   * explicit allow from the business's authority rules (no rule = denied).
+   */
   authority: "none" | "policy_gated";
   /** Who defined this contract. Core contracts ship with BARRY; others are registered by business manifests. */
   provenance: { source: "barry_core" | "business_manifest"; ref?: string };

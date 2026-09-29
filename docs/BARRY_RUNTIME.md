@@ -348,8 +348,8 @@ any capability on the business's own **capability surface** through
 `invokeCapability`. BARRY then decides deterministically, per business:
 
 - grounding: real capability and grounded inputs;
-- authority: the Genome's per-capability rules; no rule means a write is
-  refused;
+- authority: the Genome's per-capability rules; no rule means the call is
+  refused, reads included;
 - approval: exact-call and single-use;
 - idempotency;
 - system selection: the fabric;

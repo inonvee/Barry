@@ -14,8 +14,11 @@ import "@/lib/fabric/builtin";
  *   1. rules for the capability (exact id, or a "domain.*" wildcard);
  *   2. among rules whose conditions hold, the most restrictive wins:
  *      deny > require_approval > allow;
- *   3. nothing matched: a READ capability is allowed (it changes nothing);
- *      a CONSEQUENTIAL capability is DENIED — authority is never assumed.
+ *   3. nothing matched: DENIED — for reads as much as for writes. A read
+ *      changes nothing in an external system, but reading a customer
+ *      record, an invoice or an internal cost is still something the
+ *      business must have authorized. Authority is never assumed from a
+ *      contract's effect.
  *
  * Conditions compare one top-level input field with a literal. A condition
  * that can't be evaluated (missing field, wrong type) never GRANTS
@@ -81,17 +84,16 @@ export function decideCapability(graph: BusinessGraph, capability: CapabilityId,
   const allow = matching.find((r) => r.effect === "allow");
   if (allow) return { status: "allowed", reason: because(allow, `${capability} is permitted`), ruleId: allow.id };
 
-  if (contract.effect === "read") return { status: "allowed", reason: `${capability} only reads; no rule restricts it` };
   return { status: "denied", reason: `No authority rule allows ${capability} in this situation — BARRY does not assume authority` };
 }
 
 /** How a capability is governed for this business, without a concrete input (for the model's context and HQ). */
-export function authoritySummary(graph: BusinessGraph, capability: CapabilityId): "automatic" | "conditional" | "owner_approval" | "not_permitted" | "read_only" {
-  const contract = getCapability(capability);
+export function authoritySummary(graph: BusinessGraph, capability: CapabilityId): "automatic" | "conditional" | "owner_approval" | "not_permitted" {
+  if (!getCapability(capability)) return "not_permitted";
   const rules = (graph.authority ?? []).filter((r) => ruleApplies(r, capability));
   if (rules.some((r) => r.effect === "deny" && r.when.length === 0)) return "not_permitted";
   if (rules.some((r) => r.effect === "require_approval" && r.when.length === 0)) return "owner_approval";
   if (rules.some((r) => r.effect === "allow" && r.when.length === 0) && !rules.some((r) => r.effect !== "allow")) return "automatic";
-  if (rules.length > 0) return "conditional";
-  return contract?.effect === "read" ? "read_only" : "not_permitted";
+  if (rules.some((r) => r.effect !== "deny")) return "conditional";
+  return "not_permitted";
 }

@@ -46,7 +46,7 @@ export type CapabilitySurfaceEntry = {
   inputs: { name: string; type: string; required: boolean }[];
   /** An active, healthy system of this business can execute it right now. */
   available: boolean;
-  /** How the business governs it: automatic, conditional (rules decide per call), owner_approval, not_permitted, read_only. */
+  /** How the business governs it: automatic, conditional (rules decide per call), owner_approval, not_permitted (no rule allows it — reads included). */
   authority: string;
 };
 
