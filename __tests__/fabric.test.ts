@@ -43,7 +43,8 @@ async function connectParcel(businessId: string, status: "proposed" | "active" =
 
 describe("capability contract: open, namespaced, safe by construction", () => {
   it("any namespaced domain can be registered; malformed ids and unsafe contracts are refused", () => {
-    expect(getCapability("shipping.track")?.provenance.source).toBe("business_manifest");
+    expect(getCapability("shipping.create_shipment")?.provenance.source).toBe("business_manifest");
+    expect(getCapability("shipping.track")?.provenance).toEqual({ source: "barry_core", ref: "vocabulary" });
     const base = { version: "1.0.0", purpose: "x", input: z.object({}), output: z.object({}), provenance: { source: "business_manifest" as const } };
     for (const id of ["Shipping.Track", "shipping", "shipping..track", "a.b.c.d.e.f.g"]) {
       expect(() => registerCapability({ ...base, id, effect: "read", verification: "none", idempotency: "none", authority: "none" })).toThrow(CapabilityContractError);
@@ -298,7 +299,7 @@ describe("mapping proposals: inference is never authority", () => {
         post: {
           operationId: "createTicket",
           summary: "Create a support ticket",
-          requestBody: { content: { "application/json": { schema: { properties: { subject: {}, body: {}, customerRef: {} } } } } },
+          requestBody: { content: { "application/json": { schema: { properties: { reference: {}, reason: {} } } } } },
           responses: { "201": { content: { "application/json": { schema: { properties: { ticketId: {}, created: {} } } } } } },
         },
         get: { operationId: "listTickets", responses: {} },
@@ -363,7 +364,7 @@ describe("mapping proposals: inference is never authority", () => {
     await getBackend().upsertBusinessConnection(manifestConnection({ businessId: id, systemKey: "helpdesk", domain: "support", name: "Helpdesk", manifest: completed, mappings: { "support.ticket.create": storedMapping(mapping) } }));
     const sys = helpdeskSystem();
     setHttpTransportForTests(sys.transport);
-    expect(await executeCapability({ businessId: id }, "support.ticket.create", { subject: "Help", body: "b", customerRef: "c", idempotencyKey: "k-12345678" }, { authorize: allow })).toMatchObject({ ok: false, code: "mapping_not_active" });
+    expect(await executeCapability({ businessId: id }, "support.ticket.create", { reference: "ORD-9", reason: "other", idempotencyKey: "k-12345678" }, { authorize: allow })).toMatchObject({ ok: false, code: "mapping_not_active" });
 
     const stored = descriptorFromConnection((await getBackend().getBusinessConnection(id, "support"))!);
     const { getConnectorFactory, resolveCredentialValues, credentialSpecFor } = await import("@/lib/fabric/registry");
@@ -374,7 +375,7 @@ describe("mapping proposals: inference is never authority", () => {
     mapping = advanceMapping(mapping, { to: "active", approvedBy: "owner@business" });
     await getBackend().upsertBusinessConnection(manifestConnection({ businessId: id, systemKey: "helpdesk", domain: "support", name: "Helpdesk", manifest: completed, mappings: { "support.ticket.create": storedMapping(mapping) } }));
 
-    const done = await executeCapability({ businessId: id }, "support.ticket.create", { subject: "Help", body: "b", customerRef: "c", idempotencyKey: "k-12345678" }, { authorize: allow });
+    const done = await executeCapability({ businessId: id }, "support.ticket.create", { reference: "ORD-9", reason: "other", idempotencyKey: "k-12345678" }, { authorize: allow });
     expect(done).toMatchObject({ ok: true, output: { verified: true } });
     const pub = publicDescriptor((await listBusinessSystems(id)).find((s) => s.system.key === "helpdesk")!);
     expect(pub.capabilities[0]).toMatchObject({ status: "active", provenance: "owner_manifest", conformance: { suite: "barry-conformance/1" }, verifiedAt: expect.any(String) });

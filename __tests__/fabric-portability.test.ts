@@ -134,14 +134,14 @@ describe("B + C. unfamiliar systems in materially different domains, through the
     await connect(id, "helpdesk", "support", "Helpdesk", helpdeskManifest);
     await connect(id, "parcel-co", "shipping", "Parcel Co", parcelManifest);
 
-    const ticketInput = { subject: "Damaged parcel", body: "Box arrived crushed", customerRef: "cust-7", idempotencyKey: "tkt-000001" };
+    const ticketInput = { reference: "ORD-5", reason: "damaged_item", idempotencyKey: "tkt-000001" };
     const ticket = await executeCapability({ businessId: id }, "support.ticket.create", ticketInput, { authorize: allow });
     const again = await executeCapability({ businessId: id }, "support.ticket.create", ticketInput, { authorize: allow });
     const shipment = await executeCapability({ businessId: id }, "shipping.create_shipment", { orderRef: "ORD-5", address: "1 Harbour Road, Haifa", idempotencyKey: "shp-000001" }, { authorize: allow });
     expect(ticket).toMatchObject({ ok: true, output: { ticketId: "T-1", verified: true }, provenance: { system: "helpdesk" } });
     expect(again).toMatchObject({ ok: true, output: { ticketId: "T-1" } }); // same key -> same ticket
     expect(shipment).toMatchObject({ ok: true, output: { shipmentId: "shp_1", verified: true }, provenance: { system: "parcel-co" } });
-    expect(JSON.parse(desk.calls[0].body!)).toEqual({ title: "Damaged parcel", description: "Box arrived crushed", requester: "cust-7" });
+    expect(JSON.parse(desk.calls[0].body!)).toEqual({ about: "ORD-5", category: "damaged_item" });
   });
 });
 

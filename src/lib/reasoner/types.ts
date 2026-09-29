@@ -43,7 +43,8 @@ export type CapabilitySurfaceEntry = {
   id: string;
   purpose: string;
   effect: "read" | "consequential";
-  inputs: { name: string; type: string; required: boolean }[];
+  /** `options`: the contract's own closed set of values for an enum field. */
+  inputs: { name: string; type: string; required: boolean; options?: string[] }[];
   /** An active, healthy system of this business can execute it right now. */
   available: boolean;
   /** How the business governs it: automatic, conditional (rules decide per call), owner_approval, not_permitted (no rule allows it — reads included). */

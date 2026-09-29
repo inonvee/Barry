@@ -28,7 +28,7 @@ import { ACTION_REQUIREMENTS, usedCapabilities } from "./model";
 const TYPED = new Set(Object.values(ACTION_REQUIREMENTS).flat());
 
 function inputSummary(contract: AnyCapabilityContract): CapabilitySurfaceEntry["inputs"] {
-  let schema: { properties?: Record<string, { type?: string | string[] }>; required?: string[] };
+  let schema: { properties?: Record<string, { type?: string | string[]; enum?: unknown[] }>; required?: string[] };
   try {
     schema = z.toJSONSchema(contract.input, { io: "input", unrepresentable: "any" }) as typeof schema;
   } catch {
@@ -37,7 +37,12 @@ function inputSummary(contract: AnyCapabilityContract): CapabilitySurfaceEntry["
   const required = new Set(schema.required ?? []);
   return Object.entries(schema.properties ?? {})
     .filter(([name]) => name !== "idempotencyKey") // BARRY supplies it
-    .map(([name, p]) => ({ name, type: Array.isArray(p.type) ? p.type.join("|") : (p.type ?? "any"), required: required.has(name) }));
+    .map(([name, p]) => ({
+      name,
+      type: Array.isArray(p.type) ? p.type.join("|") : (p.type ?? "any"),
+      required: required.has(name),
+      ...(Array.isArray(p.enum) && p.enum.every((v) => typeof v === "string") ? { options: p.enum as string[] } : {}),
+    }));
 }
 
 export async function buildCapabilitySurface(graph: BusinessGraph): Promise<CapabilitySurfaceEntry[]> {

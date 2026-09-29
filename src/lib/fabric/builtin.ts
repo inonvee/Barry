@@ -181,3 +181,4 @@ export const BUILTIN_CAPABILITIES: AnyCapabilityContract[] = [
 ];
 
 for (const contract of BUILTIN_CAPABILITIES) registerCapability(contract);
+import "./vocabulary";

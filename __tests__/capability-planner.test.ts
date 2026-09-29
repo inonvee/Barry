@@ -150,7 +150,7 @@ describe("authority is per capability, per business, deterministic — and never
     ["billing.credit.issue", { account: "C-7" }, "requires_approval", "credit-large"], // unevaluable -> restriction holds, allow doesn't
     ["shipping.create_shipment", { orderRef: "O", address: "1 Road St" }, "denied", "no-shipments"],
     ["shipping.track", { trackingNumber: "ABC" }, "denied", undefined], // a READ with no rule is denied too — never assumed from effect=read
-    ["support.ticket.create", { subject: "x" }, "denied", undefined], // consequential, no rule -> fail closed
+    ["support.ticket.create", { reference: "ABC", reason: "other" }, "denied", undefined], // consequential, no rule -> fail closed
     ["no.such.capability", {}, "denied", undefined],
   ])("%s %j -> %s", (capability, input, status, ruleId) => {
     const d = decideCapability(g, capability, input);
@@ -346,7 +346,7 @@ describe("PROOF E — one conversation, two domains, the next step chosen from t
         const last = lastResult(ctx);
         if (!last) return ask("shipping.track", { trackingNumber: "ABC" }, "customer's package hasn't arrived");
         if (last.capability === "shipping.track" && last.output?.status === "delayed") {
-          return ask("support.ticket.create", { subject: "still hasn't arrived", body: "my package ABC still hasn't arrived", customerRef: "ABC" }, "delayed shipment: open a case");
+          return ask("support.ticket.create", { reference: "ABC", reason: "delivery_delay" }, "delayed shipment: open a case");
         }
         return undefined;
       })

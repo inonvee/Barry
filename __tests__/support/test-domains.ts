@@ -4,26 +4,15 @@ import type { HttpManifest } from "@/lib/fabric/http-manifest";
 import { createMockHttpSystem } from "./mock-http-system";
 
 /**
- * Capability contracts for business domains BARRY's core knows nothing
- * about — registered here exactly as a business manifest would register
- * them. Production code never names these domains or systems.
+ * Test systems for capability domains BARRY's core knows nothing about.
+ * shipping.track and support.ticket.create come from the shared vocabulary
+ * (src/lib/fabric/vocabulary.ts) — one definition, no competing copy;
+ * shipping.create_shipment is registered here exactly as a business
+ * manifest would register it. Production code never names these systems.
  */
+import "@/lib/fabric/vocabulary";
 
 const manifestProvenance = { source: "business_manifest" as const, ref: "test" };
-
-registerCapability({
-  id: "shipping.track",
-  version: "1.0.0",
-  purpose: "Where is a shipment?",
-  input: z.object({ trackingNumber: z.string().min(3).max(64) }),
-  output: z.object({ trackingNumber: z.string(), status: z.string(), eta: z.string().optional() }),
-  effect: "read",
-  verification: "none",
-  idempotency: "none",
-  authority: "none",
-  provenance: manifestProvenance,
-  examples: { valid: { trackingNumber: "TRK-1001" }, invalid: { trackingNumber: "x" } },
-});
 
 registerCapability({
   id: "shipping.create_shipment",
@@ -39,19 +28,6 @@ registerCapability({
   examples: { valid: { orderRef: "ORD-7", address: "1 Harbour Road, Haifa", idempotencyKey: "ship-key-0001" }, invalid: { orderRef: "", address: "x", idempotencyKey: "short" } },
 });
 
-registerCapability({
-  id: "support.ticket.create",
-  version: "1.0.0",
-  purpose: "Open a support ticket in the business's helpdesk.",
-  input: z.object({ subject: z.string().min(3).max(200), body: z.string().min(1).max(5000), customerRef: z.string().min(1), idempotencyKey: z.string().min(8) }),
-  output: z.object({ ticketId: z.string(), verified: z.literal(true) }),
-  effect: "consequential",
-  verification: "provider_confirmed",
-  idempotency: "key_required",
-  authority: "policy_gated",
-  provenance: manifestProvenance,
-  examples: { valid: { subject: "Broken zipper", body: "Arrived damaged", customerRef: "cust-1", idempotencyKey: "ticket-key-01" }, invalid: { subject: "", body: "", customerRef: "", idempotencyKey: "x" } },
-});
 
 // ── Two different shipping systems implementing the same capabilities ────
 
@@ -115,7 +91,7 @@ export const helpdeskManifest: HttpManifest = {
       capability: "support.ticket.create",
       method: "POST",
       path: "/tickets",
-      body: { title: "subject", description: "body", requester: "customerRef" },
+      body: { about: "reference", category: "reason" },
       idempotencyHeader: "Idempotency-Key",
       response: { map: { ticketId: "/ticket/id" }, success: { pointer: "/ticket/created", equals: true } },
     },

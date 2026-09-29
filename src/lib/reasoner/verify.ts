@@ -35,6 +35,8 @@ export type IRVerification = {
   rejected: IRRejection[];
   /** Per proposed customer fact: what the model said, the quote it cited, and what grounding decided. */
   customerFacts?: CustomerFactCheck[];
+  /** The model's capability proposal as it came, and whether grounding accepted it (reason when not). */
+  capabilityRequest?: { proposed: CapabilityRequest; status: "accepted" | "rejected"; reason?: string };
 };
 
 export type CustomerFactCheck = {
@@ -233,8 +235,13 @@ export function verifyIR(
     customerInfo,
     capabilityRequest: groundCapabilityRequest(ir.capabilityRequest, rejected, customerMessage, state, context),
   };
+  const capabilityCheck = ir.capabilityRequest
+    ? verified.capabilityRequest
+      ? { proposed: ir.capabilityRequest, status: "accepted" as const }
+      : { proposed: ir.capabilityRequest, status: "rejected" as const, reason: rejected.filter((r) => r.claim.startsWith("capabilityRequest")).map((r) => `${r.claim}: ${r.reason}`).join("; ") }
+    : undefined;
 
-  return { verified, verification: { llmCustomerInfo: ir.customerInfo, rejected, customerFacts } };
+  return { verified, verification: { llmCustomerInfo: ir.customerInfo, rejected, customerFacts, ...(capabilityCheck ? { capabilityRequest: capabilityCheck } : {}) } };
 }
 
 /**
@@ -243,7 +250,10 @@ export function verifyIR(
  * - every input value must be something the customer said in this
  *   conversation, a customer field BARRY already holds, or a value an
  *   earlier capability result returned — never a model-invented id,
- *   number or address. Any ungrounded value rejects the whole proposal.
+ *   number or address. The one other grounded source is the contract
+ *   itself: for an ENUM field, one of the contract's own options (a
+ *   classification the model chooses, like choosing the capability).
+ *   Any ungrounded value rejects the whole proposal.
  * Whether it may RUN is not decided here (that is authority).
  */
 function groundCapabilityRequest(
@@ -290,6 +300,8 @@ function groundCapabilityRequest(
 
   for (const [field, value] of Object.entries(request.input)) {
     if (field === "idempotencyKey") continue; // BARRY's, never the model's — stripped at execution
+    const options = entry.inputs.find((i) => i.name === field)?.options;
+    if (options && typeof value === "string" && options.includes(value)) continue; // the contract's own closed vocabulary
     if (!grounded(value)) {
       rejected.push({ claim: `capabilityRequest.input.${field}`, value, reason: "not stated by the customer or known to BARRY" });
       return undefined;
