@@ -1,22 +1,23 @@
-import { resolveConnection } from "@/lib/connections/registry";
-import { resolveConnectionCredentials } from "@/lib/connections/credentials";
-import { isProductionRuntime } from "@/lib/env";
+import { CapabilityUnavailableError, registerConnectorFactory, registerDefaultSystemProvider, resolveDomainConnector, simulationAllowed, type Connector } from "@/lib/fabric/registry";
+import { normalizeDeclaredCapabilities, listCapabilities } from "@/lib/fabric/capability";
+import "@/lib/fabric/builtin";
 import type { CommerceAdapter, Product } from "./types";
 import { MemoryCommerceAdapter } from "./adapters/memory";
 import { CustomCommerceAdapter } from "./adapters/custom";
 
 /**
- * Per-business commerce adapter resolution. FAILS CLOSED:
+ * Commerce connectors, registered in the universal connection registry
+ * (src/lib/fabric/registry.ts). Everything vendor-specific about commerce
+ * systems lives here, inside connector factories; resolution, gating and
+ * failure semantics are the fabric's and identical for every domain.
  *
- * - A business with a configured commerce connection gets exactly that
- *   provider, or an error. A broken/misconfigured connection is an error,
- *   never a silent fallback to someone else's catalog.
- * - The in-memory adapter serves a FIXTURE catalog only for a business
- *   whose connection explicitly names that fixture (or a registered
- *   simulator fixture business with no connection), and never in a
- *   production deployment unless explicitly allowed for preview/demo.
- * - Everything else: "commerce is not connected" — BARRY must not invent
- *   products.
+ * FAILS CLOSED:
+ * - A business with a stored commerce connection gets exactly that system,
+ *   or an error — never someone else's catalog.
+ * - The in-memory adapter serves a FIXTURE catalog only for a connection
+ *   that names that fixture (or a registered simulator business with no
+ *   connection), and only where simulation is allowed (dev, tests,
+ *   explicitly-allowed preview demos).
  */
 
 type CommerceAdapterFactory = (businessId: string) => CommerceAdapter;
@@ -47,48 +48,94 @@ export function fixtureCatalogForBusiness(businessId: string): string | undefine
 
 /** Fixture data is for tests, local dev, and explicitly-allowed preview demos — never a real production business. */
 export function fixtureCommerceAllowed(): boolean {
-  if (!isProductionRuntime()) return true;
-  return process.env.VERCEL_ENV === "preview" || process.env.BARRY_ALLOW_FIXTURE_COMMERCE === "1";
+  return simulationAllowed();
 }
 
 function memoryAdapterFor(businessId: string, catalogName: string): CommerceAdapter {
   const catalog = fixtureCatalogs.get(catalogName);
   if (!catalog) throw new CommerceNotConfiguredError(`Unknown fixture catalog "${catalogName}"`);
-  if (!fixtureCommerceAllowed()) throw new CommerceNotConfiguredError("Fixture commerce catalogs are disabled in production");
   const key = `${businessId}:${catalogName}`;
   if (!memoryAdapters.has(key)) memoryAdapters.set(key, new MemoryCommerceAdapter(catalog()));
   return memoryAdapters.get(key)!;
 }
 
-export async function resolveCommerceAdapterForBusiness(businessId: string): Promise<CommerceAdapter> {
-  const testFactory = testFactories.get(businessId);
-  if (testFactory) return testFactory(businessId);
+const ALL_COMMERCE = () => listCapabilities("commerce").map((c) => c.id);
 
-  let connection;
-  try {
-    connection = await resolveConnection(businessId, "commerce");
-  } catch (err) {
-    const fixture = fixtureBusinesses.get(businessId);
-    const noConnection = err instanceof Error && /^No commerce connection configured/.test(err.message);
-    if (fixture && noConnection) return memoryAdapterFor(businessId, fixture);
-    throw err instanceof Error ? err : new CommerceNotConfiguredError(String(err));
+/** Wraps a typed commerce adapter as a fabric connector; its declared operations become capability ids. */
+function commerceConnector(adapter: CommerceAdapter): Connector {
+  return {
+    systemKey: adapter.name,
+    adapter,
+    async capabilities() {
+      // Adapters without a declaration implement the base CommerceAdapter contract (no order-status lookup).
+      const declared = adapter.describeCapabilities ? await adapter.describeCapabilities() : ["catalogSearch", "catalogSchema", "variants", "liveInventory", "cart", "checkout", "orders"];
+      return normalizeDeclaredCapabilities("commerce", declared);
+    },
+  };
+}
+
+registerConnectorFactory({
+  key: "commerce/memory",
+  name: "BARRY commerce simulator",
+  kind: "first_party",
+  domain: "commerce",
+  simulated: true,
+  displayConfigKeys: ["fixtureCatalog"],
+  potentialCapabilities: ALL_COMMERCE,
+  setupGaps: (config, missing) => (typeof config.fixtureCatalog === "string" ? missing : [...missing, "config.fixtureCatalog"]),
+  create(descriptor) {
+    return commerceConnector(memoryAdapterFor(descriptor.businessId, String(descriptor.config.fixtureCatalog)));
+  },
+});
+
+registerConnectorFactory({
+  key: "custom-commerce",
+  name: "Custom commerce API",
+  kind: "first_party",
+  domain: "commerce",
+  simulated: false,
+  credentials: { envPrefix: "custom_commerce", keys: [{ key: "API_KEY", field: "apiKey", required: true }] },
+  displayConfigKeys: [],
+  potentialCapabilities: ALL_COMMERCE,
+  setupGaps: (config, missing) => (typeof config.baseUrl === "string" ? missing : [...missing, "config.baseUrl"]),
+  create(descriptor, credentials) {
+    return commerceConnector(new CustomCommerceAdapter({ baseUrl: String(descriptor.config.baseUrl) }, { apiKey: credentials.apiKey! }));
+  },
+});
+
+// Test-only override: a whole commerce system for one business, still resolved through the fabric.
+registerConnectorFactory({
+  key: "commerce/test-override",
+  name: "Test commerce system",
+  kind: "first_party",
+  domain: "commerce",
+  simulated: true,
+  potentialCapabilities: ALL_COMMERCE,
+  create(descriptor) {
+    const factory = testFactories.get(descriptor.businessId);
+    if (!factory) throw new CommerceNotConfiguredError("No test commerce system registered");
+    return commerceConnector(factory(descriptor.businessId));
+  },
+});
+
+registerDefaultSystemProvider("commerce", (businessId) => {
+  const base = { businessId, capability: "commerce", status: "connected" as const, permissions: [] };
+  if (testFactories.has(businessId)) {
+    return { ...base, id: `test-${businessId}-commerce`, provider: "test-override", config: {}, credentialsRef: "env:test-override", provenance: "fixture" };
   }
+  const fixture = fixtureBusinesses.get(businessId);
+  if (fixture) return { ...base, id: `fixture-${businessId}-commerce`, provider: "memory", config: { fixtureCatalog: fixture }, credentialsRef: "env:memory", provenance: "fixture" };
+  return undefined;
+});
 
-  switch (connection.provider) {
-    case "custom-commerce": {
-      const baseUrl = typeof connection.config.baseUrl === "string" ? connection.config.baseUrl : undefined;
-      const apiKey = resolveConnectionCredentials(connection).apiKey;
-      if (!baseUrl || !apiKey) {
-        throw new CommerceNotConfiguredError(`Commerce connection for ${businessId} is missing ${!baseUrl ? "baseUrl" : "credentials"}`);
-      }
-      return new CustomCommerceAdapter({ baseUrl }, { apiKey });
+export async function resolveCommerceAdapterForBusiness(businessId: string): Promise<CommerceAdapter> {
+  try {
+    const { connector } = await resolveDomainConnector(businessId, "commerce");
+    return connector.adapter as CommerceAdapter;
+  } catch (err) {
+    if (err instanceof CapabilityUnavailableError && err.code === "simulation_not_allowed") {
+      throw new CommerceNotConfiguredError("Fixture commerce catalogs are disabled in production");
     }
-    case "memory": {
-      const catalogName = typeof connection.config.fixtureCatalog === "string" ? connection.config.fixtureCatalog : undefined;
-      if (!catalogName) throw new CommerceNotConfiguredError(`Memory commerce connection for ${businessId} names no fixture catalog`);
-      return memoryAdapterFor(businessId, catalogName);
-    }
-    default:
-      throw new CommerceNotConfiguredError(`Unsupported commerce provider ${connection.provider}`);
+    throw err instanceof CapabilityUnavailableError ? new CommerceNotConfiguredError(err.message) : err;
   }
 }

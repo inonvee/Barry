@@ -150,7 +150,7 @@ async function assertPublicHost(url: URL, resolve: HostResolver): Promise<void> 
 }
 
 /** DNS lookup used by the socket itself — re-validates at connect time (anti-rebinding). */
-function guardedLookup(
+export function guardedLookup(
   hostname: string,
   options: dns.LookupOptions,
   callback: (err: NodeJS.ErrnoException | null, address: string | dns.LookupAddress[], family?: number) => void

@@ -1,33 +1,78 @@
-import { resolveConnectionCredentials } from "@/lib/connections/credentials";
-import { resolveConnection } from "@/lib/connections/registry";
 import { getBackend } from "@/lib/store";
-import type { ConnectionRecord } from "@/lib/store";
+import { CapabilityUnavailableError, registerConnectorFactory, registerDefaultSystemProvider, resolveDomainConnector, type Connector } from "@/lib/fabric/registry";
+import { listCapabilities, normalizeDeclaredCapabilities } from "@/lib/fabric/capability";
+import "@/lib/fabric/builtin";
 import { GoogleCalendarAdapter } from "./adapters/google-calendar";
 import { MemorySchedulingAdapter } from "./adapters/memory";
 import type { SchedulingAdapter } from "./adapters/types";
 
-type SchedulingProvider = "memory" | "google-calendar";
-type SchedulingAdapterFactory = (connection: ConnectionRecord) => SchedulingAdapter;
+/** Scheduling connectors, registered in the universal connection registry. */
 
-const factories = new Map<SchedulingProvider, SchedulingAdapterFactory>([
-  ["memory", () => new MemorySchedulingAdapter(getBackend())],
-  ["google-calendar", (connection) => {
-    const credentials = resolveConnectionCredentials(connection);
-    const calendarId = String(connection.config.calendarId ?? credentials.calendarId ?? "");
-    if (!calendarId) throw new Error("Google Calendar auth invalid");
-    return new GoogleCalendarAdapter({ calendarId, backend: getBackend() });
-  }],
-]);
+const ALL_SCHEDULING = () => listCapabilities("scheduling").map((c) => c.id);
 
-function schedulingProvider(value: string): SchedulingProvider {
-  if (value === "memory" || value === "google-calendar") return value;
-  throw new Error(`Unsupported scheduling provider ${value}`);
+function schedulingConnector(adapter: SchedulingAdapter): Connector {
+  return {
+    systemKey: adapter.name,
+    adapter,
+    async capabilities() {
+      const declared = adapter.describeCapabilities ? await adapter.describeCapabilities() : ["availability", "booking", "bookingLookup"];
+      return normalizeDeclaredCapabilities("scheduling", declared);
+    },
+  };
 }
 
+registerConnectorFactory({
+  key: "scheduling/memory",
+  name: "BARRY scheduling simulator",
+  kind: "first_party",
+  domain: "scheduling",
+  simulated: true,
+  potentialCapabilities: ALL_SCHEDULING,
+  create: () => schedulingConnector(new MemorySchedulingAdapter(getBackend())),
+});
+
+registerConnectorFactory({
+  key: "google-calendar",
+  name: "Google Calendar",
+  kind: "first_party",
+  domain: "scheduling",
+  simulated: false,
+  credentials: { envPrefix: "google_calendar", keys: [{ key: "CALENDAR_ID", field: "calendarId", required: true }], unscoped: { CALENDAR_ID: "GOOGLE_CALENDAR_ID" } },
+  potentialCapabilities: ALL_SCHEDULING,
+  // A calendar id set on the connection itself satisfies the credential.
+  setupGaps: (config, missing) => (typeof config.calendarId === "string" && config.calendarId ? missing.filter((m) => !m.endsWith("CALENDAR_ID")) : missing),
+  create(descriptor, credentials) {
+    const calendarId = String(descriptor.config.calendarId ?? credentials.calendarId ?? "");
+    if (!calendarId) throw new Error("Google Calendar auth invalid");
+    return schedulingConnector(new GoogleCalendarAdapter({ calendarId, backend: getBackend() }));
+  },
+});
+
+// Legacy single-tenant configuration: BARRY_SCHEDULING_PROVIDER, else the simulator.
+registerDefaultSystemProvider("scheduling", (businessId) => {
+  if (process.env.BARRY_REQUIRE_BUSINESS_CONNECTIONS === "1") return undefined;
+  const provider = process.env.BARRY_SCHEDULING_PROVIDER === "google-calendar" ? "google-calendar" : "memory";
+  return {
+    id: `legacy-${businessId}-scheduling`,
+    businessId,
+    capability: "scheduling",
+    provider,
+    status: "connected",
+    config: {},
+    credentialsRef: `env:${provider}`,
+    permissions: ["checkAvailability", "createBooking"],
+    provenance: "environment_default",
+  };
+});
+
 export async function resolveSchedulingAdapterForBusiness(businessId: string): Promise<SchedulingAdapter> {
-  const connection = await resolveConnection(businessId, "scheduling");
-  const provider = schedulingProvider(connection.provider);
-  const factory = factories.get(provider);
-  if (!factory) throw new Error(`No scheduling adapter registered for provider ${provider}`);
-  return factory(connection);
+  try {
+    const { connector } = await resolveDomainConnector(businessId, "scheduling");
+    return connector.adapter as SchedulingAdapter;
+  } catch (err) {
+    if (err instanceof CapabilityUnavailableError && err.code === "no_connector") throw new Error(err.message.replace(/^No connector registered for "(.*)"$/, "Unsupported scheduling provider $1"));
+    // Missing calendar credentials keep their historical message.
+    if (err instanceof CapabilityUnavailableError && err.code === "missing_credentials" && /Google Calendar/.test(err.message)) throw new Error("Google Calendar auth invalid");
+    throw err;
+  }
 }

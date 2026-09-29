@@ -82,7 +82,8 @@ export type Order = {
 };
 
 export type CommerceAdapter = {
-  readonly name: "memory" | "custom-commerce";
+  /** The connector's system key (data, never branched on). */
+  readonly name: string;
   /** What this catalog can be searched by: categories, attributes, variant options, currency. */
   describeCatalog(): Promise<CatalogSchema>;
   /** Operations of its capability this adapter really supports (see lib/capabilities). */

@@ -3,11 +3,11 @@ import type { PaymentRequestRecord } from "@/lib/store";
 
 /**
  * What a design partner (a clothing retailer with its own site, WhatsApp
- * and Instagram, a catalog with sizes, stock, cart, checkout, PayPlus and
- * orders) needs from BARRY — surface by surface, stated honestly:
+ * and Instagram, a catalog with sizes, stock, cart, checkout, their payment
+ * provider and orders) needs from BARRY — surface by surface, stated honestly:
  *
  *   live_proven           a real (non-simulated) provider completed this in a
- *                         persisted transaction (e.g. a PayPlus payment that
+ *                         persisted transaction (e.g. a payment that
  *                         the provider verified as paid)
  *   ready                 a real provider is connected and declares the
  *                         operation; not yet proven by a real transaction
@@ -92,27 +92,24 @@ export function buildDesignPartnerReadiness(input: Input): DesignPartnerSurface[
     rows.push({ surface: s.surface, status, provider: commerce.provider, detail });
   }
 
-  // Payments: PayPlus is the partner's provider.
-  const payplusPaid = (input.payments ?? []).some((p) => p.provider === "payplus" && p.status === "paid" && !!p.verifiedAt);
+  // Payments: whichever payment system the business itself connected — BARRY doesn't pick its vendor.
+  const provenPaid = (input.payments ?? []).some((p) => p.provider === payments.provider && p.status === "paid" && !!p.verifiedAt);
   let payStatus: DesignPartnerStatus;
   let payDetail: string;
   if (payments.status !== "connected") {
     payStatus = "needs_client_provider";
-    payDetail = "Connect PayPlus (API key, secret, payment page UID) on the Connections page.";
+    payDetail = "Connect the business's own payment system on the Connections page.";
   } else if (payments.simulated) {
     payStatus = "simulated";
     payDetail = "Payment links come from BARRY's simulator.";
-  } else if (payments.provider !== "payplus") {
-    payStatus = "needs_client_provider";
-    payDetail = `Connected provider is ${payments.provider}, not PayPlus.`;
-  } else if (payplusPaid) {
+  } else if (provenPaid) {
     payStatus = "live_proven";
-    payDetail = "A PayPlus payment was verified as paid by the provider.";
+    payDetail = `A ${payments.provider} payment was verified as paid by the provider.`;
   } else {
     payStatus = "ready";
-    payDetail = input.payments === null ? "PayPlus connected; payment history unavailable." : "PayPlus connected; no provider-verified paid transaction yet.";
+    payDetail = input.payments === null ? `${payments.provider} connected; payment history unavailable.` : `${payments.provider} connected; no provider-verified paid transaction yet.`;
   }
-  rows.push({ surface: "PayPlus payments", status: payStatus, provider: payments.provider, detail: payDetail });
+  rows.push({ surface: "Payments", status: payStatus, provider: payments.provider, detail: payDetail });
 
   return rows;
 }

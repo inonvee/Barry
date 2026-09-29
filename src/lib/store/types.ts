@@ -20,7 +20,7 @@ export type BookingRecord = {
   partySize: number;
   status: "confirmed" | "cancelled";
   createdAt: string;
-  provider?: "memory" | "google-calendar";
+  provider?: string;
   providerEventId?: string;
   idempotencyKey?: string;
   verifiedAt?: string;
@@ -36,7 +36,7 @@ export type PaymentRequestRecord = {
   reason: string;
   status: "pending" | "paid" | "failed" | "cancelled";
   createdAt: string;
-  provider?: "memory" | "stripe" | "payplus";
+  provider?: string;
   providerPaymentId?: string;
   providerCheckoutUrl?: string;
   idempotencyKey?: string;
@@ -56,7 +56,12 @@ export type PaymentBinding = {
   currency: string;
 };
 
-export type ConnectionCapability = "payments" | "scheduling" | "commerce" | "messaging" | "crm";
+/**
+ * The domain a connection is registered under. Open-ended: "payments",
+ * "commerce", "shipping", "procurement", or any domain a business needs —
+ * what the system can actually do is its capability mapping (src/lib/fabric).
+ */
+export type ConnectionCapability = string;
 export type ConnectionStatus = "connected" | "disconnected" | "error";
 
 export type ConnectionRecord = {

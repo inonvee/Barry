@@ -172,7 +172,7 @@ describe("HQ read model: tenant-scoped, shared readiness, honest about gaps", ()
 });
 
 describe("design-partner readiness is derived, never assumed", () => {
-  it("fixture providers: catalog/cart/checkout are simulated, channels are not built, PayPlus is not connected yet", async () => {
+  it("fixture providers: catalog/cart/checkout are simulated, channels are not built, payments are simulated", async () => {
     setPaymentAdapterForTests(undefined);
     const profiles = await resolveCapabilityProfiles(getBusinessGraph("fashion-retailer"));
     const rows = buildDesignPartnerReadiness({ profiles, payments: [] });
@@ -197,13 +197,15 @@ describe("design-partner readiness is derived, never assumed", () => {
     const by = Object.fromEntries(rows.map((r) => [r.surface, r.status]));
     expect(by["Checkout"]).toBe("ready");
     expect(by["Orders"]).toBe("needs_client_provider");
-    expect(by["PayPlus payments"]).toBe("ready");
+    expect(by["Payments"]).toBe("ready");
 
     const paid = { provider: "payplus", status: "paid", verifiedAt: "2026-09-28T00:00:00Z" } as PaymentRequestRecord;
     const proven = buildDesignPartnerReadiness({ profiles: realProfiles(), payments: [paid] });
-    expect(proven.find((r) => r.surface === "PayPlus payments")?.status).toBe("live_proven");
+    expect(proven.find((r) => r.surface === "Payments")?.status).toBe("live_proven");
     // An unverified "paid" is not proof.
+    // A paid payment from a DIFFERENT system is not proof for the connected one.
+    expect(buildDesignPartnerReadiness({ profiles: realProfiles(), payments: [{ ...paid, provider: "other-system" }] }).find((r) => r.surface === "Payments")?.status).toBe("ready");
     const claimed = buildDesignPartnerReadiness({ profiles: realProfiles(), payments: [{ ...paid, verifiedAt: undefined }] });
-    expect(claimed.find((r) => r.surface === "PayPlus payments")?.status).toBe("ready");
+    expect(claimed.find((r) => r.surface === "Payments")?.status).toBe("ready");
   });
 });

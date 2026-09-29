@@ -1,7 +1,8 @@
 import type { BusinessGraph } from "@/lib/business-graph";
 import type { PaymentRequestRecord } from "@/lib/store";
 
-export type PaymentProvider = "memory" | "stripe" | "payplus";
+/** A payment system's key (data, never branched on outside its own connector). */
+export type PaymentProvider = string;
 export type PaymentStatus = PaymentRequestRecord["status"];
 
 export type CreatePaymentLinkInput = {

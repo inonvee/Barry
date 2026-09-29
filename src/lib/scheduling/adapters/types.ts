@@ -9,7 +9,7 @@ export type SchedulingSlot = {
 export type SchedulingBooking = SchedulingSlot & {
   bookingId: string;
   status: "confirmed";
-  provider?: "memory" | "google-calendar";
+  provider?: string;
   providerEventId?: string;
   idempotencyKey: string;
   verifiedAt: string;
@@ -36,7 +36,7 @@ export type CreateBookingInput = {
 };
 
 export interface SchedulingAdapter {
-  readonly name: "memory" | "google-calendar";
+  readonly name: string;
   /** Operations of its capability this adapter really supports (see lib/capabilities). */
   describeCapabilities?(): Promise<readonly string[]>;
   checkAvailability(input: CheckAvailabilityInput): Promise<{ slots: SchedulingSlot[] }>;
