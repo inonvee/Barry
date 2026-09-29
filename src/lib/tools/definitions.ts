@@ -17,10 +17,10 @@ import {
 } from "@/lib/commerce/capability";
 
 /**
- * Simulated tool adapters. Each mirrors what a real integration (Google
- * Calendar, Stripe, a POS) will eventually do, but operates entirely against
- * the Business Graph + in-memory backend so Phase 1 needs no external
- * credentials. Swapping in a real adapter later only touches this file.
+ * Business Genome actions. Each runs through whatever system the business
+ * connected for the capability it needs (resolved by the capability fabric,
+ * src/lib/fabric), or against Genome-held state in the backend. No tool
+ * knows or branches on which vendor implements a capability.
  */
 
 export const checkAvailability = defineTool({

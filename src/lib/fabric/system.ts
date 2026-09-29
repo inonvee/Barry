@@ -65,7 +65,7 @@ export type SystemDescriptor = {
    * CAN implement; the running connector confirms what it really supports.
    */
   capabilities: CapabilityMapping[];
-  /** Where credentials live (e.g. "env:payplus:rina") and which variable NAMES are required. Never values. */
+  /** Where credentials live (e.g. "env:<system>:<name>") and which variable NAMES are required. Never values. */
   auth: { credentialsRef: string };
   /** Non-secret configuration only. */
   config: Record<string, unknown>;

@@ -155,7 +155,7 @@ export default async function HqBusinessPage({ params }: { params: Promise<{ bus
           </WithSource>
         </Card>
 
-        <Card title="Connections">
+        <Card title="Connected systems (capability fabric)">
           <WithSource value={b.connections}>
             {(cs) => (
               <ul className="divide-y divide-neutral-100 dark:divide-neutral-800 text-sm">
@@ -170,9 +170,26 @@ export default async function HqBusinessPage({ params }: { params: Promise<{ bus
                     </div>
                     <p className="text-xs text-neutral-500">
                       last verified {when(c.lastVerifiedAt)}
-                      {c.missing.length > 0 ? ` · missing setup: ${c.missing.join(", ")}` : ""}
-                      {c.operations.length > 0 ? ` · operations: ${c.operations.join(", ")}` : ""}
+                      {c.system ? ` · ${c.system.system.kind.replace(/_/g, " ")} via ${c.system.connector} · health ${c.system.health.state} · ${c.system.activation}` : ""}
                     </p>
+                    {c.missing.length > 0 && <p className="text-xs text-amber-700 dark:text-amber-400">Blocked: missing {c.missing.join(", ")}</p>}
+                    {c.system && c.system.capabilities.length > 0 && (
+                      <details className="mt-1">
+                        <summary className="cursor-pointer text-xs text-neutral-500">{c.system.capabilities.length} mapped capabilities</summary>
+                        <ul className="mt-1 space-y-0.5 text-xs">
+                          {c.system.capabilities.map((m) => (
+                            <li key={m.id} className="flex flex-wrap items-center gap-1.5">
+                              <span className="font-mono">{m.id}</span>
+                              <span className="text-neutral-500">v{m.version}</span>
+                              <Badge tone={m.status === "active" ? "good" : m.status === "disabled" ? "bad" : "warn"}>{label(m.status)}</Badge>
+                              <span className="text-neutral-500">{label(m.provenance)}</span>
+                              {m.conformance && <span className="text-neutral-500">conformance {when(m.conformance.passedAt)}</span>}
+                              {m.ownerVerificationRequired && m.status !== "active" && <span className="text-amber-700 dark:text-amber-400">needs owner activation</span>}
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    )}
                   </li>
                 ))}
               </ul>

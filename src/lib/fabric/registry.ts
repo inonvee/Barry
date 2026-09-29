@@ -27,7 +27,7 @@ import { HttpManifestSchema, manifestCapabilities, type HttpManifest } from "./h
 // ── Credentials (by reference; values never leave the server) ───────────
 
 export type CredentialSpec = {
-  /** Environment prefix, e.g. "payplus" -> PAYPLUS_<REF>_API_KEY. */
+  /** Environment prefix, e.g. "acme_pay" -> ACME_PAY_<REF>_API_KEY. */
   envPrefix: string;
   keys: { key: string; field: string; required: boolean }[];
   /** Fixed variable names used when the reference has no name (legacy single-tenant setups). */
@@ -90,7 +90,7 @@ export interface Connector {
 }
 
 export type ConnectorFactory = {
-  /** Connector type key: a first-party adapter ("payplus") or a generic protocol ("http-manifest"). */
+  /** Connector type key: a first-party adapter key or a generic protocol ("http-manifest"). */
   key: string;
   name: string;
   kind: SystemKind;
@@ -117,7 +117,7 @@ export function registerConnectorFactory(factory: ConnectorFactory): void {
 
 /**
  * The connector for a stored (domain, system) pair: a domain-scoped
- * registration ("payments/memory") wins over a global one ("payplus").
+ * registration ("payments/memory") wins over a global one ("<system>").
  */
 export function connectorKeyFor(domain: string, systemKey: string): string {
   return factories.has(`${domain}/${systemKey}`) ? `${domain}/${systemKey}` : systemKey;
@@ -195,7 +195,8 @@ export function descriptorFromConnection(record: Omit<ConnectionRecord, "created
     ...(record.lastVerifiedAt ? { lastVerifiedAt: record.lastVerifiedAt } : {}),
     schemaVersion: 1,
     provenance: { source, ref: record.id },
-    activation: record.status === "connected" ? "active" : "disabled",
+    // An erroring connection is still the business's active choice — it is UNHEALTHY, not switched off.
+    activation: record.status === "disconnected" ? "disabled" : "active",
     simulated: factory?.simulated ?? false,
     priority: typeof record.config.priority === "number" ? record.config.priority : PRIORITY[source],
   };

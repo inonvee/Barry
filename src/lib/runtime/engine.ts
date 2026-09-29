@@ -706,7 +706,7 @@ async function authorizeAndExecute(
 }
 
 /**
- * Simulate a payment outcome (Phase 1 has no real Stripe integration) and
+ * Simulate a payment outcome (as a verified provider event would report it) and
  * resume the conversation exactly as a webhook would in production.
  */
 export async function handlePaymentOutcome(
