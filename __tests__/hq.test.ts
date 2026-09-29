@@ -186,10 +186,10 @@ describe("design-partner readiness is derived, never assumed", () => {
   });
 
   const realProfiles = (): CapabilityProfiles => ({
-    commerce: { capability: "commerce", used: true, provider: "custom-commerce", status: "connected", simulated: false, operations: ["catalogSearch", "variants", "liveInventory", "cart", "checkout"], missingOperations: ["orders"] },
-    payments: { capability: "payments", used: true, provider: "payplus", status: "connected", simulated: false, operations: ["paymentLinks", "statusLookup", "webhookVerification"], missingOperations: ["refunds"] },
-    scheduling: { capability: "scheduling", used: false, provider: null, status: "not_configured", simulated: false, operations: [], missingOperations: [] },
-    messaging: { capability: "messaging", used: false, provider: null, status: "not_configured", simulated: false, operations: [], missingOperations: ["send"] },
+    commerce: { capability: "commerce", used: true, provider: "custom-commerce", status: "connected", simulated: false, operations: ["catalogSearch", "variants", "liveInventory", "cart", "checkout"], missingOperations: ["orders"], capabilities: ["commerce.catalog.search", "commerce.variants.read", "commerce.inventory.read", "commerce.cart.create", "commerce.cart.update", "commerce.checkout.create"] },
+    payments: { capability: "payments", used: true, provider: "payplus", status: "connected", simulated: false, operations: ["paymentLinks", "statusLookup", "webhookVerification"], missingOperations: ["refunds"], capabilities: ["payments.create_request", "payments.verify", "payments.webhook.verify"] },
+    scheduling: { capability: "scheduling", used: false, provider: null, status: "not_configured", simulated: false, operations: [], missingOperations: [], capabilities: [] },
+    messaging: { capability: "messaging", used: false, provider: null, status: "not_configured", simulated: false, operations: [], missingOperations: ["send"], capabilities: [] },
   });
 
   it("a real provider is 'ready' until a provider-verified transaction proves it; a missing operation needs the client", () => {

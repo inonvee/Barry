@@ -1,4 +1,6 @@
 import type { BusinessGraph } from "@/lib/business-graph";
+import { capabilityDomain, type CapabilityId } from "@/lib/fabric/capability";
+import "@/lib/fabric/builtin";
 
 /**
  * UNIVERSAL CAPABILITY MODEL + PROVIDER-SPECIFIC OPTIMIZATION.
@@ -11,6 +13,13 @@ import type { BusinessGraph } from "@/lib/business-graph";
  * needs a fallback, and what readiness reports as blocked.
  */
 
+/**
+ * The capability DOMAINS BARRY's conversation planner operates today, with
+ * the legacy operation names their adapters declare. This is a readiness
+ * SUMMARY for these domains only — capability resolution itself is open
+ * (src/lib/fabric): any namespaced capability id can be registered and
+ * resolved without touching this list.
+ */
 export const CAPABILITY_OPERATIONS = {
   commerce: ["catalogSearch", "catalogSchema", "variants", "liveInventory", "cart", "checkout", "orders", "orderStatus"],
   payments: ["paymentLinks", "statusLookup", "webhookVerification", "refunds"],
@@ -24,30 +33,33 @@ export type PaymentOperation = (typeof CAPABILITY_OPERATIONS)["payments"][number
 export type SchedulingOperation = (typeof CAPABILITY_OPERATIONS)["scheduling"][number];
 export type CapabilityOperation<C extends Capability = Capability> = (typeof CAPABILITY_OPERATIONS)[C][number];
 
-/** Which Business Genome actions each capability serves — the single mapping used everywhere. */
-export const CAPABILITY_ACTIONS: Record<Capability, string[]> = {
-  // (checkInventory/fulfillOrder act on inventory held in the Business Genome itself, not a provider.)
-  commerce: ["searchProducts", "addToCart", "updateCartLine", "createCommerceCheckout", "createCommerceOrder"],
-  payments: ["createPaymentRequest", "createCommerceCheckout", "verifyPayment"],
-  scheduling: ["checkAvailability", "createBooking"],
-  messaging: [],
+/**
+ * The capability ids (see src/lib/fabric/builtin.ts) each Business Genome
+ * action needs. The runtime gate asks the fabric whether the business's
+ * connected systems provide them — never which vendor is connected.
+ */
+export const ACTION_REQUIREMENTS: Record<string, CapabilityId[]> = {
+  searchProducts: ["commerce.catalog.search"],
+  addToCart: ["commerce.cart.create", "commerce.cart.update", "commerce.inventory.read"],
+  updateCartLine: ["commerce.cart.update"],
+  createCommerceCheckout: ["commerce.checkout.create", "payments.create_request"],
+  createCommerceOrder: ["commerce.order.create"],
+  createPaymentRequest: ["payments.create_request"],
+  verifyPayment: ["payments.verify"],
+  checkAvailability: ["scheduling.availability.read"],
+  createBooking: ["scheduling.booking.create"],
 };
 
-/** The operation(s) an action needs from its capability's provider. */
-export const ACTION_REQUIREMENTS: Record<string, { capability: Capability; operations: CapabilityOperation[] }[]> = {
-  searchProducts: [{ capability: "commerce", operations: ["catalogSearch"] }],
-  addToCart: [{ capability: "commerce", operations: ["cart", "liveInventory"] }],
-  updateCartLine: [{ capability: "commerce", operations: ["cart"] }],
-  createCommerceCheckout: [
-    { capability: "commerce", operations: ["checkout"] },
-    { capability: "payments", operations: ["paymentLinks"] },
-  ],
-  createCommerceOrder: [{ capability: "commerce", operations: ["orders"] }],
-  createPaymentRequest: [{ capability: "payments", operations: ["paymentLinks"] }],
-  verifyPayment: [{ capability: "payments", operations: ["statusLookup"] }],
-  checkAvailability: [{ capability: "scheduling", operations: ["availability"] }],
-  createBooking: [{ capability: "scheduling", operations: ["booking"] }],
-};
+/** Which Business Genome actions each domain serves — derived from ACTION_REQUIREMENTS, never maintained by hand. */
+export const CAPABILITY_ACTIONS: Record<Capability, string[]> = (() => {
+  const out: Record<Capability, string[]> = { commerce: [], payments: [], scheduling: [], messaging: [] };
+  for (const [action, ids] of Object.entries(ACTION_REQUIREMENTS)) {
+    for (const domain of new Set(ids.map(capabilityDomain))) {
+      if (domain in out && !out[domain as Capability].includes(action)) out[domain as Capability].push(action);
+    }
+  }
+  return out;
+})();
 
 export type CapabilityProfile = {
   capability: Capability;
@@ -57,22 +69,23 @@ export type CapabilityProfile = {
   status: "connected" | "not_configured" | "error";
   /** A simulated/fixture provider: fine for development, never a real integration. */
   simulated: boolean;
+  /** Legacy operation names (for readiness wording). */
   operations: string[];
   missingOperations: string[];
+  /** Capability ids of this domain the connected system provides — what the runtime gate checks. */
+  capabilities: CapabilityId[];
   error?: string;
 };
 
 export type CapabilityProfiles = Record<Capability, CapabilityProfile>;
 
-/** Can the connected providers perform this action? Unknown actions need no provider. */
+/** Can the business's connected systems perform this action? Unknown actions need no provider. */
 export function actionSupported(profiles: CapabilityProfiles | undefined, action: string): { ok: boolean; missing: string[] } {
   if (!profiles) return { ok: true, missing: [] };
   const missing: string[] = [];
-  for (const req of ACTION_REQUIREMENTS[action] ?? []) {
-    const profile = profiles[req.capability];
-    for (const op of req.operations) {
-      if (profile.status !== "connected" || !profile.operations.includes(op)) missing.push(`${req.capability}.${op}`);
-    }
+  for (const id of ACTION_REQUIREMENTS[action] ?? []) {
+    const profile = (profiles as Record<string, CapabilityProfile | undefined>)[capabilityDomain(id)];
+    if (!profile || profile.status !== "connected" || !profile.capabilities.includes(id)) missing.push(id);
   }
   return { ok: missing.length === 0, missing };
 }

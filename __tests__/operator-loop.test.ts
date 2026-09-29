@@ -360,8 +360,8 @@ describe("every turn explains itself (HQ-ready)", () => {
     expect(trace.steps[1]).toMatchObject({
       action: "createCommerceCheckout",
       capabilities: [
-        { capability: "commerce", provider: "memory" },
-        { capability: "payments", provider: "memory" },
+        { capability: "commerce.checkout.create", provider: "memory" },
+        { capability: "payments.create_request", provider: "memory" },
       ],
       policy: { status: "allowed" },
       result: { ok: true },

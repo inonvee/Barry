@@ -11,6 +11,7 @@ import { getBackend } from "@/lib/store";
 import { formatLocalDateTime } from "@/lib/scheduling/resolver";
 import type { CustomerFacingLocalDisplay, GroundedContext, ReasonerContext, SchedulingDisplayFacts } from "@/lib/reasoner/types";
 import { resolveCapabilityProfiles, actionSupported, ACTION_REQUIREMENTS, type CapabilityProfiles } from "@/lib/capabilities";
+import { capabilityDomain } from "@/lib/fabric/capability";
 import type { TurnStep, TurnTrace } from "@/lib/state";
 import { CONSTITUTION_VERSION } from "@/lib/reasoner/constitution";
 import { resolveReplyLanguage, type ReplyLanguage } from "@/lib/reasoner/language";
@@ -576,9 +577,9 @@ async function runStep(
   const { policyDecision, toolResult } = await authorizeAndExecute(graph, state, outcome, ctx, restoreStage);
   const after = state.knownFields;
   const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((k) => before[k] !== after[k]).sort();
-  const capabilities = (ACTION_REQUIREMENTS[outcome.action.name] ?? []).map((r) => ({
-    capability: r.capability,
-    provider: profiles?.[r.capability]?.provider ?? null,
+  const capabilities = (ACTION_REQUIREMENTS[outcome.action.name] ?? []).map((id) => ({
+    capability: id,
+    provider: (profiles as Record<string, CapabilityProfiles[keyof CapabilityProfiles] | undefined> | undefined)?.[capabilityDomain(id)]?.provider ?? null,
   }));
   return {
     outcome,

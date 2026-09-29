@@ -2,6 +2,7 @@ import type { BusinessGraph } from "@/lib/business-graph";
 import { resolveCommerceAdapterForBusiness } from "@/lib/commerce/registry";
 import { resolvePaymentAdapterForBusiness } from "@/lib/payments/registry";
 import { resolveSchedulingAdapterForBusiness } from "@/lib/scheduling/registry";
+import { normalizeDeclaredCapabilities } from "@/lib/fabric/capability";
 import { CAPABILITY_OPERATIONS, usedCapabilities, type Capability, type CapabilityProfile, type CapabilityProfiles } from "./model";
 
 /** Adapters may describe their operations; absent that, the base interface contract is assumed. */
@@ -40,6 +41,7 @@ async function profileFor(
       simulated: SIMULATED.has(adapter.name),
       operations,
       missingOperations: all.filter((op) => !operations.includes(op)),
+      capabilities: normalizeDeclaredCapabilities(capability, declared),
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -52,6 +54,7 @@ async function profileFor(
       simulated: false,
       operations: [],
       missingOperations: [...all],
+      capabilities: [],
       ...(notConfigured ? {} : { error: "Provider could not be resolved" }),
     };
   }
@@ -70,6 +73,6 @@ export async function resolveCapabilityProfiles(graph: BusinessGraph): Promise<C
     payments,
     scheduling,
     // No messaging adapter exists yet — reported honestly, never assumed.
-    messaging: { capability: "messaging", used: false, provider: null, status: "not_configured", simulated: false, operations: [], missingOperations: ["send"] },
+    messaging: { capability: "messaging", used: false, provider: null, status: "not_configured", simulated: false, operations: [], missingOperations: ["send"], capabilities: [] },
   };
 }
