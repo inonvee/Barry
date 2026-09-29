@@ -190,4 +190,18 @@ describe("LLM IR contract: parseIRResponse", () => {
       expect(result.ir.customerInfo).toEqual({});
     }
   });
+
+  it("capabilityRequest: a JSON object of inputs is parsed; malformed JSON, arrays and empty ids are dropped, never repaired", () => {
+    const graph = buildSpaGraph();
+    const parse = (capabilityRequest: unknown) => {
+      const r = parseIRResponse(graph, JSON.stringify(validRawIR({ capabilityRequest })));
+      if (!r.ok) throw new Error(r.kind);
+      return r.ir.capabilityRequest;
+    };
+    expect(parse({ capability: "shipping.track", inputJson: '{"trackingNumber":"ABC123"}', purpose: "where is it" })).toEqual({ capability: "shipping.track", input: { trackingNumber: "ABC123" }, purpose: "where is it" });
+    expect(parse({ capability: "shipping.track", inputJson: "{not json", purpose: "x" })).toBeUndefined();
+    expect(parse({ capability: "shipping.track", inputJson: '["ABC123"]', purpose: "x" })).toBeUndefined();
+    expect(parse({ capability: "", inputJson: "{}", purpose: "x" })).toBeUndefined();
+    expect(parse(null)).toBeUndefined();
+  });
 });

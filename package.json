@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "eval:models": "BARRY_LIVE_EVAL=1 vitest run __tests__/live-model-comparison.test.ts"
+    "eval:models": "BARRY_LIVE_EVAL=1 vitest run __tests__/live-model-comparison.test.ts",
+    "eval:capabilities": "BARRY_LIVE_EVAL=1 vitest run __tests__/capability-planner-live.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.2",
