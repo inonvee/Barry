@@ -13,6 +13,18 @@ Nowhere in this codebase does a conditional branch on business type
 policies, knowledge, and available actions. The runtime, the policy
 engine, and the tool registry only ever read from that structure.
 
+## BARRY adapts to the business
+
+BARRY works with the systems a business already runs; it never asks a
+business to migrate to software BARRY happens to support. The runtime
+reasons in open, namespaced **capabilities** (`payments.verify`,
+`shipping.track`, ...). One **universal connection registry** resolves, per
+business, which active, healthy, authorized system implements each one —
+first-party adapters, generic protocol connectors driven by validated
+manifests, and (once validated and activated) learned mappings alike.
+Model-proposed mappings are never executable until they validate, pass
+conformance and are activated by the owner. See `docs/INTEGRATION_FABRIC.md`.
+
 ## Folder structure
 
 ```
@@ -26,6 +38,9 @@ src/
     reasoner/          Reasoner interface (understand -> BARRY IR) + MockReasoner + OpenAIReasoner
     runtime/           The Observe->Update loop + the deterministic Action Compiler
     store/             BarryBackend: simulated bookings/inventory/payments/approvals
+    fabric/            Capability contracts, system descriptors, universal connection registry,
+                       executor, HTTP manifest connector, conformance suite, mapping proposals
+    commerce|payments|scheduling/  first-party adapters + their connector registrations
   app/
     simulator/         Mobile-first engineering cockpit (chat + inspector + approvals)
     api/simulator/     Route handlers the simulator UI calls

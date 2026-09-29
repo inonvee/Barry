@@ -330,12 +330,15 @@ link.
 
 ## Capability profiles
 
-The reasoner thinks in capabilities; providers implement them. Each adapter
-declares which operations of its capability it really supports
-(`describeCapabilities()`; custom-commerce may publish `GET /capabilities`).
-`resolveCapabilityProfiles(graph)` turns the business's actual connections
-into a profile that the planner (never promise what the provider can't do),
-the model's context, readiness, Learn Stack and the Connections page all use.
+The reasoner thinks in capabilities; systems implement them. Every action
+names the capability ids it needs (`ACTION_REQUIREMENTS`, e.g.
+`createCommerceCheckout` → `commerce.checkout.create` + `payments.create_request`).
+Systems are resolved per business by the universal connection registry
+(`src/lib/fabric`, see `docs/INTEGRATION_FABRIC.md`); each connector declares
+which capability ids it really supports. `resolveCapabilityProfiles(graph)`
+summarizes that per planner domain for the planner (never promise what the
+system can't do), the model's context, readiness, Learn Stack, Connections
+and HQ. The gate and every trace step use capability ids — never vendor names.
 
 ## Turn traces (HQ-ready)
 

@@ -54,18 +54,27 @@ from state.
 ## Design-partner readiness
 
 Per surface a clothing retailer needs (website chat, WhatsApp, Instagram,
-catalog search, variants, live inventory, cart, checkout, orders, PayPlus):
+catalog search, variants, live inventory, cart, checkout, orders, and the business's own payment system):
 
 | Status | Meaning |
 |---|---|
-| live proven | a real provider completed it and the provider verified it in a persisted transaction (today only derivable for PayPlus: a provider-verified paid payment) |
+| live proven | a real provider completed it and the provider verified it in a persisted transaction (today only derivable for payments: a paid payment the connected payment system verified) |
 | ready | a real provider is connected and declares the operation; not yet proven |
 | simulated | works on BARRY's simulator/fixtures only |
-| needs client's provider | BARRY's side exists; the retailer must connect their system (their store API to the custom-commerce contract, PayPlus credentials) |
+| needs client's provider | BARRY's side exists; the retailer must connect their system (their store API, their payment system's credentials) |
 | not built | BARRY has no adapter for the surface (messaging channels today) |
 
 Commerce is never auto-marked live proven: order records don't store which
 provider created them.
+
+## Connected systems
+
+The business page lists each connected system as the capability fabric sees it:
+
+- kind and connector;
+- health and activation;
+- setup blockers, by variable name only;
+- every capability mapping, with its contract version, lifecycle status (proposed / validated / conformance passed / active / disabled), provenance, conformance record, and whether owner activation is still needed.
 
 ## Controls
 
