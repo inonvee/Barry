@@ -249,7 +249,7 @@ export type ResolutionRefusal =
   | "system_unhealthy"
   | "simulation_not_allowed"
   | "no_connector"
-  | "missing_credentials"
+  | "not_configured"
   | "not_supported_by_system"
   | "connector_error";
 
@@ -274,11 +274,11 @@ async function instantiate(descriptor: SystemDescriptor): Promise<{ ok: true; co
   try {
     credentials = resolveCredentialValues(descriptor.auth.credentialsRef, descriptor.system.key, spec);
   } catch (err) {
-    return { ok: false, code: "missing_credentials", reason: err instanceof Error ? err.message : "credentials unavailable" };
+    return { ok: false, code: "not_configured", reason: err instanceof Error ? err.message : "credentials unavailable" };
   }
   const missing = (spec?.keys ?? []).filter((k) => k.required && !credentials[k.field]).map((k) => k.key);
   const gaps = factory.setupGaps ? factory.setupGaps(descriptor.config, missing) : missing;
-  if (gaps.length > 0) return { ok: false, code: "missing_credentials", reason: `${descriptor.system.name} is missing ${gaps.join(", ")}` };
+  if (gaps.length > 0) return { ok: false, code: "not_configured", reason: `${descriptor.system.name} is missing ${gaps.join(", ")}` };
   try {
     return { ok: true, connector: await factory.create(descriptor, credentials) };
   } catch (err) {

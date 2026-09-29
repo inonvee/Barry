@@ -38,6 +38,13 @@ function paymentConnector(adapter: PaymentAdapter): Connector {
       const declared = adapter.describeCapabilities ? await adapter.describeCapabilities() : ["paymentLinks", "statusLookup", "webhookVerification"];
       return normalizeDeclaredCapabilities("payments", declared);
     },
+    async execute(capability, input) {
+      if (capability !== "payments.verify") throw new Error(`${adapter.name} exposes ${capability} only through its typed adapter`);
+      // The provider's own answer about a payment it issued — never the customer's claim.
+      const payment = await adapter.getPaymentStatus({ providerPaymentId: String(input.paymentId) });
+      if (!payment) throw new Error("Payment not found at the provider");
+      return { paymentId: payment.providerPaymentId, status: payment.status };
+    },
   };
 }
 
@@ -204,7 +211,8 @@ function unavailable(err: unknown): never {
 
 export async function resolvePaymentAdapterForBusiness(businessId: string): Promise<PaymentAdapter> {
   try {
-    const { connector } = await resolveDomainConnector(businessId, "payments");
+    const { connector, descriptor } = await resolveDomainConnector(businessId, "payments");
+    if (!connector.adapter) throw new Error(`${descriptor.system.name} offers generic payments capabilities only; the conversation planner needs a typed payments adapter`);
     return connector.adapter as PaymentAdapter;
   } catch (err) {
     unavailable(err);

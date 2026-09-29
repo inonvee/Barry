@@ -21,6 +21,8 @@ async function profileFor(capability: Capability, used: boolean, businessId: str
   const all = CAPABILITY_OPERATIONS[capability] as readonly string[];
   try {
     const { descriptor, connector } = await resolveDomainConnector(businessId, capability);
+    // The planner's tools for these domains use typed adapters; a generic-only system can't serve them yet.
+    if (!connector.adapter) throw new Error(`${descriptor.system.name} is not configured for the conversation planner (generic capabilities only)`);
     const adapter = (connector.adapter ?? connector) as Described;
     const cacheKey = connector.adapter && typeof connector.adapter === "object" ? (connector.adapter as object) : connector;
     let hit = declarations.get(cacheKey);

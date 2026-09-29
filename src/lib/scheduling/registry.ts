@@ -67,12 +67,13 @@ registerDefaultSystemProvider("scheduling", (businessId) => {
 
 export async function resolveSchedulingAdapterForBusiness(businessId: string): Promise<SchedulingAdapter> {
   try {
-    const { connector } = await resolveDomainConnector(businessId, "scheduling");
+    const { connector, descriptor } = await resolveDomainConnector(businessId, "scheduling");
+    if (!connector.adapter) throw new Error(`${descriptor.system.name} offers generic scheduling capabilities only; the conversation planner needs a typed scheduling adapter`);
     return connector.adapter as SchedulingAdapter;
   } catch (err) {
     if (err instanceof CapabilityUnavailableError && err.code === "no_connector") throw new Error(err.message.replace(/^No connector registered for "(.*)"$/, "Unsupported scheduling provider $1"));
     // Missing calendar credentials keep their historical message.
-    if (err instanceof CapabilityUnavailableError && err.code === "missing_credentials" && /Google Calendar/.test(err.message)) throw new Error("Google Calendar auth invalid");
+    if (err instanceof CapabilityUnavailableError && err.code === "not_configured" && /Google Calendar/.test(err.message)) throw new Error("Google Calendar auth invalid");
     throw err;
   }
 }

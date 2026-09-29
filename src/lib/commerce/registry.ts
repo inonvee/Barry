@@ -61,7 +61,14 @@ function memoryAdapterFor(businessId: string, catalogName: string): CommerceAdap
 
 const ALL_COMMERCE = () => listCapabilities("commerce").map((c) => c.id);
 
-/** Wraps a typed commerce adapter as a fabric connector; its declared operations become capability ids. */
+const variantOut = (v: Product["variants"][number]) => ({ id: v.id, options: v.options, price: v.price, available: v.inventory.available });
+
+/**
+ * Wraps a typed commerce adapter as a fabric connector; its declared
+ * operations become capability ids. Read capabilities are also exposed
+ * through the generic contract (`execute`); consequential commerce steps
+ * keep running through the typed tools, which own their verification.
+ */
 function commerceConnector(adapter: CommerceAdapter): Connector {
   return {
     systemKey: adapter.name,
@@ -70,6 +77,36 @@ function commerceConnector(adapter: CommerceAdapter): Connector {
       // Adapters without a declaration implement the base CommerceAdapter contract (no order-status lookup).
       const declared = adapter.describeCapabilities ? await adapter.describeCapabilities() : ["catalogSearch", "catalogSchema", "variants", "liveInventory", "cart", "checkout", "orders"];
       return normalizeDeclaredCapabilities("commerce", declared);
+    },
+    async execute(capability, input) {
+      switch (capability) {
+        case "commerce.catalog.search": {
+          const { products } = await adapter.searchProducts({
+            text: input.text as string | undefined,
+            category: input.category as string | undefined,
+            attributes: input.attributes as Record<string, string> | undefined,
+          });
+          const max = input.maxPrice as number | undefined;
+          return {
+            products: products
+              .map((p) => ({ id: p.id, title: p.title, variants: p.variants.filter((v) => max === undefined || v.price.amount <= max).map(variantOut) }))
+              .filter((p) => p.variants.length > 0),
+          };
+        }
+        case "commerce.variants.read": {
+          const product = await adapter.getProduct(String(input.productId));
+          if (!product) throw new Error("Product not found");
+          return { variants: product.variants.map(variantOut) };
+        }
+        case "commerce.inventory.read": {
+          const product = await adapter.getProduct(String(input.productId));
+          const variant = product?.variants.find((v) => v.id === input.variantId);
+          if (!variant) throw new Error("Variant not found");
+          return { available: variant.inventory.available };
+        }
+        default:
+          throw new Error(`${adapter.name} exposes ${capability} only through its typed adapter`);
+      }
     },
   };
 }
@@ -130,7 +167,10 @@ registerDefaultSystemProvider("commerce", (businessId) => {
 
 export async function resolveCommerceAdapterForBusiness(businessId: string): Promise<CommerceAdapter> {
   try {
-    const { connector } = await resolveDomainConnector(businessId, "commerce");
+    const { connector, descriptor } = await resolveDomainConnector(businessId, "commerce");
+    // The conversation's commerce tools speak the typed adapter surface. A system that only
+    // implements generic capabilities (e.g. a manifest-described API) is not silently half-used.
+    if (!connector.adapter) throw new CommerceNotConfiguredError(`${descriptor.system.name} offers generic commerce capabilities only; the conversation planner needs a typed commerce adapter`);
     return connector.adapter as CommerceAdapter;
   } catch (err) {
     if (err instanceof CapabilityUnavailableError && err.code === "simulation_not_allowed") {
