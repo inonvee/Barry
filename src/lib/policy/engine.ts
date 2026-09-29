@@ -1,5 +1,6 @@
 import type { BusinessGraph } from "@/lib/business-graph";
 import { getPolicy, isActionAvailable } from "@/lib/business-graph";
+import { decideCapability } from "./authority";
 
 export type PolicyStatus = "allowed" | "requires_approval" | "denied";
 
@@ -40,6 +41,16 @@ export type ActionRequest =
  * availableActions, never by business type.
  */
 export function decide(graph: BusinessGraph, request: ActionRequest): PolicyDecision {
+  // The generic capability action is governed per CAPABILITY by the
+  // business's authority rules — never by the action name.
+  if (request.action === "invokeCapability") {
+    const params = request.params as { capability?: unknown; input?: unknown };
+    if (typeof params.capability !== "string" || !params.input || typeof params.input !== "object") {
+      return { status: "denied", reason: "Malformed capability call" };
+    }
+    const d = decideCapability(graph, params.capability, params.input as Record<string, unknown>);
+    return { status: d.status, reason: d.reason, ...(d.ruleId ? { policyId: d.ruleId } : {}) };
+  }
   if (!isActionAvailable(graph, request.action)) {
     return { status: "denied", reason: `Action "${request.action}" is not enabled for this business.` };
   }

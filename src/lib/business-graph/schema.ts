@@ -204,6 +204,33 @@ export const PlaybookSchema = z.object({
 });
 export type Playbook = z.infer<typeof PlaybookSchema>;
 
+/**
+ * AUTHORITY: what BARRY may do on its own, per capability, for THIS business.
+ * A bounded, auditable rule language — no expressions, no code:
+ *   capability  an exact id ("shipping.create_shipment") or a domain wildcard ("shipping.*")
+ *   effect      allow | require_approval | deny
+ *   when        ALL conditions must hold; each compares ONE top-level input field
+ *               of the capability call with a literal (lte/lt/gte/gt/eq/neq/in/exists)
+ * Among matching rules the most restrictive wins (deny > require_approval > allow).
+ * A consequential capability no rule allows is DENIED — authority is never assumed.
+ */
+export const AuthorityConditionSchema = z.object({
+  field: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/),
+  op: z.enum(["lte", "lt", "gte", "gt", "eq", "neq", "in", "exists"]),
+  value: z.union([z.number(), z.string().max(200), z.boolean(), z.array(z.union([z.string().max(200), z.number()])).max(200)]).optional(),
+});
+export type AuthorityCondition = z.infer<typeof AuthorityConditionSchema>;
+
+export const AuthorityRuleSchema = z.object({
+  id: z.string().min(1).max(100),
+  capability: z.string().regex(/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*(\.\*)?$/),
+  effect: z.enum(["allow", "require_approval", "deny"]),
+  when: z.array(AuthorityConditionSchema).max(10).default([]),
+  /** Shown to owners and recorded in traces. */
+  reason: z.string().max(300).optional(),
+});
+export type AuthorityRule = z.infer<typeof AuthorityRuleSchema>;
+
 export const BusinessGraphSchema = z.object({
   business: BusinessSchema,
   capabilities: CapabilityFlagsSchema,
@@ -216,5 +243,7 @@ export const BusinessGraphSchema = z.object({
   availableActions: z.array(AvailableActionSchema),
   goals: z.array(GoalSchema),
   playbook: PlaybookSchema.prefault({}),
+  /** Per-capability authority rules (see AuthorityRuleSchema). */
+  authority: z.array(AuthorityRuleSchema).default([]),
 });
 export type BusinessGraph = z.infer<typeof BusinessGraphSchema>;
