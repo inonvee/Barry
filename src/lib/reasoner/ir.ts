@@ -156,7 +156,18 @@ export type BarryIR = {
    * in the message — it never invents a value of its own.
    */
   evidence?: Record<string, string>;
+  /**
+   * The model's proposal to use ONE of the business's registered
+   * capabilities (from the capability surface it was shown), with the
+   * semantic input and why. A PROPOSAL: grounding checks the capability is
+   * on this business's surface and every input value is something the
+   * customer said or BARRY knows; the business's authority rules decide
+   * whether it may run; the fabric decides which system runs it.
+   */
+  capabilityRequest?: CapabilityRequest;
 };
+
+export type CapabilityRequest = { capability: string; input: Record<string, unknown>; purpose: string };
 
 export type CompiledToolCall = { name: string; input: Record<string, unknown> };
 
@@ -221,6 +232,8 @@ export type CompileOutcome = { stage: ConversationStage; debug?: CompileDebugInf
   | { kind: "checkout_needs_info"; missingFields: string[] }
   /** The next step toward the goal needs a provider operation this business hasn't connected. */
   | { kind: "capability_unavailable"; action: string; missing: string[] }
+  /** A capability the customer needs, but its contract's required inputs aren't known yet — ask for exactly these. */
+  | { kind: "capability_needs_input"; capability: string; missingFields: string[] }
   | { kind: "generic_confirm" }
   /** Assembled input failed the tool's own schema — a compiler bug, not a customer data problem. Never reaches callTool(). */
   | { kind: "compiler_error"; reason: string }

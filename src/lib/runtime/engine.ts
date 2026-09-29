@@ -33,7 +33,10 @@ import { cancelPaymentRequest } from "@/lib/payments/capability";
 import type { NormalizedOutboundMessage } from "@/lib/channels/types";
 import type { Product } from "@/lib/commerce/types";
 import type { BarryIR } from "@/lib/reasoner/ir";
-import { compile, SCRATCH_KEYS, type CompileOutcome } from "./compiler";
+import { compile, planCapabilityCall, SCRATCH_KEYS, type CompileOutcome } from "./compiler";
+import { buildCapabilitySurface } from "@/lib/capabilities/surface";
+import { callFingerprint, INVOKE_CAPABILITY, type CapabilityCallResult } from "@/lib/tools/capability-tool";
+import { capabilityFailureMessage, readCapabilityResults, recordCapabilityResult } from "./capability-state";
 
 /**
  * The BARRY runtime: Observe -> Understand -> Retrieve -> Compile ->
@@ -60,6 +63,10 @@ function turnId(): string {
  */
 async function patchStateAfterTool(state: ConversationState, toolName: string, output: unknown, prevStage: ConversationState["stage"]): Promise<void> {
   const known = state.knownFields;
+  if (toolName === INVOKE_CAPABILITY) {
+    recordCapabilityResult(state, output as CapabilityCallResult);
+    return;
+  }
   switch (toolName) {
     case "checkAvailability": {
       const { slots } = output as { slots: { resourceId: string; start: string; end: string }[] };
@@ -322,12 +329,19 @@ export async function handleCustomerMessage(
     console.error("[barry:engine] capability profiles unavailable", err instanceof Error ? err.message : err);
     return undefined;
   });
-  const grounded = await buildGroundedContext(graph, state, ctx, profiles);
+  const grounded: GroundedContext = (await buildGroundedContext(graph, state, ctx, profiles)) ?? {};
+  // The business's OWN capability surface (beyond the typed flows) and what earlier calls returned:
+  // the model reasons over these; it never selects a system and never grants itself authority.
+  grounded.capabilities = await buildCapabilitySurface(graph).catch((err) => {
+    console.error("[barry:engine] capability surface unavailable", err instanceof Error ? err.message : err);
+    return [];
+  });
+  grounded.capabilityResults = readCapabilityResults(state);
   const rawIr = await reasoner.understand({ graph, state, customerMessage: message, grounded });
   // The model owns understanding; verifyIR() only GROUNDS it — evidence
   // for persisted facts, consistency with current state, structural
   // ranges. It never adds a semantic value of its own.
-  const { verified: ir, verification } = verifyIR(graph, message, rawIr, state, { catalog: grounded?.catalog });
+  const { verified: ir, verification } = verifyIR(graph, message, rawIr, state, { catalog: grounded.catalog, capabilities: grounded.capabilities, capabilityResults: grounded.capabilityResults });
   const prevStage = state.stage;
   let outcome = compile(graph, state, ir, { profiles, shownProducts: grounded?.shownProducts });
 
@@ -335,7 +349,7 @@ export async function handleCustomerMessage(
   // Non-action outcomes describe where the conversation now is. An
   // action's stage only applies once its tool actually succeeds.
   if (outcome.kind !== "action") state.stage = outcome.stage;
-  state.missingFields = outcome.kind === "needs_info" || outcome.kind === "checkout_needs_info" ? outcome.missingFields : [];
+  state.missingFields = outcome.kind === "needs_info" || outcome.kind === "checkout_needs_info" || outcome.kind === "capability_needs_input" ? outcome.missingFields : [];
 
   // ── Goal-driven operator loop ─────────────────────────────────────────
   // The customer's message yields at most ONE customer-triggered action.
@@ -387,14 +401,20 @@ export async function handleCustomerMessage(
         stop = { reason: "step_budget", outcome: current.action.name };
         break;
       }
-      const candidate = compile(graph, state, CONTINUE_IR, { profiles });
+      // After a generic capability call, the next step is the MODEL's to propose from the result
+      // (e.g. a delayed shipment the business handles by opening a case) — grounded, compiled and
+      // authorized exactly like the first. Otherwise the typed goal planner continues from state.
+      const candidate =
+        current.action.name === INVOKE_CAPABILITY
+          ? await continueFromCapabilityResult(reasoner, graph, state, message, grounded)
+          : compile(graph, state, CONTINUE_IR, { profiles });
       if (candidate.kind !== "action") {
         if (NEEDS_CUSTOMER_OUTCOMES.has(candidate.kind)) next = candidate;
         stop = { reason: NEEDS_CUSTOMER_OUTCOMES.has(candidate.kind) ? "needs_customer" : "goal_idle", outcome: candidate.kind };
         break;
       }
       const name = candidate.action.name;
-      if (CUSTOMER_CHOICE_ACTIONS.has(name) || steps.some((s) => s.outcome.action.name === name)) {
+      if (CUSTOMER_CHOICE_ACTIONS.has(name) || steps.some((s) => sameCall(s.outcome.action, candidate.action))) {
         stop = { reason: "no_safe_next_step", outcome: name };
         break;
       }
@@ -542,12 +562,40 @@ async function buildGroundedContext(
 
 const CONTINUE_IR: BarryIR = { intent: "continue", entities: {}, constraints: {}, customerInfo: {} };
 
+/** The same action twice in one turn — for the generic action, the same capability with the same input. */
+function sameCall(a: { name: string; input: Record<string, unknown> }, b: { name: string; input: Record<string, unknown> }): boolean {
+  if (a.name !== b.name) return false;
+  if (a.name !== INVOKE_CAPABILITY) return true;
+  const x = a.input as { capability: string; input: Record<string, unknown> };
+  const y = b.input as { capability: string; input: Record<string, unknown> };
+  return x.capability === y.capability && callFingerprint(x.capability, x.input) === callFingerprint(y.capability, y.input);
+}
+
+/**
+ * Reasoning continuation: re-ask the model, same customer message, now with
+ * the capability results this turn produced. Only a capability proposal can
+ * come back; it is grounded and compiled like any other.
+ */
+async function continueFromCapabilityResult(
+  reasoner: ReturnType<typeof getReasoner>,
+  graph: BusinessGraph,
+  state: ConversationState,
+  message: string,
+  grounded: GroundedContext
+): Promise<CompileOutcome> {
+  const context: GroundedContext = { ...grounded, capabilityResults: readCapabilityResults(state) };
+  const raw = await reasoner.understand({ graph, state, customerMessage: message, grounded: context });
+  const { verified } = verifyIR(graph, message, { ...raw, customerInfo: {}, evidence: {} }, state, { capabilities: context.capabilities, capabilityResults: context.capabilityResults });
+  if (!verified.capabilityRequest) return { kind: "generic_confirm", stage: state.stage };
+  return planCapabilityCall(verified.capabilityRequest, state.stage) ?? { kind: "generic_confirm", stage: state.stage };
+}
+
 /** Hard ceiling on actions per customer message — the loop is bounded no matter what state says. */
 export const MAX_STEPS_PER_TURN = 4;
 /** Actions that express a customer's choice: never taken on the customer's behalf. */
 const CUSTOMER_CHOICE_ACTIONS = new Set(["addToCart", "updateCartLine", "searchProducts", "requestApproval"]);
 /** After a chain, these tell the customer the one thing still needed; others are left unsaid. */
-const NEEDS_CUSTOMER_OUTCOMES = new Set<CompileOutcome["kind"]>(["checkout_needs_info", "needs_info", "capability_unavailable", "confirm_purchase"]);
+const NEEDS_CUSTOMER_OUTCOMES = new Set<CompileOutcome["kind"]>(["checkout_needs_info", "needs_info", "capability_unavailable", "confirm_purchase", "capability_needs_input"]);
 
 /** Did an action that asks for a change actually make it? (Tool success is not the same thing.) */
 function requestedChangeApplied(action: string, output: unknown): boolean {
@@ -588,13 +636,38 @@ async function runStep(
     trace: {
       trigger,
       action: outcome.action.name,
-      capabilities,
+      ...(outcome.action.name === INVOKE_CAPABILITY ? { generic: genericStepTrace(outcome.action.input, policyDecision, toolResult) } : {}),
+      capabilities: outcome.action.name === INVOKE_CAPABILITY ? genericCapabilities(outcome.action.input, toolResult) : capabilities,
       policy: { status: policyDecision.status, reason: policyDecision.reason, ...(policyDecision.policyId ? { policyId: policyDecision.policyId } : {}) },
       result: toolResult ? (toolResult.ok ? { ok: true } : { ok: false, error: toolResult.error }) : null,
       stageBefore,
       stageAfter: state.stage,
       stateKeysChanged: changed,
     },
+  };
+}
+
+function genericResult(toolResult: ToolCallResult | null): CapabilityCallResult | undefined {
+  if (!toolResult) return undefined;
+  return toolResult.ok ? (toolResult.output as CapabilityCallResult) : ((toolResult as { capability?: CapabilityCallResult }).capability ?? undefined);
+}
+
+function genericCapabilities(input: Record<string, unknown>, toolResult: ToolCallResult | null): TurnStep["capabilities"] {
+  return [{ capability: String(input.capability), provider: genericResult(toolResult)?.provenance?.system ?? null }];
+}
+
+/** What a generic step did — capability, why, which input FIELDS (never values), authority, system, execution, verification. */
+function genericStepTrace(input: Record<string, unknown>, policy: PolicyDecision, toolResult: ToolCallResult | null): NonNullable<TurnStep["generic"]> {
+  const r = genericResult(toolResult);
+  return {
+    capability: String(input.capability),
+    purpose: String(input.purpose ?? ""),
+    inputFields: Object.keys((input.input as Record<string, unknown>) ?? {}).sort(),
+    authority: { status: policy.status, reason: policy.reason, ...(policy.policyId ? { ruleId: policy.policyId } : {}) },
+    executed: r?.executed ?? false,
+    verified: r?.verified ?? false,
+    ...(r?.code ? { code: r.code } : {}),
+    ...(r?.provenance ? { system: r.provenance.system, connector: r.provenance.connector, contractVersion: r.provenance.version, simulated: r.provenance.simulated } : {}),
   };
 }
 
@@ -695,7 +768,7 @@ async function authorizeAndExecute(
     }
     return { policyDecision, toolResult: null };
   }
-  const toolResult = await callTool(outcome.action.name, outcome.action.input, ctx);
+  const toolResult = genericFailureAsError(outcome.action.name, await callTool(outcome.action.name, outcome.action.input, ctx), state);
   if (toolResult.ok) {
     state.stage = outcome.stage;
     await patchStateAfterTool(state, outcome.action.name, toolResult.output, prevStage);
@@ -703,6 +776,19 @@ async function authorizeAndExecute(
     state.stage = prevStage;
   }
   return { policyDecision, toolResult };
+}
+
+/**
+ * The generic action always returns a structured result; one that did not
+ * succeed is a FAILED step (with a customer-safe message) — and is still
+ * recorded, so the next reasoning step knows it failed.
+ */
+function genericFailureAsError(action: string, result: ToolCallResult, state: ConversationState): ToolCallResult {
+  if (action !== INVOKE_CAPABILITY || !result.ok) return result;
+  const out = result.output as CapabilityCallResult;
+  if (out.ok) return result;
+  recordCapabilityResult(state, out);
+  return { ok: false, error: capabilityFailureMessage(out.code), capability: out } as ToolCallResult;
 }
 
 /**
@@ -850,13 +936,33 @@ export async function resumeAfterApproval(
 
   let toolResult: ToolCallResult | null = null;
   let response: string;
+  let approvalStep: TurnStep | undefined;
 
   if (decision === "declined") {
     response = `Thanks for waiting — unfortunately the owner wasn't able to approve that. Is there anything else I can help with?`;
   } else {
-    const input = (alternateValue ?? approval.requestedInput) as Record<string, unknown>;
-    toolResult = await callTool(approval.requestedAction, input, ctx);
+    // A generic capability call resumes EXACTLY as approved: the owner can't substitute another
+    // call, and the tool re-checks the approval (this business and conversation, same capability and
+    // input, approved, unexpired) and current authority before executing — once.
+    const generic = approval.requestedAction === INVOKE_CAPABILITY;
+    const input = generic
+      ? { ...(approval.requestedInput as Record<string, unknown>), approvalId }
+      : ((alternateValue ?? approval.requestedInput) as Record<string, unknown>);
+    toolResult = genericFailureAsError(approval.requestedAction, await callTool(approval.requestedAction, input, ctx), state);
     if (toolResult.ok) await patchStateAfterTool(state, approval.requestedAction, toolResult.output, state.stage);
+    if (generic) {
+      approvalStep = {
+        trigger: "approval",
+        action: INVOKE_CAPABILITY,
+        generic: genericStepTrace(input, { status: "allowed", reason: `Owner approval ${approvalId}` }, toolResult),
+        capabilities: genericCapabilities(input, toolResult),
+        policy: { status: "allowed", reason: `Owner approval ${approvalId}` },
+        result: toolResult.ok ? { ok: true } : { ok: false, error: toolResult.error },
+        stageBefore: state.stage,
+        stageAfter: state.stage,
+        stateKeysChanged: toolResult.ok || genericResult(toolResult) ? [SCRATCH_KEYS.capabilityResults] : [],
+      };
+    }
 
     const syntheticOutcome: CompileOutcome = {
       kind: "action",
@@ -887,6 +993,16 @@ export async function resumeAfterApproval(
     response,
     stateAfter: { stage: state.stage, outcome: state.outcome },
     reasoner: reasoner.name,
+    ...(approvalStep
+      ? {
+          trace: {
+            runtime: { barryVersion: BARRY_RUNTIME_VERSION, commit: runtimeCommit(), constitutionVersion: CONSTITUTION_VERSION, reasoner: reasoner.name, model: reasoner.model ?? null },
+            rejectedClaims: [],
+            steps: [approvalStep],
+            stop: { reason: toolResult?.ok ? "approval_executed" : "approval_execution_failed", outcome: INVOKE_CAPABILITY },
+          },
+        }
+      : {}),
   };
   state.turns.push(turn);
 

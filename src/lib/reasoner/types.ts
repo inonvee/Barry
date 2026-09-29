@@ -33,7 +33,24 @@ export type GroundedContext = {
   shownProducts?: (ShownResult & { id: string })[];
   cart?: { position: number; title: string; options: Record<string, string>; quantity: number }[];
   cartTotal?: string;
+  /** The business-specific capability surface the model may propose from (safe summary; no systems or credentials). */
+  capabilities?: CapabilitySurfaceEntry[];
+  /** Results of capabilities BARRY already ran in this conversation (most recent last). */
+  capabilityResults?: CapabilityResultSummary[];
 };
+
+export type CapabilitySurfaceEntry = {
+  id: string;
+  purpose: string;
+  effect: "read" | "consequential";
+  inputs: { name: string; type: string; required: boolean }[];
+  /** An active, healthy system of this business can execute it right now. */
+  available: boolean;
+  /** How the business governs it: automatic, conditional (rules decide per call), owner_approval, not_permitted, read_only. */
+  authority: string;
+};
+
+export type CapabilityResultSummary = { capability: string; ok: boolean; output?: Record<string, unknown>; verified: boolean; code?: string; at: string };
 
 export type ReasonerContext = {
   graph: BusinessGraph;

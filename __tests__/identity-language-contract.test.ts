@@ -43,6 +43,7 @@ function rawIR(customerFacts: { field: string; value: string; evidence: string }
     customerClaimsPaymentCompleted: null,
     purchaseDecision: null,
     knowledgeTopic: null,
+    capabilityRequest: null,
   });
 }
 

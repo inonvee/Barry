@@ -6,6 +6,8 @@ import { normalizeCustomerInfoField } from "@/lib/reasoner/customer-fields";
 import type { ConversationStage, ConversationState } from "@/lib/state";
 import { resolveSchedulingWindow } from "@/lib/scheduling/resolver";
 import { actionSupported, type CapabilityProfiles } from "@/lib/capabilities/model";
+import { getCapability } from "@/lib/fabric/capability";
+import { INVOKE_CAPABILITY } from "@/lib/tools/capability-tool";
 import type { GroundedContext } from "@/lib/reasoner/types";
 
 export type { CompileOutcome, CompileDebugInfo } from "@/lib/reasoner/ir";
@@ -50,6 +52,8 @@ export const SCRATCH_KEYS = {
   purchaseDecided: "__purchaseDecided",
   /** The language this conversation is held in (from the latest customer message with words). */
   conversationLanguage: "__conversationLanguage",
+  /** Recent results of generic capability calls (JSON), for the next reasoning step. */
+  capabilityResults: "__capabilityResults",
 };
 
 /**
@@ -205,6 +209,22 @@ function planCommerceGoal(graph: BusinessGraph, known: Record<string, string>, o
     "payment",
     "completePurchase"
   );
+}
+
+/** One generic capability call as an action — or what the customer still needs to provide for it. */
+export function planCapabilityCall(request: NonNullable<BarryIR["capabilityRequest"]>, stage: ConversationStage): CompileOutcome | undefined {
+  const contract = getCapability(request.capability);
+  if (!contract) return undefined;
+  const { idempotencyKey: _k, ...semantic } = request.input;
+  void _k;
+  const probe = contract.idempotency === "key_required" ? { ...semantic, idempotencyKey: "probe-key-00000000" } : semantic;
+  const parsed = contract.input.safeParse(probe);
+  if (!parsed.success) {
+    const missing = [...new Set(parsed.error.issues.filter((i) => i.path.length > 0 && semantic[String(i.path[0])] === undefined).map((i) => String(i.path[0])))];
+    if (missing.length > 0) return { kind: "capability_needs_input", capability: request.capability, missingFields: missing, stage };
+    return { kind: "compiler_error", reason: `The ${request.capability} request does not fit its contract`, stage };
+  }
+  return finalizeAction(INVOKE_CAPABILITY, { capability: request.capability, input: semantic, purpose: request.purpose.slice(0, 300) }, stage);
 }
 
 function round2(n: number): number {
@@ -412,6 +432,16 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
       "confirmation",
       "completePurchase"
     );
+  }
+
+  // A proposal to use one of the business's own capabilities (already
+  // grounded: on this business's surface, inputs stated by the customer or
+  // known). The compiler only checks the contract's required inputs are
+  // present — asking for what's missing, never guessing it. Authority and
+  // system selection happen later, deterministically.
+  if (ir.capabilityRequest) {
+    const planned = planCapabilityCall(ir.capabilityRequest, state.stage);
+    if (planned) return planned;
   }
 
   // Knowledge answers come verbatim from the business's own stored item

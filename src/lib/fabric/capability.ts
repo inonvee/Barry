@@ -54,6 +54,8 @@ export type CapabilityContract<I extends z.ZodType = z.ZodType, O extends z.ZodT
    * (e.g. "checkout"). Only for migration: new connectors declare ids.
    */
   aliases?: string[];
+  /** false: not something a conversation should ever request (e.g. authenticating an inbound event). */
+  conversational?: boolean;
   /** Example inputs used by the conformance suite. */
   examples?: { valid: unknown; invalid: unknown };
 };

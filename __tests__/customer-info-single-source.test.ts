@@ -75,6 +75,7 @@ describe("Regression 2: customerInfo is the model's evidence-cited claim — BAR
       customerClaimsPaymentCompleted: null,
     purchaseDecision: null,
       knowledgeTopic: null,
+    capabilityRequest: null,
     });
 
     const parsed = parseIRResponse(graph, rawLlmResponse);

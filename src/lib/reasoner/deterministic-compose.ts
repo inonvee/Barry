@@ -63,6 +63,39 @@ function composeLocalized(input: ComposeResponseInput): string {
 const optionLabel = (o: Record<string, string>) => Object.values(o).join(" / ");
 
 /** Hebrew for the operator-critical path (selection, cart, checkout, details, payment, order). */
+type GenericCall = { ok: boolean; executed: boolean; verified: boolean; code?: string; output?: Record<string, unknown> };
+
+/** A capability result's facts, as plain "field: value" pairs — whatever the capability is. */
+function capabilityFacts(output: Record<string, unknown> | undefined): string {
+  return Object.entries(output ?? {})
+    .filter(([k, v]) => k !== "verified" && v !== null && v !== undefined && typeof v !== "object")
+    .map(([k, v]) => `${k.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase()}: ${String(v)}`)
+    .join(", ");
+}
+
+function genericCall(toolResult: ComposeResponseInput["toolResult"]): GenericCall | undefined {
+  if (!toolResult) return undefined;
+  return (toolResult.ok ? toolResult.output : (toolResult as { capability?: unknown }).capability) as GenericCall | undefined;
+}
+
+function genericText(toolResult: ComposeResponseInput["toolResult"], lang: "he" | "en"): string {
+  const call = genericCall(toolResult);
+  const facts = capabilityFacts(call?.output);
+  if (call?.ok && call.executed) {
+    if (lang === "he") return call.verified ? `בוצע${facts ? ` — ${facts}` : ""}.` : `הנה מה שמצאתי${facts ? `: ${facts}` : ""}.`;
+    return call.verified ? `Done${facts ? ` — ${facts}` : ""}.` : `Here's what I found${facts ? `: ${facts}` : ""}.`;
+  }
+  const code = call?.code;
+  if (lang === "he") {
+    if (code === "not_authorized") return "זה לא משהו שאני מורשה לעשות לבד — אעביר את זה לצוות.";
+    if (code === "unverified") return "המערכת לא אישרה שזה בוצע, אז אני לא אגיד שזה נעשה — הצוות יבדוק ויחזור אלייך.";
+    return "המערכת הזו לא זמינה כרגע — הצוות יחזור אלייך.";
+  }
+  if (code === "not_authorized") return "That isn't something I'm permitted to do on my own — I'll pass it to the team.";
+  if (code === "unverified") return "The system didn't confirm it, so I won't say it's done — the team will check and get back to you.";
+  return "That system isn't available right now — the team will get back to you.";
+}
+
 function composeHebrew(input: ComposeResponseInput): string | undefined {
   const { outcome, toolResult, policyReason } = input;
   if (policyReason) return `זה דורש אישור קצר של בעל העסק — ${policyReason} שלחתי לו ואחזור אלייך ברגע שיאושר.`;
@@ -94,8 +127,11 @@ function composeHebrew(input: ComposeResponseInput): string | undefined {
       }
       return inStock.length ? `${outcome.productTitle} במלאי ב-${inStock.map((v) => `${optionLabel(v.options)} (${v.price})`).join(", ")}.` : `${outcome.productTitle} אזלה מהמלאי כרגע.`;
     }
+    case "capability_needs_input":
+      return `כדי לעשות את זה אני צריך: ${formatMissingFieldsList(outcome.missingFields, "he")}.`;
     case "action": {
       if (!toolResult) return undefined;
+      if (outcome.action.name === "invokeCapability") return genericText(toolResult, "he");
       if (!toolResult.ok) return `מצטער — משהו השתבש (${toolResult.error}). ננסה אפשרות אחרת?`;
       const output = toolResult.output as Record<string, unknown>;
       switch (outcome.action.name) {
@@ -240,8 +276,11 @@ function composeSingle(input: ComposeResponseInput): string {
       return `I can't complete that step here yet — I've noted your choice and the team will follow up to finish it with you.`;
     case "no_payment_to_verify":
       return `I don't see an open payment request for this conversation yet, so there's nothing for me to verify.`;
+    case "capability_needs_input":
+      return `To do that I need your ${formatMissingFieldsList(outcome.missingFields, "en")}.`;
     case "action": {
       if (!toolResult) return "Got it.";
+      if (outcome.action.name === "invokeCapability") return genericText(toolResult, "en");
       if (!toolResult.ok) {
         return `Sorry — I ran into an issue (${toolResult.error}). Could we try a different option?`;
       }

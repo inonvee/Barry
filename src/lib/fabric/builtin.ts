@@ -130,6 +130,7 @@ export const BUILTIN_CAPABILITIES: AnyCapabilityContract[] = [
     input: z.object({ rawBody: z.string().max(1_000_000), headers: z.record(z.string(), z.string()) }),
     output: z.object({ paymentId: Id, eventId: Id, status: z.enum(["pending", "paid", "failed", "cancelled"]) }),
     aliases: ["webhookVerification"],
+    conversational: false,
     ...read,
   },
   {

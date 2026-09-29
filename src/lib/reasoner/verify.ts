@@ -3,7 +3,8 @@ import type { BusinessGraph } from "@/lib/business-graph";
 import { findOffer } from "@/lib/business-graph";
 import type { ConversationState } from "@/lib/state";
 import type { DateSpec, SchedulingConstraint, TimeSpec } from "@/lib/scheduling/resolver";
-import type { BarryIR, CommerceSemantics } from "./ir";
+import type { BarryIR, CapabilityRequest, CommerceSemantics } from "./ir";
+import type { CapabilityResultSummary, CapabilitySurfaceEntry } from "./types";
 
 /**
  * Grounding, not understanding.
@@ -179,7 +180,7 @@ export function verifyIR(
   customerMessage: string,
   ir: BarryIR,
   state?: ConversationState,
-  context: { catalog?: CatalogSchema } = {}
+  context: { catalog?: CatalogSchema; capabilities?: CapabilitySurfaceEntry[]; capabilityResults?: CapabilityResultSummary[] } = {}
 ): { verified: BarryIR; verification: IRVerification } {
   const rejected: IRRejection[] = [];
 
@@ -230,7 +231,69 @@ export function verifyIR(
     },
     commerce: groundCommerce(ir.commerce, rejected, context.catalog, state),
     customerInfo,
+    capabilityRequest: groundCapabilityRequest(ir.capabilityRequest, rejected, customerMessage, state, context),
   };
 
   return { verified, verification: { llmCustomerInfo: ir.customerInfo, rejected, customerFacts } };
+}
+
+/**
+ * A capability proposal is grounded, never repaired:
+ * - the capability must be on THIS business's surface and executable now;
+ * - every input value must be something the customer said in this
+ *   conversation, a customer field BARRY already holds, or a value an
+ *   earlier capability result returned — never a model-invented id,
+ *   number or address. Any ungrounded value rejects the whole proposal.
+ * Whether it may RUN is not decided here (that is authority).
+ */
+function groundCapabilityRequest(
+  request: CapabilityRequest | undefined,
+  rejected: IRRejection[],
+  customerMessage: string,
+  state: ConversationState | undefined,
+  context: { capabilities?: CapabilitySurfaceEntry[]; capabilityResults?: CapabilityResultSummary[] }
+): CapabilityRequest | undefined {
+  if (!request) return undefined;
+  const entry = context.capabilities?.find((c) => c.id === request.capability);
+  if (!entry) {
+    rejected.push({ claim: "capabilityRequest.capability", value: request.capability, reason: "not a capability of this business" });
+    return undefined;
+  }
+  if (!entry.available) {
+    rejected.push({ claim: "capabilityRequest.capability", value: request.capability, reason: "no active system can execute it right now" });
+    return undefined;
+  }
+
+  const sources = [
+    customerMessage,
+    ...(state?.messages.filter((m) => m.role === "customer").map((m) => m.content) ?? []),
+    ...Object.entries(state?.knownFields ?? {}).filter(([k]) => !k.startsWith("__")).map(([, v]) => v),
+    ...(context.capabilityResults ?? []).map((r) => JSON.stringify(r.output ?? {})),
+  ];
+  const text = normalizeText(sources.join(" \n "));
+  const digits = sources.join(" ").replace(/\D+/g, " ");
+  const numbers = new Set((sources.join(" ").match(/\d+(?:\.\d+)?/g) ?? []).map((n) => String(Number(n))));
+  const grounded = (value: unknown): boolean => {
+    if (typeof value === "boolean") return true;
+    if (typeof value === "number") return Number.isFinite(value) && numbers.has(String(value));
+    if (typeof value === "string") {
+      const v = normalizeText(value);
+      if (!v) return false;
+      if (text.includes(v)) return true;
+      const d = value.replace(/\D+/g, "");
+      return d.length >= 4 && d.length === value.replace(/[\s\-()+./]/g, "").length && digits.replace(/ /g, "").includes(d);
+    }
+    if (Array.isArray(value)) return value.every(grounded);
+    if (value && typeof value === "object") return Object.values(value).every(grounded);
+    return false;
+  };
+
+  for (const [field, value] of Object.entries(request.input)) {
+    if (field === "idempotencyKey") continue; // BARRY's, never the model's — stripped at execution
+    if (!grounded(value)) {
+      rejected.push({ claim: `capabilityRequest.input.${field}`, value, reason: "not stated by the customer or known to BARRY" });
+      return undefined;
+    }
+  }
+  return request;
 }

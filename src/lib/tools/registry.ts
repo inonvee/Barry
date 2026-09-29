@@ -16,6 +16,7 @@ import {
   createCommerceOrder,
   verifyPayment,
 } from "./definitions";
+import { invokeCapability } from "./capability-tool";
 
 const ALL_TOOLS: AnyToolDefinition[] = [
   checkAvailability,
@@ -33,6 +34,7 @@ const ALL_TOOLS: AnyToolDefinition[] = [
   createCommerceCheckout,
   createCommerceOrder,
   verifyPayment,
+  invokeCapability,
 ];
 
 const REGISTRY = new Map<string, AnyToolDefinition>(ALL_TOOLS.map((t) => [t.name, t]));

@@ -138,6 +138,7 @@ describe("model contract: positions are the ones the customer saw", () => {
       customerClaimsPaymentCompleted: null,
       purchaseDecision: true,
       knowledgeTopic: null,
+    capabilityRequest: null,
     };
     const parsed = parseIRResponse(buildFashionRetailerGraph(), JSON.stringify(raw));
     expect(parsed.ok).toBe(true);

@@ -27,7 +27,7 @@ export type ConversationMessage = {
 /** One action BARRY took this turn — who triggered it, which capability/provider served it, what policy said, what happened. */
 export type TurnStep = {
   /** "customer": the customer's message asked for it. "continuation": BARRY's goal planner took the next safe step. */
-  trigger: "customer" | "continuation";
+  trigger: "customer" | "continuation" | "approval";
   action: string;
   capabilities: { capability: string; provider: string | null }[];
   policy: { status: string; reason: string; policyId?: string };
@@ -36,6 +36,20 @@ export type TurnStep = {
   stageAfter: string;
   /** Names of state keys this step changed — never their values. */
   stateKeysChanged: string[];
+  /** For the generic capability action: what was planned and what happened (field names, never values). */
+  generic?: {
+    capability: string;
+    purpose: string;
+    inputFields: string[];
+    authority: { status: string; reason: string; ruleId?: string };
+    executed: boolean;
+    verified: boolean;
+    code?: string;
+    system?: string;
+    connector?: string;
+    contractVersion?: string;
+    simulated?: boolean;
+  };
 };
 
 /**

@@ -44,6 +44,7 @@ function validRawIR(overrides: Record<string, unknown> = {}) {
     customerClaimsPaymentCompleted: null,
     purchaseDecision: null,
     knowledgeTopic: null,
+    capabilityRequest: null,
     ...overrides,
   };
 }

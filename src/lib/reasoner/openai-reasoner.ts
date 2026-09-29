@@ -151,6 +151,9 @@ export function buildUnderstandingContext(ctx: ReasonerContext) {
     awaitingVariantChoiceFor: pendingItem(ctx),
     cart: ctx.grounded?.cart ?? [],
     cartTotal: ctx.grounded?.cartTotal ?? null,
+    // The business's own systems' capabilities BARRY may propose (beyond the flows above), and what came back.
+    capabilitySurface: ctx.grounded?.capabilities ?? [],
+    capabilityResults: ctx.grounded?.capabilityResults ?? [],
     recentMessages,
   };
 }
@@ -187,6 +190,7 @@ YOUR TASK NOW: understand the customer's latest message in context and describe 
 - customerClaimsPaymentCompleted: true when the customer says they paid. It is only a claim; BARRY verifies it with the provider.
 - purchaseDecision: true when the customer has DECIDED to buy what's being discussed ("I'll take it", "yalla, I'm taking it"); false when they are asking, admiring, comparing, or adding while still browsing; null if unclear. It is consent for BARRY to move the purchase forward per the business playbook — never a payment or an order.
 - knowledgeTopic: when they ask about something covered by one of knowledgeTopics, that exact topic string.
+- capabilityRequest: when the customer's need is served by one of capabilitySurface's capabilities (and not by the offers/commerce flows above), propose it: the exact capability id, inputJson = a JSON object of its inputs using ONLY values the customer said or that appear in knownCustomerFields/capabilityResults (never invent an id, number or address; leave the request null and let BARRY ask if a required input is unknown), and a one-line purpose. Only propose capabilities marked available. You never decide whether it is allowed — BARRY does. If capabilityResults already answer the need, don't request it again; propose the NEXT capability only if the result makes it necessary for what the customer wants (e.g. a delayed shipment the business handles by opening a support case); otherwise null.
 - Scheduling: describe what they said, never compute timestamps. schedulingWindow fields: dateKind (explicitDate|relativeDay|weekday), isoDate (YYYY-MM-DD, resolve using business.currentDate), relativeDays, weekday (0=Sun..6=Sat), weekdayQualifier (this|next), timeKind (explicitTime|partOfDay), hour/minute (24h, as the customer meant it locally), partOfDay. Keep a day/time stated earlier unless they changed it.
 - slotAccepted / slotDeclined: only when awaitingSlotConfirmation is true and they accept or decline the offered time.
 - selectedOfferId / offerCandidateIds: for services in "offers"; several plausible -> candidates. offerChangeRequested only for an explicit change of mind to a different real offer.
@@ -227,6 +231,8 @@ export const COMPOSE_SYSTEM_PROMPT =
   "Graph's own required fields say otherwise. " +
   "If `steps` is present, BARRY took several actions this turn and ALL of them already happened: " +
   "say briefly where things now stand (the end result, not a log of each step), then ask for the ONE thing in `next` if present. " +
+  "When an action is \"invokeCapability\", toolOutput.output is what the business's own system returned: answer the customer from exactly those facts (translate field names naturally). If toolOutput.verified is false for something that changes the world, or toolOutput.ok is false, never say it was done. " +
+  "When outcome.kind is \"capability_needs_input\", ask for exactly the listed fields, nothing else. " +
   "When outcome.kind is \"checkout_needs_info\", the customer has decided to buy: ask only for those details so BARRY can send the payment link — never ask whether they want to continue. " +
   "Follow `playbook.salesStyle` when present; mention at most one genuinely relevant suggestion and only if playbook.suggestions is \"one_relevant\". " +
   "Keep it to 1-3 sentences, no headers, no JSON.";
@@ -303,7 +309,21 @@ export function sanitizeIR(graph: BusinessGraph, raw: LlmIR): BarryIR {
     customerClaims: raw.customerClaimsPaymentCompleted ? { paymentCompleted: true } : undefined,
     purchaseDecision: raw.purchaseDecision ?? undefined,
     knowledgeTopic: raw.knowledgeTopic ?? undefined,
+    capabilityRequest: parseCapabilityRequest(raw.capabilityRequest),
   };
+}
+
+/** The model's capability proposal, parsed as untrusted data: a JSON OBJECT of inputs, bounded, or nothing. */
+function parseCapabilityRequest(raw: LlmIR["capabilityRequest"]): BarryIR["capabilityRequest"] {
+  if (!raw || !raw.capability) return undefined;
+  let input: unknown;
+  try {
+    input = raw.inputJson.trim() ? JSON.parse(raw.inputJson) : {};
+  } catch {
+    return undefined;
+  }
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  return { capability: raw.capability, input: input as Record<string, unknown>, purpose: raw.purpose };
 }
 
 function nonEmptyRecord(pairs: KeyValuePair[]): Record<string, string> | undefined {

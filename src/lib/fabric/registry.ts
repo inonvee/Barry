@@ -85,6 +85,8 @@ export interface Connector {
   capabilities(): Promise<CapabilityId[]>;
   /** Generic, contract-shaped execution. First-party typed adapters may leave it out. */
   execute?(capability: CapabilityId, input: Record<string, unknown>, ctx: ExecutionContext): Promise<unknown>;
+  /** Which capabilities `execute` really handles (default: every declared capability, when `execute` exists). */
+  executes?(capability: CapabilityId): boolean;
   /** The typed first-party adapter, for domain tools that use a richer surface. */
   readonly adapter?: unknown;
 }

@@ -38,12 +38,12 @@ export const FIELD_LABELS: Record<string, Record<string, string>> = {
 };
 
 export function fieldLabel(field: string, lang: string): string {
-  return FIELD_LABELS[lang]?.[field] ?? FIELD_LABELS.en[field] ?? field.replace(/_/g, " ");
+  return FIELD_LABELS[lang]?.[field] ?? FIELD_LABELS.en[field] ?? field.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
 }
 
 export function infoRequestFields(outcome: CompileOutcome | undefined): string[] | undefined {
   if (!outcome) return undefined;
-  if (outcome.kind === "needs_info" || outcome.kind === "checkout_needs_info") return outcome.missingFields;
+  if (outcome.kind === "needs_info" || outcome.kind === "checkout_needs_info" || outcome.kind === "capability_needs_input") return outcome.missingFields;
   return undefined;
 }
 

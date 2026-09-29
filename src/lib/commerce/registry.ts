@@ -78,6 +78,7 @@ function commerceConnector(adapter: CommerceAdapter): Connector {
       const declared = adapter.describeCapabilities ? await adapter.describeCapabilities() : ["catalogSearch", "catalogSchema", "variants", "liveInventory", "cart", "checkout", "orders"];
       return normalizeDeclaredCapabilities("commerce", declared);
     },
+    executes: (capability) => ["commerce.catalog.search", "commerce.variants.read", "commerce.inventory.read"].includes(capability),
     async execute(capability, input) {
       switch (capability) {
         case "commerce.catalog.search": {

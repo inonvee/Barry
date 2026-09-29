@@ -105,6 +105,9 @@ export const LlmIRSchema = z.object({
   customerClaimsPaymentCompleted: z.boolean().nullable(),
   purchaseDecision: z.boolean().nullable(),
   knowledgeTopic: z.string().nullable(),
+  capabilityRequest: z
+    .object({ capability: z.string(), inputJson: z.string().max(4000), purpose: z.string().max(300) })
+    .nullable(),
 });
 export type LlmIR = z.infer<typeof LlmIRSchema>;
 
@@ -222,6 +225,16 @@ export function irJsonSchema() {
         customerClaimsPaymentCompleted: { type: ["boolean", "null"] },
         purchaseDecision: { type: ["boolean", "null"] },
         knowledgeTopic: { type: ["string", "null"] },
+        capabilityRequest: {
+          type: ["object", "null"],
+          additionalProperties: false,
+          properties: {
+            capability: { type: "string" },
+            inputJson: { type: "string" },
+            purpose: { type: "string" },
+          },
+          required: ["capability", "inputJson", "purpose"],
+        },
       },
       required: [
         "intent",
@@ -237,6 +250,7 @@ export function irJsonSchema() {
         "customerClaimsPaymentCompleted",
         "purchaseDecision",
         "knowledgeTopic",
+        "capabilityRequest",
       ],
     },
   };

@@ -38,6 +38,7 @@ function paymentConnector(adapter: PaymentAdapter): Connector {
       const declared = adapter.describeCapabilities ? await adapter.describeCapabilities() : ["paymentLinks", "statusLookup", "webhookVerification"];
       return normalizeDeclaredCapabilities("payments", declared);
     },
+    executes: (capability) => capability === "payments.verify",
     async execute(capability, input) {
       if (capability !== "payments.verify") throw new Error(`${adapter.name} exposes ${capability} only through its typed adapter`);
       // The provider's own answer about a payment it issued — never the customer's claim.
