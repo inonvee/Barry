@@ -49,7 +49,7 @@ export function buildPersonalTrainerGraph(): BusinessGraph {
       },
     ],
     resources: [{ id: "trainer-riley", type: "trainer", name: "Riley" }],
-    availability: [...generateDailySlots("trainer-riley", 6, [6, 7, 12, 17, 18, 19], 60, "America/Denver")],
+    availability: [...generateDailySlots("trainer-riley", 8, [6, 7, 12, 17, 18, 19], 60, "America/Denver")],
     inventory: [],
     knowledge: [
       { id: "know-location", topic: "location", content: "Sessions take place at Riverside Gym, 2nd floor studio.", kind: "faq" },

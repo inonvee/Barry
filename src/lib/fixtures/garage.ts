@@ -53,8 +53,8 @@ export function buildGarageGraph(): BusinessGraph {
       { id: "bay-2", type: "vehicle_bay", name: "Bay 2" },
     ],
     availability: [
-      ...generateDailySlots("bay-1", 5, [8, 9, 10, 11, 13, 14, 15], 30, "America/Chicago"),
-      ...generateDailySlots("bay-2", 5, [8, 9, 10, 11, 13, 14, 15], 30, "America/Chicago"),
+      ...generateDailySlots("bay-1", 8, [8, 9, 10, 11, 13, 14, 15], 30, "America/Chicago"),
+      ...generateDailySlots("bay-2", 8, [8, 9, 10, 11, 13, 14, 15], 30, "America/Chicago"),
     ],
     inventory: [],
     knowledge: [
