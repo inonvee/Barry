@@ -53,6 +53,8 @@ export async function buildCapabilitySurface(graph: BusinessGraph): Promise<Capa
     // Not offered at all when no system of this business maps it.
     if (!resolution.ok && (resolution.code === "no_system" || resolution.code === "unknown_capability" || resolution.code === "not_supported_by_system")) continue;
     const executable = resolution.ok && (resolution.connector.executes ? resolution.connector.executes(contract.id) : Boolean(resolution.connector.execute));
+    // Offered only when this business's own system can really execute it now.
+    if (!executable) continue;
     out.push({
       id: contract.id,
       purpose: contract.purpose,
