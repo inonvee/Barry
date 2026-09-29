@@ -206,31 +206,165 @@ simulator's `commerce.catalog.search`.
 | — | whether a write may run (policy / authority) |
 | — | whether it happened (provider confirmation) |
 
-## 9. What is implemented vs prepared (honest status)
+## 9. Capability-native planning and authority
 
-**Implemented**
-- Open capability contracts. Today's capabilities are migrated onto them, and
-  the runtime gate and traces use capability ids.
-- One connector registry and resolver. Commerce, payments and scheduling
-  adapters are migrated onto it: their provider switches, the credentials
-  switch, the status special cases and vendor webhook sniffing are gone from
-  shared code.
-- The executor, the declarative HTTP connector, conformance, the mapping
-  lifecycle, and the OpenAPI import.
-- Portability proofs (`__tests__/fabric-portability.test.ts`), against
-  **in-process mock systems**.
+**Let the model reason freely. Constrain its authority, not its intelligence.**
 
-**Prepared, not yet built**
-- The conversation planner still plans only its existing domains (commerce,
-  scheduling, payments). A new domain's capabilities are executable through
-  the fabric but not yet chosen by the customer conversation. That needs a
-  Genome/policy way to authorize and plan them.
-- Consequential commerce steps still run through typed adapters. A
-  generic-only (manifest) system in a planner domain is refused, with a
-  reason, rather than half-used.
-- No UI or API yet lets an owner upload a manifest or OpenAPI document; the
-  lifecycle is exercised in tests.
-- The `business_connections` unique `(business_id, capability)` constraint
-  allows one system per domain per business. Several systems can still
-  implement the same capability from different domains.
-- No real external system has been connected through a manifest.
+### Generic capability action (`tools/capability-tool.ts`, `runtime/compiler.ts`)
+
+The model can propose any of the business's capabilities through one IR
+field. `capabilityRequest` is `{capability, input, purpose}`; strict-mode
+output sends the input as a bounded JSON object string. The compiler turns a
+grounded proposal into ONE generic action, `invokeCapability`. A new domain
+therefore never needs a planner branch.
+
+Everything that makes the call safe is deterministic, and happens in this
+order:
+
+1. **Grounding** (`reasoner/verify.ts`):
+   - the capability must be on THIS business's surface and executable now;
+   - every input value must be something the customer said, a customer field
+     BARRY holds, or a value an earlier capability result returned.
+
+   An ungrounded value rejects the whole proposal, and the rejection is
+   recorded.
+2. **Contract**:
+   - missing required inputs become `capability_needs_input`, so BARRY asks
+     for exactly those fields;
+   - the input is validated against the capability's schema.
+3. **Authority**: see below. It is checked before execution, for reads too.
+4. **Idempotency**: BARRY derives the key from the business, the
+   conversation, the capability and the canonical input. The model never
+   supplies it, and repeating a plan repeats the same call.
+5. **Execution**: `executeCapability()`. The fabric picks the business's
+   system; the model never selects a provider.
+6. **Verification**: a consequential call is done only when the system
+   confirmed it.
+7. **State**: results, with provenance, are kept (bounded) for the next
+   reasoning step.
+8. **Trace**: see below.
+
+The model never gets HTTP, database access, credentials, endpoints or
+connector internals.
+
+### Capability surface (`capabilities/surface.ts`)
+
+The capability surface is business-specific. It lists only capabilities one
+of this business's systems maps **and can execute now**, each with:
+
+- purpose;
+- read or consequential;
+- input names and types;
+- the business's authority summary: automatic, conditional, owner approval,
+  not permitted, or read-only.
+
+It never includes systems, credentials, manifests or endpoints.
+
+Some capabilities are left off. Those the typed flows own (cart, checkout,
+payment links, bookings, and so on) are excluded, and so is every capability
+of a domain the business runs through a typed flow. Those flows bind
+capabilities to richer state and are not bypassed.
+
+### Authority (`policy/authority.ts`, Business Genome `authority`)
+
+Authority is per capability, per business, context-aware and deterministic.
+Rules are bounded data, not code:
+
+- `capability`: an exact id, or a `domain.*` wildcard;
+- `effect`: `allow`, `require_approval`, or `deny`;
+- `when`: conditions that must all hold. Each compares ONE top-level input
+  field with a literal, using `lte`, `lt`, `gte`, `gt`, `eq`, `neq`, `in` or
+  `exists`.
+
+Among matching rules the most restrictive wins: deny, then require_approval,
+then allow. A condition that can't be evaluated never grants authority, and
+it always counts toward a restriction. With no matching rule, a read is
+allowed and a **consequential capability is denied**: authority is never
+assumed. Every decision names its rule.
+
+Example:
+
+```json
+[
+  { "id": "credit-small", "capability": "billing.credit.issue", "effect": "allow", "when": [{ "field": "amount", "op": "lte", "value": 50 }] },
+  { "id": "credit-large", "capability": "billing.credit.issue", "effect": "require_approval", "when": [{ "field": "amount", "op": "gt", "value": 50 }] }
+]
+```
+
+### Approval continuation
+
+When authority says `requires_approval`, nothing is sent. The approval is
+persisted with the exact call, and the conversation pauses (`escalated`).
+
+On the owner's approval, `resumeAfterApproval` re-runs **exactly** the
+approved call with the same idempotency key. The tool first re-checks all of
+the following:
+
+- same business and conversation;
+- same capability and input fingerprint;
+- the approval is approved and less than 7 days old;
+- current rules still permit it (a rule that now denies it wins).
+
+The owner cannot substitute a different call. An approval resolves once, so a
+second resolution is a no-op. Declined, expired, tampered and
+cross-conversation approvals never execute.
+
+### Reasoning continuation (goal-driven, bounded)
+
+After a generic step succeeds, the model is re-asked about the same customer
+message, now with the results. It may propose ONE next capability, which is
+grounded, compiled and authorized like the first. For example: a delayed
+shipment leads to opening a support case.
+
+The loop stops when:
+
+- a required input or a customer decision is missing;
+- owner approval is needed;
+- authority denies the call;
+- the capability is unavailable or the system errors;
+- the model proposes nothing new, or the same call again;
+- `MAX_STEPS_PER_TURN` is reached.
+
+### Trace (per generic step)
+
+Each generic step records:
+
+- the capability, the model's purpose, and the input **field names** (never
+  values);
+- authority: status, rule and reason;
+- the resolving system, connector and contract version;
+- executed, verified, and any failure code;
+- the stop reason.
+
+HQ shows the business's capability surface, its authority rules, recent
+generic calls, and refusal and failure counts.
+
+## 10. What is implemented vs prepared (honest status)
+
+**Implemented and tested (mocked model and mocked external systems):**
+- the open capability contracts, one registry and resolver, the executor,
+  the manifest connector, conformance, and the mapping lifecycle;
+- capability-native planning, per-capability authority, approval
+  continuation, and reasoning continuation;
+- the proofs in `__tests__/capability-planner.test.ts` and
+  `__tests__/fabric-portability.test.ts`.
+
+**Not live-proven:**
+- No live model has been evaluated on proposing `capabilityRequest`. The
+  prompt and schema exist; the model evals don't cover it yet.
+- No real external system (carrier, helpdesk, ledger) has been connected
+  through a manifest.
+
+**Still specialized, by design:**
+- Commerce, payments and scheduling keep their typed flows and typed tools,
+  which bind carts, snapshots, slots and payment verification.
+- A generic-only system in one of those domains is refused, with a reason,
+  rather than half-used.
+
+**Not built:**
+- Owner UI or API to author authority rules or upload manifests. Rules live in
+  the Business Genome data; the lifecycle is exercised in tests.
+- One system per domain per business, from the `business_connections`
+  unique constraint.
+- Capability results are kept in conversation state (the last 8) and are not
+  yet indexed across conversations.

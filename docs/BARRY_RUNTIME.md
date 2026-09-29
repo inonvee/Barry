@@ -340,6 +340,24 @@ summarizes that per planner domain for the planner (never promise what the
 system can't do), the model's context, readiness, Learn Stack, Connections
 and HQ. The gate and every trace step use capability ids — never vendor names.
 
+## Capability-native planning
+
+Beyond the typed flows (commerce, payments, scheduling), the model can propose
+any capability on the business's own **capability surface** through
+`capabilityRequest`; the compiler turns it into the one generic action
+`invokeCapability`. BARRY then decides deterministically, per business:
+
+- grounding: real capability and grounded inputs;
+- authority: the Genome's per-capability rules; no rule means a write is
+  refused;
+- approval: exact-call and single-use;
+- idempotency;
+- system selection: the fabric;
+- verification.
+
+After a result, the model may propose one bounded next capability. See
+`docs/INTEGRATION_FABRIC.md` §9.
+
 ## Turn traces (HQ-ready)
 
 Every `TurnLog.trace` records the runtime version, commit, constitution
