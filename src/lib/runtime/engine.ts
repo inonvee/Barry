@@ -731,6 +731,7 @@ async function composeTurn(
       language,
     });
   }
+  if (outcome.kind === "conversation" && rctx.grounded?.ownerRequests?.length) input = { ...input, ownerRequests: rctx.grounded.ownerRequests };
   const guarded = guardReply(reasoner, rctx, input, await reasoner.composeResponse(rctx, input));
   if (guarded.fallback) return guarded;
   const text = guarded.text;

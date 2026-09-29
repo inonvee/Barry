@@ -126,6 +126,8 @@ export type ComposeResponseInput = {
    * new was sent), or declined by the owner earlier (not re-sent on the same terms).
    */
   existingOwnerRequest?: "still_pending" | "declined_earlier";
+  /** Requests sent to the owner in this conversation (customer-safe) — lets a plain reply state their real status. */
+  ownerRequests?: OwnerRequestView[];
   scheduling?: SchedulingDisplayFacts;
   /** When BARRY took several steps this turn: all of them, in order (the last equals outcome/toolResult). */
   steps?: ComposeStep[];

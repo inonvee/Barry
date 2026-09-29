@@ -1,4 +1,4 @@
-import type { ComposeResponseInput } from "./types";
+import type { ComposeResponseInput, OwnerRequestView } from "./types";
 import { fieldLabel } from "./reply-contract";
 
 /**
@@ -88,6 +88,25 @@ function ownerDeclinedText(lang: string | undefined): string {
     : "I checked with the owner and unfortunately we can't do that one. Anything else I can help with?";
 }
 
+/** The real status of a request sent to the owner, from BARRY's records. */
+export function ownerRequestStatusText(r: OwnerRequestView, lang: string | undefined): string {
+  const ref = r.reference ? (lang === "he" ? ` (אסמכתא ${r.reference})` : ` (reference ${r.reference})`) : "";
+  if (lang === "he") {
+    if (r.status === "waiting_on_owner") return "זה עדיין אצל בעל העסק — אעדכן אותך כאן ברגע שתהיה תשובה.";
+    if (r.status === "declined_by_owner") return "בעל העסק לא אישר את זה.";
+    if (r.status === "withdrawn_by_customer") return "הבקשה בוטלה לפי בקשתך, אז שום דבר לא יתבצע.";
+    if (r.result === "failed") return "בעל העסק אישר, אבל הביצוע לא עבר. הצוות יוכל לבדוק את זה.";
+    if (r.result === "done_unconfirmed") return `בעל העסק אישר והבקשה הוגשה, אבל עדיין אין אישור שהיא בוצעה${ref}.`;
+    return `בעל העסק אישר וזה בוצע${ref}.`;
+  }
+  if (r.status === "waiting_on_owner") return "That's still with the owner — I'll update you here as soon as I hear back.";
+  if (r.status === "declined_by_owner") return "The owner didn't approve that one.";
+  if (r.status === "withdrawn_by_customer") return "That request was withdrawn as you asked, so nothing will go ahead with it.";
+  if (r.result === "failed") return "The owner approved it, but carrying it out didn't go through — the team can look into it.";
+  if (r.result === "done_unconfirmed") return `The owner approved it and it was submitted, but it isn't confirmed yet${ref}.`;
+  return `The owner approved it and it's done${ref}.`;
+}
+
 /** The conversation's language when BARRY has strings for it; otherwise English. */
 function composeLocalized(input: ComposeResponseInput): string {
   const lang = input.language?.code;
@@ -113,6 +132,8 @@ function composeLocalized(input: ComposeResponseInput): string {
       : `Okay, I've stopped here — nothing more will be sent.${n ? " I also withdrew the request that was waiting on the owner." : ""}`;
   }
   if (input.outcome.kind === "conversation") {
+    const latest = input.ownerRequests?.at(-1);
+    if (latest) return ownerRequestStatusText(latest, lang);
     return lang === "he" ? "סליחה, לא הצלחתי לנסח תשובה כרגע — אפשר לשאול שוב?" : "Sorry — I couldn't put that answer together just now. Could you ask me again?";
   }
   if (lang === "he") {

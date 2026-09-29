@@ -46,7 +46,7 @@ const RULES: ClaimRule[] = [
   { kind: "update", en: /\b(updated|changed|rescheduled|moved|modified|amended|adjusted)\b/i, he: /(עדכנתי|עודכן|עודכנה|עודכנו|שיניתי|שונה|שונתה|שונו|הזזתי|הוזז|הוזזה|קבעתי מחדש)/, needsCompletion: true },
   { kind: "cancel", en: /\b(cancell?ed|withdrawn|voided|removed)\b/i, he: /(ביטלתי|בוטל|בוטלה|בוטלו|הסרתי|הוסר|הוסרה)/, needsCompletion: true },
   { kind: "send", en: /\b(sent|emailed|texted|forwarded)\b/i, he: /(שלחתי|נשלח|נשלחה|נשלחו)/, needsCompletion: true },
-  { kind: "owner_waiting", en: /\b(owner|manager|boss)\b.*\b(waiting|pending|hear back|haven't heard|still)\b|\b(waiting|pending|still)\b.*\b(owner|manager|boss)('s)?\b/i, he: /(מחכה|ממתין|ממתינה|עדיין).*(בעל העסק|בעלת העסק|הבעלים|המנהל|האחראי)|(בעל העסק|בעלת העסק|הבעלים|המנהל|האחראי).*(מחכה|ממתין|ממתינה|עדיין)/ },
+  { kind: "owner_waiting", en: /\b(?:waiting|wait) (?:for|on) (?:their|his|her|the|an?) ?(?:response|answer|reply|approval|decision|ok|sign-?off)\b|\b(?:pending|awaiting) (?:approval|sign-?off)\b|\b(owner|manager|boss)\b.*\b(waiting|pending|hear back|haven't heard|still)\b|\b(waiting|pending|still)\b.*\b(owner|manager|boss)('s)?\b/i, he: /(?:מחכה|ממתין|ממתינה|ממתינים) (?:ל)?(?:תשובה|אישור|לאישור|לתשובה)|(מחכה|ממתין|ממתינה|עדיין).*(בעל העסק|בעלת העסק|הבעלים|המנהל|האחראי)|(בעל העסק|בעלת העסק|הבעלים|המנהל|האחראי).*(מחכה|ממתין|ממתינה|עדיין)/ },
   { kind: "owner", en: /\b(owner|manager|boss)\b/i, he: /(בעל העסק|בעלת העסק|הבעלים|המנהל|האחראי)/ },
 ];
 
