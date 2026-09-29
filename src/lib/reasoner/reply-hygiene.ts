@@ -55,7 +55,8 @@ export function internalVocabulary(
   for (const c of ctx.grounded?.capabilities ?? []) for (const i of c.inputs) for (const o of i.options ?? []) if (RAW_ENUM.test(o)) enums.add(o);
   collectRawEnums(input.toolResult, enums);
   for (const st of input.steps ?? []) collectRawEnums(st.toolResult, enums);
-  const phrases = [input.policyReason, ...(input.steps ?? []).map((st) => st.policyReason)].filter((p): p is string => typeof p === "string" && p.trim().length >= 12);
+  // The owner-facing reasons written on the business's authority rules are internal too.
+  const phrases = [input.policyReason, ...(input.steps ?? []).map((st) => st.policyReason), ...(ctx.graph.authority ?? []).map((r) => r.reason)].filter((p): p is string => typeof p === "string" && p.trim().length >= 12);
   return { identifiers: [...[...ids].filter(looksLikeIdentifier), ...enums], phrases };
 }
 

@@ -197,7 +197,7 @@ YOUR TASK NOW: understand the customer's latest message in context and describe 
 - customerClaimsPaymentCompleted: true when the customer says they paid. It is only a claim; BARRY verifies it with the provider.
 - purchaseDecision: true when the customer has DECIDED to buy what's being discussed ("I'll take it", "yalla, I'm taking it"); false when they are asking, admiring, comparing, or adding while still browsing; null if unclear. It is consent for BARRY to move the purchase forward per the business playbook — never a payment or an order.
 - knowledgeTopic: when they ask about something covered by one of knowledgeTopics, that exact topic string.
-- capabilityRequest: when the customer's need is served by one of capabilitySurface's capabilities (and not by the offers/commerce flows above), propose it: the exact capability id, inputJson = a JSON object of its inputs using ONLY values the customer said or that appear in knownCustomerFields/capabilityResults (never invent an id, number or address; for an input that lists options, use exactly one of those options; leave the request null and let BARRY ask if a required input is unknown), and a one-line purpose. Only propose capabilities marked available; one whose authority is not_permitted can't be used for this business, so don't propose it. You never decide whether it is allowed — BARRY does. If capabilityResults already answer the need, don't request it again; propose the NEXT capability only if the result makes it necessary for what the customer wants (e.g. the result shows a problem that another capability on the surface exists to handle); otherwise null.
+- capabilityRequest: when the customer's need is served by one of capabilitySurface's capabilities (and not by the offers/commerce flows above), propose it: the exact capability id, inputJson = a JSON object of its inputs using ONLY values the customer said or that appear in knownCustomerFields/capabilityResults (never invent an id, number or address; for an input that lists options, use exactly one of those options; leave the request null and let BARRY ask if a required input is unknown), and a one-line purpose. Only propose capabilities marked available; one whose authority is not_permitted can't be used for this business, so don't propose it. You never decide whether it is allowed — BARRY does. If capabilityResults already answer the need, don't request it again; propose the NEXT capability only if the result makes it necessary for what the customer wants (e.g. the result shows a problem that another capability on the surface exists to handle), or if the customer asked for several things in this message and one of them is not answered yet (one per step — BARRY re-asks you after each result); otherwise null.
 - Scheduling: describe what they said, never compute timestamps. schedulingWindow fields: dateKind (explicitDate|relativeDay|weekday), isoDate (YYYY-MM-DD, resolve using business.currentDate), relativeDays, weekday (0=Sun..6=Sat), weekdayQualifier (this|next), timeKind (explicitTime|partOfDay), hour/minute (24h, as the customer meant it locally), partOfDay. Keep a day/time stated earlier unless they changed it.
 - slotAccepted / slotDeclined: only when awaitingSlotConfirmation is true and they accept or decline the offered time.
 - selectedOfferId / offerCandidateIds: for services in "offers"; several plausible -> candidates. offerChangeRequested only for an explicit change of mind to a different real offer.
@@ -539,6 +539,26 @@ export function buildComposeSummary(context: ComposeSummaryContext, input: Compo
   };
 }
 
+/** Exactly what the composer model is given for this reply (exported so evals can inspect it). */
+export function composeSummaryFor(ctx: ReasonerContext, input: ComposeResponseInput) {
+  const lastCustomerMessage = ctx.state.messages.filter((m) => m.role === "customer").at(-1)?.content ?? "";
+
+  return buildComposeSummary(
+    {
+      business: { name: ctx.graph.business.name, description: ctx.graph.business.description },
+      businessTone: ctx.graph.business.tone,
+      lastCustomerMessage,
+      responseStatus: composeResponseStatus(ctx, input),
+      playbook: { salesStyle: ctx.graph.playbook.salesStyle ?? null, suggestions: ctx.graph.playbook.suggestions },
+      // Earlier turns; the latest customer message is lastCustomerMessage.
+      recentConversation: earlierTurns(recentConversation(ctx)),
+      whatTheBusinessCanDo: businessAbilities(ctx),
+      waitingOnOwnerFromEarlier: Boolean(ctx.state.pendingApprovalId) && !input.policyReason,
+    },
+    input
+  );
+}
+
 /**
  * Pure parse+validate+sanitize pipeline for a raw completion string, with
  * no network I/O — this is what makes the failure modes unit-testable
@@ -688,22 +708,7 @@ export class OpenAIReasoner implements Reasoner {
 
   async composeResponse(ctx: ReasonerContext, input: ComposeResponseInput): Promise<string> {
     if (this.configError) return composeDeterministic(input);
-    const lastCustomerMessage = ctx.state.messages.filter((m) => m.role === "customer").at(-1)?.content ?? "";
-
-    const summary = buildComposeSummary(
-      {
-        business: { name: ctx.graph.business.name, description: ctx.graph.business.description },
-        businessTone: ctx.graph.business.tone,
-        lastCustomerMessage,
-        responseStatus: composeResponseStatus(ctx, input),
-        playbook: { salesStyle: ctx.graph.playbook.salesStyle ?? null, suggestions: ctx.graph.playbook.suggestions },
-        // Earlier turns; the latest customer message is lastCustomerMessage.
-        recentConversation: earlierTurns(recentConversation(ctx)),
-        whatTheBusinessCanDo: businessAbilities(ctx),
-        waitingOnOwnerFromEarlier: Boolean(ctx.state.pendingApprovalId) && !input.policyReason,
-      },
-      input
-    );
+    const summary = composeSummaryFor(ctx, input);
 
     try {
       const completion = await createCompletion(this.client, {

@@ -1,3 +1,4 @@
+import { getCapability } from "@/lib/fabric/capability";
 import type { ComposeResponseInput, CustomerFacingLocalDisplay, SchedulingDisplayFacts } from "./types";
 
 type ComposeToolResult = ComposeResponseInput["toolResult"];
@@ -44,9 +45,29 @@ function stripChannelOnlyFields(output: unknown): unknown {
   return sanitized;
 }
 
+/**
+ * A generic capability call, as the composer may see it: what it was for (the contract's purpose, in
+ * words), whether it ran and was confirmed, and the facts it returned. Which system answered, which
+ * connector, the capability id and the authority rule that allowed it are BARRY's business — never
+ * the customer's — so they are not even present to be repeated.
+ */
+function customerFacingCapabilityResult(output: unknown): unknown {
+  if (!output || typeof output !== "object") return output;
+  const r = output as { capability?: string; ok?: boolean; executed?: boolean; verified?: boolean; code?: string; output?: unknown };
+  return {
+    about: r.capability ? getCapability(r.capability)?.purpose ?? null : null,
+    ok: r.ok,
+    executed: r.executed,
+    verified: r.verified,
+    ...(r.code ? { code: r.code } : {}),
+    output: stripChannelOnlyFields(r.output),
+  };
+}
+
 export function sanitizeToolResultForCompose(input: ComposeResponseInput): ComposeToolResult {
   const { outcome, toolResult } = input;
   if (!toolResult?.ok || outcome.kind !== "action") return toolResult;
+  if (outcome.action.name === "invokeCapability") return { ...toolResult, output: customerFacingCapabilityResult(toolResult.output) };
   const withoutChannelFields = stripChannelOnlyFields(toolResult.output);
   if (outcome.action.name !== "checkAvailability" && outcome.action.name !== "createBooking") {
     return { ...toolResult, output: withoutChannelFields };

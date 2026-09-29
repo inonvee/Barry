@@ -145,8 +145,42 @@ function genericText(toolResult: ComposeResponseInput["toolResult"], lang: "he" 
 }
 
 function composeHebrew(input: ComposeResponseInput): string | undefined {
-  const { outcome, toolResult } = input;
+  const { outcome, toolResult, scheduling } = input;
   switch (outcome.kind) {
+    case "ask_general":
+      return outcome.offerNames.length ? `במה אפשר לעזור? יש לנו ${outcome.offerNames.join(", ")}.` : `במה אפשר לעזור?`;
+    case "clarify_offer":
+      return `בשמחה — מדובר על ${outcome.offerNames.join(" או ")}?`;
+    case "knowledge_answer":
+      return outcome.answer;
+    case "ask_datetime":
+      return `מתי נוח לך לקבוע ${outcome.offerName}?`;
+    case "ask_slot_confirm":
+      return scheduling?.offeredSlot ? `${scheduling.offeredSlot.localDate} ב-${scheduling.offeredSlot.localTime} מתאים?` : `השעה הזו מתאימה?`;
+    case "waiting_payment":
+      return `מחכה רק לתשלום כדי לאשר.`;
+    case "offer_fact":
+      switch (outcome.fact.type) {
+        case "price":
+          return `${outcome.offerName}: ${money(outcome.fact.price, outcome.fact.currency, "he")}.`;
+        case "duration":
+          return `${outcome.offerName} לוקח בערך ${outcome.fact.minutes} דקות.`;
+        case "deposit":
+          return outcome.fact.required
+            ? `כן, ל${outcome.offerName} צריך מקדמה${outcome.fact.amount ? ` של ${money(outcome.fact.amount, outcome.fact.currency, "he")}` : ""}.`
+            : `ל${outcome.offerName} לא צריך מקדמה.`;
+      }
+      return undefined;
+    case "generic_confirm":
+      return outcome.stage === "closed" ? `הכול מסודר — זה כבר מאושר.` : `מסדר את זה עכשיו.`;
+    case "compiler_error":
+      return `סליחה, לא הבנתי עד הסוף — אפשר לפרט קצת?`;
+    case "ask_variant": {
+      const options = [...new Set(outcome.availableOptions.map(optionLabel))];
+      const asked = outcome.requested && Object.keys(outcome.requested).length ? optionLabel(outcome.requested) : undefined;
+      if (options.length === 0) return `${outcome.productTitle} לא זמינה כרגע${asked ? ` ב-${asked}` : ""}.`;
+      return asked ? `${outcome.productTitle} לא זמינה ב-${asked}. זמין: ${options.join(", ")}. מה מתאים לך?` : `איזו אפשרות של ${outcome.productTitle}? זמין: ${options.join(", ")}.`;
+    }
     case "needs_info":
       return `מעולה — ${outcome.offerName}. אפשר ${formatMissingFieldsList(outcome.missingFields, "he")}?`;
     case "checkout_needs_info":
@@ -185,6 +219,23 @@ function composeHebrew(input: ComposeResponseInput): string | undefined {
       }
       const output = toolResult.output as Record<string, unknown>;
       switch (outcome.action.name) {
+        case "checkAvailability": {
+          if ((output as { slots: unknown[] }).slots.length === 0) return `לא מצאתי שעות פנויות בטווח הזה — לנסות יום או שעה אחרים?`;
+          const slot = scheduling?.availableSlots?.[0];
+          return slot ? `${slot.localDate} ב-${slot.localTime} פנוי — מתאים?` : `מצאתי שעה פנויה — מתאים?`;
+        }
+        case "checkInventory":
+          return (output as { quantityAvailable: number }).quantityAvailable > 0 ? `יש במלאי. להמשיך לתשלום?` : `זה אזל כרגע מהמלאי — לבחור משהו אחר?`;
+        case "createPaymentRequest":
+          return `הנה קישור מאובטח לתשלום — ברגע שהתשלום יאומת, אאשר הכול.`;
+        case "createBooking":
+          return `קבענו! התור מאושר (${(output as { bookingId: string }).bookingId}). נתראה.`;
+        case "fulfillOrder":
+          return `ההזמנה שלך (${(output as { orderId: string }).orderId}) מאושרת — תודה!`;
+        case "createLead":
+          return `תודה על הפרטים — העברתי את זה ונחזור אליך עם הצעה.`;
+        case "createFollowUp":
+          return `אין בעיה, אחזור אליך בקרוב.`;
         case "addToCart":
         case "updateCartLine": {
           const o = output as {
@@ -251,7 +302,7 @@ function composeSingle(input: ComposeResponseInput): string {
 
   switch (outcome.kind) {
     case "ask_general":
-      return `What can I help you with? We offer ${outcome.offerNames.join(", ")}.`;
+      return outcome.offerNames.length ? `What can I help you with? We offer ${outcome.offerNames.join(", ")}.` : `What can I help you with?`;
     case "clarify_offer":
       return `Sure — is that for ${outcome.offerNames.join(" or ")}?`;
     case "knowledge_answer":
