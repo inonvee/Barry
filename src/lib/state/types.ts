@@ -106,6 +106,8 @@ export type TurnLog = {
     purchaseDecision?: boolean;
     customerClaims?: unknown;
     knowledgeTopic?: string;
+    /** The grounded capability proposal this turn (capability, input as grounded, purpose). */
+    capabilityRequest?: { capability: string; input: Record<string, unknown>; purpose: string };
   };
   retrieved: {
     offerIds: string[];

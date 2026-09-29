@@ -2,6 +2,12 @@
 
 import type { ApprovalRecord } from "@/lib/store/types";
 
+/** A generic capability call is titled by its capability, not by the generic action's name. */
+function actionTitle(a: { requestedAction: string; requestedInput: unknown }): string {
+  const capability = (a.requestedInput as { capability?: unknown } | null)?.capability;
+  return a.requestedAction === "invokeCapability" && typeof capability === "string" ? `${capability} (capability call)` : a.requestedAction;
+}
+
 export function ApprovalsPanel({
   approvals,
   onDecide,
@@ -22,7 +28,7 @@ export function ApprovalsPanel({
 
       {pending.map((a) => (
         <div key={a.id} className="rounded-xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 p-3">
-          <p className="text-sm font-medium">{a.requestedAction}</p>
+          <p className="text-sm font-medium">{actionTitle(a)}</p>
           <p className="text-xs text-neutral-600 dark:text-neutral-400 mt-1">{a.reason}</p>
           <pre className="mt-2 text-xs bg-white/60 dark:bg-black/20 rounded-lg p-2 overflow-x-auto">
             {JSON.stringify(a.requestedInput, null, 2)}
@@ -52,7 +58,7 @@ export function ApprovalsPanel({
           <div className="space-y-2">
             {resolved.map((a) => (
               <div key={a.id} className="rounded-xl border border-neutral-200 dark:border-neutral-800 p-3">
-                <p className="text-sm font-medium">{a.requestedAction}</p>
+                <p className="text-sm font-medium">{actionTitle(a)}</p>
                 <p className="text-xs text-neutral-500">{a.status}</p>
               </div>
             ))}

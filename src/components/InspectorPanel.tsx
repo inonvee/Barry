@@ -110,6 +110,18 @@ export function TurnView({ state, turn, isLatest }: { state: ConversationState; 
         {turn.understood.customerClaims !== undefined && <Kv k="Customer claims" v={JSON.stringify(turn.understood.customerClaims)} />}
         {Object.keys(turn.understood.entities).length > 0 && <Json label="Entities" value={turn.understood.entities} />}
         {turn.understood.schedulingWindow && <Json label="Scheduling (as understood)" value={turn.understood.schedulingWindow} />}
+        {turn.verification?.capabilityRequest && (
+          <div className="mt-2 border-t border-neutral-100 dark:border-neutral-800 pt-1.5">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-xs text-neutral-500">Capability request</span>
+              <span className="font-mono text-xs">{turn.verification.capabilityRequest.proposed.capability}</span>
+              <Chip tone={turn.verification.capabilityRequest.status === "accepted" ? "good" : "bad"}>{turn.verification.capabilityRequest.status === "accepted" ? "grounded" : "rejected"}</Chip>
+            </div>
+            <Kv k="Input" v={Object.entries(turn.verification.capabilityRequest.proposed.input).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ") || "—"} />
+            <Kv k="Purpose" v={turn.verification.capabilityRequest.proposed.purpose || "—"} />
+            {turn.verification.capabilityRequest.reason && <p className="text-xs text-red-600 dark:text-red-400">{turn.verification.capabilityRequest.reason}</p>}
+          </div>
+        )}
       </Section>
 
       <Section title="Customer facts">
@@ -177,6 +189,20 @@ export function TurnView({ state, turn, isLatest }: { state: ConversationState; 
                   {step.result && <Chip tone={step.result.ok ? "good" : "bad"}>{step.result.ok ? "ok" : "failed"}</Chip>}
                 </div>
                 {step.capabilities.length > 0 && <Kv k="Capability / provider" v={step.capabilities.map((c) => `${c.capability}: ${c.provider ?? "none"}`).join(", ")} />}
+                {step.generic && (
+                  <>
+                    <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+                      <Chip tone={step.generic.executed ? "good" : "neutral"}>{step.generic.executed ? "executed" : "not executed"}</Chip>
+                      {step.generic.executed && <Chip tone={step.generic.verified ? "good" : "neutral"}>{step.generic.verified ? "provider-verified" : "read (no write to verify)"}</Chip>}
+                      {step.generic.simulated && <Chip tone="warn">simulated system</Chip>}
+                      {step.generic.code && <Chip tone="bad">{step.generic.code}</Chip>}
+                    </div>
+                    <Kv k="Purpose" v={step.generic.purpose || "—"} />
+                    <Kv k="Input fields" v={step.generic.inputFields.join(", ") || "—"} />
+                    <Kv k="Authority" v={`${step.generic.authority.status}${step.generic.authority.ruleId ? ` · rule ${step.generic.authority.ruleId}` : " · no rule"}`} />
+                    <Kv k="System" v={step.generic.system ? `${step.generic.system} via ${step.generic.connector}${step.generic.contractVersion ? ` · contract ${step.generic.contractVersion}` : ""}` : "not resolved / not reached"} />
+                  </>
+                )}
                 {step.policy.status !== "allowed" && <p className="text-xs text-neutral-500">{step.policy.reason}</p>}
                 {step.result?.error && <p className="text-xs text-red-600 dark:text-red-400 break-all">{step.result.error}</p>}
                 <Kv k="Stage" v={`${step.stageBefore} → ${step.stageAfter}`} />

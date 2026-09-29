@@ -402,7 +402,7 @@ export async function handleCustomerMessage(
         break;
       }
       // After a generic capability call, the next step is the MODEL's to propose from the result
-      // (e.g. a delayed shipment the business handles by opening a case) — grounded, compiled and
+      // (when the result shows something another capability exists to handle) — grounded, compiled and
       // authorized exactly like the first. Otherwise the typed goal planner continues from state.
       const candidate =
         current.action.name === INVOKE_CAPABILITY
@@ -461,6 +461,7 @@ export async function handleCustomerMessage(
       ...(ir.purchaseDecision !== undefined ? { purchaseDecision: ir.purchaseDecision } : {}),
       ...(ir.customerClaims ? { customerClaims: ir.customerClaims } : {}),
       ...(ir.knowledgeTopic ? { knowledgeTopic: ir.knowledgeTopic } : {}),
+      ...(ir.capabilityRequest ? { capabilityRequest: ir.capabilityRequest } : {}),
     },
     retrieved: { offerIds, knowledgeIds },
     verification,
