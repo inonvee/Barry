@@ -7,6 +7,8 @@ import { resolveCapabilityProfiles, type CapabilityProfiles } from "@/lib/capabi
 import { describeBusinessConnections, type ConnectionView } from "@/lib/connections/status";
 import { getLearningWorkspace } from "@/lib/learn-business/service";
 import { buildOperatingStrategy } from "@/lib/learn-business/strategy";
+import { buildCapabilitySurface } from "@/lib/capabilities/surface";
+import type { CapabilitySurfaceEntry } from "@/lib/reasoner/types";
 import { buildDesignPartnerReadiness, type DesignPartnerSurface } from "./design-partner";
 
 /**
@@ -45,12 +47,16 @@ export type TurnHealth = {
   policyBlocked: number;
   contractFallbacks: number;
   groundingRejections: number;
+  /** Generic capability calls BARRY planned, and how many were refused by authority or failed at the system. */
+  capabilityCalls: number;
+  capabilityRefused: number;
+  capabilityFailed: number;
   /** Turns persisted before migration 0011 (no trace to inspect). */
   untraced: number;
 };
 
 function turnHealth(turns: TurnActivity[]): TurnHealth {
-  const health: TurnHealth = { sampled: turns.length, failedSteps: 0, understandingFailed: 0, policyBlocked: 0, contractFallbacks: 0, groundingRejections: 0, untraced: 0 };
+  const health: TurnHealth = { sampled: turns.length, failedSteps: 0, understandingFailed: 0, policyBlocked: 0, contractFallbacks: 0, groundingRejections: 0, capabilityCalls: 0, capabilityRefused: 0, capabilityFailed: 0, untraced: 0 };
   for (const t of turns) {
     if (t.intent === "understanding_failed") health.understandingFailed++;
     if (!t.trace) {
@@ -61,6 +67,12 @@ function turnHealth(turns: TurnActivity[]): TurnHealth {
     if (t.trace.steps.some((s) => s.policy.status === "denied" || s.policy.status === "requires_approval")) health.policyBlocked++;
     if (t.trace.reply?.fallback) health.contractFallbacks++;
     if (t.trace.rejectedClaims.length > 0) health.groundingRejections++;
+    for (const step of t.trace.steps) {
+      if (!step.generic) continue;
+      health.capabilityCalls++;
+      if (step.generic.authority.status !== "allowed") health.capabilityRefused++;
+      else if (!step.generic.executed || step.generic.code) health.capabilityFailed++;
+    }
   }
   return health;
 }
@@ -183,7 +195,10 @@ export type HqBusinessDetail = HqBusinessOverview & {
     enabledActions: string[];
   };
   recentConversations: Sourced<ConversationSummary[]>;
-  recentTurns: Sourced<{ conversationId: string; at: string; intent: string | null; stop: string | null; actions: string[]; failed: boolean; fallback: boolean }[]>;
+  recentTurns: Sourced<{ conversationId: string; at: string; intent: string | null; stop: string | null; actions: string[]; failed: boolean; fallback: boolean; capabilities: { capability: string; authority: string; ruleId: string | null; system: string | null; executed: boolean; verified: boolean; code: string | null }[] }[]>;
+  /** What the model may propose for this business beyond the typed flows, and how each is governed. */
+  capabilitySurface: Sourced<CapabilitySurfaceEntry[]>;
+  authorityRules: BusinessGraph["authority"];
   approvals: Sourced<{ id: string; conversationId: string; requestedAction: string; reason: string; status: string; createdAt: string }[]>;
   orders: Sourced<{ orderId: string; conversationId: string; total: string; status: string; createdAt: string }[]>;
   payments: Sourced<{ id: string; conversationId: string; amount: string; status: string; provider: string | null; createdAt: string; verifiedAt: string | null }[]>;
@@ -248,6 +263,12 @@ export async function getHqBusiness(businessId: string): Promise<HqBusinessDetai
             actions: t.trace?.steps.map((s) => s.action) ?? [],
             failed: !!t.trace?.steps.some((s) => s.result && !s.result.ok),
             fallback: !!t.trace?.reply?.fallback,
+            // Generic capability steps: what was planned, authority, system, outcome — no input values.
+            capabilities: (t.trace?.steps ?? []).flatMap((st) =>
+              st.generic
+                ? [{ capability: st.generic.capability, authority: st.generic.authority.status, ruleId: st.generic.authority.ruleId ?? null, system: st.generic.system ?? null, executed: st.generic.executed, verified: st.generic.verified, code: st.generic.code ?? null }]
+                : []
+            ),
           })),
         }
       : o._activity,
@@ -270,6 +291,8 @@ export async function getHqBusiness(businessId: string): Promise<HqBusinessDetai
     designPartner: o._profiles.ok
       ? { ok: true, value: buildDesignPartnerReadiness({ profiles: o._profiles.value, payments: raw.payments.ok ? raw.payments.value : null }) }
       : { ok: false, unavailable: "design-partner readiness unavailable" },
+    capabilitySurface: await source("capability surface", () => buildCapabilitySurface(graph)),
+    authorityRules: graph.authority,
     notTracked: ["revenue / GMV over time", "customer satisfaction", "response latency per turn", "messaging channel delivery"],
   };
 }

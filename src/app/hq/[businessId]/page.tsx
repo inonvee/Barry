@@ -155,6 +155,46 @@ export default async function HqBusinessPage({ params }: { params: Promise<{ bus
           </WithSource>
         </Card>
 
+        <Card title="Capabilities the model may propose · authority">
+          <p className="mb-2 text-xs text-neutral-500">
+            Beyond the typed flows: what this business&apos;s own systems can execute now, and how the business governs each. The model proposes; these rules decide. A consequential capability no rule allows is refused.
+          </p>
+          <WithSource value={b.capabilitySurface}>
+            {(caps) =>
+              caps.length === 0 ? (
+                <p className="text-sm text-neutral-500">None — this business runs only through the typed flows.</p>
+              ) : (
+                <ul className="space-y-1 text-sm">
+                  {caps.map((c) => (
+                    <li key={c.id} className="flex flex-wrap items-center gap-1.5">
+                      <span className="font-mono text-xs">{c.id}</span>
+                      <Badge tone={c.effect === "read" ? "neutral" : "warn"}>{c.effect}</Badge>
+                      <Badge tone={c.authority === "not_permitted" ? "bad" : c.authority === "owner_approval" ? "warn" : "good"}>{label(c.authority)}</Badge>
+                      <span className="text-xs text-neutral-500">inputs: {c.inputs.map((i) => `${i.name}${i.required ? "" : "?"}`).join(", ") || "—"}</span>
+                    </li>
+                  ))}
+                </ul>
+              )
+            }
+          </WithSource>
+          <div className="mt-3">
+            <p className="text-xs font-medium text-neutral-500">Authority rules</p>
+            {b.authorityRules.length === 0 ? (
+              <p className="text-sm text-neutral-500">No rules — every consequential capability is refused.</p>
+            ) : (
+              <ul className="mt-1 space-y-0.5 text-xs">
+                {b.authorityRules.map((r) => (
+                  <li key={r.id}>
+                    <span className="font-mono">{r.capability}</span> → <Badge tone={r.effect === "allow" ? "good" : r.effect === "deny" ? "bad" : "warn"}>{label(r.effect)}</Badge>
+                    {r.when.length > 0 && <span className="text-neutral-500"> when {r.when.map((w) => `${w.field} ${w.op} ${w.value === undefined ? "" : JSON.stringify(w.value)}`).join(" and ")}</span>}
+                    <span className="text-neutral-400"> ({r.id})</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </Card>
+
         <Card title="Connected systems (capability fabric)">
           <WithSource value={b.connections}>
             {(cs) => (
@@ -244,6 +284,13 @@ export default async function HqBusinessPage({ params }: { params: Promise<{ bus
                         <p className="text-xs text-neutral-500">
                           {t.actions.length ? t.actions.join(" → ") : "no action"} · {t.stop ?? "no trace (before 0011)"}
                         </p>
+                        {t.capabilities.map((c, j) => (
+                          <p key={j} className="text-xs">
+                            <span className="font-mono">{c.capability}</span> · authority {c.authority}
+                            {c.ruleId ? ` (${c.ruleId})` : ""} · {c.system ?? "no system"} · {c.executed ? (c.verified ? "executed, verified" : "executed") : "not executed"}
+                            {c.code ? ` · ${c.code}` : ""}
+                          </p>
+                        ))}
                       </li>
                     ))}
                   </ul>

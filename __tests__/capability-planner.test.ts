@@ -84,12 +84,16 @@ function route(...ts: HttpTransport[]): HttpTransport {
 // ── the MOCK model: proposes from what it is shown, nothing else ─────────
 
 type Plan = (ctx: ReasonerContext) => Partial<BarryIR> | undefined;
+/** How many results existed when the model first saw each customer message (per conversation). */
+const baseline = new Map<string, number>();
 class PlanningReasoner implements Reasoner {
   readonly name = "llm" as const;
   readonly model = "test-planner";
   readonly seen: { surface: CapabilitySurfaceEntry[]; results: unknown[] }[] = [];
   constructor(private readonly plan: Plan) {}
   async understand(ctx: ReasonerContext): Promise<BarryIR> {
+    const key = `${ctx.state.id}:${ctx.state.messages.length}`;
+    if (!baseline.has(key)) baseline.set(key, ctx.grounded?.capabilityResults?.length ?? 0);
     this.seen.push({ surface: ctx.grounded?.capabilities ?? [], results: ctx.grounded?.capabilityResults ?? [] });
     return { intent: "test", entities: {}, constraints: {}, customerInfo: {}, ...(this.plan(ctx) ?? {}) } as BarryIR;
   }
@@ -99,10 +103,8 @@ class PlanningReasoner implements Reasoner {
 }
 const ask = (capability: string, input: Record<string, unknown>, purpose = "customer asked"): Partial<BarryIR> => ({ capabilityRequest: { capability, input, purpose } });
 /** Results produced during THIS customer turn (the continuation step sees them; the next message starts fresh). */
-const thisTurn = (ctx: ReasonerContext) => {
-  const since = ctx.state.messages.filter((m) => m.role === "customer").at(-1)?.at ?? "";
-  return (ctx.grounded?.capabilityResults ?? []).filter((r) => r.at >= since) as { capability: string; output?: Record<string, unknown> }[];
-};
+const thisTurn = (ctx: ReasonerContext) =>
+  (ctx.grounded?.capabilityResults ?? []).slice(baseline.get(`${ctx.state.id}:${ctx.state.messages.length}`) ?? 0) as { capability: string; output?: Record<string, unknown> }[];
 const lastResult = (ctx: ReasonerContext) => thisTurn(ctx).at(-1);
 
 // ── tenants ──────────────────────────────────────────────────────────────
@@ -403,5 +405,26 @@ describe("PROOF H — core universality: no vendors, partners or domain branches
     expect(text).not.toMatch(/\b(stripe|pay-?plus|google[- ]?calendar|shopify|wix|woocommerce|custom-commerce|rina)\b/i);
     // New domains arrive as capabilities, never as planner branches.
     expect(text).not.toMatch(/["'`](shipping|support|crm|procurement|inventory|billing|refund|logistics)\.[a-z_]/);
+  });
+});
+
+describe("HQ shows effective capabilities, authority and generic executions", () => {
+  it("surface, rules, and a recent generic call with its authority and system — no input values", async () => {
+    credentials();
+    const { getBusinessGraph } = await import("@/lib/fixtures");
+    const { getHqBusiness } = await import("@/lib/hq/service");
+    const g = getBusinessGraph("spa");
+    await connect(g, "parcel-co", "shipping", parcelManifest);
+    setHttpTransportForTests(createMockHttpSystem(PARCEL_ORIGIN, { "GET /v2/tracking/{trackingNumber}": ({ params }) => ({ json: { tracking: { number: params.trackingNumber, state: "in_transit" } } }) }, { requireAuth: { header: "authorization", value: "Bearer parcel-secret" } }).transport);
+    setReasonerForTests(new PlanningReasoner((ctx) => (thisTurn(ctx).length ? undefined : ask("shipping.track", { trackingNumber: "ABC123" }))));
+    await say(g, `hq-${n}`, "Where is order ABC123?");
+
+    const hq = await getHqBusiness("spa");
+    expect(hq!.capabilitySurface).toMatchObject({ ok: true, value: expect.arrayContaining([expect.objectContaining({ id: "shipping.track", authority: "read_only" })]) });
+    expect(hq!.authorityRules).toEqual([]);
+    const turns = hq!.recentTurns.ok ? hq!.recentTurns.value : [];
+    expect(turns.flatMap((t) => t.capabilities)).toContainEqual(expect.objectContaining({ capability: "shipping.track", authority: "allowed", system: "parcel-co", executed: true }));
+    expect(hq!.health).toMatchObject({ ok: true, value: expect.objectContaining({ capabilityCalls: 1, capabilityRefused: 0 }) });
+    expect(JSON.stringify(turns)).not.toContain("ABC123");
   });
 });

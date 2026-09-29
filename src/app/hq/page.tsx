@@ -53,7 +53,7 @@ export default async function HqOverviewPage() {
                       {(h) =>
                         h.sampled === 0
                           ? "no turns yet"
-                          : `${h.failedSteps} failed steps · ${h.understandingFailed} not understood · ${h.contractFallbacks} reply fallbacks (last ${h.sampled} turns)`
+                          : `${h.failedSteps} failed steps · ${h.understandingFailed} not understood · ${h.contractFallbacks} reply fallbacks · capability calls ${h.capabilityCalls} (${h.capabilityRefused} refused, ${h.capabilityFailed} failed) (last ${h.sampled} turns)`
                       }
                     </WithSource>
                   }
