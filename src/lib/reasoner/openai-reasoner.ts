@@ -75,9 +75,14 @@ function pendingItem(ctx: ReasonerContext): { position: number; title: string } 
   return item ? { position: item.position, title: item.title } : null;
 }
 
+/** How much of the conversation the model re-reads each turn: enough for references and corrections across long chats. */
+const UNDERSTANDING_HISTORY = 16;
+/** How much of the conversation the composer sees, to keep continuity, pacing and the customer's register. */
+const COMPOSE_HISTORY = 10;
+
 export function buildUnderstandingContext(ctx: ReasonerContext) {
   const { graph, state } = ctx;
-  const recentMessages = state.messages.slice(-8).map((m) => `${m.role}: ${m.content}`);
+  const recentMessages = state.messages.slice(-UNDERSTANDING_HISTORY).map((m) => `${m.role}: ${m.content}`);
 
   const offers = graph.offers
     .filter((o) => o.active)
@@ -144,6 +149,8 @@ export function buildUnderstandingContext(ctx: ReasonerContext) {
     stage: state.stage,
     awaitingSlotConfirmation: Boolean(state.knownFields.__offeredSlotStart && !state.knownFields.__slotAccepted),
     openPaymentRequest: Boolean(state.knownFields.__paymentRequestId && !state.knownFields.__paid),
+    // BARRY already asked the owner about something in this conversation and is waiting for the answer.
+    awaitingOwnerApproval: Boolean(state.pendingApprovalId),
     // What this business's catalog can be searched by — map the customer's words onto these values.
     catalog: ctx.grounded?.catalog ? catalogForModel(ctx.grounded.catalog) : null,
     shownResults: ctx.grounded?.shownResults ?? [],
@@ -206,14 +213,24 @@ YOUR TASK NOW: understand the customer's latest message in context and describe 
  * means the action is DONE; the model only ever describes the result.
  */
 export const COMPOSE_SYSTEM_PROMPT =
-  `${BARRY_CONSTITUTION}\n\nYOUR TASK NOW: write BARRY's reply to the customer. ` +
-  "Use the business's tone. Reply in the language given by `replyLanguage` (mirror the language of replyLanguage.basedOn when present; code is a hint). " +
+  `${BARRY_CONSTITUTION}\n\nYOUR TASK NOW: write BARRY's next message to the customer, as an employee of \`business\` would. ` +
+  // ── What you're given
+  "The JSON below is the ONLY source of truth for what happened — describe exactly that, never inventing a price, availability, capability or outcome beyond it. " +
+  "`recentConversation` is what was said before (oldest first) and `lastCustomerMessage` is what they just wrote: continue THAT conversation — don't greet again, don't re-introduce yourself, don't re-ask anything already answered there, and keep their register and pace. " +
+  "`whatTheBusinessCanDo` is everything this business offers and can help with. If the customer wants something that isn't there, say briefly that it's not something we do here and offer the closest thing that is there (or say the team can help) — never collect details for it and never promise it. " +
+  // ── Language
+  "Reply in the language given by `replyLanguage` (mirror the language of replyLanguage.basedOn when present; code is a hint). " +
   "A customer message that is only a phone number, email, code, link or emoji never changes the language. " +
-  "The JSON summary below is the ONLY source of truth for what happened — " +
-  "describe exactly that, never inventing a price, availability, or outcome beyond it. " +
-  "If policyReason is set, explain briefly and warmly that you're checking with the owner. " +
+  "In Hebrew, address the customer in their grammatical gender when their own words reveal it (e.g. they wrote מחפשת/רציתי להזמין as a woman -> feminine); otherwise use neutral phrasing — never slash forms like את/ה. " +
+  "Money is written the way people write it: a currency code becomes its symbol (ILS -> ₪, USD -> $, EUR -> €). Status or enum values (anything_like_this) become plain words. " +
+  // ── Approvals and refusals
+  "If `ownerApproval.requestedNow` is set, BARRY has ALREADY asked the owner and will come back to the customer in this chat: say so in one short line (e.g. that you're checking it with the owner and will update them here). Never ask the customer whether to request it or how to proceed, never quote a rule, limit or reason. " +
+  "If `ownerApproval.requestedEarlier` is set, that earlier request is still open — if they ask about it, say you're still waiting on the owner. " +
+  "If `notSomethingWeDo` is true, the business doesn't allow this: say so briefly and kindly without citing any rule, and offer the closest thing from whatTheBusinessCanDo or the team. " +
+  "If `ownerDecision` is \"approved\", the owner said yes and the result follows; if \"declined\", the owner couldn't approve it — say so kindly, without blame, and offer what IS possible. " +
+  // ── Results
   "If toolSucceeded is true or false, the action has ALREADY RUN — describe its result " +
-  "(toolOutput on success, a brief apology and alternative on failure). NEVER say you will " +
+  "(toolOutput on success; on failure a brief, honest apology in plain words — never the raw error text — and a real next step). NEVER say you will " +
   "check, look up, confirm, or get back to them later for something toolOutput/toolError " +
   "already answers — phrases like \"I'll check\" or \"I'll get back to you shortly\" are " +
   "forbidden whenever a tool already ran this turn. " +
@@ -228,14 +245,16 @@ export const COMPOSE_SYSTEM_PROMPT =
   "for a field the Business Graph actually lists as missing; never invent an additional " +
   "requirement (e.g. \"names and phone numbers\" when missingFields is just [\"name\", " +
   "\"phone\"]) — BARRY collects ONE customer's contact info per booking unless the Business " +
-  "Graph's own required fields say otherwise. " +
+  "Graph's own required fields say otherwise. Ask for them in one natural sentence, not a list or a form. " +
   "If `steps` is present, BARRY took several actions this turn and ALL of them already happened: " +
   "say briefly where things now stand (the end result, not a log of each step), then ask for the ONE thing in `next` if present. " +
-  "When an action is \"invokeCapability\", toolOutput.output is what the business's own system returned: answer the customer from exactly those facts (translate field names naturally). If toolOutput.verified is false for something that changes the world, or toolOutput.ok is false, never say it was done. " +
+  "When an action is \"invokeCapability\", toolOutput.output is what the business's own system returned: answer the customer from exactly those facts, in human words (what it means for them, not field names or raw values). If toolOutput.verified is false for something that changes the world, or toolOutput.ok is false, never say it was done. " +
   "When outcome.kind is \"capability_needs_input\", ask for exactly the listed fields, nothing else. " +
   "When outcome.kind is \"checkout_needs_info\", the customer has decided to buy: ask only for those details so BARRY can send the payment link — never ask whether they want to continue. " +
-  "Follow `playbook.salesStyle` when present; mention at most one genuinely relevant suggestion and only if playbook.suggestions is \"one_relevant\". " +
-  "Keep it to 1-3 sentences, no headers, no JSON.";
+  // ── Voice
+  "Follow `playbook.salesStyle` when present; mention at most one genuinely relevant suggestion and only if playbook.suggestions is \"one_relevant\" — and none when the customer only asked for information or is upset. " +
+  "Never name internal things: no action, tool or capability names, no system or provider names beyond what the customer already knows, no rule ids, no field names from this JSON. " +
+  "Keep it short — usually 1-3 sentences; for a quick question, one. No preamble, no repeating their message back, no sign-off filler, no headers, no JSON.";
 
 function factsToCustomerInfo(facts: CustomerFact[]): { customerInfo: Record<string, string>; evidence: Record<string, string> } {
   const customerInfo: Record<string, string> = {};
@@ -380,7 +399,54 @@ export type ComposeSummaryContext = {
   responseStatus?: ComposeResponseStatus;
   /** The business's own operating playbook (sales style, suggestions) — overrides general habits. */
   playbook?: { salesStyle: string | null; suggestions: string };
+  /** Who BARRY speaks for — the Genome's identity, so the reply sounds like THIS business. */
+  business?: { name: string; description?: string };
+  /** The last few messages, oldest first, so the reply continues the conversation instead of restarting it. */
+  recentConversation?: { from: "customer" | "business"; text: string }[];
+  /** What this business does and can help with — so "we can't do that" is derived, never invented. */
+  whatTheBusinessCanDo?: BusinessAbilities;
+  /** BARRY is already waiting on the owner for something earlier in this conversation. */
+  waitingOnOwnerFromEarlier?: boolean;
 };
+
+export type BusinessAbilities = {
+  offers: string[];
+  sellsFromCatalog: boolean;
+  answersQuestionsAbout: string[];
+  /** Things BARRY can do through the business's own systems, in the contracts' own words. */
+  canHelpWith: string[];
+  /** Things BARRY can start but the owner signs off on. */
+  withOwnerSignOff: string[];
+};
+
+/**
+ * The business's abilities, in plain words, from the Genome and the capability surface — the same
+ * sources the runtime acts on. Capability ids, systems and rule text are deliberately left out:
+ * the composer only needs what the business can do, never how.
+ */
+export function businessAbilities(ctx: ReasonerContext): BusinessAbilities {
+  const surface = (ctx.grounded?.capabilities ?? []).filter((c) => c.available);
+  return {
+    offers: ctx.graph.offers.filter((o) => o.active).map((o) => o.name),
+    sellsFromCatalog: Boolean(ctx.grounded?.catalog),
+    answersQuestionsAbout: ctx.graph.knowledge.map((k) => k.topic),
+    canHelpWith: surface.filter((c) => c.authority === "automatic" || c.authority === "conditional").map((c) => c.purpose),
+    withOwnerSignOff: surface.filter((c) => c.authority === "owner_approval").map((c) => c.purpose),
+  };
+}
+
+/** The conversation before the customer's latest message (which the summary carries on its own). */
+function earlierTurns(turns: NonNullable<ComposeSummaryContext["recentConversation"]>) {
+  return turns.at(-1)?.from === "customer" ? turns.slice(0, -1) : turns;
+}
+
+/** The recent conversation, as the composer sees it (text only — rich payloads are the channel's). */
+export function recentConversation(ctx: ReasonerContext, limit = COMPOSE_HISTORY): NonNullable<ComposeSummaryContext["recentConversation"]> {
+  return ctx.state.messages
+    .filter((m) => m.role === "customer" || m.role === "barry")
+    .slice(-limit)
+    .map((m) => ({ from: m.role === "customer" ? ("customer" as const) : ("business" as const), text: m.content }));
+}
 
 type ComposeResponseStatus =
   | "booking_confirmed"
@@ -429,10 +495,22 @@ export function enforceComposeGrounding(text: string, ctx: ReasonerContext, inpu
 export function buildComposeSummary(context: ComposeSummaryContext, input: ComposeResponseInput) {
   const sanitizedInput = sanitizeComposeInput(input);
   return {
+    business: context.business ?? null,
     businessTone: context.businessTone,
+    whatTheBusinessCanDo: context.whatTheBusinessCanDo ?? null,
+    recentConversation: context.recentConversation ?? [],
     lastCustomerMessage: context.lastCustomerMessage,
     outcome: sanitizeOutcomeForCompose(sanitizedInput.outcome),
-    policyReason: sanitizedInput.policyReason ?? null,
+    // Customer-safe approval state. The rule text that triggered it is internal and never reaches the reply.
+    ownerApproval: sanitizedInput.policyReason
+      ? { requestedNow: true, customerWillHearBackHere: true }
+      : context.waitingOnOwnerFromEarlier
+        ? { requestedEarlier: true, stillWaiting: true }
+        : null,
+    // The business's rules don't allow this at all (reason is internal).
+    notSomethingWeDo: sanitizedInput.refused ? true : undefined,
+    // This reply follows the owner's decision on an earlier approval request.
+    ownerDecision: sanitizedInput.ownerDecision ?? undefined,
     toolSucceeded: sanitizedInput.toolResult?.ok ?? null,
     toolOutput: sanitizedInput.toolResult?.ok ? sanitizedInput.toolResult.output : undefined,
     toolError: sanitizedInput.toolResult && !sanitizedInput.toolResult.ok ? sanitizedInput.toolResult.error : undefined,
@@ -453,7 +531,7 @@ export function buildComposeSummary(context: ComposeSummaryContext, input: Compo
           succeeded: st.toolResult ? st.toolResult.ok : null,
           output: st.toolResult?.ok ? st.toolResult.output : undefined,
           error: st.toolResult && !st.toolResult.ok ? st.toolResult.error : undefined,
-          waitingForOwner: st.policyReason ?? undefined,
+          waitingForOwner: st.policyReason ? true : undefined,
         }))
       : null,
     // The single thing still needed from the customer, if any.
@@ -614,10 +692,15 @@ export class OpenAIReasoner implements Reasoner {
 
     const summary = buildComposeSummary(
       {
+        business: { name: ctx.graph.business.name, description: ctx.graph.business.description },
         businessTone: ctx.graph.business.tone,
         lastCustomerMessage,
         responseStatus: composeResponseStatus(ctx, input),
         playbook: { salesStyle: ctx.graph.playbook.salesStyle ?? null, suggestions: ctx.graph.playbook.suggestions },
+        // Earlier turns; the latest customer message is lastCustomerMessage.
+        recentConversation: earlierTurns(recentConversation(ctx)),
+        whatTheBusinessCanDo: businessAbilities(ctx),
+        waitingOnOwnerFromEarlier: Boolean(ctx.state.pendingApprovalId) && !input.policyReason,
       },
       input
     );

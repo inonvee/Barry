@@ -178,7 +178,9 @@ describe("PROOF A — a read capability chosen from conversation, no domain plan
     const out = await say(g, `a-${n}`, "Where is order ABC?");
     const step = out.turn.trace!.steps[0];
     expect(step).toMatchObject({ action: "invokeCapability", generic: { capability: "shipping.track", inputFields: ["trackingNumber"], authority: { status: "allowed" }, executed: true, system: "parcel-co", connector: "http-manifest" } });
-    expect(out.response).toMatch(/out_for_delivery/);
+    // The system's state reaches the customer in words, never as the raw enum value.
+    expect(out.response).toMatch(/out for delivery/);
+    expect(out.response).not.toMatch(/out_for_delivery/);
     expect(out.response).toMatch(/2026-10-02/);
     expect(sys.calls).toHaveLength(1);
 
@@ -389,8 +391,8 @@ describe("PROOF F — same runtime, same words, different tenants -> different s
     const two = await say(approveShip, `f2-${n}`, "Where is order ABC?");
     expect(one.turn.trace!.steps[0].generic).toMatchObject({ system: "parcel-co" });
     expect(two.turn.trace!.steps[0].generic).toMatchObject({ system: "courier" });
-    expect(one.response).toMatch(/in_transit/);
-    expect(two.response).toMatch(/out_for_delivery/);
+    expect(one.response).toMatch(/in transit/);
+    expect(two.response).toMatch(/out for delivery/);
 
     const s1 = await buildCapabilitySurface(allowShip);
     const s2 = await buildCapabilitySurface(approveShip);

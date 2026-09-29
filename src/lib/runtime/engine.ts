@@ -3,7 +3,7 @@ import { isActionAvailable, knowledgeSearch } from "@/lib/business-graph";
 import { resolveBusinessGraph } from "@/lib/business-graph-repository";
 import { decide, type PolicyDecision } from "@/lib/policy";
 import { getReasoner } from "@/lib/reasoner";
-import { callTool } from "@/lib/tools";
+import { callTool, listTools } from "@/lib/tools";
 import type { ToolCallResult, ToolContext } from "@/lib/tools";
 import { getConversationStore } from "@/lib/state";
 import type { ConversationState, TurnLog } from "@/lib/state";
@@ -16,7 +16,8 @@ import type { TurnStep, TurnTrace } from "@/lib/state";
 import { CONSTITUTION_VERSION } from "@/lib/reasoner/constitution";
 import { resolveReplyLanguage, type ReplyLanguage } from "@/lib/reasoner/language";
 import { checkInfoRequest, infoRequestFields } from "@/lib/reasoner/reply-contract";
-import { composeDeterministic, deniedText } from "@/lib/reasoner/deterministic-compose";
+import { composeDeterministic } from "@/lib/reasoner/deterministic-compose";
+import { findInternalLeak, internalVocabulary } from "@/lib/reasoner/reply-hygiene";
 import type { ComposeResponseInput } from "@/lib/reasoner/types";
 import { BARRY_RUNTIME_VERSION, runtimeCommit } from "./version";
 import { getCatalogSchema, getCommerceProduct, getOwnedCart } from "@/lib/commerce/capability";
@@ -436,7 +437,7 @@ export async function handleCustomerMessage(
   const last = steps[steps.length - 1];
   const policyDecision: PolicyDecision | undefined = last?.policyDecision;
   const toolResult: ToolCallResult | null = last?.toolResult ?? null;
-  const composed = await composeTurn(reasoner, { graph, state, customerMessage: message }, outcome, steps, next, message, language);
+  const composed = await composeTurn(reasoner, { graph, state, customerMessage: message, grounded }, outcome, steps, next, message, language);
   const response = composed.text;
   const rich = mergeRich(steps.map((st) => buildRichPayload(st.outcome, st.toolResult)));
   state.messages.push({ role: "barry", content: response, at: new Date().toISOString(), ...(rich ? { rich } : {}) });
@@ -687,10 +688,13 @@ async function composeTurn(
   let input: ComposeResponseInput;
   if (steps.length <= 1 && !next) {
     if (last?.policyDecision.status === "denied") {
-      return { text: deniedText(last.policyDecision.reason, language) };
+      // The rule's text stays in the trace; the customer hears what it means for them.
+      input = { outcome, toolResult: null, refused: true, language };
+      return guardReply(reasoner, rctx, input, await reasoner.composeResponse(rctx, input));
     }
     if (last?.policyDecision.status === "requires_approval") {
-      return { text: await reasoner.composeResponse(rctx, { outcome, toolResult: null, policyReason: last.policyDecision.reason, language }) };
+      input = { outcome, toolResult: null, policyReason: last.policyDecision.reason, language };
+      return guardReply(reasoner, rctx, input, await reasoner.composeResponse(rctx, input));
     }
     input = sanitizeComposeInput({ outcome, toolResult: last?.toolResult ?? null, scheduling: buildSchedulingDisplay(graph, outcome, last?.toolResult ?? null, message, language), language });
   } else {
@@ -708,7 +712,9 @@ async function composeTurn(
       language,
     });
   }
-  const text = await reasoner.composeResponse(rctx, input);
+  const guarded = guardReply(reasoner, rctx, input, await reasoner.composeResponse(rctx, input));
+  if (guarded.fallback) return guarded;
+  const text = guarded.text;
   // The details BARRY asks for are the compiler's truth. A reply that asks
   // for anything else (or something stricter, or drops one) is replaced by
   // the localized deterministic request — correct, just plainer.
@@ -718,6 +724,23 @@ async function composeTurn(
     if (violation) return { text: composeDeterministic(input), fallback: `missing-field contract: ${violation.reason}` };
   }
   return { text };
+}
+
+/**
+ * Reply hygiene: a customer never sees BARRY's machinery. A model-written reply that names an
+ * internal identifier (a capability id, an action/tool name, an authority or policy rule id, a raw
+ * enum value from this turn's system results) or quotes the rule text behind an approval/refusal is
+ * replaced by the deterministic reply — plainer, but clean — and the swap is recorded in the trace.
+ */
+function guardReply(
+  reasoner: ReturnType<typeof getReasoner>,
+  rctx: ReasonerContext,
+  input: ComposeResponseInput,
+  text: string
+): { text: string; fallback?: string } {
+  if (reasoner.name !== "llm") return { text };
+  const leak = findInternalLeak(text, internalVocabulary(rctx, input, listTools().map((t) => t.name)));
+  return leak ? { text: composeDeterministic(input), fallback: `reply hygiene: ${leak}` } : { text };
 }
 
 function mergeRich(parts: (NormalizedOutboundMessage["rich"] | undefined)[]): NormalizedOutboundMessage["rich"] | undefined {
@@ -938,9 +961,19 @@ export async function resumeAfterApproval(
   let toolResult: ToolCallResult | null = null;
   let response: string;
   let approvalStep: TurnStep | undefined;
+  // The customer hears back in the conversation's own language, and BARRY is no longer waiting on the owner.
+  const language = resolveReplyLanguage({
+    customerMessages: state.messages.filter((m) => m.role === "customer").map((m) => m.content),
+    stored: state.knownFields[SCRATCH_KEYS.conversationLanguage],
+    businessLocale: graph.business.locale,
+  });
+  state.pendingApprovalId = null;
+  state.pendingAction = null;
+  const resumeCtx: ReasonerContext = { graph, state, customerMessage: "(approval resumed)" };
 
   if (decision === "declined") {
-    response = `Thanks for waiting — unfortunately the owner wasn't able to approve that. Is there anything else I can help with?`;
+    const declinedOutcome: CompileOutcome = { kind: "action", action: { name: approval.requestedAction, input: {} }, stage: state.stage };
+    response = await reasoner.composeResponse(resumeCtx, { outcome: declinedOutcome, toolResult: null, ownerDecision: "declined", language });
   } else {
     // A generic capability call resumes EXACTLY as approved: the owner can't substitute another
     // call, and the tool re-checks the approval (this business and conversation, same capability and
@@ -970,15 +1003,10 @@ export async function resumeAfterApproval(
       action: { name: approval.requestedAction, input },
       stage: state.stage,
     };
-    const scheduling = buildSchedulingDisplay(graph, syntheticOutcome, toolResult, "(approval resumed)");
-    response = await reasoner.composeResponse(
-      { graph, state, customerMessage: "(approval resumed)" },
-      sanitizeComposeInput({ outcome: syntheticOutcome, toolResult, scheduling })
-    );
+    const scheduling = buildSchedulingDisplay(graph, syntheticOutcome, toolResult, "(approval resumed)", language);
+    response = await reasoner.composeResponse(resumeCtx, sanitizeComposeInput({ outcome: syntheticOutcome, toolResult, scheduling, ownerDecision: "approved", language }));
   }
 
-  state.pendingApprovalId = null;
-  state.pendingAction = null;
   state.messages.push({ role: "barry", content: response, at: new Date().toISOString() });
 
   const turn: TurnLog = {

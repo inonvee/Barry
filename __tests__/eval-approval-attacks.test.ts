@@ -107,7 +107,7 @@ describe("Approval attacks: declined approval never proceeds", () => {
     const result = await resumeAfterApproval(graph, approvalId!, "declined", "owner-1");
     expect(result.turn.toolResult).toBeUndefined();
     expect(result.state.outcome).not.toBe("won");
-    expect(result.response).toMatch(/wasn't able to approve|couldn't approve/i);
+    expect(result.response).toMatch(/wasn't able to approve|couldn't approve|can't do that/i);
   });
 });
 

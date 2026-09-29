@@ -96,7 +96,16 @@ export type ComposeStep = {
 export type ComposeResponseInput = {
   outcome: CompileOutcome;
   toolResult?: { ok: boolean; output?: unknown; error?: string } | null;
+  /**
+   * Set when BARRY asked the owner to approve this action. INTERNAL: the
+   * business's own rule text — composers only say an owner approval was
+   * requested and never quote it to the customer.
+   */
   policyReason?: string;
+  /** The business's rules don't let BARRY do this at all (never quoted either). */
+  refused?: boolean;
+  /** This reply follows the owner's decision on an approval BARRY asked for earlier. */
+  ownerDecision?: "approved" | "declined";
   scheduling?: SchedulingDisplayFacts;
   /** When BARRY took several steps this turn: all of them, in order (the last equals outcome/toolResult). */
   steps?: ComposeStep[];

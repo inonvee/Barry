@@ -45,6 +45,6 @@ describe("scenario: personal trainer", () => {
     expect(approval).toBeTruthy();
 
     const declined = await resumeAfterApproval(graph, approval.id, "declined", "owner@trainer.com");
-    expect(declined.response.toLowerCase()).toMatch(/wasn't able to approve|sorry/);
+    expect(declined.response.toLowerCase()).toMatch(/wasn't able to approve|sorry|unfortunately/);
   });
 });

@@ -217,7 +217,7 @@ describe("the customer and the business stay in control", () => {
       const { last } = await converse(graph, [SEARCH, TAKE], { freshCatalog: false });
       expect(last.turn.trace?.steps.map((s) => s.action)).toEqual(["addToCart"]);
       expect(last.turn.trace?.stop).toEqual({ reason: "needs_customer", outcome: "capability_unavailable" });
-      expect(last.response).toMatch(/follow up|יחזור אלייך/i);
+      expect(last.response).toMatch(/follow up|יחזור אלי(?:י)?ך/i);
     } finally {
       registerCommerceAdapterFactoryForTests(id, undefined);
     }
@@ -344,7 +344,7 @@ describe("capability gate applies to customer-triggered actions too", () => {
       expect(take.turn.selectedAction ?? undefined).toBeUndefined();
       expect(take.state.knownFields.__commerceCartId).toBeUndefined();
       expect(addCalls).toBe(0);
-      expect(take.response).toMatch(/follow up|יחזור אלייך/i);
+      expect(take.response).toMatch(/follow up|יחזור אלי(?:י)?ך/i);
     } finally {
       registerCommerceAdapterFactoryForTests(id, undefined);
     }
