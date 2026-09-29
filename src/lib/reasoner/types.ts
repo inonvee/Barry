@@ -37,6 +37,16 @@ export type GroundedContext = {
   capabilities?: CapabilitySurfaceEntry[];
   /** Results of capabilities BARRY already ran in this conversation (most recent last). */
   capabilityResults?: CapabilityResultSummary[];
+  /** Every request BARRY sent to the owner in this conversation, with its real status and outcome (customer-safe). */
+  ownerRequests?: OwnerRequestView[];
+};
+
+export type OwnerRequestView = {
+  about: string;
+  status: "waiting_on_owner" | "approved" | "declined_by_owner" | "withdrawn_by_customer";
+  /** For an approved request: what actually happened when BARRY carried it out. */
+  result?: "done" | "done_unconfirmed" | "failed";
+  reference?: string;
 };
 
 export type CapabilitySurfaceEntry = {
@@ -90,7 +100,12 @@ export type SchedulingDisplayFacts = {
 export type ComposeStep = {
   outcome: CompileOutcome;
   toolResult?: { ok: boolean; output?: unknown; error?: string } | null;
+  /** Owner approval was requested for this step (internal rule text; never quoted). */
   policyReason?: string;
+  /** The business's rules don't allow this step. */
+  refused?: boolean;
+  /** Approval was needed and the same request already existed. */
+  existingOwnerRequest?: "still_pending" | "declined_earlier";
 };
 
 export type ComposeResponseInput = {
@@ -106,6 +121,11 @@ export type ComposeResponseInput = {
   refused?: boolean;
   /** This reply follows the owner's decision on an approval BARRY asked for earlier. */
   ownerDecision?: "approved" | "declined";
+  /**
+   * The same request (same operation and terms) already exists: still waiting on the owner (nothing
+   * new was sent), or declined by the owner earlier (not re-sent on the same terms).
+   */
+  existingOwnerRequest?: "still_pending" | "declined_earlier";
   scheduling?: SchedulingDisplayFacts;
   /** When BARRY took several steps this turn: all of them, in order (the last equals outcome/toolResult). */
   steps?: ComposeStep[];

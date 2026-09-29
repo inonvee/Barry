@@ -165,6 +165,22 @@ export type BarryIR = {
    * whether it may run; the fabric decides which system runs it.
    */
   capabilityRequest?: CapabilityRequest;
+  /**
+   * The model's judgment of what THIS message does to an ongoing purchase/booking — the customer's
+   * current intent is authoritative over any transaction already in progress:
+   * - advancesTransaction: true when the message moves it forward (choosing, deciding, giving the
+   *   details it needs, accepting a time, asking to book/pay); false when it only asks, checks
+   *   status, recaps, browses or chats. BARRY's funnel (asking for details, availability, payment)
+   *   runs only when this is not false. Undefined = not judged (the funnel's previous behavior).
+   * - withdrawsRequest: the customer withdraws, cancels or declines what they asked for — BARRY stops
+   *   the transaction and withdraws any request still waiting on the owner.
+   * - changesPendingRequest: the customer changed the terms/details of a request that is still
+   *   waiting on the owner (another reference, amount, option) — the old request is withdrawn
+   *   so the owner never approves stale terms.
+   */
+  advancesTransaction?: boolean;
+  withdrawsRequest?: boolean;
+  changesPendingRequest?: boolean;
 };
 
 export type CapabilityRequest = { capability: string; input: Record<string, unknown>; purpose: string };
@@ -235,6 +251,10 @@ export type CompileOutcome = { stage: ConversationStage; debug?: CompileDebugInf
   /** A capability the customer needs, but its contract's required inputs aren't known yet — ask for exactly these. */
   | { kind: "capability_needs_input"; capability: string; missingFields: string[] }
   | { kind: "generic_confirm" }
+  /** Nothing to execute this turn: the customer asked/said something BARRY answers from facts (never advances a transaction). */
+  | { kind: "conversation" }
+  /** The customer withdrew: the transaction stopped and requests still waiting on the owner were withdrawn. */
+  | { kind: "withdrawn"; withdrawnRequests: number }
   /** Assembled input failed the tool's own schema — a compiler bug, not a customer data problem. Never reaches callTool(). */
   | { kind: "compiler_error"; reason: string }
 );

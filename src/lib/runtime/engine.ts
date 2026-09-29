@@ -18,6 +18,9 @@ import { resolveReplyLanguage, type ReplyLanguage } from "@/lib/reasoner/languag
 import { checkInfoRequest, infoRequestFields } from "@/lib/reasoner/reply-contract";
 import { composeDeterministic } from "@/lib/reasoner/deterministic-compose";
 import { findInternalLeak, internalVocabulary } from "@/lib/reasoner/reply-hygiene";
+import { claimEvidence, findUnsupportedClaims, trimClosers, withoutSentences } from "@/lib/reasoner/claim-grounding";
+import { getCapability } from "@/lib/fabric/capability";
+import { conversationApprovals, findSameRequest, ownerRequestViews, recordOwnerRequestResult, resultReference, withdrawPendingRequests, type ExistingRequest } from "./owner-requests";
 import type { ComposeResponseInput } from "@/lib/reasoner/types";
 import { BARRY_RUNTIME_VERSION, runtimeCommit } from "./version";
 import { getCatalogSchema, getCommerceProduct, getOwnedCart } from "@/lib/commerce/capability";
@@ -338,13 +341,20 @@ export async function handleCustomerMessage(
     return [];
   });
   grounded.capabilityResults = readCapabilityResults(state);
+  grounded.ownerRequests = ownerRequestViews(await conversationApprovals(graph.business.id, conversationId), state);
   const rawIr = await reasoner.understand({ graph, state, customerMessage: message, grounded });
   // The model owns understanding; verifyIR() only GROUNDS it — evidence
   // for persisted facts, consistency with current state, structural
   // ranges. It never adds a semantic value of its own.
   const { verified: ir, verification } = verifyIR(graph, message, rawIr, state, { catalog: grounded.catalog, capabilities: grounded.capabilities, capabilityResults: grounded.capabilityResults });
   const prevStage = state.stage;
+  // The customer's current intent controls requests still waiting on the owner: withdrawing, or
+  // changing their terms, withdraws them before anything else happens this turn.
+  const withdrawnRequests =
+    ir.withdrawsRequest || ir.changesPendingRequest ? await withdrawPendingRequests(graph, state, ir.withdrawsRequest ? "withdrawn" : "changed") : 0;
+  if (withdrawnRequests > 0) grounded.ownerRequests = ownerRequestViews(await conversationApprovals(graph.business.id, conversationId), state);
   let outcome = compile(graph, state, ir, { profiles, shownProducts: grounded?.shownProducts });
+  if (outcome.kind === "withdrawn") outcome = { ...outcome, withdrawnRequests };
 
   state.detectedIntent = ir.intent;
   // Non-action outcomes describe where the conversation now is. An
@@ -408,7 +418,7 @@ export async function handleCustomerMessage(
       const candidate =
         current.action.name === INVOKE_CAPABILITY
           ? await continueFromCapabilityResult(reasoner, graph, state, message, grounded)
-          : compile(graph, state, CONTINUE_IR, { profiles });
+          : compile(graph, state, ir.advancesTransaction === false ? { ...CONTINUE_IR, advancesTransaction: false } : CONTINUE_IR, { profiles });
       if (candidate.kind !== "action") {
         if (NEEDS_CUSTOMER_OUTCOMES.has(candidate.kind)) next = candidate;
         stop = { reason: NEEDS_CUSTOMER_OUTCOMES.has(candidate.kind) ? "needs_customer" : "goal_idle", outcome: candidate.kind };
@@ -609,6 +619,8 @@ type ExecutedStep = {
   outcome: Extract<CompileOutcome, { kind: "action" }>;
   policyDecision: PolicyDecision;
   toolResult: ToolCallResult | null;
+  /** When approval was required and the same request already existed (nothing new was sent). */
+  existing?: ExistingRequest["state"];
   trace: TurnStep;
 };
 
@@ -624,7 +636,7 @@ async function runStep(
 ): Promise<ExecutedStep> {
   const before = { ...state.knownFields };
   const stageBefore = state.stage;
-  const { policyDecision, toolResult } = await authorizeAndExecute(graph, state, outcome, ctx, restoreStage);
+  const { policyDecision, toolResult, existing } = await authorizeAndExecute(graph, state, outcome, ctx, restoreStage);
   const after = state.knownFields;
   const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((k) => before[k] !== after[k]).sort();
   const capabilities = (ACTION_REQUIREMENTS[outcome.action.name] ?? []).map((id) => ({
@@ -635,9 +647,11 @@ async function runStep(
     outcome,
     policyDecision,
     toolResult,
+    ...(existing ? { existing } : {}),
     trace: {
       trigger,
       action: outcome.action.name,
+      ...(existing ? { ownerRequest: existing } : policyDecision.status === "requires_approval" ? { ownerRequest: "requested" as const } : {}),
       ...(outcome.action.name === INVOKE_CAPABILITY ? { generic: genericStepTrace(outcome.action.input, policyDecision, toolResult) } : {}),
       capabilities: outcome.action.name === INVOKE_CAPABILITY ? genericCapabilities(outcome.action.input, toolResult) : capabilities,
       policy: { status: policyDecision.status, reason: policyDecision.reason, ...(policyDecision.policyId ? { policyId: policyDecision.policyId } : {}) },
@@ -693,7 +707,9 @@ async function composeTurn(
       return guardReply(reasoner, rctx, input, await reasoner.composeResponse(rctx, input));
     }
     if (last?.policyDecision.status === "requires_approval") {
-      input = { outcome, toolResult: null, policyReason: last.policyDecision.reason, language };
+      input = last.existing
+        ? { outcome, toolResult: null, existingOwnerRequest: last.existing, language }
+        : { outcome, toolResult: null, policyReason: last.policyDecision.reason, language };
       return guardReply(reasoner, rctx, input, await reasoner.composeResponse(rctx, input));
     }
     input = sanitizeComposeInput({ outcome, toolResult: last?.toolResult ?? null, scheduling: buildSchedulingDisplay(graph, outcome, last?.toolResult ?? null, message, language), language });
@@ -701,12 +717,15 @@ async function composeTurn(
     input = sanitizeComposeInput({
       outcome,
       toolResult: last?.toolResult ?? null,
-      policyReason: last?.policyDecision.status === "requires_approval" ? last.policyDecision.reason : undefined,
+      policyReason: last?.policyDecision.status === "requires_approval" && !last.existing ? last.policyDecision.reason : undefined,
+      ...(last?.existing ? { existingOwnerRequest: last.existing } : {}),
       scheduling: buildSchedulingDisplay(graph, outcome, last?.toolResult ?? null, message, language),
       steps: steps.map((st) => ({
         outcome: st.outcome,
         toolResult: st.toolResult,
-        policyReason: st.policyDecision.status !== "allowed" ? st.policyDecision.reason : undefined,
+        policyReason: st.policyDecision.status === "requires_approval" && !st.existing ? st.policyDecision.reason : undefined,
+        refused: st.policyDecision.status === "denied" ? true : undefined,
+        existingOwnerRequest: st.existing,
       })),
       next,
       language,
@@ -721,7 +740,15 @@ async function composeTurn(
   const fields = infoRequestFields(next ?? outcome);
   if (fields && reasoner.name === "llm") {
     const violation = checkInfoRequest(text, fields, language.code);
-    if (violation) return { text: composeDeterministic(input), fallback: `missing-field contract: ${violation.reason}` };
+    if (violation) {
+      // A reply that answered the customer but left out the question keeps its answer: the exact
+      // request is added after it. Anything else (asking for the wrong thing) is replaced.
+      if (violation.reason.startsWith("does not ask")) {
+        const combined = `${text} ${composeDeterministic({ outcome: next ?? outcome, language })}`;
+        if (!checkInfoRequest(combined, fields, language.code)) return { text: combined, fallback: `missing-field contract: ${violation.reason} (request appended)` };
+      }
+      return { text: composeDeterministic(input), fallback: `missing-field contract: ${violation.reason}` };
+    }
   }
   return { text };
 }
@@ -740,7 +767,29 @@ function guardReply(
 ): { text: string; fallback?: string } {
   if (reasoner.name !== "llm") return { text };
   const leak = findInternalLeak(text, internalVocabulary(rctx, input, listTools().map((t) => t.name)));
-  return leak ? { text: composeDeterministic(input), fallback: `reply hygiene: ${leak}` } : { text };
+  if (leak) return { text: composeDeterministic(input), fallback: `reply hygiene: ${leak}` };
+  // Every completion/status claim, owner claim, amount and measurement must be backed by BARRY's
+  // records. Unsupported sentences are dropped; if nothing useful remains (or the reply was about
+  // an operation), the receipt-bound deterministic reply is used.
+  const bad = findUnsupportedClaims(text, claimEvidence(rctx, input, earlierOperations(rctx.state)));
+  if (bad.length > 0) {
+    const why = `claim grounding: ${[...new Set(bad.map((b) => b.why))].join("; ")}`;
+    const answerOnly = input.outcome.kind === "conversation" || input.outcome.kind === "knowledge_answer" || input.outcome.kind === "offer_fact";
+    const kept = answerOnly ? withoutSentences(text, bad) : undefined;
+    return { text: kept ? trimClosers(kept) : composeDeterministic(input), fallback: why };
+  }
+  return { text: trimClosers(text) };
+}
+
+/** Operations BARRY verifiably carried out earlier in this conversation (from state, never from prose). */
+function earlierOperations(state: ConversationState): { capabilityIds: string[]; actions: string[] } {
+  const k = state.knownFields;
+  const actions: string[] = [];
+  if (k[SCRATCH_KEYS.paymentRequestId]) actions.push("createPaymentRequest");
+  if (k[SCRATCH_KEYS.commerceOrderId]) actions.push("createCommerceOrder");
+  if (k[SCRATCH_KEYS.commerceCartId]) actions.push("addToCart");
+  if (state.stage === "closed" && state.outcome === "won") actions.push("createBooking");
+  return { capabilityIds: readCapabilityResults(state).filter((r) => r.ok).map((r) => r.capability), actions };
 }
 
 function mergeRich(parts: (NormalizedOutboundMessage["rich"] | undefined)[]): NormalizedOutboundMessage["rich"] | undefined {
@@ -764,13 +813,26 @@ async function authorizeAndExecute(
   outcome: Extract<CompileOutcome, { kind: "action" }>,
   ctx: ToolContext,
   prevStage: ConversationState["stage"]
-): Promise<{ policyDecision: PolicyDecision; toolResult: ToolCallResult | null }> {
+): Promise<{ policyDecision: PolicyDecision; toolResult: ToolCallResult | null; existing?: ExistingRequest["state"] }> {
   const policyDecision = decide(graph, { action: outcome.action.name, params: outcome.action.input });
   if (policyDecision.status === "denied") {
     state.stage = prevStage;
     return { policyDecision, toolResult: null };
   }
   if (policyDecision.status === "requires_approval") {
+    // One live request per (conversation, operation, terms): a status question or a repeated ask
+    // reuses the one still waiting; terms the owner already declined are not re-sent.
+    const same = findSameRequest(await conversationApprovals(graph.business.id, ctx.conversationId), outcome.action.name, outcome.action.input);
+    if (same) {
+      if (same.state === "still_pending") {
+        state.pendingApprovalId = same.approval.id;
+        state.pendingAction = outcome.action;
+        state.stage = "escalated";
+      } else {
+        state.stage = prevStage;
+      }
+      return { policyDecision, toolResult: null, existing: same.state };
+    }
     const approvalCall = await callTool(
       "requestApproval",
       {
@@ -961,6 +1023,7 @@ export async function resumeAfterApproval(
   let toolResult: ToolCallResult | null = null;
   let response: string;
   let approvalStep: TurnStep | undefined;
+  let resumeFallback: string | undefined;
   // The customer hears back in the conversation's own language, and BARRY is no longer waiting on the owner.
   const language = resolveReplyLanguage({
     customerMessages: state.messages.filter((m) => m.role === "customer").map((m) => m.content),
@@ -969,11 +1032,18 @@ export async function resumeAfterApproval(
   });
   state.pendingApprovalId = null;
   state.pendingAction = null;
-  const resumeCtx: ReasonerContext = { graph, state, customerMessage: "(approval resumed)" };
+  const resumeCtx: ReasonerContext = { graph, state, customerMessage: "(approval resumed)", grounded: {} };
+  const refreshOwnerRequests = async () => {
+    resumeCtx.grounded!.ownerRequests = ownerRequestViews(await conversationApprovals(graph.business.id, state.id), state);
+  };
 
   if (decision === "declined") {
+    await refreshOwnerRequests();
     const declinedOutcome: CompileOutcome = { kind: "action", action: { name: approval.requestedAction, input: {} }, stage: state.stage };
-    response = await reasoner.composeResponse(resumeCtx, { outcome: declinedOutcome, toolResult: null, ownerDecision: "declined", language });
+    const declinedInput: ComposeResponseInput = { outcome: declinedOutcome, toolResult: null, ownerDecision: "declined", language };
+    const guarded = guardReply(reasoner, resumeCtx, declinedInput, await reasoner.composeResponse(resumeCtx, declinedInput));
+    response = guarded.text;
+    resumeFallback = guarded.fallback;
   } else {
     // A generic capability call resumes EXACTLY as approved: the owner can't substitute another
     // call, and the tool re-checks the approval (this business and conversation, same capability and
@@ -984,6 +1054,13 @@ export async function resumeAfterApproval(
       : ((alternateValue ?? approval.requestedInput) as Record<string, unknown>);
     toolResult = genericFailureAsError(approval.requestedAction, await callTool(approval.requestedAction, input, ctx), state);
     if (toolResult.ok) await patchStateAfterTool(state, approval.requestedAction, toolResult.output, state.stage);
+    // What really happened, kept for later turns ("any news?") — approval alone is not execution,
+    // and execution of a write is not confirmation unless the system confirmed it.
+    const call = generic ? genericResult(toolResult) : undefined;
+    recordOwnerRequestResult(state, approvalId, {
+      result: !toolResult.ok ? "failed" : generic && !call?.verified && getCapability(String(input.capability))?.effect !== "read" ? "done_unconfirmed" : "done",
+      ...(toolResult.ok && resultReference(toolResult.output) ? { reference: resultReference(toolResult.output) } : {}),
+    });
     if (generic) {
       approvalStep = {
         trigger: "approval",
@@ -1004,7 +1081,12 @@ export async function resumeAfterApproval(
       stage: state.stage,
     };
     const scheduling = buildSchedulingDisplay(graph, syntheticOutcome, toolResult, "(approval resumed)", language);
-    response = await reasoner.composeResponse(resumeCtx, sanitizeComposeInput({ outcome: syntheticOutcome, toolResult, scheduling, ownerDecision: "approved", language }));
+    await refreshOwnerRequests();
+    // The reply describes exactly the approved operation's receipt — never anything else the customer asked for.
+    const approvedInput = sanitizeComposeInput({ outcome: syntheticOutcome, toolResult, scheduling, ownerDecision: "approved", language });
+    const guarded = guardReply(reasoner, resumeCtx, approvedInput, await reasoner.composeResponse(resumeCtx, approvedInput));
+    response = guarded.text;
+    resumeFallback = guarded.fallback;
   }
 
   state.messages.push({ role: "barry", content: response, at: new Date().toISOString() });
@@ -1029,6 +1111,7 @@ export async function resumeAfterApproval(
             rejectedClaims: [],
             steps: [approvalStep],
             stop: { reason: toolResult?.ok ? "approval_executed" : "approval_execution_failed", outcome: INVOKE_CAPABILITY },
+            reply: { language: language.code, basis: language.basis, ...(resumeFallback ? { fallback: resumeFallback } : {}) },
           },
         }
       : {}),

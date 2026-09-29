@@ -108,6 +108,9 @@ export const LlmIRSchema = z.object({
   capabilityRequest: z
     .object({ capability: z.string(), inputJson: z.string().max(4000), purpose: z.string().max(300) })
     .nullable(),
+  advancesTransaction: z.boolean().nullable().default(null),
+  withdrawsRequest: z.boolean().nullable().default(null),
+  changesPendingRequest: z.boolean().nullable().default(null),
 });
 export type LlmIR = z.infer<typeof LlmIRSchema>;
 
@@ -235,6 +238,9 @@ export function irJsonSchema() {
           },
           required: ["capability", "inputJson", "purpose"],
         },
+        advancesTransaction: { type: ["boolean", "null"] },
+        withdrawsRequest: { type: ["boolean", "null"] },
+        changesPendingRequest: { type: ["boolean", "null"] },
       },
       required: [
         "intent",
@@ -251,6 +257,9 @@ export function irJsonSchema() {
         "purchaseDecision",
         "knowledgeTopic",
         "capabilityRequest",
+        "advancesTransaction",
+        "withdrawsRequest",
+        "changesPendingRequest",
       ],
     },
   };

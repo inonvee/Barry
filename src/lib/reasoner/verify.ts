@@ -55,6 +55,10 @@ export type CustomerFactCheck = {
  */
 const CUSTOMER_FIELD = /^[a-z][a-z0-9_]{0,39}$/;
 
+/** The customer's own form of address (grammatical gender / pronouns), backed by their words. */
+export const ADDRESS_AS_FIELD = "address_as";
+const ADDRESS_AS_VALUE = /^(feminine|masculine|neutral|[a-z]{2,6}\/[a-z]{2,6}(?:\/[a-z]{2,6})?)$/i;
+
 const OFFERED_SLOT_START_KEY = "__offeredSlotStart";
 const SLOT_ACCEPTED_KEY = "__slotAccepted";
 
@@ -72,6 +76,9 @@ export function evidenceSupports(message: string, evidence: string | undefined, 
   const text = normalizeText(message);
   const quote = normalizeText(evidence);
   if (!text.includes(quote)) return false;
+  // How to address the customer is an interpretation of their own words (a grammatical form, pronouns
+  // they gave): the quote must be theirs; the value is a small closed form, never free text.
+  if (field === ADDRESS_AS_FIELD) return ADDRESS_AS_VALUE.test(value.trim());
   // Numeric values (phone numbers, ids) are compared by their digits, so
   // "055-883 2177" in the message supports "0558832177".
   if (field === "phone" || /^[\d\s()+\-./]+$/.test(value)) {

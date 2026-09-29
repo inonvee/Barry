@@ -36,6 +36,8 @@ export type TurnStep = {
   stageAfter: string;
   /** Names of state keys this step changed — never their values. */
   stateKeysChanged: string[];
+  /** For a step needing owner approval: a new request was sent, or the same request already existed. */
+  ownerRequest?: "requested" | "still_pending" | "declined_earlier";
   /** For the generic capability action: what was planned and what happened (field names, never values). */
   generic?: {
     capability: string;

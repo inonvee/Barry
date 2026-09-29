@@ -85,7 +85,8 @@ describe("the composer is given what an employee would know", () => {
     expect(s.recentConversation.map((m) => m.from)).toEqual(["customer", "business"]);
     expect(s.recentConversation[0].text).toBe("hi there");
     expect(s.lastCustomerMessage).toBe("where is ABC123?");
-    expect(s.whatTheBusinessCanDo?.canHelpWith.length).toBe(1);
+    expect(s.whatTheBusinessCanDo?.canHelpWith.filter((c) => /shipment/i.test(c))).toHaveLength(1);
+    expect(s.whatTheBusinessCanDo?.canHelpWith.some((c) => /support case/i.test(c))).toBe(false);
     expect(s.whatTheBusinessCanDo?.withOwnerSignOff.length).toBe(1);
     const json = JSON.stringify(s.whatTheBusinessCanDo) + JSON.stringify(s.business);
     expect(json).not.toMatch(/shipping\.track|support\.ticket|demo-mock|connector|credential/);

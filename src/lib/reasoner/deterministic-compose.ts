@@ -46,7 +46,7 @@ export function composeDeterministic(input: ComposeResponseInput): string {
   if (input.steps && input.steps.length > 0) {
     // Several things happened: say each in order, then the one thing still needed.
     const parts = input.steps.map((st, i) =>
-      one({ outcome: st.outcome, toolResult: st.toolResult, policyReason: st.policyReason, scheduling: i === input.steps!.length - 1 ? input.scheduling : undefined })
+      one({ outcome: st.outcome, toolResult: st.toolResult, policyReason: st.policyReason, refused: st.refused, existingOwnerRequest: st.existingOwnerRequest, scheduling: i === input.steps!.length - 1 ? input.scheduling : undefined })
     );
     if (input.next) parts.push(one({ outcome: input.next }));
     return parts.join(" ");
@@ -93,10 +93,27 @@ function composeLocalized(input: ComposeResponseInput): string {
   const lang = input.language?.code;
   if (input.refused) return deniedText(input.language);
   if (input.policyReason) return approvalRequestedText(lang);
+  if (input.existingOwnerRequest === "still_pending") {
+    return lang === "he" ? "זה עדיין אצל בעל העסק — אעדכן אותך כאן ברגע שתהיה תשובה." : "That's still with the owner — I'll update you here as soon as I hear back.";
+  }
+  if (input.existingOwnerRequest === "declined_earlier") {
+    return lang === "he"
+      ? "בעל העסק כבר השיב שלילית על זה, אז לא שלחתי את זה שוב. אפשר לעזור במשהו אחר?"
+      : "The owner already said no to that one, so I haven't sent it again. Anything else I can do?";
+  }
   if (input.ownerDecision === "declined") return ownerDeclinedText(lang);
   if (input.ownerDecision === "approved") {
     const rest = composeLocalized({ ...input, ownerDecision: undefined });
     return lang === "he" ? `בעל העסק אישר. ${rest}` : `Good news — the owner approved it. ${rest}`;
+  }
+  if (input.outcome.kind === "withdrawn") {
+    const n = input.outcome.withdrawnRequests;
+    return lang === "he"
+      ? `בסדר, עצרתי כאן — לא אשלח שום דבר נוסף.${n ? " ביטלתי גם את הבקשה שחיכתה לבעל העסק." : ""}`
+      : `Okay, I've stopped here — nothing more will be sent.${n ? " I also withdrew the request that was waiting on the owner." : ""}`;
+  }
+  if (input.outcome.kind === "conversation") {
+    return lang === "he" ? "סליחה, לא הצלחתי לנסח תשובה כרגע — אפשר לשאול שוב?" : "Sorry — I couldn't put that answer together just now. Could you ask me again?";
   }
   if (lang === "he") {
     const he = composeHebrew(input);

@@ -31,6 +31,8 @@ export const SCRATCH_KEYS = {
   slotAccepted: "__slotAccepted",
   inventoryChecked: "__inventoryChecked",
   lastSchedulingDate: "__lastSchedulingDate",
+  /** The last time-of-day the customer set ("after 3", "morning") — kept when a later turn only names a day. */
+  lastSchedulingTime: "__lastSchedulingTime",
   commerceLastProductIds: "__commerceLastProductIds",
   commercePendingProductId: "__commercePendingProductId",
   commercePendingReplaceLineId: "__commercePendingReplaceLineId",
@@ -348,6 +350,11 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
       const lastDate = JSON.parse(state.knownFields[SCRATCH_KEYS.lastSchedulingDate]);
       window = { ...window, date: lastDate };
     }
+    // Symmetrically, a DAY-ONLY mention ("Friday", or a later turn restating the day) keeps the
+    // time the customer already set — it never silently widens back to the whole day.
+    if (!window.time && state.knownFields[SCRATCH_KEYS.lastSchedulingTime]) {
+      window = { ...window, time: JSON.parse(state.knownFields[SCRATCH_KEYS.lastSchedulingTime]) };
+    }
     const resolved = resolveSchedulingWindow(window, graph.business.timezone);
     if (resolved) {
       if (
@@ -366,6 +373,9 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
     }
     if (window.date) {
       scratchUpdate[SCRATCH_KEYS.lastSchedulingDate] = JSON.stringify(window.date);
+    }
+    if (window.time) {
+      scratchUpdate[SCRATCH_KEYS.lastSchedulingTime] = JSON.stringify(window.time);
     }
   }
   if (ir.constraints.partySize && ir.constraints.partySize > 1) {
@@ -409,8 +419,30 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
   debug.appliedCustomerInfo = appliedCustomerInfo;
   Object.assign(state.knownFields, scratchUpdate, appliedCustomerInfo);
 
+  // The customer's CURRENT intent is authoritative over any transaction in progress. A withdrawal
+  // clears every consent BARRY holds (the runtime also withdraws requests waiting on the owner);
+  // a message that doesn't advance the transaction never runs the funnel (details, availability,
+  // payment) — questions, status checks and recaps are answered, not converted into a next step.
+  if (ir.withdrawsRequest) {
+    for (const key of [
+      SCRATCH_KEYS.purchaseDecided,
+      SCRATCH_KEYS.commerceCheckoutRequested,
+      SCRATCH_KEYS.commerceCheckoutOnSuccess,
+      SCRATCH_KEYS.slotAccepted,
+      SCRATCH_KEYS.offeredStart,
+      SCRATCH_KEYS.offeredEnd,
+      SCRATCH_KEYS.offeredResource,
+      SCRATCH_KEYS.discountPct,
+    ]) {
+      delete known[key];
+    }
+    const somethingElse = ir.capabilityRequest || ir.knowledgeTopic || (ir.commerce && ir.commerce.intent !== "checkout") || ir.offerChangeRequested;
+    if (!somethingElse) return { kind: "withdrawn", withdrawnRequests: 0, stage: state.stage === "closed" ? "closed" : "discovery" };
+  }
+  const advancing = ir.withdrawsRequest ? false : ir.advancesTransaction;
+
   if (state.stage === "closed") {
-    return { kind: "generic_confirm", stage: "closed" };
+    return advancing === false ? { kind: "conversation", stage: "closed" } : { kind: "generic_confirm", stage: "closed" };
   }
 
   // A customer ASSERTING payment is a claim, never a fact. The only thing
@@ -485,8 +517,9 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
   }
 
   // Nothing new to act on from the customer's words: take the next safe
-  // step toward the commerce goal, if one is in progress.
-  const commerceStep = planCommerceGoal(graph, known, options);
+  // step toward the commerce goal, if one is in progress — unless this
+  // message doesn't advance it (a question mid-checkout is answered).
+  const commerceStep = advancing === false ? undefined : planCommerceGoal(graph, known, options);
   if (commerceStep) return commerceStep;
 
   // An explicit decline of a previously offered slot ("no"/"לא") only
@@ -558,6 +591,7 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
   }
 
   if (!selectedOfferId) {
+    if (advancing === false) return { kind: "conversation", stage: state.stage };
     return {
       kind: "ask_general",
       offerNames: graph.offers.filter((o) => o.active).map((o) => o.name).slice(0, 5),
@@ -579,6 +613,8 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
   if (fact) {
     return { kind: "offer_fact", offerName: offer.name, fact, stage: state.stage };
   }
+  // Not advancing: nothing is asked for or executed — the reply answers from facts.
+  if (advancing === false) return { kind: "conversation", stage: state.stage };
 
   const missing = missingCustomerInfo(offer, known);
   if (missing.length > 0) {

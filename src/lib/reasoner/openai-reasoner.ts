@@ -11,6 +11,8 @@ import { composeDeterministic } from "./deterministic-compose";
 import { logReasonerFailure } from "./diagnostics";
 import type { BarryIR, ComposeResponseInput, Reasoner, ReasonerContext } from "./types";
 import { sanitizeComposeInput } from "./compose-sanitization";
+import { businessFacts, customerFacts, transactionFacts } from "./compose-facts";
+import { customerReceipts } from "./receipts";
 import type { SchedulingConstraint } from "@/lib/scheduling/resolver";
 import type { CompileOutcome } from "@/lib/reasoner/ir";
 
@@ -78,7 +80,7 @@ function pendingItem(ctx: ReasonerContext): { position: number; title: string } 
 /** How much of the conversation the model re-reads each turn: enough for references and corrections across long chats. */
 const UNDERSTANDING_HISTORY = 16;
 /** How much of the conversation the composer sees, to keep continuity, pacing and the customer's register. */
-const COMPOSE_HISTORY = 10;
+const COMPOSE_HISTORY = 16;
 
 export function buildUnderstandingContext(ctx: ReasonerContext) {
   const { graph, state } = ctx;
@@ -151,6 +153,10 @@ export function buildUnderstandingContext(ctx: ReasonerContext) {
     openPaymentRequest: Boolean(state.knownFields.__paymentRequestId && !state.knownFields.__paid),
     // BARRY already asked the owner about something in this conversation and is waiting for the answer.
     awaitingOwnerApproval: Boolean(state.pendingApprovalId),
+    // Every request sent to the owner in this conversation (what, status, outcome) — for status
+    // questions, withdrawals and changed terms (see withdrawsRequest / changesPendingRequest).
+    pendingOwnerRequests: (ctx.grounded?.ownerRequests ?? []).filter((r) => r.status === "waiting_on_owner"),
+    ownerRequests: ctx.grounded?.ownerRequests ?? [],
     // What this business's catalog can be searched by — map the customer's words onto these values.
     catalog: ctx.grounded?.catalog ? catalogForModel(ctx.grounded.catalog) : null,
     shownResults: ctx.grounded?.shownResults ?? [],
@@ -193,11 +199,15 @@ YOUR TASK NOW: understand the customer's latest message in context and describe 
 - customerFacts: details the customer states about THEMSELVES in this message. One item per detail: { field, value, evidence }.
   - field: a plain lowercase field name. When they are answering BARRY's question, use the names in askedFor exactly (e.g. "name", "phone"); otherwise a clear name ("email", "address").
   - value: the detail as they gave it. evidence: the exact text from THIS message that contains it (for a message that is only the detail, the whole message).
-  - A verb, a product, a relationship word ("my wife") or anything that isn't their own detail is never a fact. Omit anything not given this turn — never placeholders.
+  - A verb, a product, a relationship word ("my wife") or anything that isn't their own detail is never a fact. Omit anything not given this turn — never placeholders. Details about someone else (a sister, a partner) are not the customer's.
+  - How to address them: when they state it ("I'm a woman", "he/him", "don't call me bro") or their own Hebrew grammar shows it (e.g. "אני מחפשת"), add { field: "address_as", value: "feminine" | "masculine" | the pronouns they gave (e.g. "he/him"), evidence: those exact words }. A correction of their name ("I'm Alex, not Alicia") is a new "name" fact.
 - customerClaimsPaymentCompleted: true when the customer says they paid. It is only a claim; BARRY verifies it with the provider.
 - purchaseDecision: true when the customer has DECIDED to buy what's being discussed ("I'll take it", "yalla, I'm taking it"); false when they are asking, admiring, comparing, or adding while still browsing; null if unclear. It is consent for BARRY to move the purchase forward per the business playbook — never a payment or an order.
 - knowledgeTopic: when they ask about something covered by one of knowledgeTopics, that exact topic string.
 - capabilityRequest: when the customer's need is served by one of capabilitySurface's capabilities (and not by the offers/commerce flows above), propose it: the exact capability id, inputJson = a JSON object of its inputs using ONLY values the customer said or that appear in knownCustomerFields/capabilityResults (never invent an id, number or address; for an input that lists options, use exactly one of those options; leave the request null and let BARRY ask if a required input is unknown), and a one-line purpose. Only propose capabilities marked available; one whose authority is not_permitted can't be used for this business, so don't propose it. You never decide whether it is allowed — BARRY does. If capabilityResults already answer the need, don't request it again; propose the NEXT capability only if the result makes it necessary for what the customer wants (e.g. the result shows a problem that another capability on the surface exists to handle), or if the customer asked for several things in this message and one of them is not answered yet (one per step — BARRY re-asks you after each result); otherwise null.
+- advancesTransaction: does THIS message move the purchase/booking forward? true when they choose, decide, give the details it needs, accept a time or ask to book/pay; false when they only ask a question (price, policy, product facts, "what can you do"), check status, ask for a recap, browse, chat, or refuse to give details yet ("no phone until I decide" is false). The customer's latest message decides, not the conversation's earlier momentum. null if unclear.
+- withdrawsRequest: true when they withdraw, cancel or decline what they asked for ("forget it", "then I'm not buying", "don't send a link", "לא קונה", "תבטל") — including a request BARRY sent to the owner (see pendingOwnerRequests).
+- changesPendingRequest: true when a request in pendingOwnerRequests is still waiting and they changed its details (a different reference/number, amount, option). A plain status question ("any news?") is false — it never creates or changes anything.
 - Scheduling: describe what they said, never compute timestamps. schedulingWindow fields: dateKind (explicitDate|relativeDay|weekday), isoDate (YYYY-MM-DD, resolve using business.currentDate), relativeDays, weekday (0=Sun..6=Sat), weekdayQualifier (this|next), timeKind (explicitTime|partOfDay), hour/minute (24h, as the customer meant it locally), partOfDay. Keep a day/time stated earlier unless they changed it.
 - slotAccepted / slotDeclined: only when awaitingSlotConfirmation is true and they accept or decline the offered time.
 - selectedOfferId / offerCandidateIds: for services in "offers"; several plausible -> candidates. offerChangeRequested only for an explicit change of mind to a different real offer.
@@ -218,6 +228,13 @@ export const COMPOSE_SYSTEM_PROMPT =
   "The JSON below is the ONLY source of truth for what happened — describe exactly that, never inventing a price, availability, capability or outcome beyond it. " +
   "`recentConversation` is what was said before (oldest first) and `lastCustomerMessage` is what they just wrote: continue THAT conversation — don't greet again, don't re-introduce yourself, don't re-ask anything already answered there, and keep their register and pace. " +
   "`whatTheBusinessCanDo` is everything this business offers and can help with. If the customer wants something that isn't there, say briefly that it's not something we do here and offer the closest thing that is there (or say the team can help) — never collect details for it and never promise it. " +
+  // ── What happened, and the facts
+  "`receipts` is THE record of what BARRY did for this reply. Say something was done ONLY when a receipt shows it: result \"done\" = done; \"done_unconfirmed\" = submitted but not confirmed yet; \"not_done\"/\"failed\" = it didn't happen; \"sent_to_owner\" = you've asked the owner; \"still_with_owner\" = still waiting, nothing new was sent; \"owner_declined_earlier\" = the owner already declined those terms, not sent again; \"not_allowed\" = we can't do that. Describe each receipt as exactly that operation — never as something else the customer asked for. If the customer asked for several things and a receipt doesn't cover one, that one was NOT done: say so plainly (and if it isn't in whatTheBusinessCanDo, that we can't do it here). Your own earlier messages are never proof; if one of them claimed something `transaction`/`ownerRequests`/receipts contradict, correct it. " +
+  "Only BARRY's runtime can send something to the owner. Mention the owner only when ownerApproval, receipts or ownerRequests show a request; otherwise never say you passed, will pass, or are waiting on anything with the owner. For status questions answer from ownerRequests (approved and done — with its reference; declined; withdrawn; still waiting). " +
+  "Prices, deposits, durations, policies, product details and availability come ONLY from `facts`, receipts/toolOutput and scheduling. Quote prices exactly as written in facts. Never say something is available/in stock unless a receipt that looked up times or stock shows it now (or facts.shownProducts says so). Never state a measurement, colour, fit or specification that isn't in facts — say you don't have that detail. Never recommend something above a budget the customer stated; say nothing fits it instead. A total is computed only from those prices, the quantity and the business's own stated discount/shipping rules, and answering it never requires contact details. " +
+  "Recaps and status questions (\"what did we agree\", \"is it booked\", \"did you send a link\") are answered from `transaction` and `ownerRequests` — the latest correction wins; answer yes/no first when asked. " +
+  "Use `customer` (their name, how to address them): never ask for something already there, and never ask for contact details unless outcome/next asks for them. Answer every question in lastCustomerMessage; if one can't be answered from facts, say so. If they asked for a yes/no, a price only, or no more suggestions, do exactly that. " +
+  "When outcome.kind is \"conversation\", nothing was executed: answer from facts only. When it is \"withdrawn\", confirm you've stopped and nothing more will be sent (and that the request waiting on the owner was withdrawn when withdrawnRequests > 0). " +
   // ── Language
   "Reply in the language given by `replyLanguage` (mirror the language of replyLanguage.basedOn when present; code is a hint). " +
   "A customer message that is only a phone number, email, code, link or emoji never changes the language. " +
@@ -329,6 +346,9 @@ export function sanitizeIR(graph: BusinessGraph, raw: LlmIR): BarryIR {
     purchaseDecision: raw.purchaseDecision ?? undefined,
     knowledgeTopic: raw.knowledgeTopic ?? undefined,
     capabilityRequest: parseCapabilityRequest(raw.capabilityRequest),
+    advancesTransaction: raw.advancesTransaction ?? undefined,
+    withdrawsRequest: raw.withdrawsRequest ? true : undefined,
+    changesPendingRequest: raw.changesPendingRequest ? true : undefined,
   };
 }
 
@@ -407,13 +427,21 @@ export type ComposeSummaryContext = {
   whatTheBusinessCanDo?: BusinessAbilities;
   /** BARRY is already waiting on the owner for something earlier in this conversation. */
   waitingOnOwnerFromEarlier?: boolean;
+  /** Exact business facts (offers with prices, knowledge, shown products, cart). */
+  facts?: ReturnType<typeof businessFacts>;
+  /** What the customer told BARRY about themselves. */
+  customer?: Record<string, string>;
+  /** Where the transaction really stands. */
+  transaction?: ReturnType<typeof transactionFacts>;
+  /** Every request sent to the owner in this conversation, with its real status/outcome. */
+  ownerRequests?: NonNullable<ReasonerContext["grounded"]>["ownerRequests"];
 };
 
 export type BusinessAbilities = {
   offers: string[];
   sellsFromCatalog: boolean;
   answersQuestionsAbout: string[];
-  /** Things BARRY can do through the business's own systems, in the contracts' own words. */
+  /** Things BARRY can do (its enabled operations and the business's own systems), in plain words. */
   canHelpWith: string[];
   /** Things BARRY can start but the owner signs off on. */
   withOwnerSignOff: string[];
@@ -424,13 +452,29 @@ export type BusinessAbilities = {
  * sources the runtime acts on. Capability ids, systems and rule text are deliberately left out:
  * the composer only needs what the business can do, never how.
  */
+/** BARRY's typed operations a business can enable, in plain words (identical for every business). */
+const TYPED_ABILITIES: Record<string, string> = {
+  checkAvailability: "check open times for the bookable services",
+  createBooking: "book a new appointment for a bookable service (not look up, move or cancel an existing one)",
+  createPaymentRequest: "send a payment link",
+  checkInventory: "check stock",
+  createLead: "record a new enquiry/quote request for the team (not edit one already recorded)",
+  createFollowUp: "schedule a follow-up message",
+  searchProducts: "search the product catalog",
+  addToCart: "add products to the cart and change cart quantities/options",
+  createCommerceCheckout: "send a secure checkout link for the cart",
+  verifyPayment: "check whether a payment went through",
+  requestApproval: "ask the owner to approve something the business's rules require approval for (a discount beyond the automatic limit, a custom price) — only BARRY's runtime sends these",
+};
+
 export function businessAbilities(ctx: ReasonerContext): BusinessAbilities {
   const surface = (ctx.grounded?.capabilities ?? []).filter((c) => c.available);
+  const typed = ctx.graph.availableActions.filter((a) => a.enabled && TYPED_ABILITIES[a.name]).map((a) => TYPED_ABILITIES[a.name]);
   return {
     offers: ctx.graph.offers.filter((o) => o.active).map((o) => o.name),
     sellsFromCatalog: Boolean(ctx.grounded?.catalog),
     answersQuestionsAbout: ctx.graph.knowledge.map((k) => k.topic),
-    canHelpWith: surface.filter((c) => c.authority === "automatic" || c.authority === "conditional").map((c) => c.purpose),
+    canHelpWith: [...typed, ...surface.filter((c) => c.authority === "automatic" || c.authority === "conditional").map((c) => c.purpose)],
     withOwnerSignOff: surface.filter((c) => c.authority === "owner_approval").map((c) => c.purpose),
   };
 }
@@ -504,9 +548,17 @@ export function buildComposeSummary(context: ComposeSummaryContext, input: Compo
     // Customer-safe approval state. The rule text that triggered it is internal and never reaches the reply.
     ownerApproval: sanitizedInput.policyReason
       ? { requestedNow: true, customerWillHearBackHere: true }
-      : context.waitingOnOwnerFromEarlier
-        ? { requestedEarlier: true, stillWaiting: true }
-        : null,
+      : sanitizedInput.existingOwnerRequest === "still_pending" || context.waitingOnOwnerFromEarlier
+        ? { requestedEarlier: true, stillWaiting: true, nothingNewWasSent: sanitizedInput.existingOwnerRequest === "still_pending" || undefined }
+        : sanitizedInput.existingOwnerRequest === "declined_earlier"
+          ? { ownerAlreadyDeclinedTheseTerms: true, notSentAgain: true }
+          : null,
+    // THE record of what BARRY did for this reply: only these operations happened, with exactly these results.
+    receipts: customerReceipts(sanitizedInput),
+    ownerRequests: context.ownerRequests ?? [],
+    facts: context.facts ?? null,
+    customer: context.customer ?? {},
+    transaction: context.transaction ?? null,
     // The business's rules don't allow this at all (reason is internal).
     notSomethingWeDo: sanitizedInput.refused ? true : undefined,
     // This reply follows the owner's decision on an earlier approval request.
@@ -553,7 +605,11 @@ export function composeSummaryFor(ctx: ReasonerContext, input: ComposeResponseIn
       // Earlier turns; the latest customer message is lastCustomerMessage.
       recentConversation: earlierTurns(recentConversation(ctx)),
       whatTheBusinessCanDo: businessAbilities(ctx),
-      waitingOnOwnerFromEarlier: Boolean(ctx.state.pendingApprovalId) && !input.policyReason,
+      waitingOnOwnerFromEarlier: Boolean(ctx.state.pendingApprovalId) && !input.policyReason && !input.existingOwnerRequest,
+      facts: businessFacts(ctx, input.language?.code),
+      customer: customerFacts(ctx),
+      transaction: transactionFacts(ctx, input.language?.code),
+      ownerRequests: ctx.grounded?.ownerRequests ?? [],
     },
     input
   );
