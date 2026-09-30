@@ -150,7 +150,7 @@ export const ApprovalCard: React.FC<{at: number; buttonsAt: number; tapAt: numbe
               <Enter key={i} at={at + 8 + i * 5} y={12} blur={5} dur={22}>
                 <div style={{display: 'flex', flexDirection: 'column', gap: 6, paddingBlock: 16, borderBottom: `1px solid ${C.line}`}}>
                   <Label size={13} color={C.faint}>{r.label}</Label>
-                  <span style={{fontSize: hi ? 40 : 32, fontWeight: hi ? 500 : 400, color: i === 3 ? C.hold : C.text, letterSpacing: '-0.01em'}}><Mixed text={r.value} /></span>
+                  <span style={{fontSize: hi ? 44 : 36, fontWeight: hi ? 500 : 400, color: i === 3 ? C.hold : C.text, letterSpacing: '-0.01em'}}><Mixed text={r.value} /></span>
                 </div>
               </Enter>
             );

@@ -32,7 +32,7 @@ export const OwnerScene: React.FC = () => {
       <div style={{position: 'absolute', inset: 0, opacity: 1 - 0.78 * back, filter: back > 0.02 ? `blur(${back * 10}px)` : undefined, scale: 1 - 0.04 * back}}>
         <div style={{position: 'absolute', insetInlineStart: 140, top: 150, width: 880}}>
           <ChatHeader at={0} name={t.barry} sub={t.activeNow} live barry />
-          <Thread items={items} height={800} width={880} size={34} maxWidth={740} fade={150} />
+          <Thread items={items} height={800} width={880} size={38} maxWidth={780} fade={150} />
         </div>
         <div style={{position: 'absolute', insetInlineStart: 1160, top: 300}}>
           <StatusLine at={q.strip} label={o.strip[0].label} value={o.strip[0].value} tone="working" />

@@ -28,7 +28,7 @@ export const Close5Scene: React.FC = () => {
       <DayClock clock={CLOCK.close5} />
       <div style={{position: 'absolute', insetInlineStart: 140, top: 150, width: 860}}>
         <ChatHeader at={0} name={k.customer} sub={lang === 'he' ? 'לקוח · Onyx Studio' : 'Customer · Onyx Studio'} live />
-        <Thread items={items} height={380} width={860} size={34} maxWidth={720} fade={40} />
+        <Thread items={items} height={380} width={860} size={38} maxWidth={760} fade={40} />
       </div>
 
       {/* the deal, as Barry sees it */}

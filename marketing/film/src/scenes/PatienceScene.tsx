@@ -42,7 +42,7 @@ export const PatienceScene: React.FC = () => {
             </div>
           }
         />
-        <Thread items={items} height={800} width={860} size={34} maxWidth={720} fade={220} />
+        <Thread items={items} height={800} width={860} size={38} maxWidth={740} fade={220} />
       </div>
 
       <div style={{position: 'absolute', insetInlineStart: 1110, top: 230, opacity: 1 - 0.92 * dimAll, filter: dimAll > 0.02 ? `blur(${dimAll * 4}px)` : undefined}}>

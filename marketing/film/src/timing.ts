@@ -14,19 +14,19 @@ export const SCENE_ORDER: SceneId[] = [
 ];
 
 const BASE_DUR: Record<SceneId, number> = {
-  morning: 300,
-  dress: 330,
-  patience: 235,
-  close5: 170,
-  escalate: 300,
-  owner: 285,
-  supplier: 360,
+  morning: 286,
+  dress: 316,
+  patience: 222,
+  close5: 150,
+  escalate: 276,
+  owner: 244,
+  supplier: 346,
   montage: 180,
-  systems: 135,
-  adapt: 140,
+  systems: 160, // longer hold on "Same operator."
+  adapt: 180, // a beat of black before the positioning line
   night: 125,
-  nextDay: 160,
-  brand: 225,
+  nextDay: 150,
+  brand: 270, // BARRY holds alone; the final frame holds
 };
 
 // Language-native pacing hooks: nudge a scene if one language's copy needs more or less air.
@@ -64,26 +64,26 @@ export const CLOCK: Partial<Record<SceneId, {from?: string; time: string; roll?:
 
 // ---- Cues: scene-local frames. Scenes animate from these; scripts/generate-audio.mjs schedules sound from them. ----
 export const Q = {
-  morning: {notif: 22, barry: 84, expand: 100, b2: 128, b3: 160, log: 96, cut: 212, t1: 220, systems: 244, t2: 256},
+  morning: {notif: 22, barry: 76, expand: 92, b2: 118, b3: 148, log: 88, cut: 198, t1: 206, systems: 230, t2: 242},
   dress: {
     header: 2, c1: 10, typing: 42, b1: 66,
     pull: 94, factStart: 100, factGap: 7, verify: 146, collapse: 172,
     shift: 196, c2: 208, typing2: 232, b2: 244, link: 258,
     rowStart: 222, rowGap: 11, payDone: 292, paid: 298, order: 304,
   },
-  patience: {history: 0, burst: [18, 29, 36, 50, 64, 76], typing: 96, reply: 120, track: 126, checked: 128, courier: 140, eta: 152, t1: 176, t2: 196},
-  close5: {c1: 8, typing: 28, b1: 44, rail: 52, zone: 54, marker: 70, lock: 90, c2: 108, after: 116, afterGap: 11},
-  escalate: {c1: 8, typing: 26, b1: 42, send: 62, card: 68, c2: 90, buttons: 116, tap: 140, resolve: 148, back: 150, typing2: 158, b2: 172, paid: 192, cut: 214, t1: 220, t2: 250},
-  owner: {q1: 8, typing: 24, b1: 38, b2: 56, b3: 80, strip: 60, stripGap: 22, q2: 138, typing2: 152, b4: 166, cardStart: 198, cardGap: 12},
+  patience: {history: 0, burst: [18, 29, 36, 50, 64, 76], typing: 96, reply: 120, track: 126, checked: 128, courier: 140, eta: 152, t1: 166, t2: 184},
+  close5: {c1: 8, typing: 28, b1: 44, rail: 52, zone: 54, marker: 68, lock: 86, c2: 98, after: 104, afterGap: 10},
+  escalate: {c1: 8, typing: 26, b1: 42, send: 62, card: 68, c2: 90, buttons: 116, tap: 140, resolve: 148, back: 150, typing2: 154, b2: 166, paid: 184, cut: 204, t1: 210, t2: 238},
+  owner: {q1: 8, typing: 24, b1: 38, b2: 56, b3: 80, strip: 60, stripGap: 22, q2: 116, typing2: 128, b4: 140, cardStart: 172, cardGap: 12},
   supplier: {
     phoneIn: 0, ownerMsg: 14, typing: 42, barryReply: 58, open: 86, core: 90,
-    nodeStart: 96, nodeGap: 6, understand: 152, converge: 194, suppliers: 204, select: 236, reasonStart: 240, reasonGap: 6,
-    po: 268, authOK: 284, submitted: 298, eta: 306, phoneBack: 314, done: 324,
+    nodeStart: 96, nodeGap: 6, understand: 152, converge: 194, suppliers: 204, select: 228, reasonStart: 232, reasonGap: 6,
+    po: 256, authOK: 270, submitted: 284, eta: 292, phoneBack: 300, done: 310,
   },
   montage: {start: 0, gap: 30},
   systems: {modules: 0, moduleGap: 3, w1: 30, w2: 60, w3: 90},
-  adapt: {l1: 10, l2: 64},
+  adapt: {l1: 26, l2: 92},
   night: {e1: 16, gap: 20, t: 82},
-  nextDay: {barry: 10, expand: 24, b2: 46, employee: 92},
-  brand: {point: 20, line: 34, mark: 50, shift: 108, works: 114, soon: 160},
+  nextDay: {barry: 10, expand: 24, b2: 46, employee: 86},
+  brand: {point: 20, line: 34, mark: 50, shift: 128, works: 132, soon: 186},
 } as const;

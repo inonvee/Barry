@@ -483,7 +483,7 @@ for (const lang of langs) {
   // normalise: peak to -1.5 dBFS after a soft clip, with headroom
   let peak = 0;
   for (let i = 0; i < N; i++) peak = Math.max(peak, Math.abs(L[i]), Math.abs(R[i]));
-  const g = 0.95 / peak;
+  const g = 0.7 / peak; // after the soft clip: sample peak ≈ -1.8 dBFS, leaving ~1 dB true-peak headroom after AAC
   for (let i = 0; i < N; i++) { L[i] = softclip(L[i] * g); R[i] = softclip(R[i] * g); }
   const n = endS;
   const wav = path.join(root, `public/audio/mix-${lang}.wav`);

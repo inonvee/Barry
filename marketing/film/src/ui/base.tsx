@@ -168,6 +168,7 @@ export const Label: React.FC<{children: React.ReactNode; size?: number; color?: 
   children, size = 15, color = C.faint, style,
 }) => {
   const {lang} = useLang();
+  size = size * 1.15; // mobile readability: labels never drop below ~15px
   if (lang === 'en') return <Mono size={size} color={color} style={style}>{children}</Mono>;
   return (
     <span style={{fontFamily: FONT.sans, fontSize: size * 1.25, fontWeight: 500, color, letterSpacing: '0.02em', ...style}}>

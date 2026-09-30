@@ -49,7 +49,7 @@ export const EscalateScene: React.FC = () => {
 
       <div style={{position: 'absolute', insetInlineStart: 140, top: 150, width: 820}}>
         <ChatHeader at={0} name={e.customer} sub={lang === 'he' ? 'לקוח · Onyx Studio' : 'Customer · Onyx Studio'} live />
-        <Thread items={items} height={790} width={820} size={34} maxWidth={700} fade={120} />
+        <Thread items={items} height={790} width={820} size={38} maxWidth={730} fade={120} />
       </div>
       <div style={{position: 'absolute', insetInlineStart: 1080, top: 230}}>
         <ApprovalCard at={q.card} buttonsAt={q.buttons} tapAt={q.tap} resolveAt={q.resolve} />

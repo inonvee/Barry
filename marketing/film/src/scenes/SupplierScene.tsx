@@ -165,7 +165,7 @@ export const SupplierScene: React.FC = () => {
                 </span>
                 <span style={{fontSize: 24, fontWeight: 500}}>{t.barry}</span>
               </div>
-              <Thread items={phoneItems} height={700} width={410} size={27} maxWidth={330} fade={30} />
+              <Thread items={phoneItems} height={700} width={410} size={30} maxWidth={350} fade={30} />
             </PhoneFrame>
           </Enter>
         </div>

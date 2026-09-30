@@ -16,25 +16,25 @@ Remotion's own Chrome download may be blocked; `remotion.config.ts` falls back t
 Official Remotion agent skills were installed with `npx skills add remotion-dev/skills` (folders git-ignored; re-run to restore).
 
 ## Spec
-1920×1080, 30 fps, 2945 frames = **98.2 s** (HE and EN identical), H.264 CRF 18, AAC stereo.
-All cuts are hard cuts; the corner day-clock (with a 24h line that fills as the day passes) connects the scenes.
+1920×1080, 30 fps, 2905 frames = **96.8 s** (HE and EN identical), H.264 CRF 18, AAC stereo.
+Audio mastered to ≈ −19.7 LUFS integrated, −1.7 dBTP true peak. All cuts are hard cuts; the corner day-clock (with a 24h line that fills as the day passes) connects the scenes.
 
 ## Story — "People stop. Barry works." (one day inside one business, no people on screen)
 | Scene | Start | What it proves |
 |---|---|---|
 | 07:03 morning | 0:00.0 | An employee calls in sick; Barry's overnight briefing. **People stop. / Barry works.** (music starts here) |
-| 10:26→10:28 dress | 0:10.0 | Ordinary WhatsApp ask → the six facts Barry checked → link → payment verified → order |
-| 13:18 patience | 0:21.0 | "hello? ?? bro…" → the same calm answer, tracking re-checked. **Message 37. / Same patience.** |
-| 15:44 close | 0:28.8 | 10% asked → Barry counters 5% inside his authority → deal closes, margin protected |
-| 16:02 escalate | 0:34.5 | Stubborn customer → one concise owner decision (₪90 difference) → paid. **Not every decision needs you. / The important ones do.** |
-| 18:42 owner | 0:44.5 | COO-style briefing; ₪1,240 recovery started; what went well → outcome cards |
-| 21:16 supplier | 0:54.0 | "the usual order" → nine business signals → usual supplier chosen *for reasons*, not price → PO → "Done…Arriving Thursday." |
-| montage | 1:06.0 | Fashion, spa, garage, delivery, wholesale, clinic — hard cuts on the beat |
-| systems | 1:12.0 | 12 system modules; Barry acts across them. **Different business. Different systems. Same operator.** |
-| adapt | 1:16.5 | **Your business doesn't adapt to Barry. / Barry adapts to your business.** |
-| 00:37 night | 1:21.2 | The ₪1,240 customer from 18:42 comes back and pays. *Barry works.* |
-| 07:01 next day | 1:25.3 | "Quiet night — the good kind." Sam: back today 💪 |
-| brand | 1:30.7 | Vacuum → BARRY → **WORKS.** / **עובד.** → COMING SOON |
+| 10:26→10:28 dress | 0:09.5 | Ordinary WhatsApp ask → the six facts Barry checked → link → payment verified → order |
+| 13:18 patience | 0:20.1 | "hello? ?? bro…" → the same calm answer, tracking re-checked. **Message 37. / Same patience.** |
+| 15:44 close | 0:27.5 | 10% asked → Barry counters 5% inside his authority → deal closes, margin protected |
+| 16:02 escalate | 0:32.5 | Stubborn customer → one concise owner decision (₪90 difference) → paid. **Not every decision needs you. / The important ones do.** |
+| 18:42 owner | 0:41.7 | COO-style briefing; ₪1,240 recovery started; what went well → outcome cards |
+| 21:16 supplier | 0:49.8 | "the usual order" → nine business signals → usual supplier chosen *for reasons*, not price → PO → "Done…Arriving Thursday." |
+| montage | 1:01.3 | Fashion, spa, garage, delivery, wholesale, clinic — hard cuts on the beat |
+| systems | 1:07.3 | 12 system modules; Barry acts across them. **Different business. Different systems. Same operator.** |
+| adapt | 1:12.7 | **Your business doesn't adapt to Barry. / Barry adapts to your business.** |
+| 00:37 night | 1:18.7 | The ₪1,240 customer from 18:42 comes back and pays. *Barry works.* |
+| 07:01 next day | 1:22.8 | "Quiet night — the good kind." Sam: back today 💪 |
+| brand | 1:27.8 | Vacuum → BARRY → **WORKS.** / **עובד.** → COMING SOON |
 
 ## Architecture
 - `src/timing.ts` — one clock: scene durations, transition overlaps, cue table (`Q`). Scenes animate from it; the audio generator schedules from it. 120 BPM (15 f/beat); the montage sits on the beat grid.

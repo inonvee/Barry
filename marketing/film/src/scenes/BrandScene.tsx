@@ -1,5 +1,5 @@
 import React from 'react';
-import {interpolate, useCurrentFrame, useVideoConfig} from 'remotion';
+import {interpolate, spring, useCurrentFrame, useVideoConfig} from 'remotion';
 import {C, FONT} from '../theme';
 import {EASE, clamp, enterSoft, prog, systemPulse} from '../motion';
 import {Q} from '../timing';
@@ -17,12 +17,12 @@ export const BrandScene: React.FC = () => {
   const line = prog(frame, q.line, 30, EASE.inOut);
   const glow = prog(frame, q.mark, 60);
   const shift = prog(frame, q.shift, 26, EASE.inOut);
-  const soon = prog(frame, q.soon, 30);
+  const soon = prog(frame, q.soon, 44, EASE.out);
   const soonPulse = 0.78 + 0.22 * systemPulse(frame, 120);
   const size = 190;
   const CY = 470;
   const letters = t.brand.split('');
-  const w = enterSoft(frame, fps, q.works, 40);
+  const w = spring({frame: frame - q.works, fps, config: {damping: 30, stiffness: 180, mass: 0.9}, durationInFrames: 26});
 
   return (
     <SceneRoot backdrop={<Backdrop bloom={0.5 * glow} bloomY={44} bloomSize={62} />}>

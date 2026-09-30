@@ -97,7 +97,7 @@ export const DressScene: React.FC = () => {
         }}
       >
         <ChatHeader at={q.header} name={d.customer} sub={t.customerOf} live />
-        <Thread items={items} height={COL.threadH} width={COL.w} size={36} maxWidth={740} />
+        <Thread items={items} height={COL.threadH} width={COL.w} size={40} maxWidth={780} />
       </div>
 
       {/* what Barry checked before answering */}
