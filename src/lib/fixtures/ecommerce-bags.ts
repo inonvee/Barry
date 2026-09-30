@@ -65,6 +65,7 @@ export function buildEcommerceBagsGraph(): BusinessGraph {
       { id: "pol-discount", description: "Max automatic discount", rule: { type: "max_auto_discount_pct", value: 10 } },
       { id: "pol-refund", description: "Refunds need approval", rule: { type: "refund_requires_approval", value: true } },
       { id: "pol-max-payment", description: "Max automatic payment amount", rule: { type: "max_auto_payment_amount", value: 1000 } },
+      { id: "pol-free-shipping", description: "Free shipping on orders over $75", rule: { type: "free_shipping_over", value: 75 } },
     ],
     availableActions: [
       { name: "checkInventory" },

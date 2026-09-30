@@ -3,11 +3,18 @@ import { z } from "zod";
 import { getBusinessGraph } from "@/lib/fixtures";
 import { resumeAfterApproval } from "@/lib/runtime";
 import { getBackend } from "@/lib/store";
+import { getConversationStore } from "@/lib/state";
+import { withLifecycle } from "@/lib/runtime/owner-requests";
 
 export async function GET(req: NextRequest) {
   const businessId = req.nextUrl.searchParams.get("businessId");
   if (!businessId) return NextResponse.json({ error: "businessId is required" }, { status: 400 });
-  const approvals = await getBackend().listApprovals(businessId);
+  const raw = await getBackend().listApprovals(businessId);
+  // The authoritative lifecycle (active / superseded / withdrawn / declined / executed / failed), not just the stored status.
+  const store = getConversationStore();
+  const ids = [...new Set(raw.map((a) => a.conversationId))];
+  const states = new Map(await Promise.all(ids.map(async (id) => [id, await store.get(id).catch(() => undefined)] as const)));
+  const approvals = withLifecycle(raw, states);
   return NextResponse.json({ approvals });
 }
 

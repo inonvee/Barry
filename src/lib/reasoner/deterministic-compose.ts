@@ -132,6 +132,7 @@ function composeLocalized(input: ComposeResponseInput): string {
       : `Okay, I've stopped here — nothing more will be sent.${n ? " I also withdrew the request that was waiting on the owner." : ""}`;
   }
   if (input.outcome.kind === "conversation") {
+    if (input.statusText) return input.statusText;
     const latest = input.ownerRequests?.at(-1);
     if (latest) return ownerRequestStatusText(latest, lang);
     return lang === "he" ? "סליחה, לא הצלחתי לנסח תשובה כרגע — אפשר לשאול שוב?" : "Sorry — I couldn't put that answer together just now. Could you ask me again?";

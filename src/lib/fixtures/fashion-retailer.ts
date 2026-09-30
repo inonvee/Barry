@@ -74,6 +74,7 @@ export function buildFashionRetailerGraph(): BusinessGraph {
       { id: "pol-discount", description: "Max automatic discount", rule: { type: "max_auto_discount_pct", value: 5 } },
       { id: "pol-max-payment", description: "Max automatic payment amount", rule: { type: "max_auto_payment_amount", value: 2000 } },
       { id: "pol-booking", description: "No bookings", rule: { type: "bookings_auto_allowed", value: true } },
+      { id: "pol-free-shipping", description: "Free shipping above ₪399", rule: { type: "free_shipping_over", value: 399 } },
     ],
     availableActions: [
       { name: "searchProducts" },

@@ -1,5 +1,9 @@
 import type { ComposeResponseInput, ReasonerContext } from "./types";
-import { buildReceipts, operationKinds, type OperationKind } from "./receipts";
+import { operationKinds } from "./receipts";
+import type { LedgerEntry } from "@/lib/runtime/ledger";
+
+/** What a claim asserts happened — each is satisfied only by a matching domain effect in the ledger. */
+export type ClaimKind = "refund" | "update" | "cancel" | "send" | "create" | "booking" | "payment" | "availability";
 
 /**
  * Claim grounding — the last check between a model-written reply and the customer.
@@ -20,7 +24,8 @@ import { buildReceipts, operationKinds, type OperationKind } from "./receipts";
  */
 
 export type ClaimEvidence = {
-  kinds: Set<OperationKind>;
+  /** Claim kinds the ledger's domain effects support (never transport success or prior prose). */
+  kinds: Set<ClaimKind>;
   ownerRequestExists: boolean;
   ownerRequestWaiting: boolean;
   amounts: number[];
@@ -37,7 +42,7 @@ const MODAL = /\b(will|'ll|can|could|would|may|might|if|once|after|when|before|w
 /** The customer did it ("once you've sent…"), not BARRY. */
 const CUSTOMER_SUBJECT = /\byou(?:'ve| have)?\s+(?:\w+\s+)?(?:sent|updated|changed|cancell?ed|paid)\b/i;
 
-type ClaimRule = { kind: OperationKind | "owner" | "owner_waiting"; en: RegExp; he: RegExp; needsCompletion?: boolean };
+type ClaimRule = { kind: ClaimKind | "owner" | "owner_waiting"; en: RegExp; he: RegExp; needsCompletion?: boolean };
 
 const COMPLETION_EN = /\b(i've|i have|we've|we have|has been|have been|was|were|is now|are now|is all|got|just|already|successfully|processed|issued|done)\b/i;
 
@@ -46,6 +51,11 @@ const RULES: ClaimRule[] = [
   { kind: "update", en: /\b(updated|changed|rescheduled|moved|modified|amended|adjusted)\b/i, he: /(עדכנתי|עודכן|עודכנה|עודכנו|שיניתי|שונה|שונתה|שונו|הזזתי|הוזז|הוזזה|קבעתי מחדש)/, needsCompletion: true },
   { kind: "cancel", en: /\b(cancell?ed|withdrawn|voided|removed)\b/i, he: /(ביטלתי|בוטל|בוטלה|בוטלו|הסרתי|הוסר|הוסרה)/, needsCompletion: true },
   { kind: "send", en: /\b(sent|emailed|texted|forwarded)\b/i, he: /(שלחתי|נשלח|נשלחה|נשלחו)/, needsCompletion: true },
+  // The effect vocabulary: each maps to domain effect types, and only the ledger can satisfy it.
+  { kind: "create", en: /\b(opened|created|booked|placed|registered|filed|logged|reserved)\b/i, he: /(פתחתי|נפתח|נפתחה|יצרתי|נוצר|נוצרה|הזמנתי|רשמתי|נרשם|נרשמה|קבעתי לך|נקבע לך)/, needsCompletion: true },
+  { kind: "booking", en: /\b(?:booking|appointment|reservation)\b[^.!?]*\b(?:confirmed|is set|all set|is booked|is reserved)\b|\b(?:you're|you are) (?:all )?(?:set|booked|confirmed)\b|\bconfirmed (?:your|the) (?:booking|appointment|reservation)\b/i, he: /(התור (?:נקבע|מאושר|אושר)|ההזמנה (?:מאושרת|אושרה)|התור שלך (?:מאושר|נקבע)|הכול מסודר)/ },
+  { kind: "payment", en: /\bpayment\b[^.!?]*\b(?:verified|received|confirmed|completed?|went through|successful|settled)\b|\b(?:paid|payment) (?:is |has been )?(?:verified|confirmed|received)\b/i, he: /(התשלום (?:אומת|התקבל|עבר|אושר)|קיבלתי את התשלום|שולם בהצלחה)/ },
+  { kind: "availability", en: /\b(?:is|are|it's|we have|there's|there is|there are)\b[^.!?]*\b(?:available|in stock)\b|\b(?:slots?|openings?|times?|spots?) (?:available|free|open)\b/i, he: /(פנוי|פנויה|פנויים|פנויות|זמין|זמינה|זמינים|זמינות|במלאי|יש מקום)/ },
   { kind: "owner_waiting", en: /\b(?:waiting|wait) (?:for|on) (?:their|his|her|the|an?) ?(?:response|answer|reply|approval|decision|ok|sign-?off)\b|\b(?:pending|awaiting) (?:approval|sign-?off)\b|\b(owner|manager|boss)\b.*\b(waiting|pending|hear back|haven't heard|still)\b|\b(waiting|pending|still)\b.*\b(owner|manager|boss)('s)?\b/i, he: /(?:מחכה|ממתין|ממתינה|ממתינים) (?:ל)?(?:תשובה|אישור|לאישור|לתשובה)|(מחכה|ממתין|ממתינה|עדיין).*(בעל העסק|בעלת העסק|הבעלים|המנהל|האחראי)|(בעל העסק|בעלת העסק|הבעלים|המנהל|האחראי).*(מחכה|ממתין|ממתינה|עדיין)/ },
   { kind: "owner", en: /\b(owner|manager|boss)\b/i, he: /(בעל העסק|בעלת העסק|הבעלים|המנהל|האחראי)/ },
 ];
@@ -85,13 +95,54 @@ function collectMoney(value: unknown, into: number[], depth = 0, moneyKey = fals
   else if (typeof value === "object") for (const [k, v] of Object.entries(value as Record<string, unknown>)) collectMoney(v, into, depth + 1, moneyKey || MONEY_KEY.test(k));
 }
 
-/** Everything BARRY can show as evidence for a reply's claims. */
-export function claimEvidence(ctx: ReasonerContext, input: ComposeResponseInput, earlier: { capabilityIds: string[]; actions: string[] }): ClaimEvidence {
-  const kinds = new Set<OperationKind>();
-  for (const r of buildReceipts(input)) if (r.result === "done" || r.result === "done_unconfirmed") r.kinds.forEach((k) => kinds.add(k));
-  for (const id of earlier.capabilityIds) operationKinds("invokeCapability", id).forEach((k) => kinds.add(k));
-  for (const a of earlier.actions) operationKinds(a).forEach((k) => kinds.add(k));
+/** The claim kinds one ledger entry supports (only real, confirmed domain effects). */
+export function effectClaimKinds(e: LedgerEntry): ClaimKind[] {
+  if (e.status === "withdrawn" || e.status === "superseded") return ["cancel"];
+  if (e.status !== "effected") return [];
+  switch (e.effect) {
+    case "booking.created":
+      return ["create", "booking"];
+    case "order.created":
+    case "order.fulfilled":
+    case "enquiry.created":
+      return ["create"];
+    case "payment.settled":
+      return ["payment"];
+    case "payment.link_created":
+    case "followup.scheduled":
+      return ["send"];
+    case "cart.line_added":
+      return ["create"];
+    case "cart.line_updated":
+    case "cart.line_replaced":
+      return ["update"];
+    case "cart.line_removed":
+      return ["cancel", "update"];
+    case "availability.found":
+    case "stock.available":
+      return ["availability"];
+  }
+  if (e.effect.startsWith("request.") || e.effect.endsWith(".read") || e.effect.endsWith(".failed")) return [];
+  // A confirmed consequential capability effect: its kind comes from BARRY's own operation id.
+  return operationKinds("invokeCapability", e.operation).filter((k) => k !== "read") as ClaimKind[];
+}
+
+/**
+ * Everything BARRY can show as evidence for a reply's claims: the conversation's effect LEDGER
+ * (never transport success, never the assistant's own earlier prose), owner requests, and facts.
+ * Availability is evidence only from a lookup in THIS turn (entries after `turnStartSeq`).
+ */
+export function claimEvidence(ctx: ReasonerContext, input: ComposeResponseInput, ledger: LedgerEntry[], turnStartSeq = 0): ClaimEvidence {
+  const kinds = new Set<ClaimKind>();
+  for (const e of ledger) {
+    for (const k of effectClaimKinds(e)) {
+      if (k === "availability" && e.seq <= turnStartSeq) continue;
+      kinds.add(k);
+    }
+  }
   if (input.outcome.kind === "withdrawn" && input.outcome.withdrawnRequests > 0) kinds.add("cancel");
+  // What the catalog itself reports as in stock (re-read from the provider this turn).
+  if ((ctx.grounded?.shownResults ?? []).some((r) => r.variants.some((v) => v.inStock))) kinds.add("availability");
 
   const requests = ctx.grounded?.ownerRequests ?? [];
   const ownerRequestWaiting = Boolean(input.policyReason) || input.existingOwnerRequest === "still_pending" || requests.some((r) => r.status === "waiting_on_owner");
@@ -116,7 +167,9 @@ export function claimEvidence(ctx: ReasonerContext, input: ComposeResponseInput,
   for (const st of input.steps ?? []) collectMoney(st.toolResult?.output, base);
   if (input.outcome.kind === "price_request") collectMoney({ current: input.outcome.current, requested: input.outcome.requested }, base);
   if (input.outcome.kind === "offer_fact") collectMoney(input.outcome.fact, base);
-  for (const r of requests) base.push(...moneyIn(r.about));
+  for (const r of requests) base.push(...moneyIn(r.about), ...(typeof r.terms?.amount === "number" ? [r.terms.amount] : []));
+  for (const e of ledger) if (typeof e.terms.amount === "number") base.push(e.terms.amount);
+  collectMoney(input.quote, base);
   // The customer's own figures may be repeated back as they said them (no arithmetic on them).
   const mentioned = numbersIn(customerText);
 
@@ -160,27 +213,18 @@ export type ClaimViolation = { sentence: string; why: string };
 export function findUnsupportedClaims(text: string, ev: ClaimEvidence): ClaimViolation[] {
   const out: ClaimViolation[] = [];
   for (const sentence of splitSentences(text)) {
-    const negated = NEGATED.test(sentence);
-    const modal = MODAL.test(sentence) || CUSTOMER_SUBJECT.test(sentence);
-    const hits = new Set(RULES.filter((r) => r.en.test(sentence) || r.he.test(sentence)).map((r) => r.kind));
-    if (!negated && hits.size > 0) {
-      if (hits.has("owner_waiting")) {
+    // Negation and modality are judged per clause: "it has been cancelled, and there will be no
+    // charge" is a cancellation claim — the "no" belongs to the other clause.
+    // Owner claims are judged on the whole sentence ("I asked the owner and I'm still waiting").
+    const ownerHits = new Set(RULES.filter((r) => (r.kind === "owner" || r.kind === "owner_waiting") && (r.en.test(sentence) || r.he.test(sentence))).map((r) => r.kind));
+    if (!NEGATED.test(sentence)) {
+      if (ownerHits.has("owner_waiting")) {
         if (!ev.ownerRequestWaiting) out.push({ sentence, why: "says BARRY is waiting on the owner, but no request is waiting" });
-      } else if (hits.has("owner") && !ev.ownerRequestExists) {
+      } else if (ownerHits.has("owner") && !ev.ownerRequestExists) {
         out.push({ sentence, why: "mentions an owner request that was never made" });
       }
-      const ownerSentence = hits.has("owner") || hits.has("owner_waiting");
-      for (const rule of RULES) {
-        if (rule.kind === "owner" || rule.kind === "owner_waiting" || !hits.has(rule.kind) || modal) continue;
-        // Handing something to the owner is covered by the owner check, not a "sent" operation.
-        if (rule.kind === "send" && ownerSentence) continue;
-        const word = (sentence.match(rule.en) ?? sentence.match(rule.he))?.[0]?.toLowerCase();
-        // A status the business's own system reported ("cancelled", "changed") is a fact, not a claim of BARRY's.
-        if (word && ev.reportedText.includes(word)) continue;
-        if (rule.needsCompletion && !rule.he.test(sentence) && !COMPLETION_EN.test(sentence)) continue;
-        if (!ev.kinds.has(rule.kind as OperationKind)) out.push({ sentence, why: `claims a ${rule.kind} that no executed operation shows` });
-      }
     }
+    for (const clause of clausesOf(sentence)) checkClause(clause, sentence, ownerHits.size > 0, ev, out);
     for (const m of sentence.matchAll(MONEY)) {
       const value = num(m[2] ?? m[3]);
       if (value > 0 && !derivable(value, ev)) out.push({ sentence, why: `states an amount (${m[0].trim()}) not in the business's facts or results` });
@@ -190,6 +234,33 @@ export function findUnsupportedClaims(text: string, ev: ClaimEvidence): ClaimVio
     }
   }
   return out;
+}
+
+function clausesOf(sentence: string): string[] {
+  return sentence
+    .split(/[,;—–]|\s(?:and|but|while|so)\s|\s-\s/i)
+    .map((c) => c.trim())
+    .filter(Boolean);
+}
+
+function checkClause(sentence: string, fullSentence: string, ownerSentence: boolean, ev: ClaimEvidence, out: ClaimViolation[]): void {
+  {
+    const negated = NEGATED.test(sentence);
+    const modal = MODAL.test(sentence) || CUSTOMER_SUBJECT.test(sentence);
+    const hits = new Set(RULES.filter((r) => r.en.test(sentence) || r.he.test(sentence)).map((r) => r.kind));
+    if (!negated && hits.size > 0) {
+      for (const rule of RULES) {
+        if (rule.kind === "owner" || rule.kind === "owner_waiting" || !hits.has(rule.kind) || modal) continue;
+        // Handing something to the owner is covered by the owner check, not a "sent" operation.
+        if (rule.kind === "send" && ownerSentence) continue;
+        const word = (sentence.match(rule.en) ?? sentence.match(rule.he))?.[0]?.toLowerCase();
+        // A status the business's own system reported ("cancelled", "changed") is a fact, not a claim of BARRY's.
+        if (word && ev.reportedText.includes(word)) continue;
+        if (rule.needsCompletion && !rule.he.test(sentence) && !COMPLETION_EN.test(sentence)) continue;
+        if (!ev.kinds.has(rule.kind as ClaimKind)) out.push({ sentence: fullSentence, why: `claims a ${rule.kind} that no recorded business effect shows` });
+      }
+    }
+  }
 }
 
 const CLOSER_EN = /^(?:(?:and )?if you (?:have|need) (?:any )?(?:other |more |further |additional )?(?:questions|help|assistance)|let me know if|feel free to|i'?m (?:here|happy|glad) (?:to help|for you|if you|whenever)|don'?t hesitate|is there anything else|anything else i can|happy to help with anything|just let me know|hope (?:this|that) helps)/i;
@@ -208,4 +279,38 @@ export function withoutSentences(text: string, bad: ClaimViolation[]): string | 
   const kept = splitSentences(text).filter((s) => !drop.has(s));
   const substantive = kept.filter((s) => !CLOSER_EN.test(s) && !CLOSER_HE.test(s));
   return substantive.length ? kept.join(" ") : undefined;
+}
+
+/**
+ * Receipt identity: a business reference (e.g. a ticket number) belongs to the exact terms of the
+ * request that produced it. A sentence that puts that reference next to ANOTHER request's
+ * identifiers — and none of its own — re-attributes a receipt, and is rejected. Structural: the
+ * pairs come from BARRY's frozen records, not from wording.
+ */
+export function findMisattributedReferences(text: string, records: { reference?: string; terms: Record<string, string | number> }[]): ClaimViolation[] {
+  const idLike = (v: string | number) => typeof v === "string" && v.length >= 4 && /\d/.test(v);
+  const withIds = records.map((r) => ({ reference: r.reference, own: Object.values(r.terms).filter(idLike).map(String) }));
+  const all = new Set(withIds.flatMap((r) => r.own));
+  const out: ClaimViolation[] = [];
+  for (const sentence of splitSentences(text)) {
+    for (const r of withIds) {
+      if (!r.reference || !sentence.includes(r.reference)) continue;
+      const mentioned = [...all].filter((id) => sentence.includes(id));
+      if (mentioned.length > 0 && !mentioned.some((id) => r.own.includes(id))) {
+        out.push({ sentence, why: `attributes ${r.reference} to ${mentioned.join(", ")}, but it belongs to ${r.own.join(", ") || "another request"}` });
+      }
+    }
+  }
+  return out;
+}
+
+/** The reply isn't in the conversation's language (by script — never by vocabulary). */
+export function languageMismatch(text: string, code: string | undefined): string | undefined {
+  if (code !== "he" && code !== "en") return undefined;
+  const letters = [...text].filter((ch) => /\p{L}/u.test(ch));
+  if (letters.length < 8) return undefined;
+  const hebrew = letters.filter((ch) => /\p{Script=Hebrew}/u.test(ch)).length / letters.length;
+  if (code === "he" && hebrew < 0.3) return "reply is not in Hebrew";
+  if (code === "en" && hebrew > 0.3) return "reply is not in English";
+  return undefined;
 }

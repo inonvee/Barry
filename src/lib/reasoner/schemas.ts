@@ -88,6 +88,8 @@ export const LlmIRSchema = z.object({
     discountPct: z.number().nullable(),
     slotAccepted: z.boolean().nullable(),
     slotDeclined: z.boolean().nullable(),
+    /** How many units the customer wants of what's being discussed (a purchase quantity), when they said. */
+    quantity: z.number().nullable().default(null),
   }),
   /**
    * THE single authoritative channel for details the customer states about
@@ -111,6 +113,8 @@ export const LlmIRSchema = z.object({
   advancesTransaction: z.boolean().nullable().default(null),
   withdrawsRequest: z.boolean().nullable().default(null),
   changesPendingRequest: z.boolean().nullable().default(null),
+  readRequested: z.boolean().nullable().default(null),
+  checkoutConsent: z.boolean().nullable().default(null),
 });
 export type LlmIR = z.infer<typeof LlmIRSchema>;
 
@@ -176,8 +180,9 @@ export function irJsonSchema() {
             discountPct: { type: ["number", "null"] },
             slotAccepted: { type: ["boolean", "null"] },
             slotDeclined: { type: ["boolean", "null"] },
+            quantity: { type: ["number", "null"] },
           },
-          required: ["schedulingWindow", "partySize", "discountPct", "slotAccepted", "slotDeclined"],
+          required: ["schedulingWindow", "partySize", "discountPct", "slotAccepted", "slotDeclined", "quantity"],
         },
         customerFacts: {
           type: "array",
@@ -241,6 +246,8 @@ export function irJsonSchema() {
         advancesTransaction: { type: ["boolean", "null"] },
         withdrawsRequest: { type: ["boolean", "null"] },
         changesPendingRequest: { type: ["boolean", "null"] },
+        readRequested: { type: ["boolean", "null"] },
+        checkoutConsent: { type: ["boolean", "null"] },
       },
       required: [
         "intent",
@@ -260,6 +267,8 @@ export function irJsonSchema() {
         "advancesTransaction",
         "withdrawsRequest",
         "changesPendingRequest",
+        "readRequested",
+        "checkoutConsent",
       ],
     },
   };

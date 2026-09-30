@@ -1,5 +1,11 @@
 import { formatLocalDateTime } from "@/lib/scheduling/resolver";
 import { money } from "./deterministic-compose";
+import { buildQuote } from "@/lib/runtime/pricing";
+
+function parsePrice(text: string): { amount: number; currency: string } | undefined {
+  const m = text.trim().match(/^(\d+(?:\.\d+)?)\s+([A-Z]{3})$/);
+  return m ? { amount: Number(m[1]), currency: m[2] } : undefined;
+}
 import type { ReasonerContext } from "./types";
 
 /**
@@ -44,6 +50,21 @@ export function businessFacts(ctx: ReasonerContext, lang = "en") {
     shownProducts: ctx.grounded?.shownResults ?? [],
     cart: ctx.grounded?.cart ?? [],
     cartTotal: ctx.grounded?.cartTotal ?? null,
+    // The same authoritative pricing for catalog items: price + the business's own shipping rule
+    // (free above its threshold / its flat fee / unknown) — so budget answers never add or drop shipping.
+    shownProductTotals: (ctx.grounded?.shownResults ?? []).flatMap((r) => {
+      const prices = r.variants.map((v) => parsePrice(v.price)).filter((p): p is { amount: number; currency: string } => Boolean(p));
+      if (!prices.length) return [];
+      const cheapest = prices.reduce((a, b) => (b.amount < a.amount ? b : a));
+      const q = buildQuote(ctx.graph, [{ item: r.title, itemRef: `shown-${r.position}`, unitPrice: cheapest.amount, quantity: 1 }], cheapest.currency);
+      return [{ position: r.position, title: r.title, price: money(cheapest.amount, cheapest.currency, lang), shipping: q.shipping.amount === null ? "unknown" : money(q.shipping.amount, q.currency, lang), totalWithShipping: q.complete ? money(q.total, q.currency, lang) : null }];
+    }),
+    cartTotalWithShipping: (() => {
+      const p = parsePrice(ctx.grounded?.cartTotal ?? "");
+      if (!p) return null;
+      const q = buildQuote(ctx.graph, [{ item: "cart", itemRef: "cart", unitPrice: p.amount, quantity: 1 }], p.currency);
+      return { goods: money(p.amount, p.currency, lang), shipping: q.shipping.amount === null ? "unknown" : money(q.shipping.amount, q.currency, lang), total: q.complete ? money(q.total, q.currency, lang) : null };
+    })(),
   };
 }
 

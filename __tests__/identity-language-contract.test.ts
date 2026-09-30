@@ -210,7 +210,8 @@ describe("runtime: Rina checkout details in Hebrew, exactly the missing fields",
     const conv = `conv-${id}`;
     await handleCustomerMessage(g, conv, "c", SEARCH);
     const take = await handleCustomerMessage(g, conv, "c", TAKE);
-    expect(take.turn.trace?.reply?.fallback).toMatch(/missing-field contract/);
+    // Caught as the wrong language and/or the wrong fields — either way the deterministic Hebrew request is used.
+    expect(take.turn.trace?.reply?.fallback).toMatch(/missing-field contract|language/);
     expect(take.response).not.toMatch(/full name|שם מלא/i);
     expect(take.response).toMatch(/שם/);
     expect(take.response).toMatch(/טלפון/);

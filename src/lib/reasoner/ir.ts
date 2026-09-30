@@ -32,6 +32,8 @@ export type BarryIRConstraints = {
   slotAccepted?: boolean;
   /** Customer explicitly declined the previously offered slot ("no"/"לא") — never inferred from anything else. */
   slotDeclined?: boolean;
+  /** Units of the offer/product under discussion the customer wants (a correction replaces the earlier number). */
+  quantity?: number;
 };
 
 /**
@@ -181,6 +183,18 @@ export type BarryIR = {
   advancesTransaction?: boolean;
   withdrawsRequest?: boolean;
   changesPendingRequest?: boolean;
+  /**
+   * READ intent, separate from purchase and checkout: the customer asks BARRY to actually look
+   * something up now (open times, stock) without committing. Reads run even when the message does
+   * not advance a transaction — and never imply a purchase.
+   */
+  readRequested?: boolean;
+  /**
+   * CHECKOUT consent, separate from choosing or changing items: true = they asked to pay / check out
+   * now; false = they said not to (e.g. "only change the size, don't check out"). A cart change never
+   * implies checkout by itself.
+   */
+  checkoutConsent?: boolean;
 };
 
 export type CapabilityRequest = { capability: string; input: Record<string, unknown>; purpose: string };

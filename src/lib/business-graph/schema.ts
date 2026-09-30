@@ -156,6 +156,16 @@ export const PolicySchema = z.object({
       type: z.literal("max_auto_payment_amount"),
       value: z.number().min(0),
     }),
+    /** Shipping is free when the goods total (after discount) reaches this amount, in the business currency. */
+    z.object({
+      type: z.literal("free_shipping_over"),
+      value: z.number().min(0),
+    }),
+    /** Shipping costs this flat fee (below any free-shipping threshold). Absent -> the fee is unknown, never invented. */
+    z.object({
+      type: z.literal("flat_shipping_fee"),
+      value: z.number().min(0),
+    }),
   ]),
 });
 export type Policy = z.infer<typeof PolicySchema>;

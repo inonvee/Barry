@@ -4,6 +4,8 @@ import type { CatalogSchema } from "@/lib/commerce/catalog";
 import type { BusinessGraph } from "@/lib/business-graph";
 import type { ConversationState } from "@/lib/state";
 import type { BarryIR, CompileOutcome } from "./ir";
+import type { Quote } from "@/lib/runtime/pricing";
+import type { LedgerEntry } from "@/lib/runtime/ledger";
 
 export type { BarryIR, BarryIRConstraints, RequestedCapability, CompileOutcome, CompiledToolCall, OfferFact } from "./ir";
 
@@ -39,13 +41,23 @@ export type GroundedContext = {
   capabilityResults?: CapabilityResultSummary[];
   /** Every request BARRY sent to the owner in this conversation, with its real status and outcome (customer-safe). */
   ownerRequests?: OwnerRequestView[];
+  /** The conversation's effect ledger (immutable domain effects) and where this turn's entries start. */
+  ledger?: LedgerEntry[];
+  turnStartSeq?: number;
 };
 
 export type OwnerRequestView = {
   about: string;
-  status: "waiting_on_owner" | "approved" | "declined_by_owner" | "withdrawn_by_customer";
+  status: "waiting_on_owner" | "approved" | "declined_by_owner" | "withdrawn_by_customer" | "superseded";
+  /** Authoritative lifecycle: active, superseded, withdrawn, declined, executed, executed_unconfirmed, failed, approved. */
+  lifecycle: string;
+  /** Revision of this operation within the conversation (1 = first). */
+  revision: number;
+  /** The exact terms this request was made with — frozen; a later reference never rewrites them. */
+  terms: Record<string, string | number>;
   /** For an approved request: what actually happened when BARRY carried it out. */
   result?: "done" | "done_unconfirmed" | "failed";
+  /** The business reference produced by THIS request (e.g. the ticket number) — belongs to these terms only. */
   reference?: string;
 };
 
@@ -128,6 +140,12 @@ export type ComposeResponseInput = {
   existingOwnerRequest?: "still_pending" | "declined_earlier";
   /** Requests sent to the owner in this conversation (customer-safe) — lets a plain reply state their real status. */
   ownerRequests?: OwnerRequestView[];
+  /** The authoritative quantity-aware quote for what's being discussed (the only source of totals). */
+  quote?: Quote;
+  /** A deterministic, localized statement of where things really stand (requests, booking, payment, quote). */
+  statusText?: string;
+  /** A draft that failed grounding: regenerate the WHOLE reply from trusted facts, dropping dependent conclusions. */
+  repair?: { draft: string; problems: string[] };
   scheduling?: SchedulingDisplayFacts;
   /** When BARRY took several steps this turn: all of them, in order (the last equals outcome/toolResult). */
   steps?: ComposeStep[];

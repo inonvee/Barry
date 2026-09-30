@@ -18,9 +18,11 @@ import { resolveReplyLanguage, type ReplyLanguage } from "@/lib/reasoner/languag
 import { checkInfoRequest, infoRequestFields } from "@/lib/reasoner/reply-contract";
 import { composeDeterministic } from "@/lib/reasoner/deterministic-compose";
 import { findInternalLeak, internalVocabulary } from "@/lib/reasoner/reply-hygiene";
-import { claimEvidence, findUnsupportedClaims, trimClosers, withoutSentences } from "@/lib/reasoner/claim-grounding";
-import { getCapability } from "@/lib/fabric/capability";
-import { conversationApprovals, findSameRequest, ownerRequestViews, recordOwnerRequestResult, resultReference, withdrawPendingRequests, type ExistingRequest } from "./owner-requests";
+import { claimEvidence, findMisattributedReferences, findUnsupportedClaims, languageMismatch, trimClosers } from "@/lib/reasoner/claim-grounding";
+import { renderStatus } from "@/lib/reasoner/status-render";
+import { appendLedger, classifyExecution, readLedger, requestEntry, type LedgerEntry } from "./ledger";
+import { currentQuote } from "./pricing";
+import { conversationApprovals, findSameRequest, supersedeOlderRevisions, ownerRequestViews, recordOwnerRequestResult, withdrawPendingRequests, type ExistingRequest } from "./owner-requests";
 import type { ComposeResponseInput } from "@/lib/reasoner/types";
 import { BARRY_RUNTIME_VERSION, runtimeCommit } from "./version";
 import { getCatalogSchema, getCommerceProduct, getOwnedCart } from "@/lib/commerce/capability";
@@ -185,8 +187,11 @@ async function patchStateAfterTool(state: ConversationState, toolName: string, o
       break;
     }
     case "checkInventory": {
+      // Stock is checked FOR a quantity: enough for what the customer wants, or not checked at all.
       const { quantityAvailable } = output as { quantityAvailable: number };
-      if (quantityAvailable > 0) known[SCRATCH_KEYS.inventoryChecked] = "1";
+      const wanted = Number(known[SCRATCH_KEYS.quantity] ?? 1);
+      if (quantityAvailable >= wanted) known[SCRATCH_KEYS.inventoryChecked] = String(wanted);
+      else delete known[SCRATCH_KEYS.inventoryChecked];
       break;
     }
     case "createLead": {
@@ -342,6 +347,8 @@ export async function handleCustomerMessage(
   });
   grounded.capabilityResults = readCapabilityResults(state);
   grounded.ownerRequests = ownerRequestViews(await conversationApprovals(graph.business.id, conversationId), state);
+  // Effects recorded after this point happened in THIS turn (e.g. a lookup that can back an availability claim).
+  grounded.turnStartSeq = readLedger(state).length;
   const rawIr = await reasoner.understand({ graph, state, customerMessage: message, grounded });
   // The model owns understanding; verifyIR() only GROUNDS it — evidence
   // for persisted facts, consistency with current state, structural
@@ -470,6 +477,14 @@ export async function handleCustomerMessage(
       schedulingWindow: ir.constraints.schedulingWindow,
       ...(ir.commerce ? { commerce: ir.commerce } : {}),
       ...(ir.purchaseDecision !== undefined ? { purchaseDecision: ir.purchaseDecision } : {}),
+      signals: {
+        advancesTransaction: rawIr.advancesTransaction ?? null,
+        withdrawsRequest: rawIr.withdrawsRequest ?? null,
+        changesPendingRequest: rawIr.changesPendingRequest ?? null,
+        readRequested: rawIr.readRequested ?? null,
+        checkoutConsent: rawIr.checkoutConsent ?? null,
+        quantity: rawIr.constraints.quantity ?? null,
+      },
       ...(ir.customerClaims ? { customerClaims: ir.customerClaims } : {}),
       ...(ir.knowledgeTopic ? { knowledgeTopic: ir.knowledgeTopic } : {}),
       ...(ir.capabilityRequest ? { capabilityRequest: ir.capabilityRequest } : {}),
@@ -503,6 +518,7 @@ export async function handleCustomerMessage(
       steps: steps.map((st) => st.trace),
       stop,
       reply: { language: language.code, basis: language.basis, ...(composed.fallback ? { fallback: composed.fallback } : {}) },
+      effects: ledgerForTrace(readLedger(state).slice(grounded.turnStartSeq ?? 0)),
       missingFields: state.missingFields,
       ...(grounded?.shownResults?.length || grounded?.cart
         ? {
@@ -636,7 +652,10 @@ async function runStep(
 ): Promise<ExecutedStep> {
   const before = { ...state.knownFields };
   const stageBefore = state.stage;
-  const { policyDecision, toolResult, existing } = await authorizeAndExecute(graph, state, outcome, ctx, restoreStage);
+  const { policyDecision, toolResult, existing, requestId } = await authorizeAndExecute(graph, state, outcome, ctx, restoreStage);
+  // The domain effect of this step, frozen in the ledger — transport success is never recorded as a business effect.
+  if (toolResult) appendLedger(state, classifyExecution(outcome.action.name, outcome.action.input, toolResult));
+  else if (requestId) appendLedger(state, requestEntry(outcome.action.name, outcome.action.input, requestId, "awaiting_owner"));
   const after = state.knownFields;
   const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((k) => before[k] !== after[k]).sort();
   const capabilities = (ACTION_REQUIREMENTS[outcome.action.name] ?? []).map((id) => ({
@@ -700,19 +719,23 @@ async function composeTurn(
   const graph = rctx.graph;
   const last = steps[steps.length - 1];
   let input: ComposeResponseInput;
+  // The composer and every check see the ledger as it stands after this turn's steps, the current
+  // owner requests, and the one authoritative quote.
+  rctx.grounded = { ...(rctx.grounded ?? {}), ledger: readLedger(rctx.state), ownerRequests: ownerRequestViews(await conversationApprovals(graph.business.id, rctx.state.id), rctx.state) };
+  const quote = currentQuote(graph, rctx.state);
   if (steps.length <= 1 && !next) {
     if (last?.policyDecision.status === "denied") {
       // The rule's text stays in the trace; the customer hears what it means for them.
-      input = { outcome, toolResult: null, refused: true, language };
-      return guardReply(reasoner, rctx, input, await reasoner.composeResponse(rctx, input));
+      input = { outcome, toolResult: null, refused: true, language, quote };
+      return await guardReply(reasoner, rctx, input, await reasoner.composeResponse(rctx, input));
     }
     if (last?.policyDecision.status === "requires_approval") {
       input = last.existing
-        ? { outcome, toolResult: null, existingOwnerRequest: last.existing, language }
-        : { outcome, toolResult: null, policyReason: last.policyDecision.reason, language };
-      return guardReply(reasoner, rctx, input, await reasoner.composeResponse(rctx, input));
+        ? { outcome, toolResult: null, existingOwnerRequest: last.existing, language, quote }
+        : { outcome, toolResult: null, policyReason: last.policyDecision.reason, language, quote };
+      return await guardReply(reasoner, rctx, input, await reasoner.composeResponse(rctx, input));
     }
-    input = sanitizeComposeInput({ outcome, toolResult: last?.toolResult ?? null, scheduling: buildSchedulingDisplay(graph, outcome, last?.toolResult ?? null, message, language), language });
+    input = sanitizeComposeInput({ outcome, toolResult: last?.toolResult ?? null, scheduling: buildSchedulingDisplay(graph, outcome, last?.toolResult ?? null, message, language), language, quote });
   } else {
     input = sanitizeComposeInput({
       outcome,
@@ -729,10 +752,11 @@ async function composeTurn(
       })),
       next,
       language,
+      quote,
     });
   }
   if (outcome.kind === "conversation" && rctx.grounded?.ownerRequests?.length) input = { ...input, ownerRequests: rctx.grounded.ownerRequests };
-  const guarded = guardReply(reasoner, rctx, input, await reasoner.composeResponse(rctx, input));
+  const guarded = await guardReply(reasoner, rctx, input, await reasoner.composeResponse(rctx, input));
   if (guarded.fallback) return guarded;
   const text = guarded.text;
   // The details BARRY asks for are the compiler's truth. A reply that asks
@@ -760,37 +784,55 @@ async function composeTurn(
  * enum value from this turn's system results) or quotes the rule text behind an approval/refusal is
  * replaced by the deterministic reply — plainer, but clean — and the swap is recorded in the trace.
  */
-function guardReply(
+/**
+ * Every model-written reply is checked against BARRY's records before it can reach the customer:
+ * internal leaks, effect/owner/amount/measurement claims (evidence = the effect ledger and facts),
+ * receipt identity, and the reply language. A failing draft is REGENERATED as a whole from the
+ * trusted facts (the composer is told exactly what it can't support, so dependent conclusions go
+ * with it); if the regenerated reply still fails, the deterministic reply renders the real state.
+ */
+async function guardReply(
   reasoner: ReturnType<typeof getReasoner>,
   rctx: ReasonerContext,
   input: ComposeResponseInput,
   text: string
-): { text: string; fallback?: string } {
+): Promise<{ text: string; fallback?: string }> {
   if (reasoner.name !== "llm") return { text };
-  const leak = findInternalLeak(text, internalVocabulary(rctx, input, listTools().map((t) => t.name)));
-  if (leak) return { text: composeDeterministic(input), fallback: `reply hygiene: ${leak}` };
-  // Every completion/status claim, owner claim, amount and measurement must be backed by BARRY's
-  // records. Unsupported sentences are dropped; if nothing useful remains (or the reply was about
-  // an operation), the receipt-bound deterministic reply is used.
-  const bad = findUnsupportedClaims(text, claimEvidence(rctx, input, earlierOperations(rctx.state)));
-  if (bad.length > 0) {
-    const why = `claim grounding: ${[...new Set(bad.map((b) => b.why))].join("; ")}`;
-    const answerOnly = input.outcome.kind === "conversation" || input.outcome.kind === "knowledge_answer" || input.outcome.kind === "offer_fact";
-    const kept = answerOnly ? withoutSentences(text, bad) : undefined;
-    return { text: kept ? trimClosers(kept) : composeDeterministic(input), fallback: why };
+  const problems = replyProblems(rctx, input, text);
+  if (problems.length === 0) return { text: trimClosers(text) };
+  let repaired: string | undefined;
+  try {
+    repaired = await reasoner.composeResponse(rctx, { ...input, repair: { draft: text, problems } });
+  } catch {
+    repaired = undefined;
   }
-  return { text: trimClosers(text) };
+  if (repaired && replyProblems(rctx, input, repaired).length === 0) return { text: trimClosers(repaired), fallback: `${problems.join("; ")} -> regenerated` };
+  return { text: composeDeterministic(withStatus(rctx, input)), fallback: `${problems.join("; ")} -> deterministic` };
 }
 
-/** Operations BARRY verifiably carried out earlier in this conversation (from state, never from prose). */
-function earlierOperations(state: ConversationState): { capabilityIds: string[]; actions: string[] } {
-  const k = state.knownFields;
-  const actions: string[] = [];
-  if (k[SCRATCH_KEYS.paymentRequestId]) actions.push("createPaymentRequest");
-  if (k[SCRATCH_KEYS.commerceOrderId]) actions.push("createCommerceOrder");
-  if (k[SCRATCH_KEYS.commerceCartId]) actions.push("addToCart");
-  if (state.stage === "closed" && state.outcome === "won") actions.push("createBooking");
-  return { capabilityIds: readCapabilityResults(state).filter((r) => r.ok).map((r) => r.capability), actions };
+function replyProblems(rctx: ReasonerContext, input: ComposeResponseInput, text: string): string[] {
+  const problems: string[] = [];
+  const leak = findInternalLeak(text, internalVocabulary(rctx, input, listTools().map((t) => t.name)));
+  if (leak) problems.push(`reply hygiene: ${leak}`);
+  const ledger = rctx.grounded?.ledger ?? readLedger(rctx.state);
+  const bad = [
+    ...findUnsupportedClaims(text, claimEvidence(rctx, input, ledger, rctx.grounded?.turnStartSeq ?? 0)),
+    ...findMisattributedReferences(text, rctx.grounded?.ownerRequests ?? []),
+  ];
+  if (bad.length) problems.push(`claim grounding: ${[...new Set(bad.map((b) => b.why))].join("; ")}`);
+  const lang = languageMismatch(text, input.language?.code);
+  if (lang) problems.push(`language: ${lang}`);
+  return problems;
+}
+
+/** The input with the deterministic state rendering attached (requests, booking, payment, quote). */
+function withStatus(rctx: ReasonerContext, input: ComposeResponseInput): ComposeResponseInput {
+  const ledger = rctx.grounded?.ledger ?? readLedger(rctx.state);
+  return { ...input, statusText: renderStatus({ requests: rctx.grounded?.ownerRequests ?? [], ledger, quote: input.quote, lang: input.language?.code ?? "en" }) };
+}
+
+function ledgerForTrace(entries: LedgerEntry[]): NonNullable<TurnTrace["effects"]> {
+  return entries.map((e) => ({ seq: e.seq, operation: e.operation, effect: e.effect, status: e.status, terms: e.terms, ...(e.reference ? { reference: e.reference } : {}), ...(e.requestId ? { requestId: e.requestId } : {}) }));
 }
 
 function mergeRich(parts: (NormalizedOutboundMessage["rich"] | undefined)[]): NormalizedOutboundMessage["rich"] | undefined {
@@ -814,7 +856,7 @@ async function authorizeAndExecute(
   outcome: Extract<CompileOutcome, { kind: "action" }>,
   ctx: ToolContext,
   prevStage: ConversationState["stage"]
-): Promise<{ policyDecision: PolicyDecision; toolResult: ToolCallResult | null; existing?: ExistingRequest["state"] }> {
+): Promise<{ policyDecision: PolicyDecision; toolResult: ToolCallResult | null; existing?: ExistingRequest["state"]; requestId?: string }> {
   const policyDecision = decide(graph, { action: outcome.action.name, params: outcome.action.input });
   if (policyDecision.status === "denied") {
     state.stage = prevStage;
@@ -834,6 +876,8 @@ async function authorizeAndExecute(
       }
       return { policyDecision, toolResult: null, existing: same.state };
     }
+    // A new revision (e.g. a corrected quantity) supersedes the older one still waiting.
+    await supersedeOlderRevisions(graph, state, outcome.action.name, outcome.action.input);
     const approvalCall = await callTool(
       "requestApproval",
       {
@@ -850,9 +894,9 @@ async function authorizeAndExecute(
       state.pendingApprovalId = approvalId;
       state.pendingAction = outcome.action;
       state.stage = "escalated";
-    } else {
-      state.stage = prevStage;
+      return { policyDecision, toolResult: null, requestId: approvalId };
     }
+    state.stage = prevStage;
     return { policyDecision, toolResult: null };
   }
   const toolResult = genericFailureAsError(outcome.action.name, await callTool(outcome.action.name, outcome.action.input, ctx), state);
@@ -1033,16 +1077,18 @@ export async function resumeAfterApproval(
   });
   state.pendingApprovalId = null;
   state.pendingAction = null;
-  const resumeCtx: ReasonerContext = { graph, state, customerMessage: "(approval resumed)", grounded: {} };
+  const resumeCtx: ReasonerContext = { graph, state, customerMessage: "(approval resumed)", grounded: { turnStartSeq: readLedger(state).length } };
   const refreshOwnerRequests = async () => {
     resumeCtx.grounded!.ownerRequests = ownerRequestViews(await conversationApprovals(graph.business.id, state.id), state);
+    resumeCtx.grounded!.ledger = readLedger(state);
   };
 
   if (decision === "declined") {
+    appendLedger(state, requestEntry(approval.requestedAction, approval.requestedInput, approvalId, "owner_declined"));
     await refreshOwnerRequests();
     const declinedOutcome: CompileOutcome = { kind: "action", action: { name: approval.requestedAction, input: {} }, stage: state.stage };
     const declinedInput: ComposeResponseInput = { outcome: declinedOutcome, toolResult: null, ownerDecision: "declined", language };
-    const guarded = guardReply(reasoner, resumeCtx, declinedInput, await reasoner.composeResponse(resumeCtx, declinedInput));
+    const guarded = await guardReply(reasoner, resumeCtx, declinedInput, await reasoner.composeResponse(resumeCtx, declinedInput));
     response = guarded.text;
     resumeFallback = guarded.fallback;
   } else {
@@ -1057,10 +1103,11 @@ export async function resumeAfterApproval(
     if (toolResult.ok) await patchStateAfterTool(state, approval.requestedAction, toolResult.output, state.stage);
     // What really happened, kept for later turns ("any news?") — approval alone is not execution,
     // and execution of a write is not confirmation unless the system confirmed it.
-    const call = generic ? genericResult(toolResult) : undefined;
+    // The executed effect is frozen with THIS request's id, terms and reference — later turns can't re-attribute it.
+    const effect = appendLedger(state, { ...classifyExecution(approval.requestedAction, input, toolResult), requestId: approvalId });
     recordOwnerRequestResult(state, approvalId, {
-      result: !toolResult.ok ? "failed" : generic && !call?.verified && getCapability(String(input.capability))?.effect !== "read" ? "done_unconfirmed" : "done",
-      ...(toolResult.ok && resultReference(toolResult.output) ? { reference: resultReference(toolResult.output) } : {}),
+      result: effect.status === "effected" ? "done" : effect.status === "effected_unconfirmed" ? "done_unconfirmed" : "failed",
+      ...(effect.reference ? { reference: effect.reference } : {}),
     });
     if (generic) {
       approvalStep = {
@@ -1085,7 +1132,7 @@ export async function resumeAfterApproval(
     await refreshOwnerRequests();
     // The reply describes exactly the approved operation's receipt — never anything else the customer asked for.
     const approvedInput = sanitizeComposeInput({ outcome: syntheticOutcome, toolResult, scheduling, ownerDecision: "approved", language });
-    const guarded = guardReply(reasoner, resumeCtx, approvedInput, await reasoner.composeResponse(resumeCtx, approvedInput));
+    const guarded = await guardReply(reasoner, resumeCtx, approvedInput, await reasoner.composeResponse(resumeCtx, approvedInput));
     response = guarded.text;
     resumeFallback = guarded.fallback;
   }
@@ -1113,6 +1160,7 @@ export async function resumeAfterApproval(
             steps: [approvalStep],
             stop: { reason: toolResult?.ok ? "approval_executed" : "approval_execution_failed", outcome: INVOKE_CAPABILITY },
             reply: { language: language.code, basis: language.basis, ...(resumeFallback ? { fallback: resumeFallback } : {}) },
+            effects: ledgerForTrace(readLedger(state).slice(resumeCtx.grounded?.turnStartSeq ?? 0)),
           },
         }
       : {}),

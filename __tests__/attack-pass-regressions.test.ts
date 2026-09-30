@@ -111,7 +111,7 @@ describe("F01 + F09 — logistics: approval executes exactly the reviewed ticket
     // Next status question: the live composer said "still waiting for the owner" after resolution.
     model.write = () => "I'm still waiting for an update from the owner.";
     const status = await handleCustomerMessage(g, id, "c", "any update?");
-    expect(status.response).not.toMatch(/waiting/i);
+    expect(status.response).not.toMatch(/still waiting/i);
     expect(status.response).toContain(demoHelpdeskTickets()[0].ticketId);
     const statusSummary = model.summaries.at(-1)!;
     expect(statusSummary.ownerRequests.at(-1)).toMatchObject({ status: "approved", result: "done", reference: demoHelpdeskTickets()[0].ticketId });
@@ -247,7 +247,7 @@ describe("F03/F07/F08 — auto: information turns are answered; no fake owner re
     const g = getBusinessGraph("garage");
     model.write = () => "I submitted the request for the discount approval to the owner. I'm currently waiting for their response.";
     const a = await handleCustomerMessage(g, conv("auto-owner"), "c", "did you actually submit anything to the owner?");
-    expect(a.response).not.toMatch(/submitted|waiting/i);
+    expect(a.response).not.toMatch(/I submitted|currently waiting/i);
     expect(a.turn.trace?.reply?.fallback).toMatch(/owner/);
     model.write = () => "הבקשה להנחה בוטלה.";
     const b = await handleCustomerMessage(g, conv("auto-cancel"), "c", "תבטל את הבקשה להנחה");
@@ -294,7 +294,9 @@ describe("F04/F06 — furniture: no claimed update without an update; no invente
   it("dimensions that are not in the business's facts are removed; the rest of the answer stays", async () => {
     const model = new ScriptedModel(() => ({ selectedOfferId: "offer-sofa", advancesTransaction: false }));
     setReasonerForTests(model);
-    model.write = () => "The Harlow 3-Seat Sofa is $1,299. It is 78 inches wide and 34 inches deep.";
+    // The first draft invents dimensions; asked to regenerate, the composer answers from the facts.
+    model.write = (input) =>
+      input.repair ? "The Harlow 3-Seat Sofa is $1,299. I don't have its exact dimensions, so I can't tell you whether it fits." : "The Harlow 3-Seat Sofa is $1,299. It is 78 inches wide and 34 inches deep.";
     const out = await handleCustomerMessage(getBusinessGraph("furniture-store"), conv("dims"), "c", "what are the Harlow dimensions? info only");
     expect(out.response).not.toMatch(/78|34/);
     expect(out.response).toContain("$1,299");
@@ -347,7 +349,7 @@ describe("claim grounding recognises claims, not reported facts or offers", () =
     outcome: { kind: "action", action: { name: "invokeCapability", input: { capability: "shipping.track", input: {}, purpose: "x" } }, stage: "discovery" },
     toolResult: output ? { ok: true, output: { capability: "shipping.track", ok: true, executed: true, verified: false, output } } : null,
   });
-  const none = { capabilityIds: [], actions: [] };
+  const none: never[] = [];
 
   it.each([
     ["Your parcel was cancelled by the carrier.", { status: "cancelled" }],

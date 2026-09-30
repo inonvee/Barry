@@ -78,6 +78,8 @@ export type TurnTrace = {
   stop: { reason: string; outcome: string };
   /** Reply language and why; `fallback` when the model's reply broke a contract and the deterministic reply was used. */
   reply?: { language: string; basis: string; fallback?: string };
+  /** Domain effects recorded THIS turn in the conversation's immutable ledger (effect type, status, frozen terms, reference). */
+  effects?: { seq: number; operation: string; effect: string; status: string; terms: Record<string, string | number>; reference?: string; requestId?: string }[];
   /** The customer fields still missing after this turn (the compiler's truth). */
   missingFields?: string[];
   /**
@@ -106,6 +108,15 @@ export type TurnLog = {
     /** The grounded commerce semantics (intent, reference, variant, query) — so a failure is diagnosable from the log alone. */
     commerce?: unknown;
     purchaseDecision?: boolean;
+    /** The model's literal turn signals (as returned, before compiler handling) — for independent verification. */
+    signals?: {
+      advancesTransaction: boolean | null;
+      withdrawsRequest: boolean | null;
+      changesPendingRequest: boolean | null;
+      readRequested: boolean | null;
+      checkoutConsent: boolean | null;
+      quantity: number | null;
+    };
     customerClaims?: unknown;
     knowledgeTopic?: string;
     /** The grounded capability proposal this turn (capability, input as grounded, purpose). */

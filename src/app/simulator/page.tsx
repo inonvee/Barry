@@ -4,11 +4,10 @@ import { useCallback, useEffect, useState } from "react";
 import { BusinessSwitcher } from "@/components/BusinessSwitcher";
 import { ChatPanel } from "@/components/ChatPanel";
 import { InspectorPanel } from "@/components/InspectorPanel";
-import { ApprovalsPanel } from "@/components/ApprovalsPanel";
+import { ApprovalsPanel, type ApprovalView } from "@/components/ApprovalsPanel";
 import { GraphPanel } from "@/components/GraphPanel";
 import type { ConversationState } from "@/lib/state";
 import type { BusinessGraph } from "@/lib/business-graph";
-import type { ApprovalRecord } from "@/lib/store/types";
 import {
   createConversationId,
   getOrCreateCustomerId,
@@ -24,7 +23,7 @@ export default function SimulatorPage() {
   const [businessId, setBusinessId] = useState<string | null>(null);
   const [graph, setGraph] = useState<BusinessGraph | null>(null);
   const [state, setState] = useState<ConversationState | null>(null);
-  const [approvals, setApprovals] = useState<ApprovalRecord[]>([]);
+  const [approvals, setApprovals] = useState<ApprovalView[]>([]);
   // null until the per-business restore effect below resolves them — every
   // action that needs these already gates on businessId/graph being ready,
   // so a brief null window here causes no bad requests.
@@ -124,9 +123,8 @@ export default function SimulatorPage() {
       });
       const data = await res.json();
       if (data.state) setState(data.state);
-      if (data.turn?.policyDecision?.status === "requires_approval") {
-        refreshApprovals(businessId);
-      }
+      // Every turn can create, reuse, supersede or withdraw a request — always show the current lifecycle.
+      refreshApprovals(businessId);
     } finally {
       setSending(false);
     }
@@ -172,7 +170,7 @@ export default function SimulatorPage() {
   }
   const paymentPrompt = computePaymentPrompt();
 
-  const pendingApprovalCount = approvals.filter((a) => a.status === "pending").length;
+  const pendingApprovalCount = approvals.filter((a) => (a.lifecycle ?? (a.status === "pending" ? "active" : a.status)) === "active").length;
 
   return (
     <div className="flex h-dvh flex-col bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100">
@@ -224,7 +222,7 @@ export default function SimulatorPage() {
         )}
         {tab === "inspector" && <InspectorPanel state={state} />}
         {tab === "approvals" && (
-          <ApprovalsPanel approvals={approvals} onDecide={decideApproval} busyId={busyApprovalId} />
+          <ApprovalsPanel approvals={approvals} onDecide={decideApproval} busyId={busyApprovalId} currentConversationId={conversationId} />
         )}
         {tab === "graph" && <GraphPanel graph={graph} />}
       </main>

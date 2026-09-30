@@ -13,6 +13,7 @@ import type { BarryIR, ComposeResponseInput, Reasoner, ReasonerContext } from ".
 import { sanitizeComposeInput } from "./compose-sanitization";
 import { businessFacts, customerFacts, transactionFacts } from "./compose-facts";
 import { customerReceipts } from "./receipts";
+import { effectPhrase, ledgerView } from "@/lib/runtime/ledger";
 import type { SchedulingConstraint } from "@/lib/scheduling/resolver";
 import type { CompileOutcome } from "@/lib/reasoner/ir";
 
@@ -208,6 +209,9 @@ YOUR TASK NOW: understand the customer's latest message in context and describe 
 - advancesTransaction: does THIS message move the purchase/booking forward? true when they choose, decide, give the details it needs, accept a time or ask to book/pay; false when they only ask a question (price, policy, product facts, "what can you do"), check status, ask for a recap, browse, chat, or refuse to give details yet ("no phone until I decide" is false). The customer's latest message decides, not the conversation's earlier momentum. null if unclear.
 - withdrawsRequest: true when they withdraw, cancel or decline what they asked for ("forget it", "then I'm not buying", "don't send a link", "לא קונה", "תבטל") — including a request BARRY sent to the owner (see pendingOwnerRequests).
 - changesPendingRequest: true when a request in pendingOwnerRequests is still waiting and they changed its details (a different reference/number, amount, option). A plain status question ("any news?") is false — it never creates or changes anything.
+- readRequested: true when they ask BARRY to actually check something now — open times, stock ("check the real calendar", "do a real inventory lookup") — whether or not they intend to buy. A read never implies a purchase; set advancesTransaction false if they aren't committing.
+- checkoutConsent: true only when they ask to pay / check out now; false when they say not to ("just change the size, don't check out", "no payment yet"); null otherwise. Choosing or changing an item is never checkout consent by itself — purchaseDecision is separate.
+- constraints.quantity: how many units they want of what's being discussed (a correction replaces the earlier number); null if they didn't say.
 - Scheduling: describe what they said, never compute timestamps. schedulingWindow fields: dateKind (explicitDate|relativeDay|weekday), isoDate (YYYY-MM-DD, resolve using business.currentDate), relativeDays, weekday (0=Sun..6=Sat), weekdayQualifier (this|next), timeKind (explicitTime|partOfDay), hour/minute (24h, as the customer meant it locally), partOfDay. Keep a day/time stated earlier unless they changed it.
 - slotAccepted / slotDeclined: only when awaitingSlotConfirmation is true and they accept or decline the offered time.
 - selectedOfferId / offerCandidateIds: for services in "offers"; several plausible -> candidates. offerChangeRequested only for an explicit change of mind to a different real offer.
@@ -229,6 +233,10 @@ export const COMPOSE_SYSTEM_PROMPT =
   "`recentConversation` is what was said before (oldest first) and `lastCustomerMessage` is what they just wrote: continue THAT conversation — don't greet again, don't re-introduce yourself, don't re-ask anything already answered there, and keep their register and pace. " +
   "`whatTheBusinessCanDo` is everything this business offers and can help with. If the customer wants something that isn't there, say briefly that it's not something we do here and offer the closest thing that is there (or say the team can help) — never collect details for it and never promise it. " +
   // ── What happened, and the facts
+  "`ledger` is the permanent record of every operation in this conversation and its REAL outcome (`happened`). Transport success is not an outcome: a payment check that says pending means NOT paid; a request waiting on the owner means NOT done; submitted-but-unconfirmed means you can't say it's done. Never state an outcome the ledger doesn't show — including for earlier turns, whatever earlier messages said. Each entry's `reference` belongs only to that entry's `terms`: when asked about several references, answer each one from its own entry (opened with its number / declined / withdrawn / not opened). " +
+  "`pricing` is THE quote (quantity, discount, shipping, total) — state its total exactly; never compute an amount yourself. If pricing.complete is false the shipping cost is unknown: say the total excludes shipping. " +
+  "Availability/stock can be stated only from a `ledger` entry with thisTurn true that looked it up (or facts.shownProducts); otherwise say you'd need to check. " +
+  "If `repairRequired` is present, your draft (yourDraft) stated things BARRY cannot support (problems). Rewrite the WHOLE reply from the facts and ledger: remove every unsupported statement AND every conclusion that depended on it (e.g. with unknown dimensions you cannot say whether something fits; with no booking in the ledger, nothing is booked). Keep what was correct. " +
   "`receipts` is THE record of what BARRY did for this reply. Say something was done ONLY when a receipt shows it: result \"done\" = done; \"done_unconfirmed\" = submitted but not confirmed yet; \"not_done\"/\"failed\" = it didn't happen; \"sent_to_owner\" = you've asked the owner; \"still_with_owner\" = still waiting, nothing new was sent; \"owner_declined_earlier\" = the owner already declined those terms, not sent again; \"not_allowed\" = we can't do that. Describe each receipt as exactly that operation — never as something else the customer asked for. If the customer asked for several things and a receipt doesn't cover one, that one was NOT done: say so plainly (and if it isn't in whatTheBusinessCanDo, that we can't do it here). Your own earlier messages are never proof; if one of them claimed something `transaction`/`ownerRequests`/receipts contradict, correct it. " +
   "Only BARRY's runtime can send something to the owner. Mention the owner only when ownerApproval, receipts or ownerRequests show a request; otherwise never say you passed, will pass, or are waiting on anything with the owner. For status questions answer from ownerRequests (approved and done — with its reference; declined; withdrawn; still waiting). " +
   "Prices, deposits, durations, policies, product details and availability come ONLY from `facts`, receipts/toolOutput and scheduling. Quote prices exactly as written in facts. Never say something is available/in stock unless a receipt that looked up times or stock shows it now (or facts.shownProducts says so). Never state a measurement, colour, fit or specification that isn't in facts — say you don't have that detail. Never recommend something above a budget the customer stated; say nothing fits it instead. A total is computed only from those prices, the quantity and the business's own stated discount/shipping rules, and answering it never requires contact details. " +
@@ -334,6 +342,7 @@ export function sanitizeIR(graph: BusinessGraph, raw: LlmIR): BarryIR {
       discountPct: raw.constraints.discountPct ?? undefined,
       slotAccepted: raw.constraints.slotAccepted ?? undefined,
       slotDeclined: raw.constraints.slotDeclined ?? undefined,
+      quantity: raw.constraints.quantity && raw.constraints.quantity > 0 ? raw.constraints.quantity : undefined,
     },
     // One fact = field + value + its own quote. Mapped into BARRY's internal
     // shape unchanged; field NAMES are validated by grounding (verifyIR),
@@ -349,6 +358,8 @@ export function sanitizeIR(graph: BusinessGraph, raw: LlmIR): BarryIR {
     advancesTransaction: raw.advancesTransaction ?? undefined,
     withdrawsRequest: raw.withdrawsRequest ? true : undefined,
     changesPendingRequest: raw.changesPendingRequest ? true : undefined,
+    readRequested: raw.readRequested ? true : undefined,
+    checkoutConsent: raw.checkoutConsent ?? undefined,
   };
 }
 
@@ -435,6 +446,8 @@ export type ComposeSummaryContext = {
   transaction?: ReturnType<typeof transactionFacts>;
   /** Every request sent to the owner in this conversation, with its real status/outcome. */
   ownerRequests?: NonNullable<ReasonerContext["grounded"]>["ownerRequests"];
+  /** The conversation's effect ledger, customer-safe. */
+  ledger?: { what: string; happened: string; terms: Record<string, string | number>; reference?: string; outcome?: Record<string, string | number | boolean>; thisTurn: boolean }[];
 };
 
 export type BusinessAbilities = {
@@ -555,6 +568,13 @@ export function buildComposeSummary(context: ComposeSummaryContext, input: Compo
           : null,
     // THE record of what BARRY did for this reply: only these operations happened, with exactly these results.
     receipts: customerReceipts(sanitizedInput),
+    // The permanent effect ledger of this conversation: each entry is one operation with its own frozen
+    // terms, its own reference and its real domain outcome. A reference belongs ONLY to its own entry's terms.
+    ledger: context.ledger ?? [],
+    // THE amounts: the authoritative quantity-aware quote (never compute a total yourself).
+    pricing: sanitizedInput.quote ?? null,
+    // Present when your previous draft stated things BARRY can't support: rewrite the WHOLE reply.
+    repairRequired: sanitizedInput.repair ? { yourDraft: sanitizedInput.repair.draft, problems: sanitizedInput.repair.problems } : undefined,
     ownerRequests: context.ownerRequests ?? [],
     facts: context.facts ?? null,
     customer: context.customer ?? {},
@@ -610,6 +630,14 @@ export function composeSummaryFor(ctx: ReasonerContext, input: ComposeResponseIn
       customer: customerFacts(ctx),
       transaction: transactionFacts(ctx, input.language?.code),
       ownerRequests: ctx.grounded?.ownerRequests ?? [],
+      ledger: ledgerView(ctx.grounded?.ledger ?? []).map((e) => ({
+        what: e.describes,
+        happened: effectPhrase(e),
+        terms: e.terms,
+        ...(e.reference ? { reference: e.reference } : {}),
+        ...(e.outcome ? { outcome: e.outcome } : {}),
+        thisTurn: e.seq > (ctx.grounded?.turnStartSeq ?? Number.MAX_SAFE_INTEGER),
+      })),
     },
     input
   );

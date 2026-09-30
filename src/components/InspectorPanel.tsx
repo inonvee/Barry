@@ -105,6 +105,14 @@ export function TurnView({ state, turn, isLatest }: { state: ConversationState; 
       <Section title="Understanding">
         <Kv k="Raw intent" v={turn.understood.intent} />
         <Kv k="Purchase decision" v={turn.understood.purchaseDecision === undefined ? "—" : String(turn.understood.purchaseDecision)} />
+        {turn.understood.signals && (
+          <Kv
+            k="Turn signals (model, literal)"
+            v={Object.entries(turn.understood.signals)
+              .map(([name, value]) => `${name}=${value === null ? "null" : String(value)}`)
+              .join(" · ")}
+          />
+        )}
         <CommerceSummary commerce={turn.understood.commerce} />
         {turn.understood.knowledgeTopic && <Kv k="Knowledge topic" v={turn.understood.knowledgeTopic} />}
         {turn.understood.customerClaims !== undefined && <Kv k="Customer claims" v={JSON.stringify(turn.understood.customerClaims)} />}
@@ -211,6 +219,18 @@ export function TurnView({ state, turn, isLatest }: { state: ConversationState; 
             ))}
           </div>
           <Kv k="Stopped because" v={`${trace.stop.reason} (${trace.stop.outcome})`} />
+        </Section>
+      )}
+
+      {trace?.effects && trace.effects.length > 0 && (
+        <Section title="Business effects (ledger)">
+          {trace.effects.map((e) => (
+            <p key={e.seq} className="text-xs font-mono">
+              #{e.seq} {e.operation} → <span className={e.status === "effected" ? "text-green-700 dark:text-green-400" : "text-amber-700 dark:text-amber-400"}>{e.effect} · {e.status}</span>
+              {e.reference ? ` · ref ${e.reference}` : ""}
+              {Object.keys(e.terms).length ? ` · ${JSON.stringify(e.terms)}` : ""}
+            </p>
+          ))}
         </Section>
       )}
 

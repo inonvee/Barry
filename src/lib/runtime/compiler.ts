@@ -9,6 +9,7 @@ import { actionSupported, type CapabilityProfiles } from "@/lib/capabilities/mod
 import { getCapability } from "@/lib/fabric/capability";
 import { INVOKE_CAPABILITY } from "@/lib/tools/capability-tool";
 import type { GroundedContext } from "@/lib/reasoner/types";
+import { paymentTermsFromQuote, quoteOffer } from "./pricing";
 
 export type { CompileOutcome, CompileDebugInfo } from "@/lib/reasoner/ir";
 
@@ -30,6 +31,8 @@ export const SCRATCH_KEYS = {
   mentionedPartySize: "__mentionedPartySize",
   slotAccepted: "__slotAccepted",
   inventoryChecked: "__inventoryChecked",
+  /** Units the customer wants of the offer under discussion (latest correction wins). */
+  quantity: "__quantity",
   lastSchedulingDate: "__lastSchedulingDate",
   /** The last time-of-day the customer set ("after 3", "morning") — kept when a later turn only names a day. */
   lastSchedulingTime: "__lastSchedulingTime",
@@ -229,9 +232,6 @@ export function planCapabilityCall(request: NonNullable<BarryIR["capabilityReque
   return finalizeAction(INVOKE_CAPABILITY, { capability: request.capability, input: semantic, purpose: request.purpose.slice(0, 300) }, stage);
 }
 
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
-}
 
 /** Validate a deterministically-assembled input against the tool's real Zod schema before it can ever become an "action" outcome. */
 function finalizeAction(
@@ -258,6 +258,17 @@ function finalizeAction(
   // `callTool()` re-validates against the tool schema at execution time
   // regardless, so this loses no safety.
   return { kind: "action", action: { name, input }, stage, goal };
+}
+
+/** The read an offer supports (open times for bookable services, stock for stocked goods) — never a write. */
+function plannedRead(offer: Offer, known: Record<string, string>, stage: ConversationStage): CompileOutcome | undefined {
+  if (offer.requiresScheduling) {
+    const earliest = known[SCRATCH_KEYS.mentionedEarliest];
+    if (!earliest) return { kind: "ask_datetime", offerName: offer.name, stage };
+    return finalizeAction("checkAvailability", { offerId: offer.id, earliest, latest: known[SCRATCH_KEYS.mentionedLatest], partySize: Number(known[SCRATCH_KEYS.mentionedPartySize] ?? 1) }, stage);
+  }
+  if (offer.requiresInventory) return finalizeAction("checkInventory", { offerId: offer.id, quantity: Number(known[SCRATCH_KEYS.quantity] ?? 1) }, stage);
+  return undefined;
 }
 
 function missingCustomerInfo(offer: Offer, known: Record<string, string>): string[] {
@@ -384,6 +395,9 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
   if (ir.constraints.discountPct) {
     scratchUpdate[SCRATCH_KEYS.discountPct] = String(ir.constraints.discountPct);
   }
+  if (ir.constraints.quantity && Number.isInteger(ir.constraints.quantity) && ir.constraints.quantity > 0 && ir.constraints.quantity <= 1000) {
+    scratchUpdate[SCRATCH_KEYS.quantity] = String(ir.constraints.quantity);
+  }
   if (ir.constraints.slotAccepted) {
     scratchUpdate[SCRATCH_KEYS.slotAccepted] = "1";
   }
@@ -440,6 +454,12 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
     if (!somethingElse) return { kind: "withdrawn", withdrawnRequests: 0, stage: state.stage === "closed" ? "closed" : "discovery" };
   }
   const advancing = ir.withdrawsRequest ? false : ir.advancesTransaction;
+  // Checkout consent is its own signal: "don't check out" blocks every step toward payment this turn.
+  const checkoutBlocked = ir.checkoutConsent === false;
+  if (checkoutBlocked) {
+    delete known[SCRATCH_KEYS.commerceCheckoutRequested];
+    delete known[SCRATCH_KEYS.commerceCheckoutOnSuccess];
+  }
 
   if (state.stage === "closed") {
     return advancing === false ? { kind: "conversation", stage: "closed" } : { kind: "generic_confirm", stage: "closed" };
@@ -499,13 +519,15 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
       delete known[SCRATCH_KEYS.commerceCheckoutRequested];
       delete known[SCRATCH_KEYS.commerceCheckoutOnSuccess];
     }
-    if (c.intent === "checkout") known[SCRATCH_KEYS.commerceCheckoutRequested] = "1";
+    if (c.intent === "checkout" && !checkoutBlocked) known[SCRATCH_KEYS.commerceCheckoutRequested] = "1";
     if (c.intent === "select" || c.intent === "replace" || c.intent === "change_variant" || c.intent === "change_quantity") {
       // A decision attached to a cart change is only INTENT here: checkout
       // eligibility follows the verified result of that change (see the
       // runtime's state patch), never the customer's words alone.
       // An explicit request to buy it now needs no playbook permission to advance.
-      if (cartlessCheckout || (ir.purchaseDecision === true && graph.playbook.commerce.advanceToCheckout === "on_purchase_decision")) {
+      // A cart change never implies checkout by itself: only a decision to buy (per the playbook) or an
+      // explicit checkout — and never when the customer said not to check out.
+      if (!checkoutBlocked && (cartlessCheckout || (ir.purchaseDecision === true && graph.playbook.commerce.advanceToCheckout === "on_purchase_decision"))) {
         known[SCRATCH_KEYS.commerceCheckoutOnSuccess] = "1";
       } else {
         delete known[SCRATCH_KEYS.commerceCheckoutOnSuccess];
@@ -519,7 +541,7 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
   // Nothing new to act on from the customer's words: take the next safe
   // step toward the commerce goal, if one is in progress — unless this
   // message doesn't advance it (a question mid-checkout is answered).
-  const commerceStep = advancing === false ? undefined : planCommerceGoal(graph, known, options);
+  const commerceStep = advancing === false || checkoutBlocked ? undefined : planCommerceGoal(graph, known, options);
   if (commerceStep) return commerceStep;
 
   // An explicit decline of a previously offered slot ("no"/"לא") only
@@ -613,8 +635,15 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
   if (fact) {
     return { kind: "offer_fact", offerName: offer.name, fact, stage: state.stage };
   }
-  // Not advancing: nothing is asked for or executed — the reply answers from facts.
-  if (advancing === false) return { kind: "conversation", stage: state.stage };
+  // Not advancing: nothing is asked for or bought — but an explicitly requested READ still runs
+  // (open times, stock), because looking something up is not committing to anything.
+  if (advancing === false) {
+    if (ir.readRequested) {
+      const read = plannedRead(offer, known, state.stage);
+      if (read) return read;
+    }
+    return { kind: "conversation", stage: state.stage };
+  }
 
   const missing = missingCustomerInfo(offer, known);
   if (missing.length > 0) {
@@ -664,20 +693,10 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
 
     if (offer.requiresPayment) {
       if (!known[SCRATCH_KEYS.paymentRequestId]) {
-        const discountPct = Number(known[SCRATCH_KEYS.discountPct] ?? 0);
-        const baseAmount = offer.depositAmount ?? offer.price ?? 0;
-        return finalizeAction(
-          "createPaymentRequest",
-          {
-            amount: round2(baseAmount * (1 - discountPct / 100)),
-            currency: offer.currency,
-            reason: `Deposit for ${offer.name}`,
-            discountPct,
-            isCustomPrice: false,
-          },
-          "payment",
-          "collectDeposit"
-        );
+        if (checkoutBlocked) return { kind: "conversation", stage: state.stage };
+        const quote = quoteOffer(graph, offer, 1, Number(known[SCRATCH_KEYS.discountPct] ?? 0), "deposit");
+        if (!quote) return { kind: "compiler_error", reason: `No deposit or price for ${offer.name}`, stage: state.stage };
+        return finalizeAction("createPaymentRequest", paymentTermsFromQuote(quote, `Deposit for ${offer.name}`), "payment", "collectDeposit");
       }
       if (!known[SCRATCH_KEYS.paid]) {
         return { kind: "waiting_payment", stage: "payment" };
@@ -700,27 +719,21 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
   }
 
   if (offer.requiresInventory) {
-    if (!known[SCRATCH_KEYS.inventoryChecked]) {
-      return finalizeAction("checkInventory", { offerId: offer.id }, "payment", "completePurchase");
+    // Stock is checked for the quantity the customer wants now; a changed quantity re-checks.
+    const quantity = Number(known[SCRATCH_KEYS.quantity] ?? 1);
+    if (known[SCRATCH_KEYS.inventoryChecked] !== String(quantity) && !(quantity === 1 && known[SCRATCH_KEYS.inventoryChecked] === "1")) {
+      return finalizeAction("checkInventory", { offerId: offer.id, quantity }, "payment", "completePurchase");
     }
     if (offer.requiresPayment && !known[SCRATCH_KEYS.paymentRequestId]) {
       // A payment link needs the customer's decision, not just their interest.
       if (!known[SCRATCH_KEYS.purchaseDecided]) {
         return { kind: "confirm_purchase", offerName: offer.name, stage: "offer_selection" };
       }
-      const discountPct = Number(known[SCRATCH_KEYS.discountPct] ?? 0);
-      return finalizeAction(
-        "createPaymentRequest",
-        {
-          amount: round2((offer.price ?? 0) * (1 - discountPct / 100)),
-          currency: offer.currency,
-          reason: `Payment for ${offer.name}`,
-          discountPct,
-          isCustomPrice: false,
-        },
-        "payment",
-        "completePurchase"
-      );
+      if (checkoutBlocked) return { kind: "conversation", stage: state.stage };
+      // ONE quantity-aware quote is the amount the owner reviews, the link charges and the reply states.
+      const quote = quoteOffer(graph, offer, quantity, Number(known[SCRATCH_KEYS.discountPct] ?? 0));
+      if (!quote) return { kind: "compiler_error", reason: `No price for ${offer.name}`, stage: state.stage };
+      return finalizeAction("createPaymentRequest", paymentTermsFromQuote(quote, `Payment for ${offer.name}`), "payment", "completePurchase");
     }
     if (!known[SCRATCH_KEYS.paid]) {
       return { kind: "waiting_payment", stage: "payment" };
