@@ -67,6 +67,44 @@ const authority = (outs: TurnOutcome[], capability: string) => outs.flatMap((o) 
 const pendingCount = async (outs: TurnOutcome[]) => (await getBackend().listApprovals(outs[0].state.businessId)).filter((a) => a.conversationId === outs[0].state.id);
 
 export const SCENARIOS: Scenario[] = [
+  // ── Pass #3 structural invariants (F20–F22, atomic revision) ──
+  {
+    name: "pass3-F20-furniture-hard-cap",
+    business: "furniture-store",
+    language: "en",
+    turns: ["two Birchwood tables at 9% off, my hard max is 1700. Maya maya.p3@example.com", "correct to THREE tables at 9, max 1700 still hard. If too high refuse, dont propose a payment above my cap"],
+    expectation: "First: request for $1,636.18. Second: refuses — three tables come to $2,454.27, above $1,700; nothing pending or sent.",
+    check: async (outs) => {
+      const approvals = (await getBackend().listApprovals(outs[0].state.businessId)).filter((a) => a.conversationId === outs[0].state.id && a.status === "pending");
+      return approvals.some((a) => Number((a.requestedInput as { amount?: number }).amount) > 1700) ? "a request above the hard cap exists" : undefined;
+    },
+  },
+  {
+    name: "pass3-F22-strict-window",
+    business: "personal-trainer",
+    language: "en",
+    turns: ["free consultation Monday October 5 between 15:15 and 15:45 only, read only, no alternatives"],
+    expectation: "Looks up only that window; offers nothing outside 15:15–15:45.",
+    check: (outs) => {
+      const step = (outs[0].turn.trace?.steps ?? []).find((s) => s.action === "checkAvailability");
+      const w = outs[0].turn.compiled?.resolvedSchedulingWindow;
+      if (!step) return "no lookup ran";
+      return w && new Date(w.latest).getTime() - new Date(w.earliest).getTime() > 31 * 60 * 1000 ? "window wider than requested" : undefined;
+    },
+  },
+  {
+    name: "pass3-atomic-revision",
+    business: LOGISTICS_DEMO_ID,
+    language: "en",
+    turns: ["open a support case for P3-A-610, it's late", "sorry, the right number is P3-A-611 not 610"],
+    expectation: "After the correction exactly one request is pending, for P3-A-611 — or none, said plainly; never 'reviewing' an obsolete one.",
+    check: async (outs) => {
+      const pending = (await getBackend().listApprovals(outs[0].state.businessId)).filter((a) => a.conversationId === outs[0].state.id && a.status === "pending");
+      if (pending.length > 1) return "more than one active request";
+      if (pending.some((a) => JSON.stringify(a.requestedInput).includes("610"))) return "the superseded reference is still pending";
+      return undefined;
+    },
+  },
   // ── Pass #2 domain-truth regressions (F15–F19) ──
   {
     name: "pass2-F15-spa-pending-payment",

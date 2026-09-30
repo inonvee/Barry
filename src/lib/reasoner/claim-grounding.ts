@@ -3,7 +3,7 @@ import { operationKinds } from "./receipts";
 import type { LedgerEntry } from "@/lib/runtime/ledger";
 
 /** What a claim asserts happened — each is satisfied only by a matching domain effect in the ledger. */
-export type ClaimKind = "refund" | "update" | "cancel" | "send" | "create" | "booking" | "payment" | "availability";
+export type ClaimKind = "refund" | "update" | "cancel" | "send" | "create" | "booking" | "payment" | "availability" | "delivery" | "callback" | "cart_empty";
 
 /**
  * Claim grounding — the last check between a model-written reply and the customer.
@@ -32,7 +32,10 @@ export type ClaimEvidence = {
   /** Figures the customer stated themselves (repeatable as-is). */
   mentioned: number[];
   percentages: number[];
+  /** The business's own facts (Genome, provider data, results) — the only source for product facts. */
   factText: string;
+  /** What the customer said — repeatable as THEIRS, never promoted to a product fact. */
+  customerText: string;
   /** Lower-cased text of what the business's systems reported (statuses etc.). */
   reportedText: string;
 };
@@ -42,21 +45,28 @@ const MODAL = /\b(will|'ll|can|could|would|may|might|if|once|after|when|before|w
 /** The customer did it ("once you've sent…"), not BARRY. */
 const CUSTOMER_SUBJECT = /\byou(?:'ve| have)?\s+(?:\w+\s+)?(?:sent|updated|changed|cancell?ed|paid)\b/i;
 
-type ClaimRule = { kind: ClaimKind | "owner" | "owner_waiting"; en: RegExp; he: RegExp; needsCompletion?: boolean };
+/** `promiseToo`: a future promise ("we'll call you", "I'll email it") needs the same evidence as a completed claim. */
+type ClaimRule = { kind: ClaimKind | "owner" | "owner_waiting"; en: RegExp; he: RegExp; needsCompletion?: boolean; promiseToo?: boolean };
 
 const COMPLETION_EN = /\b(i've|i have|we've|we have|has been|have been|was|were|is now|are now|is all|got|just|already|successfully|processed|issued|done)\b/i;
 
 const RULES: ClaimRule[] = [
   { kind: "refund", en: /\b(refund(?:ed)?|reimburs\w*|credited)\b/i, he: /(החזרתי|הוחזר|הוחזרה|הוחזרו|זיכיתי|זוכית|זוכה|בוצע החזר|ההחזר (?:בוצע|אושר|עבר))/, needsCompletion: true },
   { kind: "update", en: /\b(updated|changed|rescheduled|moved|modified|amended|adjusted)\b/i, he: /(עדכנתי|עודכן|עודכנה|עודכנו|שיניתי|שונה|שונתה|שונו|הזזתי|הוזז|הוזזה|קבעתי מחדש)/, needsCompletion: true },
-  { kind: "cancel", en: /\b(cancell?ed|withdrawn|voided|removed)\b/i, he: /(ביטלתי|בוטל|בוטלה|בוטלו|הסרתי|הוסר|הוסרה)/, needsCompletion: true },
+  { kind: "cancel", en: /\b(cancell?ed|withdrawn|voided|removed)\b/i, he: /(ביטלתי|בוטל|בוטלה|בוטלו|הסרתי|הוסר|הוסרה|הוצאתי|הורדתי|הוצאו|הורדו)/, needsCompletion: true },
+  // The cart's state is whatever the provider's cart says — never what was requested.
+  { kind: "cart_empty", en: /\b(?:your )?cart is (?:now )?empty\b|\bnothing (?:left )?in your cart\b/i, he: /(הסל(?: שלך)? (?:כעת |עכשיו )?ריק|אין (?:כלום|שום דבר) בסל)/ },
   { kind: "send", en: /\b(sent|emailed|texted|forwarded)\b/i, he: /(שלחתי|נשלח|נשלחה|נשלחו)/, needsCompletion: true },
   // The effect vocabulary: each maps to domain effect types, and only the ledger can satisfy it.
   { kind: "create", en: /\b(opened|created|booked|placed|registered|filed|logged|reserved)\b/i, he: /(פתחתי|נפתח|נפתחה|יצרתי|נוצר|נוצרה|הזמנתי|רשמתי|נרשם|נרשמה|קבעתי לך|נקבע לך)/, needsCompletion: true },
-  { kind: "booking", en: /\b(?:booking|appointment|reservation)\b[^.!?]*\b(?:confirmed|is set|all set|is booked|is reserved)\b|\b(?:you're|you are) (?:all )?(?:set|booked|confirmed)\b|\bconfirmed (?:your|the) (?:booking|appointment|reservation)\b/i, he: /(התור (?:נקבע|מאושר|אושר)|ההזמנה (?:מאושרת|אושרה)|התור שלך (?:מאושר|נקבע)|הכול מסודר)/ },
+  { kind: "booking", en: /\b(?:booking|appointment|reservation)\b[^.!?]*\b(?:confirmed|is set|all set|is booked|is reserved)\b|\b(?:you're|you are) (?:all )?(?:set|booked|confirmed)\b|\bconfirmed (?:your|the) (?:booking|appointment|reservation)\b/i, he: /(התור (?:נקבע|מאושר|אושר)|ההזמנה (?:מאושרת|אושרה)|התור שלך (?:מאושר|נקבע)|הכול מסודר|הוזמן|הוזמנה|הוזמנו|קבענו|נקבע ל)/ },
+  // Different domain effects, never interchangeable: a payment LINK is not an email DELIVERY, and a
+  // recorded enquiry is not an arranged CALLBACK.
+  { kind: "delivery", en: /\b(?:emailed|e-mailed|sent (?:it |the link |this |you )?(?:to|at) your (?:e-?mail|inbox|address)|(?:to|in) your (?:e-?mail|inbox))\b/i, he: /(נשלח(?:ה)? ל(?:כתובת ה)?(?:אימייל|מייל)|שלחתי (?:לך )?ל(?:מייל|אימייל)|לתיבת הדואר|ישלח(?:ו)? למייל)/, promiseToo: true },
+  { kind: "callback", en: /\b(?:(?:the |our )?team|someone|we|they|a (?:salesperson|representative|specialist))(?: will|'ll)? (?:reach out|call you|contact you|get back to you|be in touch|follow up with you)\b/i, he: /(יחזרו אליך|יצרו (?:איתך|אתך) קשר|ניצור (?:איתך|אתך) קשר|נחזור אליך|יתקשרו אליך|יחזור אליך)/, promiseToo: true },
   { kind: "payment", en: /\bpayment\b[^.!?]*\b(?:verified|received|confirmed|completed?|went through|successful|settled)\b|\b(?:paid|payment) (?:is |has been )?(?:verified|confirmed|received)\b/i, he: /(התשלום (?:אומת|התקבל|עבר|אושר)|קיבלתי את התשלום|שולם בהצלחה)/ },
   { kind: "availability", en: /\b(?:is|are|it's|we have|there's|there is|there are)\b[^.!?]*\b(?:available|in stock)\b|\b(?:slots?|openings?|times?|spots?) (?:available|free|open)\b/i, he: /(פנוי|פנויה|פנויים|פנויות|זמין|זמינה|זמינים|זמינות|במלאי|יש מקום)/ },
-  { kind: "owner_waiting", en: /\b(?:waiting|wait) (?:for|on) (?:their|his|her|the|an?) ?(?:response|answer|reply|approval|decision|ok|sign-?off)\b|\b(?:pending|awaiting) (?:approval|sign-?off)\b|\b(owner|manager|boss)\b.*\b(waiting|pending|hear back|haven't heard|still)\b|\b(waiting|pending|still)\b.*\b(owner|manager|boss)('s)?\b/i, he: /(?:מחכה|ממתין|ממתינה|ממתינים) (?:ל)?(?:תשובה|אישור|לאישור|לתשובה)|(מחכה|ממתין|ממתינה|עדיין).*(בעל העסק|בעלת העסק|הבעלים|המנהל|האחראי)|(בעל העסק|בעלת העסק|הבעלים|המנהל|האחראי).*(מחכה|ממתין|ממתינה|עדיין)/ },
+  { kind: "owner_waiting", en: /\b(?:waiting|wait) (?:for|on) (?:their|his|her|the|an?) ?(?:response|answer|reply|approval|decision|ok|sign-?off)\b|\b(?:pending|awaiting) (?:approval|sign-?off)\b|\b(owner|manager|boss)\b.*\b(waiting|pending|hear back|haven't heard|still)\b|\b(waiting|pending|still)\b.*\b(owner|manager|boss)('s)?\b|\b(?:owner|manager|boss)\b[^.!?]*\b(?:is |are )?(?:currently )?(?:reviewing|looking (?:into|at)|considering|checking)\b/i, he: /(?:מחכה|ממתין|ממתינה|ממתינים) (?:ל)?(?:תשובה|אישור|לאישור|לתשובה)|(מחכה|ממתין|ממתינה|עדיין).*(בעל העסק|בעלת העסק|הבעלים|המנהל|האחראי)|(בעל העסק|בעלת העסק|הבעלים|המנהל|האחראי).*(מחכה|ממתין|ממתינה|עדיין|בודק|בודקת|שוקל)/ },
   { kind: "owner", en: /\b(owner|manager|boss)\b/i, he: /(בעל העסק|בעלת העסק|הבעלים|המנהל|האחראי)/ },
 ];
 
@@ -109,8 +119,9 @@ export function effectClaimKinds(e: LedgerEntry): ClaimKind[] {
     case "payment.settled":
       return ["payment"];
     case "payment.link_created":
-    case "followup.scheduled":
       return ["send"];
+    case "followup.scheduled":
+      return ["send", "callback"];
     case "cart.line_added":
       return ["create"];
     case "cart.line_updated":
@@ -141,6 +152,10 @@ export function claimEvidence(ctx: ReasonerContext, input: ComposeResponseInput,
     }
   }
   if (input.outcome.kind === "withdrawn" && input.outcome.withdrawnRequests > 0) kinds.add("cancel");
+  // The cart is empty only if the provider's latest cart says so: the last cart receipt's after-state,
+  // or (no cart change recorded) the cart as re-read this turn.
+  const lastCart = [...ledger].reverse().find((e) => e.outcome && typeof e.outcome.cartAfter === "string");
+  if (lastCart ? lastCart.outcome!.cartAfter === "empty" : !(ctx.grounded?.cart?.length)) kinds.add("cart_empty");
   // What the catalog itself reports as in stock (re-read from the provider this turn).
   if ((ctx.grounded?.shownResults ?? []).some((r) => r.variants.some((v) => v.inStock))) kinds.add("availability");
 
@@ -181,14 +196,13 @@ export function claimEvidence(ctx: ReasonerContext, input: ComposeResponseInput,
   const factText = [
     ...g.offers.map((o) => `${o.name} ${o.description}`),
     knowledge,
-    customerText,
     JSON.stringify(ctx.grounded?.shownResults ?? []),
     JSON.stringify(ctx.grounded?.cart ?? []),
     JSON.stringify(input.toolResult?.output ?? null),
   ].join("\n");
 
   const reportedText = JSON.stringify([input.toolResult?.output ?? null, ...(input.steps ?? []).map((st) => st.toolResult?.output ?? null), ctx.grounded?.capabilityResults ?? []]).toLowerCase();
-  return { kinds, ownerRequestExists, ownerRequestWaiting, amounts: [...new Set(base.filter((n) => Number.isFinite(n) && n > 0))], mentioned, percentages: [...percentages], factText, reportedText };
+  return { kinds, ownerRequestExists, ownerRequestWaiting, amounts: [...new Set(base.filter((n) => Number.isFinite(n) && n > 0))], mentioned, percentages: [...percentages], factText, customerText, reportedText };
 }
 
 function derivable(x: number, ev: ClaimEvidence): boolean {
@@ -230,7 +244,13 @@ export function findUnsupportedClaims(text: string, ev: ClaimEvidence): ClaimVio
       if (value > 0 && !derivable(value, ev)) out.push({ sentence, why: `states an amount (${m[0].trim()}) not in the business's facts or results` });
     }
     for (const m of sentence.matchAll(MEASURE)) {
-      if (!ev.factText.includes(m[1])) out.push({ sentence, why: `states a measurement (${m[0].trim()}) not in the business's facts` });
+      if (ev.factText.includes(m[1])) continue;
+      // Provenance: a figure only the CUSTOMER gave (their room, a guess they relayed) may be repeated
+      // as theirs — never asserted as a property of the product.
+      const clause = clausesOf(sentence).find((c) => c.includes(m[0].trim())) ?? sentence;
+      const attributedToCustomer = /\b(?:your|you|you've|you said|you mentioned)\b|שלך|שלכם|אצלך|ציינת|אמרת/i.test(clause) || NEGATED.test(clause);
+      if (ev.customerText.includes(m[1]) && attributedToCustomer) continue;
+      out.push({ sentence, why: `states a measurement (${m[0].trim()}) that no business fact supports` });
     }
   }
   return out;
@@ -250,13 +270,15 @@ function checkClause(sentence: string, fullSentence: string, ownerSentence: bool
     const hits = new Set(RULES.filter((r) => r.en.test(sentence) || r.he.test(sentence)).map((r) => r.kind));
     if (!negated && hits.size > 0) {
       for (const rule of RULES) {
-        if (rule.kind === "owner" || rule.kind === "owner_waiting" || !hits.has(rule.kind) || modal) continue;
+        if (rule.kind === "owner" || rule.kind === "owner_waiting" || !hits.has(rule.kind) || (modal && !rule.promiseToo)) continue;
         // Handing something to the owner is covered by the owner check, not a "sent" operation.
         if (rule.kind === "send" && ownerSentence) continue;
         const word = (sentence.match(rule.en) ?? sentence.match(rule.he))?.[0]?.toLowerCase();
         // A status the business's own system reported ("cancelled", "changed") is a fact, not a claim of BARRY's.
         if (word && ev.reportedText.includes(word)) continue;
         if (rule.needsCompletion && !rule.he.test(sentence) && !COMPLETION_EN.test(sentence)) continue;
+        // A callback promise is kept when BARRY really will come back (an owner request that resumes the chat).
+        if (rule.kind === "callback" && ev.ownerRequestWaiting) continue;
         if (!ev.kinds.has(rule.kind as ClaimKind)) out.push({ sentence: fullSentence, why: `claims a ${rule.kind} that no recorded business effect shows` });
       }
     }

@@ -56,6 +56,11 @@ export type LedgerEntry = {
 
 export const LEDGER_KEY = "__effectLedger";
 
+export type CartLineSnapshot = { position: number; id: string; title: string; options: Record<string, string>; quantity: number };
+
+const lineLabel = (l: { title: string; options: Record<string, string> }) => `${l.title}${Object.keys(l.options).length ? ` (${Object.values(l.options).join(" / ")})` : ""}`;
+const cartLabel = (lines: { title: string; options: Record<string, string>; quantity: number }[]) => (lines.length ? lines.map((l) => `${l.quantity} × ${lineLabel(l)}`).join(", ") : "empty");
+
 const OPERATION_WORDS: Record<string, string> = {
   checkAvailability: "availability lookup",
   createBooking: "appointment booking",
@@ -130,7 +135,7 @@ function referenceOf(output: unknown): string | undefined {
  * The DOMAIN outcome of one executed call: effect type + status + reference + outcome. This is the
  * one place transport results become business effects.
  */
-export function classifyExecution(action: string, input: unknown, result: ToolCallResult): Omit<LedgerEntry, "seq" | "at"> {
+export function classifyExecution(action: string, input: unknown, result: ToolCallResult, cartBefore?: CartLineSnapshot[]): Omit<LedgerEntry, "seq" | "at"> {
   const base = { operation: operationOf(action, input), describes: describe(action, input), terms: termsOf(action, input) };
   if (!result.ok) {
     const cap = (result as { capability?: { executed?: boolean } }).capability;
@@ -178,14 +183,39 @@ export function classifyExecution(action: string, input: unknown, result: ToolCa
       return { ...base, effect: "catalog.searched", status: "effected", outcome: { results: ((out.products as unknown[]) ?? []).length } };
     case "addToCart":
     case "updateCartLine": {
-      if (out.added === false) return { ...base, effect: "cart.not_changed", status: "no_effect" };
+      // A cart receipt freezes the EXACT subject: which line (product + options), its quantity before
+      // and after, and the whole cart after — read from the provider's returned cart, never from the request.
+      const after = ((out.cart as { lines?: CartLineSnapshot[] } | undefined)?.lines ?? []) as CartLineSnapshot[];
+      const targetId = action === "updateCartLine" ? String((input as { lineId?: unknown })?.lineId ?? "") : String(out.lineId ?? "");
+      const before = cartBefore?.find((l) => l.id === targetId);
+      const afterLine = after.find((l) => l.id === targetId);
+      const subject = before ?? afterLine;
+      const terms = {
+        ...base.terms,
+        ...(subject ? { item: lineLabel(subject) } : {}),
+        quantityBefore: before?.quantity ?? 0,
+        quantityAfter: afterLine?.quantity ?? 0,
+      };
+      const outcome = { cartAfter: cartLabel(after) };
+      if (out.added === false) return { ...base, terms, effect: "cart.not_changed", status: "no_effect", outcome };
       const qty = (input as { quantity?: unknown })?.quantity;
+      if (action === "updateCartLine") {
+        // The requested change must be visible on THAT line in the returned cart.
+        const wanted = typeof qty === "number" ? qty : undefined;
+        const applied = wanted === 0 ? !afterLine : wanted === undefined ? Boolean(afterLine) : afterLine?.quantity === wanted;
+        if (!applied || (cartBefore && !before)) return { ...base, terms, effect: "cart.change_not_verified", status: "failed", outcome };
+      }
       const effect = action === "addToCart" ? (out.replacedLineId ? "cart.line_replaced" : "cart.line_added") : qty === 0 ? "cart.line_removed" : "cart.line_updated";
-      return { ...base, effect, status: "effected" };
+      return { ...base, terms, effect, status: "effected", outcome };
     }
     default:
       return { ...base, effect: `${action}.done`, status: "effected" };
   }
+}
+
+/** A write the final-write gate stopped before anything was proposed or executed. */
+export function classifyBlocked(action: string, input: unknown): Omit<LedgerEntry, "seq" | "at"> {
+  return { operation: operationOf(action, input), describes: describe(action, input), terms: termsOf(action, input), effect: "write.blocked", status: "no_effect" };
 }
 
 /** An owner request's lifecycle event (asked, withdrawn, superseded, declined) as a new entry. */
@@ -224,6 +254,10 @@ export function effectPhrase(e: LedgerEntry): string {
       return "submitted, but the system has NOT confirmed it happened";
   }
   switch (e.effect) {
+    case "write.blocked":
+      return "NOT created — it would break the customer's own consent or limits; nothing was sent or charged";
+    case "cart.change_not_verified":
+      return "the requested cart change could NOT be verified on the cart — do not say it happened";
     case "payment.pending":
       return "checked with the payment provider: NOT paid yet (pending)";
     case "payment.not_paid":

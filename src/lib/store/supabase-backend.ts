@@ -1,4 +1,5 @@
 import { getSupabaseClient } from "./supabase-client";
+import { ApprovalAlreadyResolvedError } from "./types";
 import type {
   ApprovalRecord,
   BarryBackend,
@@ -746,9 +747,13 @@ export class SupabaseBackend implements BarryBackend {
       .from("approvals")
       .update({ status: decision, resolution })
       .eq("id", approvalId)
+      // Compare-and-set: only a PENDING approval can be resolved, so two concurrent resolutions (a
+      // double click, a stale tab, an owner racing a customer withdrawal) can never both win.
+      .eq("status", "pending")
       .select("*")
-      .single();
+      .maybeSingle();
     if (error) throw new Error(`Failed to resolve approval ${approvalId}: ${error.message}`);
+    if (!data) throw new ApprovalAlreadyResolvedError(approvalId);
     return approvalFromRow(data);
   }
 

@@ -8,6 +8,7 @@ import type { ToolCallResult, ToolContext } from "@/lib/tools";
 import { getConversationStore } from "@/lib/state";
 import type { ConversationState, TurnLog } from "@/lib/state";
 import { getBackend } from "@/lib/store";
+import { ApprovalAlreadyResolvedError, type ApprovalRecord } from "@/lib/store/types";
 import { formatLocalDateTime } from "@/lib/scheduling/resolver";
 import type { CustomerFacingLocalDisplay, GroundedContext, ReasonerContext, SchedulingDisplayFacts } from "@/lib/reasoner/types";
 import { resolveCapabilityProfiles, actionSupported, ACTION_REQUIREMENTS, type CapabilityProfiles } from "@/lib/capabilities";
@@ -20,9 +21,10 @@ import { composeDeterministic } from "@/lib/reasoner/deterministic-compose";
 import { findInternalLeak, internalVocabulary } from "@/lib/reasoner/reply-hygiene";
 import { claimEvidence, findMisattributedReferences, findUnsupportedClaims, languageMismatch, trimClosers } from "@/lib/reasoner/claim-grounding";
 import { renderStatus } from "@/lib/reasoner/status-render";
-import { appendLedger, classifyExecution, readLedger, requestEntry, type LedgerEntry } from "./ledger";
+import { appendLedger, classifyBlocked, classifyExecution, readLedger, requestEntry, type CartLineSnapshot, type LedgerEntry } from "./ledger";
 import { currentQuote } from "./pricing";
-import { conversationApprovals, findSameRequest, supersedeOlderRevisions, ownerRequestViews, recordOwnerRequestResult, withdrawPendingRequests, type ExistingRequest } from "./owner-requests";
+import { finalWriteGate, type WriteBlock } from "./write-gate";
+import { conversationApprovals, findSameRequest, settleChangedTerms, supersedeOlderRevisions, ownerRequestViews, recordOwnerRequestResult, withdrawPendingRequests, type ExistingRequest } from "./owner-requests";
 import type { ComposeResponseInput } from "@/lib/reasoner/types";
 import { BARRY_RUNTIME_VERSION, runtimeCommit } from "./version";
 import { getCatalogSchema, getCommerceProduct, getOwnedCart } from "@/lib/commerce/capability";
@@ -125,7 +127,13 @@ async function patchStateAfterTool(state: ConversationState, toolName: string, o
       // makes the cart eligible for checkout.
       if (known[SCRATCH_KEYS.commerceCheckoutOnSuccess]) {
         known[SCRATCH_KEYS.commerceCheckoutRequested] = "1";
+        known[SCRATCH_KEYS.checkoutScope] = JSON.stringify("all");
         delete known[SCRATCH_KEYS.commerceCheckoutOnSuccess];
+      } else {
+        // The cart changed without a decision to buy it as it now is: earlier checkout consent was
+        // for the earlier cart revision and no longer applies.
+        delete known[SCRATCH_KEYS.commerceCheckoutRequested];
+        delete known[SCRATCH_KEYS.checkoutScope];
       }
       if (result.cart) {
         known[SCRATCH_KEYS.commerceCartId] = result.cart.id;
@@ -353,14 +361,19 @@ export async function handleCustomerMessage(
   // The model owns understanding; verifyIR() only GROUNDS it — evidence
   // for persisted facts, consistency with current state, structural
   // ranges. It never adds a semantic value of its own.
-  const { verified: ir, verification } = verifyIR(graph, message, rawIr, state, { catalog: grounded.catalog, capabilities: grounded.capabilities, capabilityResults: grounded.capabilityResults });
+  const { verified: ir, verification } = verifyIR(graph, message, rawIr, state, { catalog: grounded.catalog, capabilities: grounded.capabilities, capabilityResults: grounded.capabilityResults, cartLineCount: grounded.cartLines?.length });
   const prevStage = state.stage;
   // The customer's current intent controls requests still waiting on the owner: withdrawing, or
   // changing their terms, withdraws them before anything else happens this turn.
-  const withdrawnRequests =
-    ir.withdrawsRequest || ir.changesPendingRequest ? await withdrawPendingRequests(graph, state, ir.withdrawsRequest ? "withdrawn" : "changed") : 0;
+  // A withdrawal happens now (scoped to the requests it names). Changed terms are settled AFTER this
+  // turn's steps (atomically): the old request is superseded only once we know whether a valid
+  // replacement exists — never leaving a phantom "the owner is reviewing it".
+  delete state.knownFields.__reusedApprovalThisTurn;
+  const withdrawnRequests = ir.withdrawsRequest ? await withdrawPendingRequests(graph, state, "withdrawn", ir.withdrawScope) : 0;
+  const pendingBeforeChange = ir.changesPendingRequest && !ir.withdrawsRequest ? (await conversationApprovals(graph.business.id, conversationId)).filter((a) => a.status === "pending") : [];
   if (withdrawnRequests > 0) grounded.ownerRequests = ownerRequestViews(await conversationApprovals(graph.business.id, conversationId), state);
-  let outcome = compile(graph, state, ir, { profiles, shownProducts: grounded?.shownProducts });
+  state.knownFields.__focusOfferId = ir.selectedOfferId ?? "";
+  let outcome = compile(graph, state, ir, { profiles, shownProducts: grounded?.shownProducts, cartLines: grounded.cartLines });
   if (outcome.kind === "withdrawn") outcome = { ...outcome, withdrawnRequests };
 
   state.detectedIntent = ir.intent;
@@ -380,6 +393,9 @@ export async function handleCustomerMessage(
   let next: CompileOutcome | undefined;
   let stop: TurnTrace["stop"] = { reason: "no_action", outcome: outcome.kind };
 
+  // The cart as it stands before each step (re-read at turn start, then taken from each mutation's
+  // returned cart) — every cart receipt freezes the exact line and its before/after quantity.
+  let cartNow: CartLineSnapshot[] | undefined = grounded.cartLines;
   if (outcome.kind === "action") {
     let current: Extract<CompileOutcome, { kind: "action" }> = outcome;
     let trigger: TurnStep["trigger"] = "customer";
@@ -398,10 +414,12 @@ export async function handleCustomerMessage(
         stop = { reason: "capability_unavailable", outcome: current.action.name };
         break;
       }
-      const step = await runStep(graph, state, current, ctx, trigger === "customer" ? prevStage : state.stage, trigger, profiles);
+      const step = await runStep(graph, state, current, ctx, trigger === "customer" ? prevStage : state.stage, trigger, profiles, cartNow);
       steps.push(step);
+      const returnedCart = (step.toolResult?.ok ? (step.toolResult.output as { cart?: { lines: { id: string; title: string; options: Record<string, string>; quantity: number }[] } }).cart : undefined)?.lines;
+      if (returnedCart) cartNow = returnedCart.map((l, i) => ({ position: i + 1, id: l.id, title: l.title, options: l.options, quantity: l.quantity }));
       if (step.policyDecision.status !== "allowed") {
-        stop = { reason: step.policyDecision.status === "denied" ? "policy_denied" : "owner_approval_required", outcome: current.action.name };
+        stop = { reason: step.blocked ? "write_blocked" : step.policyDecision.status === "denied" ? "policy_denied" : "owner_approval_required", outcome: current.action.name };
         break;
       }
       if (!step.toolResult?.ok) {
@@ -444,6 +462,11 @@ export async function handleCustomerMessage(
       trigger = "continuation";
     }
     if (steps.length > 0) outcome = steps[steps.length - 1].outcome;
+  }
+
+  if (pendingBeforeChange.length > 0) {
+    const settled = await settleChangedTerms(graph, state, pendingBeforeChange);
+    if (!settled.replacement) grounded.revisionWithoutReplacement = true;
   }
 
   if (next) {
@@ -579,7 +602,11 @@ async function buildGroundedContext(
     });
     if (cartId) {
       const cart = await getOwnedCart({ graph, customerId: ctx.customerId, conversationId: ctx.conversationId }, cartId);
-      grounded.cart = cart.lines.map((line, index) => ({ position: index + 1, title: line.title, options: line.options, quantity: line.quantity }));
+      grounded.cartLines = cart.lines.map((line, index) => ({ position: index + 1, id: line.id, title: line.title, options: line.options, quantity: line.quantity }));
+      grounded.cart = grounded.cartLines.map(({ id: _id, ...line }) => {
+        void _id;
+        return line;
+      });
       grounded.cartTotal = `${cart.total.amount} ${cart.total.currency}`;
     }
   } catch (err) {
@@ -637,6 +664,8 @@ type ExecutedStep = {
   toolResult: ToolCallResult | null;
   /** When approval was required and the same request already existed (nothing new was sent). */
   existing?: ExistingRequest["state"];
+  /** The final-write gate stopped this write (scope, cap, unknown shipping) — nothing was proposed or executed. */
+  blocked?: WriteBlock;
   trace: TurnStep;
 };
 
@@ -648,13 +677,23 @@ async function runStep(
   ctx: ToolContext,
   restoreStage: ConversationState["stage"],
   trigger: TurnStep["trigger"],
-  profiles: CapabilityProfiles | undefined
+  profiles: CapabilityProfiles | undefined,
+  cartBefore?: CartLineSnapshot[]
 ): Promise<ExecutedStep> {
   const before = { ...state.knownFields };
   const stageBefore = state.stage;
-  const { policyDecision, toolResult, existing, requestId } = await authorizeAndExecute(graph, state, outcome, ctx, restoreStage);
+  // The final-write gate runs BEFORE approval creation or execution: scope, cart revision and hard cap
+  // are re-derived now and must match the customer's current consent — no model signal overrides it.
+  const blocked = await finalWriteGate(graph, state, outcome.action.name, outcome.action.input, ctx);
+  const { policyDecision, toolResult, existing, requestId } = blocked
+    ? { policyDecision: { status: "denied" as const, reason: `final-write gate: ${blocked.reason}` }, toolResult: null, existing: undefined, requestId: undefined }
+    : await authorizeAndExecute(graph, state, outcome, ctx, restoreStage);
+  if (blocked) {
+    state.stage = restoreStage;
+    appendLedger(state, { ...classifyBlocked(outcome.action.name, outcome.action.input), outcome: { reason: blocked.reason, ...(blocked.total !== undefined ? { total: blocked.total } : {}), ...(blocked.cap !== undefined ? { cap: blocked.cap } : {}) } });
+  }
   // The domain effect of this step, frozen in the ledger — transport success is never recorded as a business effect.
-  if (toolResult) appendLedger(state, classifyExecution(outcome.action.name, outcome.action.input, toolResult));
+  if (toolResult) appendLedger(state, classifyExecution(outcome.action.name, outcome.action.input, toolResult, cartBefore));
   else if (requestId) appendLedger(state, requestEntry(outcome.action.name, outcome.action.input, requestId, "awaiting_owner"));
   const after = state.knownFields;
   const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((k) => before[k] !== after[k]).sort();
@@ -667,6 +706,7 @@ async function runStep(
     policyDecision,
     toolResult,
     ...(existing ? { existing } : {}),
+    ...(blocked ? { blocked } : {}),
     trace: {
       trigger,
       action: outcome.action.name,
@@ -722,8 +762,13 @@ async function composeTurn(
   // The composer and every check see the ledger as it stands after this turn's steps, the current
   // owner requests, and the one authoritative quote.
   rctx.grounded = { ...(rctx.grounded ?? {}), ledger: readLedger(rctx.state), ownerRequests: ownerRequestViews(await conversationApprovals(graph.business.id, rctx.state.id), rctx.state) };
-  const quote = currentQuote(graph, rctx.state);
+  // The quote follows the offer the customer is asking about NOW (not a stale earlier one).
+  const quote = currentQuote(graph, { ...rctx.state, selectedOfferId: rctx.state.knownFields.__focusOfferId || rctx.state.selectedOfferId });
   if (steps.length <= 1 && !next) {
+    if (last?.blocked) {
+      input = { outcome, toolResult: null, writeBlocked: last.blocked, language, quote };
+      return await guardReply(reasoner, rctx, input, await reasoner.composeResponse(rctx, input));
+    }
     if (last?.policyDecision.status === "denied") {
       // The rule's text stays in the trace; the customer hears what it means for them.
       input = { outcome, toolResult: null, refused: true, language, quote };
@@ -742,6 +787,7 @@ async function composeTurn(
       toolResult: last?.toolResult ?? null,
       policyReason: last?.policyDecision.status === "requires_approval" && !last.existing ? last.policyDecision.reason : undefined,
       ...(last?.existing ? { existingOwnerRequest: last.existing } : {}),
+      ...(last?.blocked ? { writeBlocked: last.blocked } : {}),
       scheduling: buildSchedulingDisplay(graph, outcome, last?.toolResult ?? null, message, language),
       steps: steps.map((st) => ({
         outcome: st.outcome,
@@ -756,6 +802,7 @@ async function composeTurn(
     });
   }
   if (outcome.kind === "conversation" && rctx.grounded?.ownerRequests?.length) input = { ...input, ownerRequests: rctx.grounded.ownerRequests };
+  if (rctx.grounded?.revisionWithoutReplacement) input = { ...input, revisionWithoutReplacement: true };
   const guarded = await guardReply(reasoner, rctx, input, await reasoner.composeResponse(rctx, input));
   if (guarded.fallback) return guarded;
   const text = guarded.text;
@@ -868,6 +915,7 @@ async function authorizeAndExecute(
     const same = findSameRequest(await conversationApprovals(graph.business.id, ctx.conversationId), outcome.action.name, outcome.action.input);
     if (same) {
       if (same.state === "still_pending") {
+        state.knownFields.__reusedApprovalThisTurn = same.approval.id;
         state.pendingApprovalId = same.approval.id;
         state.pendingAction = outcome.action;
         state.stage = "escalated";
@@ -1035,18 +1083,19 @@ export async function resumeAfterApproval(
   // approval never reaches the tool call at all.
   const existing = await backend.getApproval(approvalId);
   if (!existing) throw new Error(`Approval ${approvalId} not found`);
-  if (existing.status !== "pending") {
+  const alreadyResolved = async (): Promise<TurnOutcome> => {
+    const current = (await backend.getApproval(approvalId)) ?? existing;
     const store = getConversationStore();
     const state = await store.get(existing.conversationId);
     if (!state) throw new Error(`Conversation ${existing.conversationId} not found`);
-    const response = `This request was already ${existing.status} — nothing more to do here.`;
+    const response = `This request was already ${current.status} — nothing more to do here.`;
     return {
       state,
       turn: {
         id: turnId(),
         at: new Date().toISOString(),
         customerMessage: "(duplicate owner approval resolution)",
-        understood: { intent: "approval_already_resolved", entities: { decision: existing.status } },
+        understood: { intent: "approval_already_resolved", entities: { decision: current.status } },
         retrieved: { offerIds: [], knowledgeIds: [] },
         response,
         stateAfter: { stage: state.stage },
@@ -1054,9 +1103,17 @@ export async function resumeAfterApproval(
       },
       response,
     };
-  }
+  };
+  if (existing.status !== "pending") return alreadyResolved();
 
-  const approval = await backend.resolveApproval(approvalId, decision, decidedBy, alternateValue);
+  // Compare-and-set in the backend: a concurrent or stale resolution loses here and executes nothing.
+  let approval: ApprovalRecord;
+  try {
+    approval = await backend.resolveApproval(approvalId, decision, decidedBy, alternateValue);
+  } catch (err) {
+    if (err instanceof ApprovalAlreadyResolvedError) return alreadyResolved();
+    throw err;
+  }
 
   const store = getConversationStore();
   const state = await store.get(approval.conversationId);
@@ -1083,12 +1140,26 @@ export async function resumeAfterApproval(
     resumeCtx.grounded!.ledger = readLedger(state);
   };
 
+  // An owner's approval is not the customer's consent: the final-write gate re-checks scope, cart
+  // revision and hard cap NOW, against the customer's current constraints, before anything executes.
+  const resumeBlock =
+    decision === "approved" ? await finalWriteGate(graph, state, approval.requestedAction, (alternateValue ?? approval.requestedInput) as Record<string, unknown>, ctx) : undefined;
+
   if (decision === "declined") {
     appendLedger(state, requestEntry(approval.requestedAction, approval.requestedInput, approvalId, "owner_declined"));
     await refreshOwnerRequests();
     const declinedOutcome: CompileOutcome = { kind: "action", action: { name: approval.requestedAction, input: {} }, stage: state.stage };
     const declinedInput: ComposeResponseInput = { outcome: declinedOutcome, toolResult: null, ownerDecision: "declined", language };
     const guarded = await guardReply(reasoner, resumeCtx, declinedInput, await reasoner.composeResponse(resumeCtx, declinedInput));
+    response = guarded.text;
+    resumeFallback = guarded.fallback;
+  } else if (resumeBlock) {
+    appendLedger(state, { ...classifyBlocked(approval.requestedAction, approval.requestedInput), requestId: approvalId, outcome: { reason: resumeBlock.reason, ...(resumeBlock.total !== undefined ? { total: resumeBlock.total } : {}), ...(resumeBlock.cap !== undefined ? { cap: resumeBlock.cap } : {}) } });
+    recordOwnerRequestResult(state, approvalId, { result: "failed" });
+    await refreshOwnerRequests();
+    const blockedOutcome: CompileOutcome = { kind: "action", action: { name: approval.requestedAction, input: {} }, stage: state.stage };
+    const blockedInput: ComposeResponseInput = { outcome: blockedOutcome, toolResult: null, writeBlocked: resumeBlock, language };
+    const guarded = await guardReply(reasoner, resumeCtx, blockedInput, await reasoner.composeResponse(resumeCtx, blockedInput));
     response = guarded.text;
     resumeFallback = guarded.fallback;
   } else {

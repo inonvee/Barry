@@ -33,9 +33,15 @@ export const SCRATCH_KEYS = {
   inventoryChecked: "__inventoryChecked",
   /** Units the customer wants of the offer under discussion (latest correction wins). */
   quantity: "__quantity",
+  /** The customer's hard spending cap: {amount, currency?, includesShipping} — enforced at every payment write. */
+  budgetCap: "__budgetCap",
+  /** Exactly which cart lines the customer consented to check out (line ids) — "all" when they meant the whole cart. */
+  checkoutScope: "__checkoutScope",
   lastSchedulingDate: "__lastSchedulingDate",
   /** The last time-of-day the customer set ("after 3", "morning") — kept when a later turn only names a day. */
   lastSchedulingTime: "__lastSchedulingTime",
+  /** The customer's window has an explicit end: a slot must END by it, not just start before it. */
+  windowEndIsHard: "__windowEndIsHard",
   commerceLastProductIds: "__commerceLastProductIds",
   commercePendingProductId: "__commercePendingProductId",
   commercePendingReplaceLineId: "__commercePendingReplaceLineId",
@@ -150,23 +156,25 @@ function compileCommerce(ir: BarryIR, known: Record<string, string>, options: Co
     case "change_variant":
     case "change_quantity":
     case "remove": {
+      const targetLine = resolveCartLine(commerce, known, options);
       // BARRY just asked which option the customer wants for a pending
       // item; an option named without pointing at a cart line answers it.
       if (commerce.intent === "change_variant" && known[SCRATCH_KEYS.commercePendingProductId] && commerce.reference?.type !== "cart_line") {
         return compileCommerce({ ...ir, commerce: { ...commerce, intent: "select", reference: undefined } }, known, options);
       }
-      if (!cartId || !lineId) {
+      if (!cartId || !targetLine) {
         // Nothing in the cart yet: a variant choice completes a pending selection.
-        if (commerce.intent === "change_variant" && (known[SCRATCH_KEYS.commercePendingProductId] || lastIds.length === 1)) {
+        const cartEmpty = !cartId || (options.cartLines ? options.cartLines.length === 0 : !lineId);
+        if (cartEmpty && commerce.intent === "change_variant" && (known[SCRATCH_KEYS.commercePendingProductId] || lastIds.length === 1)) {
           return compileCommerce({ ...ir, commerce: { ...commerce, intent: "select", reference: undefined } }, known, options);
         }
-        return { kind: "clarify_reference", available: lastIds.length, stage: "offer_selection" };
+        return { kind: "clarify_reference", available: options.cartLines?.length ?? lastIds.length, stage: "offer_selection" };
       }
       return finalizeAction(
         "updateCartLine",
         {
           cartId,
-          lineId,
+          lineId: targetLine,
           options: commerce.intent === "change_variant" ? commerce.variant : undefined,
           quantity: commerce.intent === "remove" ? 0 : commerce.quantity,
         },
@@ -265,7 +273,11 @@ function plannedRead(offer: Offer, known: Record<string, string>, stage: Convers
   if (offer.requiresScheduling) {
     const earliest = known[SCRATCH_KEYS.mentionedEarliest];
     if (!earliest) return { kind: "ask_datetime", offerName: offer.name, stage };
-    return finalizeAction("checkAvailability", { offerId: offer.id, earliest, latest: known[SCRATCH_KEYS.mentionedLatest], partySize: Number(known[SCRATCH_KEYS.mentionedPartySize] ?? 1) }, stage);
+    return finalizeAction(
+      "checkAvailability",
+      { offerId: offer.id, earliest, latest: known[SCRATCH_KEYS.mentionedLatest], partySize: Number(known[SCRATCH_KEYS.mentionedPartySize] ?? 1), ...(known[SCRATCH_KEYS.windowEndIsHard] ? { endBy: known[SCRATCH_KEYS.mentionedLatest] } : {}) },
+      stage
+    );
   }
   if (offer.requiresInventory) return finalizeAction("checkInventory", { offerId: offer.id, quantity: Number(known[SCRATCH_KEYS.quantity] ?? 1) }, stage);
   return undefined;
@@ -302,6 +314,14 @@ function resolveOfferFact(requestedCapability: string | undefined, offer: Offer)
 }
 
 function resolveOfferId(graph: BusinessGraph, state: ConversationState, ir: BarryIR): string | undefined {
+  // The CURRENT task wins over stale context: when the customer names another offer and nothing is
+  // committed on the old one (no link, slot, decision or pending request), the named offer is the subject.
+  const k = state.knownFields;
+  const committed = Boolean(k[SCRATCH_KEYS.paymentRequestId] || k[SCRATCH_KEYS.offeredStart] || k[SCRATCH_KEYS.purchaseDecided] || state.pendingApprovalId);
+  if (ir.selectedOfferId && ir.selectedOfferId !== state.selectedOfferId && findOffer(graph, ir.selectedOfferId) && !committed) {
+    delete k[SCRATCH_KEYS.inventoryChecked];
+    return ir.selectedOfferId;
+  }
   // Sticky: once an offer is chosen for this conversation, new candidate
   // guesses from later turns never override it.
   if (state.selectedOfferId && findOffer(graph, state.selectedOfferId)) {
@@ -332,7 +352,22 @@ export type CompileOptions = {
   profiles?: CapabilityProfiles;
   /** What BARRY last showed, re-read from the provider this turn (real ids, real stock). */
   shownProducts?: ShownProduct[];
+  /** The cart's lines as the provider holds them now, with real ids, in the order shown to the customer. */
+  cartLines?: NonNullable<GroundedContext["cartLines"]>;
 };
+
+/**
+ * The exact cart line a mutation targets: the line the customer's reference grounds to — by its
+ * position in the REAL cart — or the only line when there is exactly one. Several lines and no
+ * reference: nothing is guessed (the customer is asked). Never "the last line BARRY touched".
+ */
+function resolveCartLine(commerce: NonNullable<BarryIR["commerce"]>, known: Record<string, string>, options: CompileOptions): string | undefined {
+  const lines = options.cartLines;
+  if (!lines) return known[SCRATCH_KEYS.commerceCartLineId];
+  if (commerce.referenceInvalid) return undefined;
+  if (commerce.reference?.type === "cart_line") return lines[commerce.reference.index]?.id;
+  return lines.length === 1 ? lines[0].id : undefined;
+}
 
 type ShownProduct = NonNullable<GroundedContext["shownProducts"]>[number];
 
@@ -364,7 +399,9 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
     // Symmetrically, a DAY-ONLY mention ("Friday", or a later turn restating the day) keeps the
     // time the customer already set — it never silently widens back to the whole day.
     if (!window.time && state.knownFields[SCRATCH_KEYS.lastSchedulingTime]) {
-      window = { ...window, time: JSON.parse(state.knownFields[SCRATCH_KEYS.lastSchedulingTime]) };
+      const last = JSON.parse(state.knownFields[SCRATCH_KEYS.lastSchedulingTime]);
+      // Stored as the whole time constraint (start, explicit end, exclusivity) — carried together.
+      window = "kind" in last ? { ...window, time: last } : { ...window, ...last };
     }
     const resolved = resolveSchedulingWindow(window, graph.business.timezone);
     if (resolved) {
@@ -386,14 +423,23 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
       scratchUpdate[SCRATCH_KEYS.lastSchedulingDate] = JSON.stringify(window.date);
     }
     if (window.time) {
-      scratchUpdate[SCRATCH_KEYS.lastSchedulingTime] = JSON.stringify(window.time);
+      scratchUpdate[SCRATCH_KEYS.lastSchedulingTime] = JSON.stringify({ time: window.time, ...(window.end ? { end: window.end } : {}), ...(window.startExclusive ? { startExclusive: true } : {}) });
     }
+    if (resolved?.explicitEnd) scratchUpdate[SCRATCH_KEYS.windowEndIsHard] = "1";
+    else if (resolved) scratchUpdate[SCRATCH_KEYS.windowEndIsHard] = "";
   }
   if (ir.constraints.partySize && ir.constraints.partySize > 1) {
     scratchUpdate[SCRATCH_KEYS.mentionedPartySize] = String(ir.constraints.partySize);
+  } else if (ir.constraints.partySize === 1) {
+    delete known[SCRATCH_KEYS.mentionedPartySize];
   }
   if (ir.constraints.discountPct) {
     scratchUpdate[SCRATCH_KEYS.discountPct] = String(ir.constraints.discountPct);
+  }
+  // A stated hard cap (or a search budget) binds every later payment write until the customer changes it.
+  const cap = ir.constraints.budgetMax ?? ir.commerce?.query?.budget?.amount;
+  if (cap && cap > 0) {
+    scratchUpdate[SCRATCH_KEYS.budgetCap] = JSON.stringify({ amount: cap, includesShipping: ir.constraints.budgetIncludesShipping === true });
   }
   if (ir.constraints.quantity && Number.isInteger(ir.constraints.quantity) && ir.constraints.quantity > 0 && ir.constraints.quantity <= 1000) {
     scratchUpdate[SCRATCH_KEYS.quantity] = String(ir.constraints.quantity);
@@ -498,7 +544,10 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
 
   // Knowledge answers come verbatim from the business's own stored item
   // for the topic the model named — BARRY never paraphrases policy.
-  if (ir.knowledgeTopic) {
+  // A message that both changes the cart and asks a question does BOTH: the mutation is executed
+  // here, and the question is answered from the business's knowledge in the reply's facts.
+  const mutatesCart = ir.commerce && ["select", "replace", "change_variant", "change_quantity", "remove", "checkout"].includes(ir.commerce.intent);
+  if (ir.knowledgeTopic && !mutatesCart) {
     const item = graph.knowledge.find((k) => k.topic === ir.knowledgeTopic);
     if (item) return { kind: "knowledge_answer", answer: item.content, stage: state.stage };
   }
@@ -519,7 +568,27 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
       delete known[SCRATCH_KEYS.commerceCheckoutRequested];
       delete known[SCRATCH_KEYS.commerceCheckoutOnSuccess];
     }
-    if (c.intent === "checkout" && !checkoutBlocked) known[SCRATCH_KEYS.commerceCheckoutRequested] = "1";
+    if ((c.intent === "checkout" || ir.checkoutConsent === true) && !checkoutBlocked) {
+      // Consent is SCOPED: an item the customer pointed at is the whole consent; a reference that
+      // doesn't ground to anything real is no consent at all (ask, never check out the whole cart).
+      if (c.referenceInvalid) {
+        delete known[SCRATCH_KEYS.commerceCheckoutRequested];
+        delete known[SCRATCH_KEYS.checkoutScope];
+        return { kind: "clarify_reference", available: options.cartLines?.length ?? 0, stage: "offer_selection" };
+      }
+      const scopeLine =
+        c.reference?.type === "cart_line"
+          ? options.cartLines?.[c.reference.index]?.id
+          : c.reference?.type === "previous_result"
+            ? options.cartLines?.find((l) => l.title === options.shownProducts?.find((p) => p.position === c.reference!.index + 1)?.title)?.id
+            : undefined;
+      if (c.reference && !scopeLine) {
+        delete known[SCRATCH_KEYS.commerceCheckoutRequested];
+        return { kind: "clarify_reference", available: options.cartLines?.length ?? 0, stage: "offer_selection" };
+      }
+      known[SCRATCH_KEYS.checkoutScope] = JSON.stringify(scopeLine ? { lineIds: [scopeLine], quantity: c.quantity ?? null } : "all");
+      if (c.intent === "checkout") known[SCRATCH_KEYS.commerceCheckoutRequested] = "1";
+    }
     if (c.intent === "select" || c.intent === "replace" || c.intent === "change_variant" || c.intent === "change_quantity") {
       // A decision attached to a cart change is only INTENT here: checkout
       // eligibility follows the verified result of that change (see the
@@ -583,6 +652,9 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
     delete known[SCRATCH_KEYS.paid];
     delete known[SCRATCH_KEYS.inventoryChecked];
     delete known[SCRATCH_KEYS.purchaseDecided];
+    // The party size belonged to the old service (e.g. a couples booking): the new one starts from
+    // what the customer says now, never a stale party.
+    if (!ir.constraints.partySize) delete known[SCRATCH_KEYS.mentionedPartySize];
   }
 
   let selectedOfferId = resolveOfferId(graph, state, ir);
@@ -631,7 +703,8 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
   // field is collected: requiredCustomerInfo means "needed to fulfill a
   // booking/purchase," not "needed before BARRY may state a price." A
   // "How much is it?" must never be blocked on a phone number.
-  const fact = resolveOfferFact(ir.requestedCapability, offer);
+  // Correcting a pending request's terms is a transaction step, not a fact question.
+  const fact = ir.changesPendingRequest ? undefined : resolveOfferFact(ir.requestedCapability, offer);
   if (fact) {
     return { kind: "offer_fact", offerName: offer.name, fact, stage: state.stage };
   }
@@ -681,7 +754,7 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
       const partySize = Number(known[SCRATCH_KEYS.mentionedPartySize] ?? 1);
       return finalizeAction(
         "checkAvailability",
-        { offerId: offer.id, earliest, latest: known[SCRATCH_KEYS.mentionedLatest], partySize },
+        { offerId: offer.id, earliest, latest: known[SCRATCH_KEYS.mentionedLatest], partySize, ...(known[SCRATCH_KEYS.windowEndIsHard] ? { endBy: known[SCRATCH_KEYS.mentionedLatest] } : {}) },
         "scheduling",
         "bookAppointment"
       );

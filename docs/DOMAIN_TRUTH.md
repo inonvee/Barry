@@ -109,3 +109,30 @@ The simulator refreshes the list after **every** turn. Only *active* requests ha
 - Claim detection still reads BARRY's *outgoing* text against a closed effect vocabulary. What changed is that the evidence is now the ledger.
 - A lookup the customer asks for runs only if the model sets `readRequested`.
 - The weekday-qualifier ambiguity from Spa (Oct 5 → Oct 12) was not addressed.
+
+## Pass #3: structural invariants (commit `b51eced` attack)
+
+1. **Final-write consent** (`src/lib/runtime/write-gate.ts`). The gate runs immediately before any payment-bearing write, in three places:
+   - when a request is proposed to the owner;
+   - when a write is executed;
+   - after an owner approves, re-checked against the customer's current constraints.
+
+   It re-reads the cart and quote, then enforces:
+   - **Scope:** only the consented lines, in the consented quantity.
+   - **References:** an invalid reference is never consent.
+   - **Hard cap:** the customer's hard maximum (IR `constraints.budgetMax`). If the cap includes shipping and the shipping cost is unknown, nothing is created.
+
+   A blocked write is recorded as `write.blocked` (no effect), and the reply says why, with the real numbers. A cart change in a later turn invalidates earlier checkout consent.
+2. **Exact mutation subject.** Cart mutations resolve the grounded `cart_line` position against the real cart, never the last line touched. Reference grounding counts the real cart lines. Each receipt freezes:
+   - the item (product and options);
+   - the quantity before and after;
+   - the returned cart.
+
+   A change not visible on that line is recorded as `cart.change_not_verified` (failed). A reply claiming "the cart is empty" is checked against the provider's cart.
+3. **Exact domain-effect narration.** A payment link is not an email delivery, and an enquiry is not an arranged callback: each needs its own effect. Booking needs `booking.created` (the Hebrew booking vocabulary now included). "The owner is reviewing" needs a request that is actually waiting. A measurement the customer gave may be repeated as theirs, never asserted as a product fact.
+4. **Atomic revision.** When a customer changes a pending request's terms, the change is settled after the turn:
+   - if a valid replacement was created, the old request is superseded;
+   - if not, the old request is still superseded, and the reply says nothing is waiting on the owner.
+
+   Withdrawal is scoped by `withdrawScope`. Approval resolution is compare-and-set on `pending` in both backends, so concurrent or stale approvals execute nothing twice.
+5. **Temporal constraints.** A scheduling constraint carries `end` and `startExclusive`. Both survive to UTC, and the availability tool holds every provider's answer to them. Changing service clears a stale party size.

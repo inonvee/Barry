@@ -31,12 +31,23 @@ export const checkAvailability = defineTool({
     earliest: z.string(), // ISO datetime
     latest: z.string().optional(),
     partySize: z.number().int().positive().default(1),
+    /** The customer's hard end: a slot must FINISH by it (whatever the provider's own window semantics). */
+    endBy: z.string().optional(),
   }),
   outputSchema: z.object({
     slots: z.array(z.object({ resourceId: z.string(), start: z.string(), end: z.string() })),
   }),
   async execute(input, ctx) {
-    return checkSchedulingAvailability({ graph: ctx.graph, ...input });
+    const { endBy, ...query } = input;
+    const result = await checkSchedulingAvailability({ graph: ctx.graph, ...query });
+    // Every provider's answer is held to the customer's exact window: start at/after `earliest`
+    // (already exclusive when they said "after"), start by `latest`, and end by a hard end.
+    const earliest = new Date(query.earliest).getTime();
+    const latest = query.latest ? new Date(query.latest).getTime() : Infinity;
+    const hardEnd = endBy ? new Date(endBy).getTime() : Infinity;
+    return {
+      slots: result.slots.filter((s) => new Date(s.start).getTime() >= earliest && new Date(s.start).getTime() <= latest && new Date(s.end).getTime() <= hardEnd),
+    };
   },
 });
 

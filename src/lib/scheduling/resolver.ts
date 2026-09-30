@@ -24,7 +24,13 @@ export type TimeSpec =
   | { kind: "explicitTime"; hour: number; minute: number } // 24h, local to the business
   | { kind: "partOfDay"; part: "morning" | "afternoon" | "evening" };
 
-export type SchedulingConstraint = { date?: DateSpec; time?: TimeSpec };
+/**
+ * A customer's requested window. `time` is where it starts; `end` is an explicit end ("until 15:45",
+ * "before 17:00") — without one the window is the default few hours. `startExclusive` means strictly
+ * after the start ("after 3" excludes 15:00 itself). These survive every transformation to UTC and
+ * into the provider lookup; nothing widens them silently.
+ */
+export type SchedulingConstraint = { date?: DateSpec; time?: TimeSpec; end?: { hour: number; minute: number }; startExclusive?: boolean };
 
 const partOfDayHour: Record<"morning" | "afternoon" | "evening", number> = {
   morning: 9,
@@ -254,20 +260,27 @@ export function resolveSchedulingWindow(
   constraint: SchedulingConstraint,
   timeZone: string,
   now: Date = new Date()
-): { earliest: string; latest: string; anomaly?: "nonexistent" | "ambiguous" } | undefined {
+): { earliest: string; latest: string; anomaly?: "nonexistent" | "ambiguous"; explicitEnd?: boolean } | undefined {
   if (!constraint.date && !constraint.time) return undefined;
 
   const { hour, minute } = resolveTime(constraint.time);
   const { year, month, day } = resolveDate(constraint.date, timeZone, now, { hour, minute });
 
   const earliest = zonedTimeToUtc(year, month, day, hour, minute, timeZone);
-  const latestInstant = new Date(earliest.instant);
+  let latestInstant = new Date(earliest.instant);
   latestInstant.setUTCHours(latestInstant.getUTCHours() + 3);
+  // An explicit end is a hard bound on the same local day.
+  if (constraint.end && (constraint.end.hour > hour || (constraint.end.hour === hour && constraint.end.minute > minute))) {
+    latestInstant = zonedTimeToUtc(year, month, day, constraint.end.hour, constraint.end.minute, timeZone).instant;
+  }
+  // "Strictly after": a slot starting exactly at the stated time is excluded.
+  const earliestInstant = constraint.startExclusive ? new Date(earliest.instant.getTime() + 1) : earliest.instant;
 
   return {
-    earliest: earliest.instant.toISOString(),
+    earliest: earliestInstant.toISOString(),
     latest: latestInstant.toISOString(),
     anomaly: earliest.anomaly,
+    ...(constraint.end ? { explicitEnd: true } : {}),
   };
 }
 

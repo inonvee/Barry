@@ -291,3 +291,11 @@ export interface BarryBackend {
   createFollowUp(record: Omit<FollowUpRecord, "id" | "createdAt" | "status">): Promise<FollowUpRecord>;
   listFollowUps(businessId: string): Promise<FollowUpRecord[]>;
 }
+
+/** Resolving an approval that is no longer pending (already approved/declined/withdrawn/superseded). */
+export class ApprovalAlreadyResolvedError extends Error {
+  constructor(readonly approvalId: string) {
+    super(`Approval ${approvalId} is no longer pending`);
+    this.name = "ApprovalAlreadyResolvedError";
+  }
+}

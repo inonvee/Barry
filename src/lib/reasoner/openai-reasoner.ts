@@ -211,8 +211,11 @@ YOUR TASK NOW: understand the customer's latest message in context and describe 
 - changesPendingRequest: true when a request in pendingOwnerRequests is still waiting and they changed its details (a different reference/number, amount, option). A plain status question ("any news?") is false — it never creates or changes anything.
 - readRequested: true when they ask BARRY to actually check something now — open times, stock ("check the real calendar", "do a real inventory lookup") — whether or not they intend to buy. A read never implies a purchase; set advancesTransaction false if they aren't committing.
 - checkoutConsent: true only when they ask to pay / check out now; false when they say not to ("just change the size, don't check out", "no payment yet"); null otherwise. Choosing or changing an item is never checkout consent by itself — purchaseDecision is separate.
+- constraints.budgetMax: a hard maximum the customer set for what they'll pay (a number); budgetIncludesShipping true when they said it includes everything / shipping. null if none.
+- withdrawScope: when withdrawsRequest, the identifiers (references, numbers) of exactly the requests being withdrawn; [] when they withdraw everything. "Don't reopen A" about an already-closed A is NOT a withdrawal of anything else.
+- readRequested is false for a question about the STATUS of their own order/booking/request — that's answered from BARRY's records, not a lookup.
 - constraints.quantity: how many units they want of what's being discussed (a correction replaces the earlier number); null if they didn't say.
-- Scheduling: describe what they said, never compute timestamps. schedulingWindow fields: dateKind (explicitDate|relativeDay|weekday), isoDate (YYYY-MM-DD, resolve using business.currentDate), relativeDays, weekday (0=Sun..6=Sat), weekdayQualifier (this|next), timeKind (explicitTime|partOfDay), hour/minute (24h, as the customer meant it locally), partOfDay. Keep a day/time stated earlier unless they changed it.
+- Scheduling: describe what they said, never compute timestamps. A window's end and exclusivity are part of it: "15:15-15:45" -> hour 15 minute 15, endHour 15 endMinute 45; "after 3" / "strictly after 15:00" -> hour 15, startExclusive true; "before 17:00" -> endHour 17. schedulingWindow fields: dateKind (explicitDate|relativeDay|weekday), isoDate (YYYY-MM-DD, resolve using business.currentDate), relativeDays, weekday (0=Sun..6=Sat), weekdayQualifier (this|next), timeKind (explicitTime|partOfDay), hour/minute (24h, as the customer meant it locally), partOfDay. Keep a day/time stated earlier unless they changed it.
 - slotAccepted / slotDeclined: only when awaitingSlotConfirmation is true and they accept or decline the offered time.
 - selectedOfferId / offerCandidateIds: for services in "offers"; several plausible -> candidates. offerChangeRequested only for an explicit change of mind to a different real offer.
 - requestedCapability: "ask_price" | "ask_duration" | "ask_deposit" when they ask that about an offer; else null.
@@ -234,6 +237,7 @@ export const COMPOSE_SYSTEM_PROMPT =
   "`whatTheBusinessCanDo` is everything this business offers and can help with. If the customer wants something that isn't there, say briefly that it's not something we do here and offer the closest thing that is there (or say the team can help) — never collect details for it and never promise it. " +
   // ── What happened, and the facts
   "`ledger` is the permanent record of every operation in this conversation and its REAL outcome (`happened`). Transport success is not an outcome: a payment check that says pending means NOT paid; a request waiting on the owner means NOT done; submitted-but-unconfirmed means you can't say it's done. Never state an outcome the ledger doesn't show — including for earlier turns, whatever earlier messages said. Each entry's `reference` belongs only to that entry's `terms`: when asked about several references, answer each one from its own entry (opened with its number / declined / withdrawn / not opened). " +
+  "If `writeBlocked` is present, the payment/checkout was NOT created because it would break the customer's own consent or limits (reason: outside_consent_scope = the cart has items they didn't consent to — list them; over_budget = total above their cap; shipping_unknown = can't prove the all-in total stays under their cap): say exactly that with its numbers, and that nothing was sent or charged. If `revisionWithoutReplacement` is true, the earlier request was cancelled because they changed its details and NO new request exists yet: say nothing is waiting on the owner now and what's needed to send the corrected one. " +
   "`pricing` is THE quote (quantity, discount, shipping, total) — state its total exactly; never compute an amount yourself. If pricing.complete is false the shipping cost is unknown: say the total excludes shipping. " +
   "Availability/stock can be stated only from a `ledger` entry with thisTurn true that looked it up (or facts.shownProducts); otherwise say you'd need to check. " +
   "If `repairRequired` is present, your draft (yourDraft) stated things BARRY cannot support (problems). Rewrite the WHOLE reply from the facts and ledger: remove every unsupported statement AND every conclusion that depended on it (e.g. with unknown dimensions you cannot say whether something fits; with no booking in the ledger, nothing is booked). Keep what was correct. " +
@@ -318,7 +322,8 @@ function unflattenSchedulingWindow(raw: LlmSchedulingWindow | null): SchedulingC
   }
 
   if (!date && !time) return undefined;
-  return { date, time };
+  const end = raw.endHour !== null && raw.endHour !== undefined ? { hour: raw.endHour, minute: raw.endMinute ?? 0 } : undefined;
+  return { date, time, ...(end ? { end } : {}), ...(raw.startExclusive ? { startExclusive: true } : {}) };
 }
 
 /** Never trust the model's offer id/candidates without checking they exist on this business. */
@@ -343,6 +348,8 @@ export function sanitizeIR(graph: BusinessGraph, raw: LlmIR): BarryIR {
       slotAccepted: raw.constraints.slotAccepted ?? undefined,
       slotDeclined: raw.constraints.slotDeclined ?? undefined,
       quantity: raw.constraints.quantity && raw.constraints.quantity > 0 ? raw.constraints.quantity : undefined,
+      budgetMax: raw.constraints.budgetMax && raw.constraints.budgetMax > 0 ? raw.constraints.budgetMax : undefined,
+      budgetIncludesShipping: raw.constraints.budgetIncludesShipping ?? undefined,
     },
     // One fact = field + value + its own quote. Mapped into BARRY's internal
     // shape unchanged; field NAMES are validated by grounding (verifyIR),
@@ -360,6 +367,7 @@ export function sanitizeIR(graph: BusinessGraph, raw: LlmIR): BarryIR {
     changesPendingRequest: raw.changesPendingRequest ? true : undefined,
     readRequested: raw.readRequested ? true : undefined,
     checkoutConsent: raw.checkoutConsent ?? undefined,
+    withdrawScope: raw.withdrawScope?.length ? raw.withdrawScope : undefined,
   };
 }
 
@@ -571,6 +579,10 @@ export function buildComposeSummary(context: ComposeSummaryContext, input: Compo
     // The permanent effect ledger of this conversation: each entry is one operation with its own frozen
     // terms, its own reference and its real domain outcome. A reference belongs ONLY to its own entry's terms.
     ledger: context.ledger ?? [],
+    // The final-write gate stopped the payment/checkout: nothing was created; say why with these numbers.
+    writeBlocked: sanitizedInput.writeBlocked ?? undefined,
+    // The customer changed a pending request but no valid replacement exists: nothing is pending now.
+    revisionWithoutReplacement: sanitizedInput.revisionWithoutReplacement || undefined,
     // THE amounts: the authoritative quantity-aware quote (never compute a total yourself).
     pricing: sanitizedInput.quote ?? null,
     // Present when your previous draft stated things BARRY can't support: rewrite the WHOLE reply.

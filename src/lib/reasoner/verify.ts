@@ -112,14 +112,17 @@ function groundScheduling(window: SchedulingConstraint | undefined, rejected: IR
   const time = validTime(window.time) ? window.time : undefined;
   if (window.date && !date) rejected.push({ claim: "schedulingWindow.date", value: window.date, reason: "out of range" });
   if (window.time && !time) rejected.push({ claim: "schedulingWindow.time", value: window.time, reason: "out of range" });
-  return date || time ? { date, time } : undefined;
+  const end = window.end && Number.isInteger(window.end.hour) && window.end.hour >= 0 && window.end.hour <= 23 && Number.isInteger(window.end.minute) && window.end.minute >= 0 && window.end.minute <= 59 ? window.end : undefined;
+  if (window.end && !end) rejected.push({ claim: "schedulingWindow.end", value: window.end, reason: "out of range" });
+  return date || time ? { date, time, ...(end ? { end } : {}), ...(window.startExclusive ? { startExclusive: true } : {}) } : undefined;
 }
 
 function groundCommerce(
   commerce: CommerceSemantics | undefined,
   rejected: IRRejection[],
   catalog?: CatalogSchema,
-  state?: ConversationState
+  state?: ConversationState,
+  cartLineCount?: number
 ): CommerceSemantics | undefined {
   if (!commerce) return undefined;
   const grounded: CommerceSemantics = { ...commerce, query: commerce.query ? { ...commerce.query } : undefined };
@@ -128,7 +131,8 @@ function groundCommerce(
     // or holds. Outside that set it is rejected AND marked, so the compiler
     // asks — it never falls back to guessing another item.
     const shownCount = state?.knownFields.__commerceLastProductIds?.split(",").filter(Boolean).length;
-    const cartLines = state?.knownFields.__commerceCartLineId ? 1 : 0;
+    // The real number of cart lines, re-read from the provider — never "one line because one is remembered".
+    const cartLines = cartLineCount ?? (state?.knownFields.__commerceCartLineId ? 1 : 0);
     const { type, index } = grounded.reference;
     const limit = type === "previous_result" ? shownCount : cartLines;
     const reason = !Number.isInteger(index) || index < 0 ? "invalid position" : limit !== undefined && index >= limit ? "points outside what BARRY showed" : undefined;
@@ -189,7 +193,7 @@ export function verifyIR(
   customerMessage: string,
   ir: BarryIR,
   state?: ConversationState,
-  context: { catalog?: CatalogSchema; capabilities?: CapabilitySurfaceEntry[]; capabilityResults?: CapabilityResultSummary[] } = {}
+  context: { catalog?: CatalogSchema; capabilities?: CapabilitySurfaceEntry[]; capabilityResults?: CapabilityResultSummary[]; cartLineCount?: number } = {}
 ): { verified: BarryIR; verification: IRVerification } {
   const rejected: IRRejection[] = [];
 
@@ -238,7 +242,7 @@ export function verifyIR(
       slotAccepted,
       slotDeclined,
     },
-    commerce: groundCommerce(ir.commerce, rejected, context.catalog, state),
+    commerce: groundCommerce(ir.commerce, rejected, context.catalog, state, context.cartLineCount),
     customerInfo,
     capabilityRequest: groundCapabilityRequest(ir.capabilityRequest, rejected, customerMessage, state, context),
   };

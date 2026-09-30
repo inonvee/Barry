@@ -6,6 +6,7 @@ import type { ConversationState } from "@/lib/state";
 import type { BarryIR, CompileOutcome } from "./ir";
 import type { Quote } from "@/lib/runtime/pricing";
 import type { LedgerEntry } from "@/lib/runtime/ledger";
+import type { WriteBlock } from "@/lib/runtime/write-gate";
 
 export type { BarryIR, BarryIRConstraints, RequestedCapability, CompileOutcome, CompiledToolCall, OfferFact } from "./ir";
 
@@ -34,6 +35,8 @@ export type GroundedContext = {
   /** Internal (never given to the model): the same list with real ids, re-read from the provider. */
   shownProducts?: (ShownResult & { id: string })[];
   cart?: { position: number; title: string; options: Record<string, string>; quantity: number }[];
+  /** Internal (never given to the model): the same cart lines with their real ids, re-read from the provider. */
+  cartLines?: { position: number; id: string; title: string; options: Record<string, string>; quantity: number }[];
   cartTotal?: string;
   /** The business-specific capability surface the model may propose from (safe summary; no systems or credentials). */
   capabilities?: CapabilitySurfaceEntry[];
@@ -41,6 +44,8 @@ export type GroundedContext = {
   capabilityResults?: CapabilityResultSummary[];
   /** Every request BARRY sent to the owner in this conversation, with its real status and outcome (customer-safe). */
   ownerRequests?: OwnerRequestView[];
+  /** This turn changed a pending request's terms and no valid replacement was created. */
+  revisionWithoutReplacement?: boolean;
   /** The conversation's effect ledger (immutable domain effects) and where this turn's entries start. */
   ledger?: LedgerEntry[];
   turnStartSeq?: number;
@@ -144,6 +149,10 @@ export type ComposeResponseInput = {
   quote?: Quote;
   /** A deterministic, localized statement of where things really stand (requests, booking, payment, quote). */
   statusText?: string;
+  /** The final-write gate stopped the payment/checkout this turn: why, with the real numbers. */
+  writeBlocked?: WriteBlock;
+  /** The customer changed a pending request's terms but no valid replacement was created: the old one is gone. */
+  revisionWithoutReplacement?: boolean;
   /** A draft that failed grounding: regenerate the WHOLE reply from trusted facts, dropping dependent conclusions. */
   repair?: { draft: string; problems: string[] };
   scheduling?: SchedulingDisplayFacts;

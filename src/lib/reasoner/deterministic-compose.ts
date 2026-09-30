@@ -41,6 +41,16 @@ export function money(amount: number | string, currency: string | undefined, lan
 }
 
 export function composeDeterministic(input: ComposeResponseInput): string {
+  if (input.revisionWithoutReplacement) {
+    const rest = composeDeterministic({ ...input, revisionWithoutReplacement: false });
+    const lead =
+      input.language?.code === "he"
+        ? "ביטלתי את הבקשה הקודמת כי הפרטים השתנו, וכרגע שום דבר לא ממתין לבעל העסק."
+        : "I've cancelled the earlier request because the details changed — nothing is waiting on the owner right now.";
+    return `${lead} ${rest}`;
+  }
+  // A blocked write is the whole story of the turn's outcome: nothing was created — say why.
+  if (input.writeBlocked) return writeBlockedText(input.writeBlocked, input.language?.code);
   const language = input.language;
   const one = (part: ComposeResponseInput) => composeLocalized({ ...part, language });
   if (input.steps && input.steps.length > 0) {
@@ -88,6 +98,19 @@ function ownerDeclinedText(lang: string | undefined): string {
     : "I checked with the owner and unfortunately we can't do that one. Anything else I can help with?";
 }
 
+/** Why a payment/checkout was NOT created — with the real numbers; nothing was sent or charged. */
+export function writeBlockedText(b: NonNullable<ComposeResponseInput["writeBlocked"]>, lang: string | undefined): string {
+  const amt = (n: number | undefined) => (n === undefined ? "" : money(n, b.currency, lang === "he" ? "he" : "en"));
+  if (lang === "he") {
+    if (b.reason === "over_budget") return `לא יצרתי קישור לתשלום: הסכום יוצא ${amt(b.total)}, מעל התקרה שלך של ${amt(b.cap)}. לא נשלח ולא חויב שום דבר.`;
+    if (b.reason === "shipping_unknown") return `לא יצרתי קישור לתשלום: עלות המשלוח לא ידועה לי, אז אני לא יכול להבטיח שהסכום הכולל יישאר עד ${amt(b.cap)}. לא נשלח ולא חויב שום דבר.`;
+    return `לא יצרתי קישור לתשלום: בסל יש גם ${b.extraItems?.join(", ")}, שלא אישרת לקנות. להסיר אותם קודם?`;
+  }
+  if (b.reason === "over_budget") return `I haven't created a payment link: the total comes to ${amt(b.total)}, above your ${amt(b.cap)} limit. Nothing was sent or charged.`;
+  if (b.reason === "shipping_unknown") return `I haven't created a payment link: I don't know the shipping cost, so I can't guarantee the total stays within ${amt(b.cap)}. Nothing was sent or charged.`;
+  return `I haven't created a payment link: your cart also has ${b.extraItems?.join(", ")}, which you didn't ask to buy. Want me to remove those first?`;
+}
+
 /** The real status of a request sent to the owner, from BARRY's records. */
 export function ownerRequestStatusText(r: OwnerRequestView, lang: string | undefined): string {
   const ref = r.reference ? (lang === "he" ? ` (אסמכתא ${r.reference})` : ` (reference ${r.reference})`) : "";
@@ -110,6 +133,7 @@ export function ownerRequestStatusText(r: OwnerRequestView, lang: string | undef
 /** The conversation's language when BARRY has strings for it; otherwise English. */
 function composeLocalized(input: ComposeResponseInput): string {
   const lang = input.language?.code;
+  if (input.writeBlocked) return writeBlockedText(input.writeBlocked, lang);
   if (input.refused) return deniedText(input.language);
   if (input.policyReason) return approvalRequestedText(lang);
   if (input.existingOwnerRequest === "still_pending") {
@@ -211,6 +235,7 @@ function composeHebrew(input: ComposeResponseInput): string | undefined {
       }
       return undefined;
     case "generic_confirm":
+      if (input.statusText) return input.statusText;
       return outcome.stage === "closed" ? `הכול מסודר — זה כבר מאושר.` : `מסדר את זה עכשיו.`;
     case "compiler_error":
       return `סליחה, לא הבנתי עד הסוף — אפשר לפרט קצת?`;
@@ -272,7 +297,7 @@ function composeHebrew(input: ComposeResponseInput): string | undefined {
         case "fulfillOrder":
           return `ההזמנה שלך (${(output as { orderId: string }).orderId}) מאושרת — תודה!`;
         case "createLead":
-          return `תודה על הפרטים — העברתי את זה ונחזור אליך עם הצעה.`;
+          return `תודה — רשמתי את הפנייה שלך עבור הצוות.`;
         case "createFollowUp":
           return `אין בעיה, אחזור אליך בקרוב.`;
         case "addToCart":
@@ -372,6 +397,8 @@ function composeSingle(input: ComposeResponseInput): string {
             : `No deposit is required for ${outcome.offerName}.`;
       }
     case "generic_confirm":
+      // A guard-repaired reply states the real records instead of a generic "confirmed".
+      if (input.statusText) return input.statusText;
       // stage "closed" means this is a duplicate-webhook/replayed-message
       // guard (compileCore already completed this transaction earlier) —
       // never claim to be "finalizing" something that's already done.
@@ -516,7 +543,7 @@ function composeSingle(input: ComposeResponseInput): string {
           return `Your order (${output.orderId}) is confirmed — thanks for shopping with us!`;
         }
         case "createLead":
-          return `Thanks for the details — I've passed this along and we'll follow up with a quote shortly.`;
+          return `Thanks — I've recorded your enquiry for the team.`;
         case "createFollowUp":
           return `No problem, I'll follow up with you soon.`;
         default:

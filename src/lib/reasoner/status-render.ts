@@ -67,15 +67,21 @@ export function renderStatus(input: { requests: OwnerRequestView[]; ledger: Ledg
   const paid = effected.find((e) => e.effect === "payment.settled");
   const linkSent = effected.some((e) => e.effect === "payment.link_created");
   const order = effected.find((e) => e.effect === "order.created" || e.effect === "order.fulfilled");
+  const enquiry = effected.find((e) => e.effect === "enquiry.created");
+  const blocked = input.ledger.filter((e) => e.effect === "write.blocked").at(-1);
   if (lang === "he") {
     lines.push(booked ? `יש תור מאושר${booked.reference ? ` (${booked.reference})` : ""}.` : "אין תור מאושר.");
     lines.push(paid ? "התשלום אומת." : linkSent ? "נשלח קישור לתשלום, והתשלום עוד לא אומת." : "לא נגבה תשלום.");
     if (order) lines.push(`ההזמנה נוצרה${order.reference ? ` (${order.reference})` : ""}.`);
+    if (enquiry) lines.push("הפנייה שלך רשומה אצל הצוות (אי אפשר לערוך אותה מכאן).");
+    if (blocked) lines.push("קישור התשלום האחרון לא נוצר, כי הוא לא עמד בתנאים שלך.");
     if (!input.requests.some((r) => r.lifecycle === "active")) lines.push("אין בקשה שממתינה לבעל העסק.");
   } else {
     lines.push(booked ? `You have a confirmed appointment${booked.reference ? ` (${booked.reference})` : ""}.` : "Nothing is booked.");
     lines.push(paid ? "Your payment is verified." : linkSent ? "A payment link was sent; no payment has been verified." : "No payment has been taken.");
     if (order) lines.push(`Your order was placed${order.reference ? ` (${order.reference})` : ""}.`);
+    if (enquiry) lines.push("Your enquiry is recorded for the team (it can't be edited from here).");
+    if (blocked) lines.push("The last payment link was not created, because it didn't meet your conditions.");
     if (!input.requests.some((r) => r.lifecycle === "active")) lines.push("Nothing is waiting on the owner.");
   }
   if (input.quote) lines.push(quoteText(input.quote, lang));

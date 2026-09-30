@@ -121,23 +121,23 @@ describe("payment is bound to the cart snapshot", () => {
     expect(checkout.response).not.toMatch(/https?:\/\//);
   });
 
-  it("changing the cart after checkout cancels the unpaid payment and re-issues checkout for the new cart", async () => {
+  it("changing the cart after checkout cancels the unpaid payment; consent for the old cart does not carry to the new one", async () => {
     const { graph, conv, cust, payment } = await toCheckout();
     const changed = await handleCustomerMessage(graph, conv, cust, "Actually make it L");
-    // The customer's change runs first; BARRY then re-prices the new cart in the same turn.
-    expect(changed.turn.trace?.steps.map((st) => [st.action, st.trigger])).toEqual([
-      ["updateCartLine", "customer"],
-      ["createCommerceCheckout", "continuation"],
-    ]);
+    // The customer's change runs; the old checkout (priced for the old cart) is cancelled, and no new
+    // checkout is created on consent that was given for a different cart revision.
+    expect(changed.turn.trace?.steps.map((st) => [st.action, st.trigger])).toEqual([["updateCartLine", "customer"]]);
     expect((await getBackend().getPaymentRequest(payment.id))?.status).toBe("cancelled");
-    const fresh = (await getBackend().getPaymentRequest(changed.state.knownFields.__paymentRequestId))!;
-    expect(fresh.id).not.toBe(payment.id);
-    expect(fresh.binding?.snapshotHash).not.toBe(payment.binding?.snapshotHash);
+    expect(changed.state.knownFields.__paymentRequestId).toBeUndefined();
+    expect(changed.state.knownFields.__commerceCheckoutRequested).toBeUndefined();
     const adapter = await resolveCommerceAdapterForBusiness(graph.business.id);
     const cart = (await adapter.getCart(changed.state.knownFields.__commerceCartId))!;
     expect(cart.lines.map((l) => l.options.size)).toEqual(["L"]);
-    expect(fresh.binding?.snapshotHash).toBe(cartSnapshotHash(cart));
-    expect(changed.rich?.paymentUrl).toMatch(/^https:\/\//);
+    // Explicit consent for the new cart re-issues checkout bound to the new snapshot.
+    const again = await handleCustomerMessage(graph, conv, cust, "ok checkout now");
+    const fresh = (await getBackend().getPaymentRequest(again.state.knownFields.__paymentRequestId))!;
+    expect(fresh.id).not.toBe(payment.id);
+    expect(fresh.binding?.snapshotHash).toBe(cartSnapshotHash((await adapter.getCart(again.state.knownFields.__commerceCartId))!));
   });
 
   it("a verified payment for a superseded payment request never creates an order", async () => {

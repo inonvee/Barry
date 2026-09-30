@@ -1,3 +1,4 @@
+import { ApprovalAlreadyResolvedError } from "./types";
 import type {
   ApprovalRecord,
   BarryBackend,
@@ -307,6 +308,8 @@ export class MemoryBackend implements BarryBackend {
   ) {
     const approval = this.approvals.get(approvalId);
     if (!approval) throw new Error(`Approval ${approvalId} not found`);
+    // Compare-and-set, as in the database: only a pending approval can be resolved.
+    if (approval.status !== "pending") throw new ApprovalAlreadyResolvedError(approvalId);
     approval.status = decision;
     approval.resolution = {
       decision,

@@ -50,6 +50,11 @@ export const LlmSchedulingWindowSchema = z.object({
   hour: z.number().nullable(), // for explicitTime: 24h, local to the business
   minute: z.number().nullable(),
   partOfDay: z.enum(["morning", "afternoon", "evening"]).nullable(),
+  /** Explicit end of the window ("until 15:45", "before 17:00"), 24h local. */
+  endHour: z.number().nullable().default(null),
+  endMinute: z.number().nullable().default(null),
+  /** "Strictly after" the start time: a slot starting exactly then is excluded. */
+  startExclusive: z.boolean().nullable().default(null),
 });
 export type LlmSchedulingWindow = z.infer<typeof LlmSchedulingWindowSchema>;
 
@@ -90,6 +95,8 @@ export const LlmIRSchema = z.object({
     slotDeclined: z.boolean().nullable(),
     /** How many units the customer wants of what's being discussed (a purchase quantity), when they said. */
     quantity: z.number().nullable().default(null),
+    budgetMax: z.number().nullable().default(null),
+    budgetIncludesShipping: z.boolean().nullable().default(null),
   }),
   /**
    * THE single authoritative channel for details the customer states about
@@ -115,6 +122,7 @@ export const LlmIRSchema = z.object({
   changesPendingRequest: z.boolean().nullable().default(null),
   readRequested: z.boolean().nullable().default(null),
   checkoutConsent: z.boolean().nullable().default(null),
+  withdrawScope: z.array(z.string()).nullable().default(null),
 });
 export type LlmIR = z.infer<typeof LlmIRSchema>;
 
@@ -163,6 +171,9 @@ export function irJsonSchema() {
                 hour: { type: ["number", "null"] },
                 minute: { type: ["number", "null"] },
                 partOfDay: { type: ["string", "null"], enum: ["morning", "afternoon", "evening", null] },
+                endHour: { type: ["number", "null"] },
+                endMinute: { type: ["number", "null"] },
+                startExclusive: { type: ["boolean", "null"] },
               },
               required: [
                 "dateKind",
@@ -174,6 +185,9 @@ export function irJsonSchema() {
                 "hour",
                 "minute",
                 "partOfDay",
+                "endHour",
+                "endMinute",
+                "startExclusive",
               ],
             },
             partySize: { type: ["number", "null"] },
@@ -181,8 +195,10 @@ export function irJsonSchema() {
             slotAccepted: { type: ["boolean", "null"] },
             slotDeclined: { type: ["boolean", "null"] },
             quantity: { type: ["number", "null"] },
+            budgetMax: { type: ["number", "null"] },
+            budgetIncludesShipping: { type: ["boolean", "null"] },
           },
-          required: ["schedulingWindow", "partySize", "discountPct", "slotAccepted", "slotDeclined", "quantity"],
+          required: ["schedulingWindow", "partySize", "discountPct", "slotAccepted", "slotDeclined", "quantity", "budgetMax", "budgetIncludesShipping"],
         },
         customerFacts: {
           type: "array",
@@ -248,6 +264,7 @@ export function irJsonSchema() {
         changesPendingRequest: { type: ["boolean", "null"] },
         readRequested: { type: ["boolean", "null"] },
         checkoutConsent: { type: ["boolean", "null"] },
+        withdrawScope: { type: ["array", "null"], items: { type: "string" } },
       },
       required: [
         "intent",
@@ -269,6 +286,7 @@ export function irJsonSchema() {
         "changesPendingRequest",
         "readRequested",
         "checkoutConsent",
+        "withdrawScope",
       ],
     },
   };

@@ -1,7 +1,7 @@
 import type { BusinessGraph } from "@/lib/business-graph";
 import { getCapability } from "@/lib/fabric/capability";
 import { getBackend } from "@/lib/store";
-import type { ApprovalRecord } from "@/lib/store/types";
+import { ApprovalAlreadyResolvedError, type ApprovalRecord } from "@/lib/store/types";
 import type { ConversationState } from "@/lib/state";
 import { getTool } from "@/lib/tools";
 import { INVOKE_CAPABILITY } from "@/lib/tools/capability-tool";
@@ -50,7 +50,7 @@ export async function supersedeOlderRevisions(graph: BusinessGraph, state: Conve
     (a) => a.status === "pending" && operationKey(a.requestedAction, a.requestedInput) === key && requestIdentity(a.requestedAction, a.requestedInput) !== id
   );
   for (const a of older) {
-    await getBackend().resolveApproval(a.id, "declined", WITHDRAWN_BY.superseded);
+    if (!(await resolveIfPending(a.id, WITHDRAWN_BY.superseded))) continue;
     appendLedger(state, requestEntry(a.requestedAction, a.requestedInput, a.id, "superseded"));
   }
   if (older.some((a) => a.id === state.pendingApprovalId)) {
@@ -132,17 +132,77 @@ export function findSameRequest(approvals: ApprovalRecord[], action: string, inp
 }
 
 /** Withdraw everything still waiting on the owner in this conversation (customer withdrew or changed terms). */
-export async function withdrawPendingRequests(graph: BusinessGraph, state: ConversationState, why: keyof typeof WITHDRAWN_BY): Promise<number> {
-  const pending = (await conversationApprovals(graph.business.id, state.id)).filter((a) => a.status === "pending");
+export async function withdrawPendingRequests(graph: BusinessGraph, state: ConversationState, why: keyof typeof WITHDRAWN_BY, scope?: string[]): Promise<number> {
+  // A scoped withdrawal ("not A") only withdraws the requests whose own terms carry those identifiers.
+  const inScope = (a: ApprovalRecord) => {
+    if (!scope?.length) return true;
+    const terms = Object.values(termsOf(a.requestedAction, a.requestedInput)).map((v) => String(v).toLowerCase());
+    return scope.some((id) => terms.some((t) => t.includes(id.toLowerCase().trim())));
+  };
+  const pending = (await conversationApprovals(graph.business.id, state.id)).filter((a) => a.status === "pending" && inScope(a));
+  let withdrawn = 0;
   for (const a of pending) {
-    await getBackend().resolveApproval(a.id, "declined", WITHDRAWN_BY[why]);
+    if (!(await resolveIfPending(a.id, WITHDRAWN_BY[why]))) continue;
     appendLedger(state, requestEntry(a.requestedAction, a.requestedInput, a.id, why === "withdrawn" ? "withdrawn" : "superseded"));
+    if (state.pendingApprovalId === a.id) {
+      state.pendingApprovalId = null;
+      state.pendingAction = null;
+    }
+    withdrawn++;
   }
-  if (pending.length > 0) {
-    state.pendingApprovalId = null;
-    state.pendingAction = null;
+  return withdrawn;
+}
+
+/**
+ * ATOMIC REVISION. After a turn in which the customer changed a pending request's terms: every request
+ * that was pending BEFORE the turn and is still pending (i.e. not the one the new terms produced) is
+ * superseded. Returns whether a replacement of the same operation now exists — when none does, the
+ * reply must say nothing is pending (never "the owner is reviewing" an obsolete request).
+ */
+export async function settleChangedTerms(graph: BusinessGraph, state: ConversationState, pendingBefore: ApprovalRecord[]): Promise<{ superseded: number; replacement: boolean }> {
+  const now = await conversationApprovals(graph.business.id, state.id);
+  const beforeIds = new Set(pendingBefore.map((a) => a.id));
+  const created = now.filter((a) => a.status === "pending" && !beforeIds.has(a.id));
+  let superseded = 0;
+  let replacement = false;
+  for (const old of pendingBefore) {
+    const current = now.find((a) => a.id === old.id);
+    if (!current || current.status !== "pending") {
+      replacement ||= created.some((c) => operationKey(c.requestedAction, c.requestedInput) === operationKey(old.requestedAction, old.requestedInput));
+      continue;
+    }
+    const replaced = created.some((c) => operationKey(c.requestedAction, c.requestedInput) === operationKey(old.requestedAction, old.requestedInput));
+    // A request whose terms are unchanged (the dedupe reused it) is still the current one.
+    if (!replaced && state.pendingApprovalId === old.id && created.length === 0 && reusedThisTurn(state, old.id)) {
+      replacement = true;
+      continue;
+    }
+    if (await resolveIfPending(old.id, WITHDRAWN_BY.changed)) {
+      appendLedger(state, requestEntry(old.requestedAction, old.requestedInput, old.id, "superseded"));
+      superseded++;
+      if (state.pendingApprovalId === old.id) {
+        state.pendingApprovalId = created.at(-1)?.id ?? null;
+        if (!created.length) state.pendingAction = null;
+      }
+    }
+    replacement ||= replaced;
   }
-  return pending.length;
+  return { superseded, replacement };
+}
+
+/** Whether this turn's steps reused (deduped onto) this still-pending request. */
+function reusedThisTurn(state: ConversationState, approvalId: string): boolean {
+  return state.knownFields.__reusedApprovalThisTurn === approvalId;
+}
+
+async function resolveIfPending(id: string, by: string): Promise<boolean> {
+  try {
+    await getBackend().resolveApproval(id, "declined", by);
+    return true;
+  } catch (err) {
+    if (err instanceof ApprovalAlreadyResolvedError) return false;
+    throw err;
+  }
 }
 
 const humanWords = (v: string) => (/^[a-z]+(?:_[a-z]+)+$/.test(v) ? v.replace(/_/g, " ") : v);

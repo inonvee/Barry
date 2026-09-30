@@ -34,6 +34,9 @@ export type BarryIRConstraints = {
   slotDeclined?: boolean;
   /** Units of the offer/product under discussion the customer wants (a correction replaces the earlier number). */
   quantity?: number;
+  /** A HARD maximum the customer set for what they'll pay; `budgetIncludesShipping` when they said "including everything". */
+  budgetMax?: number;
+  budgetIncludesShipping?: boolean;
 };
 
 /**
@@ -195,6 +198,11 @@ export type BarryIR = {
    * implies checkout by itself.
    */
   checkoutConsent?: boolean;
+  /**
+   * When withdrawing, the identifiers (references/numbers) of exactly the requests withdrawn — a
+   * selective "don't reopen A" never withdraws B. Empty/absent = everything still pending.
+   */
+  withdrawScope?: string[];
 };
 
 export type CapabilityRequest = { capability: string; input: Record<string, unknown>; purpose: string };
