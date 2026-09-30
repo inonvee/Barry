@@ -14,6 +14,7 @@ import {
   updateCartLine,
   createCommerceCheckout,
   createCommerceOrder,
+  grantDiscount,
   verifyPayment,
 } from "./definitions";
 import { invokeCapability } from "./capability-tool";
@@ -33,6 +34,7 @@ const ALL_TOOLS: AnyToolDefinition[] = [
   updateCartLine,
   createCommerceCheckout,
   createCommerceOrder,
+  grantDiscount,
   verifyPayment,
   invokeCapability,
 ];

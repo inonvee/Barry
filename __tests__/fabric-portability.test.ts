@@ -162,9 +162,11 @@ describe("D. which system is used is tenant STATE, not code", () => {
   it("in a live conversation, the checkout's payment system follows the business's connection", async () => {
     const SEARCH = "עד 400 שקל M אני מחפשת שמלה מידה";
     const TAKE = "אני אקח את הראשונה ב-M";
+    const CHECKOUT = "יאללה לתשלום";
     const script: Record<string, Partial<BarryIR>> = {
       [SEARCH]: { intent: "commerce_search", commerce: { intent: "search", query: { text: SEARCH, category: "dress", budget: { amount: 400 } }, variant: { size: "M" } } },
       [TAKE]: { intent: "commerce_select", purchaseDecision: true, commerce: { intent: "select", reference: { type: "previous_result", index: 0 }, variant: { size: "M" } } },
+      [CHECKOUT]: { intent: "commerce_checkout", checkoutConsent: true, commerce: { intent: "checkout" } },
     };
     const named = (name: string) => () => Object.defineProperty(new MemoryPaymentAdapter(), "name", { value: name });
     registerPaymentAdapterFactoryForTests("stripe", named("stripe"));
@@ -181,7 +183,8 @@ describe("D. which system is used is tenant STATE, not code", () => {
     const checkoutProvider = async (conv: string) => {
       setReasonerForTests(new ScriptedReasoner(script));
       await handleCustomerMessage(graph, conv, `c-${conv}`, SEARCH);
-      const out = await handleCustomerMessage(graph, conv, `c-${conv}`, TAKE);
+      await handleCustomerMessage(graph, conv, `c-${conv}`, TAKE);
+      const out = await handleCustomerMessage(graph, conv, `c-${conv}`, CHECKOUT);
       const step = out.turn.trace!.steps.find((s) => s.action === "createCommerceCheckout")!;
       expect(step.result, JSON.stringify(out.turn.trace)).toMatchObject({ ok: true });
       return step.capabilities.find((c) => c.capability === "payments.create_request")?.provider;

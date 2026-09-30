@@ -36,7 +36,9 @@ export type GroundedContext = {
   shownProducts?: (ShownResult & { id: string })[];
   cart?: { position: number; title: string; options: Record<string, string>; quantity: number }[];
   /** Internal (never given to the model): the same cart lines with their real ids, re-read from the provider. */
-  cartLines?: { position: number; id: string; title: string; options: Record<string, string>; quantity: number }[];
+  cartLines?: { position: number; id: string; title: string; options: Record<string, string>; quantity: number; productId?: string }[];
+  /** Internal (never given to the model): catalog products a NAMED item to add was looked up as, so a name grounds to a real catalog item — never to whatever is nearby. */
+  namedProducts?: (ShownResult & { id: string })[];
   cartTotal?: string;
   /** The authoritative cart's revision when this turn read it. */
   cartRevision?: number;

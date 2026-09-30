@@ -356,8 +356,13 @@ function composeHebrew(input: ComposeResponseInput): string | undefined {
       return `לשלוח לך קישור מאובטח לתשלום עבור ${outcome.offerName}?`;
     case "clarify_reference":
       return outcome.available > 0 ? `לאיזה מהם התכוונת? הצגתי ${outcome.available} אפשרויות.` : `מה מחפשים? אחפש בקטלוג.`;
+    case "offer_checkout":
+      // Follows the cart receipt (which states the total): only the offer itself.
+      return `רוצה שנעבור לתשלום?`;
     case "cart_subject_unresolved": {
       const inCart = outcome.inCart.length ? outcome.inCart.join(", ") : "כלום";
+      if (outcome.reason === "not_in_catalog") return `לא מצאתי „${outcome.subject}” בקטלוג, אז לא הוספתי כלום. איך בדיוק קוראים לפריט?`;
+      if (outcome.reason === "ambiguous_catalog") return `יש כמה פריטים שמתאימים ל„${outcome.subject}” (${inCart}), אז לא הוספתי כלום. לאיזה מהם התכוונת?`;
       if (outcome.reason === "not_in_cart") return `„${outcome.subject}” לא נמצא כרגע בעגלה — בעגלה יש: ${inCart}. לא שיניתי כלום.`;
       if (outcome.reason === "unreadable") return `לא הצלחתי לקרוא את העגלה כרגע, אז לא שיניתי כלום. נסו שוב בעוד רגע.`;
       return `לא ברור לי לאיזה פריט בעגלה התכוונת (${inCart}), אז לא שיניתי כלום. איזה מהם?`;
@@ -407,6 +412,11 @@ function composeHebrew(input: ComposeResponseInput): string | undefined {
           return `ההזמנה שלך (${(output as { orderId: string }).orderId}) מאושרת — תודה!`;
         case "createLead":
           return `תודה — רשמתי את הפנייה שלך עבור הצוות.`;
+        case "grantDiscount": {
+          const o = output as { discountPct: number; item: string; before: { amount: number; currency: string }; after: { amount: number; currency: string } };
+          const on = o.item === "the whole cart" ? "על כל העגלה" : `על ${o.item}`;
+          return `${o.discountPct}% הנחה ${on} — הסה״כ שלך עכשיו ${money(o.after.amount, o.after.currency, "he")} (במקום ${money(o.before.amount, o.before.currency, "he")}). רוצה שנעבור לתשלום?`;
+        }
         case "createFollowUp":
           return `אין בעיה, אחזור אליך בקרוב.`;
         case "addToCart":
@@ -520,8 +530,13 @@ function composeSingle(input: ComposeResponseInput): string {
       return outcome.available > 0
         ? `Which one did you mean? I showed you ${outcome.available} option${outcome.available === 1 ? "" : "s"}.`
         : `What are you looking for? I'll search the catalog for you.`;
+    case "offer_checkout":
+      // Follows the cart receipt (which states the total): only the offer itself.
+      return `Want to check out now?`;
     case "cart_subject_unresolved": {
       const inCart = outcome.inCart.length ? outcome.inCart.join(", ") : "nothing";
+      if (outcome.reason === "not_in_catalog") return `I couldn't find “${outcome.subject}” in the catalog, so I didn't add anything. What's the item called exactly?`;
+      if (outcome.reason === "ambiguous_catalog") return `Several items match “${outcome.subject}” (${inCart}), so I didn't add anything. Which one did you mean?`;
       if (outcome.reason === "not_in_cart") return `“${outcome.subject}” isn't in your cart right now — your cart has: ${inCart}. I didn't change anything.`;
       if (outcome.reason === "unreadable") return `I couldn't read your cart just now, so I didn't change anything. Please try again in a moment.`;
       return `I'm not sure which item in your cart you meant (${inCart}), so I didn't change anything. Which one?`;
@@ -585,6 +600,11 @@ function composeSingle(input: ComposeResponseInput): string {
         case "createPaymentRequest": {
           // The link itself is delivered in the channel's rich payload; its internal id is never shown.
           return `Here's your secure payment link — once the payment is verified, I'll confirm everything.`;
+        }
+        case "grantDiscount": {
+          const o = toolResult.output as { discountPct: number; item: string; before: { amount: number; currency: string }; after: { amount: number; currency: string } };
+          const on = o.item === "the whole cart" ? "your whole cart" : `the ${o.item}`;
+          return `${o.discountPct}% off ${on} is applied — your total is now ${money(o.after.amount, o.after.currency)} (was ${money(o.before.amount, o.before.currency)}). Want to check out now?`;
         }
         case "searchProducts": {
           const output = toolResult.output as {

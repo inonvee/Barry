@@ -4,7 +4,7 @@ import { getBackend } from "@/lib/store";
 import type { PaymentRequestRecord } from "@/lib/store";
 import { resolveCommerceAdapterForBusiness } from "./registry";
 import { groundSearchQuery, type CatalogSchema, type SearchRequest } from "./catalog";
-import type { Cart, CommerceAdapter, Order, Product, ProductVariant } from "./types";
+import type { Cart, CommerceAdapter, Money, Order, Product, ProductVariant } from "./types";
 
 /**
  * Commerce capability. Two rules hold everywhere in this module:
@@ -226,6 +226,24 @@ export async function createCommerceCheckout(ctx: Ctx & { cartId: string }): Pro
   // The checkout is priced from THIS cart revision; the recorded post-checkout state is the provider's own.
   const priced = await recordCartSnapshot(ctx, { ...((await adapter.getCart(cart.id)) ?? cart), status: "checkout" as const });
   return { checkoutId: checkout.id, cart: priced, snapshotHash: cartSnapshotHash(cart), checkoutUrl: checkout.checkoutUrl };
+}
+
+/**
+ * A granted discount priced against the cart AS IT IS NOW: the percentage applies to the lines the
+ * granted item names (all lines for "the whole cart"), never to anything added since. Exact money.
+ */
+export function discountedCartTotal(cart: Pick<Cart, "lines" | "total">, discount: { pct: number; item: string }): { before: Money; after: Money; discountable: number } {
+  const wholeCart = discount.item === "the whole cart";
+  const words = (t: string) => (t.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter((w) => w.length > 1 || /\p{N}/u.test(w));
+  const wanted = words(discount.item);
+  const named = (title: string) => {
+    const have = new Set(words(title));
+    return wanted.length > 0 && wanted.every((w) => have.has(w));
+  };
+  const discountable = cart.lines.filter((l) => wholeCart || named(l.title)).reduce((sum, l) => sum + l.unitPrice.amount * l.quantity, 0);
+  const off = Math.round(discountable * discount.pct) / 100;
+  const after = Math.max(0, Math.round((cart.total.amount - off) * 100) / 100);
+  return { before: cart.total, after: { amount: after, currency: cart.total.currency }, discountable };
 }
 
 export function commerceOrderIdempotencyKey(input: { businessId: string; conversationId: string; cartId: string; paymentRequestId: string }): string {

@@ -34,7 +34,7 @@ export type AskInput = {
   handoff: boolean;
 };
 
-const NEEDS_CUSTOMER = new Set<CompileOutcome["kind"]>(["needs_info", "checkout_needs_info", "capability_needs_input", "ask_variant", "ask_datetime", "ask_slot_confirm", "clarify_offer", "clarify_reference", "cart_subject_unresolved", "ask_general", "confirm_purchase"]);
+const NEEDS_CUSTOMER = new Set<CompileOutcome["kind"]>(["needs_info", "checkout_needs_info", "capability_needs_input", "ask_variant", "ask_datetime", "ask_slot_confirm", "clarify_offer", "clarify_reference", "cart_subject_unresolved", "ask_general", "confirm_purchase", "offer_checkout"]);
 
 function stepStatus(s: AskStep): AskStatus {
   if (s.blocked || s.policy === "denied") return "blocked";

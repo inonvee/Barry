@@ -42,8 +42,12 @@ export type ReadinessCheck = {
   area: "knowledge" | "ai" | "platform" | "systems" | "authority" | "channel" | "handoff" | "payments";
   label: string;
   status: "pass" | "fail" | "warn";
+  /** OWNER words — never a setting key or command. */
   detail: string;
+  /** OWNER words for what fixes it. */
   fix?: string;
+  /** BARRY TEAM technical detail (setting keys) — for the team's screens only. */
+  technical?: string;
   /** Why it matters for a pilot (plain words). */
   why?: string;
   gate: Gate;
@@ -98,13 +102,13 @@ export async function assessPilotReadiness(graph: BusinessGraph, opts: { convers
   // ── Supervised pilot: real, durable, owned, reachable ────────────────
   const reasoner = safe(() => getReasoner());
   const live = reasoner?.name === "llm" && !reasoner.configError;
-  add({ id: "ai.model", area: "ai", gate: "READY_FOR_SUPERVISED_PILOT", label: "Live AI model", status: live ? "pass" : "fail", detail: live ? `Understanding runs on ${reasoner?.model ?? "the configured model"}.` : reasoner?.configError ? `AI configuration error: ${reasoner.configError}` : "BARRY is running on the simulator's scripted understanding.", fix: "Configure the AI model (OPENAI_API_KEY, BARRY_REASONER=openai)." });
+  add({ id: "ai.model", area: "ai", gate: "READY_FOR_SUPERVISED_PILOT", label: "Live AI model", status: live ? "pass" : "fail", detail: live ? `Understanding runs on ${reasoner?.model ?? "the configured model"}.` : reasoner?.configError ? `AI configuration error: ${reasoner.configError}` : "BARRY is running on the simulator's scripted understanding.", fix: "The BARRY team turns on the live AI model.", technical: "Set OPENAI_API_KEY and BARRY_REASONER=openai." });
   const conversations = opts.conversations ?? (await getConversationStore().listByBusiness(businessId).catch(() => [] as ConversationState[]));
   const ai = aiHealth(conversations);
   if (live) add({ id: "ai.health", area: "ai", gate: "READY_FOR_SUPERVISED_PILOT", label: "AI availability", status: ai.status === "unavailable" ? "fail" : ai.status === "degraded" ? "warn" : "pass", detail: ai.summary, fix: ai.lastFailure?.kind === "provider_quota_exhausted" ? "Add credit to the AI provider account." : "Check the AI provider status and account." });
-  add({ id: "platform.persistence", area: "platform", gate: "READY_FOR_SUPERVISED_PILOT", label: "Durable storage", status: isSupabaseConfigured() ? "pass" : "fail", detail: isSupabaseConfigured() ? "Conversations, approvals and payments are stored durably." : "Conversations and approvals live in process memory and are lost on restart.", fix: "Configure the database (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)." });
+  add({ id: "platform.persistence", area: "platform", gate: "READY_FOR_SUPERVISED_PILOT", label: "Durable storage", status: isSupabaseConfigured() ? "pass" : "fail", detail: isSupabaseConfigured() ? "Conversations, approvals and payments are stored durably." : "Conversations and approvals live in process memory and are lost on restart.", fix: "The BARRY team connects the database.", technical: "Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY." });
   const access = ownerAccessFor(businessId);
-  add({ id: "platform.owner_access", area: "platform", gate: "READY_FOR_SUPERVISED_PILOT", label: "Owner access to approvals", status: access.scoped ? "pass" : access.global ? "warn" : "fail", detail: access.scoped ? "The owner has their own access, limited to this business." : access.global ? "Owner access uses the shared operator token (it opens every business)." : "No owner access is configured: nobody can approve requests.", fix: "Give this owner their own token (BARRY_OWNER_TOKENS=businessId:token)." });
+  add({ id: "platform.owner_access", area: "platform", gate: "READY_FOR_SUPERVISED_PILOT", label: "Owner access to approvals", status: access.scoped ? "pass" : access.global ? "warn" : "fail", detail: access.scoped ? "The owner has their own access, limited to this business." : access.global ? "Owner access uses the shared operator token (it opens every business)." : "No owner access is configured: nobody can approve requests.", fix: "The BARRY team issues this owner their own sign-in.", technical: "Add the business to BARRY_OWNER_TOKENS (businessId:token)." });
 
   const workspace = await getLearningWorkspace(graph).catch(() => undefined);
   if (!workspace) add({ id: "systems.unavailable", area: "systems", gate: "READY_FOR_SUPERVISED_PILOT", label: "Connected systems", status: "fail", detail: "Connection status could not be read.", fix: "Check the database connection." });
@@ -137,10 +141,10 @@ export async function assessPilotReadiness(graph: BusinessGraph, opts: { convers
   add({ id: "handoff.path", area: "handoff", gate: "READY_FOR_SUPERVISED_PILOT", label: "Human handoff", status: handoffPath(graph) ? "pass" : "fail", detail: handoffPath(graph) ? `When a customer needs a person: ${handoffPath(graph)}` : "BARRY records handoffs in your inbox, but you haven't said how your team replies — BARRY can't promise customers a reply.", fix: "Describe how your team takes over (who, how, how fast)." });
   const wa = whatsappConfig();
   const numbers = whatsappNumbersFor(businessId);
-  add({ id: "channel.configured", area: "channel", gate: "READY_FOR_SUPERVISED_PILOT", label: "Customer channel (WhatsApp)", status: wa.configured && numbers.length > 0 ? "pass" : "fail", detail: wa.configured && numbers.length > 0 ? `WhatsApp number routed to this business (${wa.sendMode === "live" ? "sending live" : "dry run: replies recorded, not sent"}).` : wa.missing.length ? `Missing WhatsApp settings: ${wa.missing.join(", ")}.` : "No WhatsApp number is routed to this business.", fix: "Connect the WhatsApp Business number (Meta app + webhook) and route it to this business." });
+  add({ id: "channel.configured", area: "channel", gate: "READY_FOR_SUPERVISED_PILOT", label: "Customer channel (WhatsApp)", status: wa.configured && numbers.length > 0 ? "pass" : "fail", detail: wa.configured && numbers.length > 0 ? `WhatsApp number routed to this business (${wa.sendMode === "live" ? "sending live" : "dry run: replies recorded, not sent"}).` : wa.missing.length ? `WhatsApp isn't connected yet (${wa.missing.length} setting${wa.missing.length === 1 ? "" : "s"} for the BARRY team to add).` : "No WhatsApp number is routed to this business.", fix: "The BARRY team connects the WhatsApp Business number (Meta app + webhook) and routes it to this business.", ...(wa.missing.length ? { technical: `Missing WhatsApp settings: ${wa.missing.join(", ")}.` } : {}) });
 
   // ── Customer traffic: proven live ────────────────────────────────────
-  add({ id: "channel.live", area: "channel", gate: "READY_FOR_CUSTOMER_TRAFFIC", label: "Replies are sent for real", status: wa.sendMode === "live" ? "pass" : "fail", detail: wa.sendMode === "live" ? "WhatsApp replies are sent." : "WhatsApp replies are in dry-run mode.", fix: "Switch sending to live (BARRY_WHATSAPP_SEND=live) after the supervised pilot." });
+  add({ id: "channel.live", area: "channel", gate: "READY_FOR_CUSTOMER_TRAFFIC", label: "Replies are sent for real", status: wa.sendMode === "live" ? "pass" : "fail", detail: wa.sendMode === "live" ? "WhatsApp replies are sent." : "WhatsApp replies are in dry-run mode.", fix: "After the supervised pilot, the BARRY team switches sending to live.", technical: "Set BARRY_WHATSAPP_SEND=live." });
   const channelConvos = conversations.filter((c) => /^wa:/.test(c.id));
   const delivered = channelConvos.some((c) => readDeliveries(c.knownFields).some((d) => d.status === "sent"));
   add({ id: "channel.proven", area: "channel", gate: "READY_FOR_CUSTOMER_TRAFFIC", label: "A real message answered end to end", status: delivered ? "pass" : "fail", detail: delivered ? "A real WhatsApp message was received and answered." : "No real WhatsApp message has been received and answered yet.", fix: "Send a test message from a real phone and confirm the reply arrives." });

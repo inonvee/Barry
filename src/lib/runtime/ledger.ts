@@ -79,7 +79,7 @@ export type RecoveredIntent = {
 
 export const LEDGER_KEY = "__effectLedger";
 
-export type CartLineSnapshot = { position: number; id: string; title: string; options: Record<string, string>; quantity: number };
+export type CartLineSnapshot = { position: number; id: string; title: string; options: Record<string, string>; quantity: number; productId?: string };
 
 const lineLabel = (l: { title: string; options: Record<string, string> }) => `${l.title}${Object.keys(l.options).length ? ` (${Object.values(l.options).join(" / ")})` : ""}`;
 const cartLabel = (lines: { title: string; options: Record<string, string>; quantity: number }[]) => (lines.length ? lines.map((l) => `${l.quantity} × ${lineLabel(l)}`).join(", ") : "empty");
@@ -94,6 +94,7 @@ const OPERATION_WORDS: Record<string, string> = {
   updateCartLine: "cart change",
   createCommerceCheckout: "checkout payment link",
   createCommerceOrder: "order",
+  grantDiscount: "discount",
   verifyPayment: "payment status check",
   createFollowUp: "follow-up message",
   fulfillOrder: "order confirmation",
@@ -245,6 +246,10 @@ export function classifyExecution(action: string, input: unknown, result: ToolCa
       }
       const effect = action === "addToCart" ? (out.replacedLineId ? "cart.line_replaced" : "cart.line_added") : qty === 0 ? "cart.line_removed" : "cart.line_updated";
       return { ...base, terms, effect, status: "effected", outcome };
+    }
+    case "grantDiscount": {
+      const after = (out.after as { amount?: number } | undefined)?.amount;
+      return { ...base, effect: "discount.granted", status: "effected", outcome: { discountPct: Number(out.discountPct), ...(typeof after === "number" ? { amountAfter: after } : {}) } };
     }
     default:
       return { ...base, effect: `${action}.done`, status: "effected" };

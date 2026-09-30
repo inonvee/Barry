@@ -98,6 +98,7 @@ describe("payment is bound to the cart snapshot", () => {
     const { conv, cust } = ids();
     await handleCustomerMessage(graph, conv, cust, "I need a black dress for a wedding, size M, under ₪450");
     await handleCustomerMessage(graph, conv, cust, "Take the first one in M");
+    await handleCustomerMessage(graph, conv, cust, "Let's check out");
     const checkout = await handleCustomerMessage(graph, conv, cust, "My name is Dana and my phone is 0501234567");
     expect(checkout.turn.selectedAction?.name).toBe("createCommerceCheckout");
     const paymentId = checkout.state.knownFields.__paymentRequestId;

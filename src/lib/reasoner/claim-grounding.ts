@@ -288,6 +288,7 @@ export function claimEvidence(ctx: ReasonerContext, input: ComposeResponseInput,
     ...new Set(
       [
         ...(ctx.grounded?.shownResults ?? []).map((r) => r.title),
+        ...(ctx.grounded?.namedProducts ?? []).map((r) => r.title),
         ...(ctx.grounded?.cart ?? []).map((l) => l.title),
         ...ledger.flatMap((e) => [e.terms.item, e.terms.itemAfter].filter((v): v is string => typeof v === "string").map(title)),
       ].filter(Boolean)

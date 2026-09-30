@@ -53,6 +53,7 @@ const SEARCH_THREE = "__setup: black dresses";
 const ADD_FIRST_M = "__setup: add first in M";
 const ADD_SECOND_M = "__setup: add second in M";
 const TAKE_ONE_M = "__setup: take it in M";
+const CHECKOUT = "__setup: check out";
 
 export const SETUP_IR: Record<string, Partial<BarryIR>> = {
   [SEARCH_ONE]: { intent: "search", commerce: { intent: "search", query: { text: "dress", category: "dress", budget: { amount: 320 } } } },
@@ -60,6 +61,7 @@ export const SETUP_IR: Record<string, Partial<BarryIR>> = {
   [ADD_FIRST_M]: { intent: "select", purchaseDecision: false, commerce: { intent: "select", reference: { type: "previous_result", index: 0 }, variant: { size: "M" } } },
   [ADD_SECOND_M]: { intent: "select", purchaseDecision: false, commerce: { intent: "select", reference: { type: "previous_result", index: 1 }, variant: { size: "M" } } },
   [TAKE_ONE_M]: { intent: "select", purchaseDecision: true, commerce: { intent: "select", variant: { size: "M" } } },
+  [CHECKOUT]: { intent: "checkout", checkoutConsent: true, commerce: { intent: "checkout" } },
 };
 
 const SETUPS: Record<Setup, string[]> = {
@@ -67,7 +69,7 @@ const SETUPS: Record<Setup, string[]> = {
   three_shown: [SEARCH_THREE],
   cart_first_M: [SEARCH_THREE, ADD_FIRST_M],
   cart_second_M: [SEARCH_THREE, ADD_SECOND_M],
-  checkout_pending: [SEARCH_ONE, TAKE_ONE_M],
+  checkout_pending: [SEARCH_ONE, TAKE_ONE_M, CHECKOUT],
 };
 
 export type Expectation = {

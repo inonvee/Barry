@@ -52,6 +52,7 @@ export function buildBriefing(ws: OwnerWorkspace, week: ReturnType<typeof revenu
       stuckWithYou: fmt(ws.opportunities.summary.stuckWithYou),
       waitingOnCustomer: fmt(ws.opportunities.summary.waitingOnCustomer),
       atRisk: fmt(ws.opportunities.summary.atRisk),
+      simulatedTestMoney: fmt(ws.opportunities.summary.simulated),
       items: ws.opportunities.items.slice(0, 12).map((o) => ({ kind: o.kind.replace(/_/g, " "), customer: o.customer, ...(o.amount !== undefined && o.currency ? { amount: money(o.amount, o.currency) } : {}), why: o.reasoning, nextMove: `${o.next.who === "you" ? "you" : o.next.who === "customer" ? "the customer" : "BARRY"}: ${o.next.action}`, ...(o.simulated ? { simulated: true } : {}) })),
     },
     conversationsNeedingAttention: ws.conversations.filter((c) => c.status === "needs_you").slice(0, 10).map((c) => ({ customer: c.customer, why: c.attention, lastMessage: c.lastMessage?.text })),
@@ -77,6 +78,9 @@ function revenueWords(r: ReturnType<typeof revenueSummary>) {
     recoveredAfterAFailedAttempt: fmt(r.recovered),
     bookedValueNotYetCollected: fmt(r.influenced),
     openOpportunities: fmt(r.potential),
+    /** Unpaid links on a simulated provider: pending test money (labelled, never revenue, never inside openOpportunities). */
+    pendingSimulatedTestMoney: fmt(r.potentialSimulated),
+    pendingSimulatedItems: r.potentialSimulatedItems,
     simulatedTestMoney: fmt(r.simulatedPaid),
     conversationsWithPurchaseIntent: r.purchaseIntentConversations,
     converted: r.convertedConversations,
@@ -96,8 +100,9 @@ export function briefingText(b: OwnerBriefing): string {
     `Collected by BARRY today: ${b.revenueToday.collectedByBarry} (${b.revenueToday.paymentsCollected} payment${b.revenueToday.paymentsCollected === 1 ? "" : "s"}). Last 7 days: ${b.revenueLast7Days.collectedByBarry}.`,
     b.revenueToday.bookedValueNotYetCollected !== "none" ? `Booked but not yet collected: ${b.revenueToday.bookedValueNotYetCollected}.` : "",
     b.revenueToday.openOpportunities !== "none" ? `Open opportunities (not revenue yet): ${b.revenueToday.openOpportunities}.` : "",
+    b.revenueToday.pendingSimulatedTestMoney !== "none" ? `Pending on a simulated provider (test money, unpaid, not revenue): ${b.revenueToday.pendingSimulatedTestMoney} across ${b.revenueToday.pendingSimulatedItems} link${b.revenueToday.pendingSimulatedItems === 1 ? "" : "s"}.` : "",
     b.waitingForYou.length ? `Waiting for you: ${b.waitingForYou.map((w) => `${w.customer} — ${w.what}${w.amount ? ` (${w.amount})` : ""} → ${w.youDecide}`).join("; ")}.` : "Nothing is waiting for you.",
-    b.moneyInMotion.items.length ? `Money in motion: ${b.moneyInMotion.stuckWithYou} waits on you, ${b.moneyInMotion.waitingOnCustomer} on customers, ${b.moneyInMotion.atRisk} at risk. ${b.moneyInMotion.items.slice(0, 4).map((o) => `${o.customer}: ${o.kind}${o.amount ? ` ${o.amount}` : ""} — ${o.nextMove}`).join("; ")}.` : "",
+    b.moneyInMotion.items.length ? `Money in motion: ${b.moneyInMotion.stuckWithYou} waits on you, ${b.moneyInMotion.waitingOnCustomer} on customers, ${b.moneyInMotion.atRisk} at risk${b.moneyInMotion.simulatedTestMoney !== "none" ? `, ${b.moneyInMotion.simulatedTestMoney} is test money on a simulated provider` : ""}. ${b.moneyInMotion.items.slice(0, 4).map((o) => `${o.customer}: ${o.kind}${o.amount ? ` ${o.amount}` : ""}${o.simulated ? " (simulated, test)" : ""} — ${o.nextMove}`).join("; ")}.` : "",
     `AI: ${b.aiHealth}`,
     `Readiness: ${b.readiness.level}.`,
     b.capabilities.canDoNow.length ? `BARRY can do now: ${b.capabilities.canDoNow.slice(0, 8).join("; ")}.` : "",
@@ -109,7 +114,7 @@ export function briefingText(b: OwnerBriefing): string {
 const OWNER_PROMPT = `You are BARRY's owner assistant: you help the owner of ONE business understand what BARRY did for them. You are READ-ONLY.
 Answer the owner's question using ONLY the JSON briefing. Rules:
 - Every number, amount, name and status you state must appear in the briefing. If the briefing doesn't contain it, say you don't have that information.
-- Keep money categories apart: "collectedByBarry" is money actually collected and verified; "bookedValueNotYetCollected" is value secured but not collected; "openOpportunities" is NOT revenue; "simulatedTestMoney" is test money, never revenue. Never add them together.
+- Keep money categories apart: "collectedByBarry" is money actually collected and verified; "bookedValueNotYetCollected" is value secured but not collected; "openOpportunities" is NOT revenue; "pendingSimulatedTestMoney" is an unpaid link on a simulated provider (say it exists, that it is pending and test money, never revenue); "simulatedTestMoney" is test money, never revenue. Never add them together. When asked about pending or unpaid payments, mention every pending link, including simulated ones, labelled as such.
 - "waitingForYou" is the owner's queue: for each item say what it is, why BARRY escalated (its "why"), what the owner decides ("youDecide") and what follows ("ifApproved"). "moneyInMotion" says where money is stuck and whose move it is — recommend that move, never invent another.
 - To explain WHY something happened or failed, use "whatHappened": the customer's asks, what BARRY did ("barryDid"), the outcome and "stoppedBecause" — quote those, never guess a cause.
 - "What can you do for me?" is answered from "capabilities": canDoNow (real), onSimulatorOnly (nothing real happens yet), and afterSetup (each step and what it unlocks). Never promise a capability that isn't listed.

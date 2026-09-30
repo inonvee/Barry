@@ -48,6 +48,8 @@ export type OpportunitySummary = {
   atRisk: Money;
   items: number;
   simulatedItems: number;
+  /** Test money in motion (simulated providers): shown and labelled, never inside the three real figures. */
+  simulated: Money;
 };
 
 export type OpportunityInput = {
@@ -246,9 +248,13 @@ export function revenueOpportunities(input: OpportunityInput): { items: Opportun
   }
 
   items.sort((x, y) => (y.amount ?? 0) - (x.amount ?? 0) || x.since.localeCompare(y.since));
-  const summary: OpportunitySummary = { stuckWithYou: {}, waitingOnCustomer: {}, atRisk: {}, items: items.length, simulatedItems: items.filter((i) => i.simulated).length };
+  const summary: OpportunitySummary = { stuckWithYou: {}, waitingOnCustomer: {}, atRisk: {}, items: items.length, simulatedItems: items.filter((i) => i.simulated).length, simulated: {} };
   for (const i of items) {
-    if (i.simulated || i.amount === undefined || !i.currency) continue;
+    if (i.amount === undefined || !i.currency) continue;
+    if (i.simulated) {
+      add(summary.simulated, i.currency, i.amount);
+      continue;
+    }
     if (i.next.who === "you") add(summary.stuckWithYou, i.currency, i.amount);
     if (i.next.who === "customer") add(summary.waitingOnCustomer, i.currency, i.amount);
     if (AT_RISK.includes(i.kind) || (i.kind === "unpaid_link" && i.recoverable)) add(summary.atRisk, i.currency, i.amount);

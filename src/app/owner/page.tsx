@@ -585,9 +585,9 @@ const REVENUE_CATEGORIES: { id: OwnerWorkspace["revenueEvidence"][number]["categ
   { id: "collected", label: "Collected", explain: "Paid and verified by your payment provider — the only real revenue.", tone: "good" },
   { id: "recovered", label: "Recovered", explain: "Collected after an earlier failed or cancelled attempt (already inside Collected).", tone: "good" },
   { id: "booked_not_collected", label: "Booked, not collected", explain: "Value of bookings BARRY made; not cash.", tone: "info" },
-  { id: "open_opportunity", label: "Pending", explain: "Unpaid links and requests waiting for you — not revenue.", tone: "warn" },
+  { id: "open_opportunity", label: "Pending", explain: "Unpaid links and requests waiting for you — not revenue. Simulated ones are marked as test money.", tone: "warn" },
   { id: "simulated", label: "Simulated", explain: "Test money on simulated providers — never counted.", tone: "neutral" },
-  { id: "excluded_unverified", label: "Not counted", explain: "Marked paid without verification, or unpaid simulated links.", tone: "neutral" },
+  { id: "excluded_unverified", label: "Not counted", explain: "Marked paid without provider verification.", tone: "neutral" },
 ];
 
 function MoneyView({ ws, range, setRange, onOpen, onIntervention }: { ws: OwnerWorkspace; range: "today" | "7d" | "30d"; setRange: (r: "today" | "7d" | "30d") => void; onOpen: (id: string) => void; onIntervention: (id: string) => void }) {
@@ -609,7 +609,11 @@ function MoneyView({ ws, range, setRange, onOpen, onIntervention }: { ws: OwnerW
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <Stat label="Collected" value={formatMoney(r.direct)} hint={`${r.directPayments} verified payment${r.directPayments === 1 ? "" : "s"}${Object.keys(r.recovered).length ? ` · ${formatMoney(r.recovered)} recovered` : ""}`} emphasis tone={Object.keys(r.direct).length ? "good" : undefined} />
         <Stat label="Booked, not collected" value={formatMoney(r.influenced)} hint={`${r.influencedBookings} booking${r.influencedBookings === 1 ? "" : "s"}`} />
-        <Stat label="Pending" value={formatMoney(r.potential)} hint={`${r.potentialItems} unpaid link${r.potentialItems === 1 ? "" : "s"} or request${r.potentialItems === 1 ? "" : "s"} — not revenue`} />
+        <Stat
+          label="Pending"
+          value={formatMoney(r.potential)}
+          hint={`${r.potentialItems} unpaid link${r.potentialItems === 1 ? "" : "s"} or request${r.potentialItems === 1 ? "" : "s"} — not revenue${r.potentialSimulatedItems ? ` · plus ${formatMoney(r.potentialSimulated)} pending on a simulated provider (test money, ${r.potentialSimulatedItems} link${r.potentialSimulatedItems === 1 ? "" : "s"})` : ""}`}
+        />
         <Stat label="Converted" value={r.purchaseIntentConversations ? `${r.convertedConversations} / ${r.purchaseIntentConversations}` : "—"} hint={`of conversations with buying intent · ${r.lostOpportunities} lost`} />
       </div>
       {(Object.keys(r.simulatedPaid).length > 0 || Object.keys(r.simulatedInfluenced).length > 0) && (
@@ -643,6 +647,12 @@ function MoneyView({ ws, range, setRange, onOpen, onIntervention }: { ws: OwnerW
                       <li key={i} className="flex flex-col gap-0.5 py-1.5 sm:flex-row sm:justify-between">
                         <button className="min-w-0 break-words text-left text-[#344054]" onClick={() => onOpen(x.conversationId)}>
                           {x.customer} — <span className="text-[#667085]">{x.record}</span>
+                          {x.simulated && (
+                            <>
+                              {" "}
+                              <Pill tone="neutral">Test money</Pill>
+                            </>
+                          )}
                         </button>
                         <span className="shrink-0 tabular-nums">{formatMoney({ [x.currency]: x.amount })}</span>
                       </li>

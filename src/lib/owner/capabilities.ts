@@ -55,7 +55,10 @@ export type SetupStep = {
   id: string;
   title: string;
   why: string;
+  /** OWNER words: what happens and who does it — never a setting key, variable name or command. */
   how: string;
+  /** BARRY TEAM technical detail (setting keys, values) — shown only in an explicit team section, never in owner copy. */
+  technical?: string;
   who: "you" | "barry_team";
   gate: SetupGate;
   /** Titles of the needs this step unlocks (or makes real instead of simulated). */
@@ -136,7 +139,8 @@ export function deriveCapabilities(input: CapabilityInput): CapabilityAssessment
             id: `connect.${n.domain}`,
             title: `Connect your ${words}`,
             why: n.domain === "commerce" ? "BARRY can only sell what your store really has: stock, prices, the cart and checkout all come from it." : n.domain === "payments" ? "Money is only real when your provider reports it paid; BARRY never counts anything else." : "BARRY offers only times your calendar really has, and books through it.",
-            how: missing.length ? `Add the missing settings (${missing.join(", ")}) with the BARRY team, then run a connection test.` : `Connect it on the Connections page with the BARRY team (name the platform you use, or give API access).`,
+            how: missing.length ? `The BARRY team completes the connection (${missing.length} setting${missing.length === 1 ? "" : "s"} still missing), then runs a connection test.` : `Connect it on the Connections page with the BARRY team (name the platform you use, or give API access).`,
+            ...(missing.length ? { technical: `Missing settings: ${missing.join(", ")}.` } : {}),
             who: "barry_team",
             gate: "supervised_pilot",
           },
@@ -291,7 +295,7 @@ export function deriveCapabilities(input: CapabilityInput): CapabilityAssessment
     provider: channelReady ? "WhatsApp Cloud API" : null,
     simulated: false,
     blockedBy: [
-      ...(channelReady ? [] : [step({ id: "channel.whatsapp", title: "Connect your WhatsApp number", why: "Customers can only reach BARRY through a connected channel.", how: wa.missing.length ? `Add the WhatsApp settings (${wa.missing.join(", ")}) with the BARRY team and route your number to this business.` : "Route your WhatsApp Business number to this business with the BARRY team.", who: "barry_team", gate: "supervised_pilot" }, "Talk to customers on WhatsApp")]),
+      ...(channelReady ? [] : [step({ id: "channel.whatsapp", title: "Connect your WhatsApp number", why: "Customers can only reach BARRY through a connected channel.", how: wa.missing.length ? `The BARRY team completes the WhatsApp connection (${wa.missing.length} setting${wa.missing.length === 1 ? "" : "s"} still missing) and routes your number to this business.` : "Route your WhatsApp Business number to this business with the BARRY team.", ...(wa.missing.length ? { technical: `Missing WhatsApp settings: ${wa.missing.join(", ")}.` } : {}), who: "barry_team", gate: "supervised_pilot" }, "Talk to customers on WhatsApp")]),
       ...(channelReady && wa.sendMode !== "live" ? [step({ id: "channel.live", title: "Switch WhatsApp replies to live", why: "In dry run BARRY records what it would send; customers receive nothing.", how: "After the supervised pilot, the BARRY team switches sending to live.", who: "barry_team", gate: "customer_traffic" }, "Talk to customers on WhatsApp")] : []),
     ],
   });
@@ -307,7 +311,7 @@ export function deriveCapabilities(input: CapabilityInput): CapabilityAssessment
     authorityWords: "on its own",
     provider: input.ai.live ? (input.ai.model ?? "live model") : null,
     simulated: !input.ai.live,
-    blockedBy: input.ai.live ? [] : [step({ id: "platform.ai", title: "Turn on the live AI model", why: "Without it BARRY can't understand real customers; it only replays scripted understanding.", how: "The BARRY team configures the model (OPENAI_API_KEY, BARRY_REASONER=openai).", who: "barry_team", gate: "supervised_pilot" }, "Understand customers with the live AI model")],
+    blockedBy: input.ai.live ? [] : [step({ id: "platform.ai", title: "Turn on the live AI model", why: "Without it BARRY can't understand real customers; it only replays scripted understanding.", how: "The BARRY team turns on the live AI model for your business.", technical: "Set OPENAI_API_KEY and BARRY_REASONER=openai.", who: "barry_team", gate: "supervised_pilot" }, "Understand customers with the live AI model")],
   });
   needs.push({
     id: "platform.memory",
@@ -319,7 +323,7 @@ export function deriveCapabilities(input: CapabilityInput): CapabilityAssessment
     authorityWords: "on its own",
     provider: input.durable ? "database" : null,
     simulated: false,
-    blockedBy: input.durable ? [] : [step({ id: "platform.memory", title: "Turn on durable storage", why: "Otherwise conversations, approvals and payments disappear on the next restart.", how: "The BARRY team configures the database (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY).", who: "barry_team", gate: "supervised_pilot" }, "Remember conversations, requests and payments durably")],
+    blockedBy: input.durable ? [] : [step({ id: "platform.memory", title: "Turn on durable storage", why: "Otherwise conversations, approvals and payments disappear on the next restart.", how: "The BARRY team connects the database that keeps your conversations, requests and payments.", technical: "Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.", who: "barry_team", gate: "supervised_pilot" }, "Remember conversations, requests and payments durably")],
   });
   needs.push({
     id: "platform.owner",
@@ -331,7 +335,7 @@ export function deriveCapabilities(input: CapabilityInput): CapabilityAssessment
     authorityWords: "always — approvals happen before the effect",
     provider: null,
     simulated: false,
-    blockedBy: input.ownerAccess.scoped || input.ownerAccess.global ? [] : [step({ id: "platform.owner", title: "Give yourself owner access", why: "Someone must be able to approve requests and see what BARRY did — and only for their own business.", how: "The BARRY team issues your owner token (BARRY_OWNER_TOKENS=businessId:token).", who: "barry_team", gate: "supervised_pilot" }, "Ask you before consequential actions")],
+    blockedBy: input.ownerAccess.scoped || input.ownerAccess.global ? [] : [step({ id: "platform.owner", title: "Give yourself owner access", why: "Someone must be able to approve requests and see what BARRY did — and only for their own business.", how: "The BARRY team issues your own owner sign-in, limited to your business.", technical: "Add this business to BARRY_OWNER_TOKENS (businessId:token).", who: "barry_team", gate: "supervised_pilot" }, "Ask you before consequential actions")],
   });
 
   // Consequential capabilities with no owner limit at all: worth a step, even though nothing is blocked.

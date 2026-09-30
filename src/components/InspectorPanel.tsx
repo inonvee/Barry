@@ -177,6 +177,9 @@ const SUBJECT_BASIS: Record<string, string> = {
   unreadable: "cart unreadable — no write",
   no_reference: "no target — no write",
   invalid_reference: "position outside the cart — no write",
+  shown: "named by the customer — a product BARRY showed / the cart holds",
+  catalog: "named by the customer — looked up in the catalog by that name",
+  not_in_catalog: "NAMED ITEM NOT IN CATALOG — no write",
 };
 
 /** CUSTOMER SUBJECT → GROUNDED LINE → BEFORE → EFFECT → AUTHORITATIVE AFTER → REVISION. */

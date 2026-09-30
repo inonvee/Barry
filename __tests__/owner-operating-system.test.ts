@@ -303,7 +303,7 @@ describe("the operating components render the models (server render)", () => {
     expect(queue).toMatch(/Current: nothing the customer said since/);
     const empty = renderToString(createElement(InterventionQueue, { items: [], busyId: null, onAct: () => undefined }));
     expect(empty).toMatch(/Nothing needs you right now/);
-    const money = renderToString(createElement(MoneyInMotion, { items: [{ id: "o1", kind: "unpaid_link", customer: "Adi", conversationId: "c", since: hoursAgo(30), ageHours: 30, amount: 390, currency: "ILS", simulated: false, evidence: ["payment request x"], reasoning: "Unpaid for a day.", next: { who: "you", action: "Follow up." }, recoverable: true }], summary: { stuckWithYou: { ILS: 390 }, waitingOnCustomer: {}, atRisk: { ILS: 390 }, items: 1, simulatedItems: 0 }, onOpen: () => undefined, onIntervention: () => undefined }));
+    const money = renderToString(createElement(MoneyInMotion, { items: [{ id: "o1", kind: "unpaid_link", customer: "Adi", conversationId: "c", since: hoursAgo(30), ageHours: 30, amount: 390, currency: "ILS", simulated: false, evidence: ["payment request x"], reasoning: "Unpaid for a day.", next: { who: "you", action: "Follow up." }, recoverable: true }], summary: { stuckWithYou: { ILS: 390 }, waitingOnCustomer: {}, atRisk: { ILS: 390 }, items: 1, simulatedItems: 0, simulated: {} }, onOpen: () => undefined, onIntervention: () => undefined }));
     expect(money).toMatch(/Unpaid link/);
     expect(money).toMatch(/Your move/);
     expect(money).toMatch(/Follow up\./);

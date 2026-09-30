@@ -209,6 +209,11 @@ export function MoneyInMotion({ items, summary, onOpen, onIntervention, limit }:
           <p className="mt-1 text-lg font-semibold tabular-nums text-[#b42318] sm:text-xl">{formatMoney(summary.atRisk)}</p>
         </div>
       </div>
+      {Object.keys(summary.simulated).length > 0 && (
+        <p className="mt-2 text-[12px] text-[#667085]">
+          Plus {formatMoney(summary.simulated)} pending on a simulated provider — test money, shown apart and never counted above.
+        </p>
+      )}
       {items.length === 0 ? (
         <div className="mt-3">
           <Empty title="No money is stuck">When a payment link goes unpaid, a sale waits on your approval, a purchase goes quiet or a deposit is missing, it shows here with what to do about it.</Empty>

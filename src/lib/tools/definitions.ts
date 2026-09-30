@@ -7,6 +7,7 @@ import { createPaymentLink, verifyPaymentWithProvider } from "@/lib/payments/cap
 import {
   addCommerceItem,
   createCommerceCheckout as createCommerceCheckoutCapability,
+  discountedCartTotal,
   createCommerceOrder as createCommerceOrderCapability,
   getCommerceProduct,
   getOwnedCart,
@@ -337,6 +338,9 @@ export const createCommerceCheckout = defineTool({
     cartId: z.string(),
     /** The total policy approved. If the provider's cart no longer totals this, nothing is sent. */
     expectedTotal: moneySchema.optional(),
+    /** A discount the RUNTIME granted (policy-allowed or owner-approved), priced here against the real cart. */
+    discountPct: z.number().positive().max(99).optional(),
+    discountItem: z.string().optional(),
   }),
   outputSchema: z.object({
     checkoutId: z.string(),
@@ -361,31 +365,66 @@ export const createCommerceCheckout = defineTool({
     ) {
       throw new Error("Your cart changed — please review it before checkout");
     }
+    // A granted discount is applied to the real cart's lines now — the customer pays exactly this.
+    const priced = input.discountPct && input.discountItem ? discountedCartTotal(checkout.cart, { pct: input.discountPct, item: input.discountItem }).after : checkout.cart.total;
     const pr = await createPaymentLink({
       graph: ctx.graph,
       businessId: ctx.graph.business.id,
       conversationId: ctx.conversationId,
       customerId: ctx.customerId,
-      amount: checkout.cart.total.amount,
-      currency: checkout.cart.total.currency,
-      reason: `Order for cart ${checkout.cart.id}`,
+      amount: priced.amount,
+      currency: priced.currency,
+      reason: `Order for cart ${checkout.cart.id}${input.discountPct ? ` (${input.discountPct}% off ${input.discountItem})` : ""}`,
       binding: {
         kind: "commerce_cart",
         cartId: checkout.cart.id,
         snapshotHash: checkout.snapshotHash,
-        amount: checkout.cart.total.amount,
-        currency: checkout.cart.total.currency,
+        amount: priced.amount,
+        currency: priced.currency,
       },
     });
     return {
       checkoutId: checkout.checkoutId,
       cartId: checkout.cart.id,
-      amount: checkout.cart.total,
+      amount: priced,
       snapshotHash: checkout.snapshotHash,
       status: "pending" as const,
       paymentRequestId: pr.paymentRequestId,
       checkoutUrl: pr.checkoutUrl || checkout.checkoutUrl,
     };
+  },
+});
+
+/**
+ * A discount granted on a cart — by policy (within the automatic limit) or by the owner's approval of
+ * exactly these terms. It changes nothing at the provider and sends nothing: it is the one record the
+ * checkout prices from. The amounts are computed against the cart as it really is now.
+ */
+export const grantDiscount = defineTool({
+  name: "grantDiscount",
+  description: "Grant a discount on the cart (a percentage on a named item or the whole cart); the checkout is priced from it.",
+  inputSchema: z.object({
+    cartId: z.string(),
+    discountPct: z.number().positive().max(99),
+    /** The item the discount applies to (a cart line's title), or "the whole cart". */
+    item: z.string().min(1),
+    currency: z.string().optional(),
+    /** The list total when the discount was asked (for the owner's card); the real cart is re-read here. */
+    listAmount: z.number().optional(),
+  }),
+  outputSchema: z.object({
+    cartId: z.string(),
+    discountPct: z.number(),
+    item: z.string(),
+    before: moneySchema,
+    after: moneySchema,
+    revision: z.number().optional(),
+  }),
+  async execute(input, ctx) {
+    const cart = await getOwnedCart({ graph: ctx.graph, customerId: ctx.customerId, conversationId: ctx.conversationId }, input.cartId);
+    const priced = discountedCartTotal(cart, { pct: input.discountPct, item: input.item });
+    if (priced.discountable <= 0) throw new Error("That item is not in the cart");
+    return { cartId: cart.id, discountPct: input.discountPct, item: input.item, before: priced.before, after: priced.after, ...(typeof cart.revision === "number" ? { revision: cart.revision } : {}) };
   },
 });
 

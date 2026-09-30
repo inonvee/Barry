@@ -59,6 +59,16 @@ export const SCRATCH_KEYS = {
    * solely when the requested cart mutation verifiably succeeds.
    */
   commerceCheckoutOnSuccess: "__commerceCheckoutOnSuccess",
+  /**
+   * The customer DECIDED to buy what they're choosing this turn (playbook: on_purchase_decision) but
+   * did not ask to check out: once the cart change verifiably succeeds, BARRY OFFERS checkout — it
+   * never starts collecting checkout details or pricing on that basis.
+   */
+  commerceCheckoutOfferOnSuccess: "__commerceCheckoutOfferOnSuccess",
+  /** A checkout offer is due to the customer (consumed by the one reply that makes it). */
+  commerceCheckoutOffered: "__commerceCheckoutOffered",
+  /** A discount the runtime granted (allowed by policy or approved by the owner): {pct, item, cartId}. Only this ever prices a checkout. */
+  discountGranted: "__discountGranted",
   /** The customer decided to buy the selected offer (consent to send a payment link). */
   purchaseDecided: "__purchaseDecided",
   /** The language this conversation is held in (from the latest customer message with words). */
@@ -90,6 +100,51 @@ function resolveShownProduct(commerce: NonNullable<BarryIR["commerce"]>, known: 
   return lastIds.length === 1 ? lastIds[0] : undefined;
 }
 
+/**
+ * THE product a NAMED item to add/ask about grounds to — the one canonical binding of a customer's
+ * name to a catalog item. Candidates are real, provider-read products only: what BARRY showed, what
+ * the cart holds, and the catalog lookup made for exactly this name. Exactly one product may carry the
+ * name; none or several means NOTHING is added (the customer is asked). A pending choice, the only
+ * shown item, the last-touched line or a position never stand in for a name — and a position that
+ * points at a different product than the name is a conflict, not a choice.
+ */
+export function groundNamedProduct(commerce: NonNullable<BarryIR["commerce"]>, known: Record<string, string>, options: CompileOptions): CartSubjectGrounding {
+  const named = commerce.subject!.trim();
+  const base = { named };
+  const namedBy = (title: string) => lineNamedBy(named, { title, options: {} });
+  const candidates = new Map<string, { id: string; title: string; from: "shown" | "catalog" }>();
+  for (const p of options.shownProducts ?? []) if (namedBy(p.title) && !candidates.has(p.id)) candidates.set(p.id, { id: p.id, title: p.title, from: "shown" });
+  for (const l of options.cartLines ?? []) if (l.productId && namedBy(l.title) && !candidates.has(l.productId)) candidates.set(l.productId, { id: l.productId, title: l.title, from: "shown" });
+  for (const p of options.namedProducts ?? []) if (namedBy(p.title) && !candidates.has(p.id)) candidates.set(p.id, { id: p.id, title: p.title, from: "catalog" });
+  const found = [...candidates.values()];
+  if (found.length === 0) return { ...base, basis: "not_in_catalog", candidates: (options.shownProducts ?? []).map((p) => p.title) };
+  if (found.length > 1) return { ...base, basis: "ambiguous", candidates: found.map((p) => p.title) };
+  const chosen = found[0];
+  if (!commerce.referenceInvalid && commerce.reference?.type === "previous_result") {
+    const lastIds = known[SCRATCH_KEYS.commerceLastProductIds]?.split(",").filter(Boolean) ?? [];
+    const byPosition = lastIds[commerce.reference.index];
+    if (byPosition && byPosition !== chosen.id) return { ...base, basis: "conflict", candidates: [chosen.title] };
+  }
+  return { ...base, basis: chosen.from, product: { id: chosen.id, title: chosen.title } };
+}
+
+/** The named product for a select/inquire, recorded for the Inspector; undefined when the name grounds to no single product. */
+function resolveNamedProduct(commerce: NonNullable<BarryIR["commerce"]>, known: Record<string, string>, options: CompileOptions): { productId?: string; grounding: CartSubjectGrounding } {
+  const grounding = groundNamedProduct(commerce, known, options);
+  if (options.debug) options.debug.cartSubject = grounding;
+  return { productId: grounding.product?.id, grounding };
+}
+
+function unresolvedNamedAdd(grounding: CartSubjectGrounding, options: CompileOptions): CompileOutcome {
+  return {
+    kind: "cart_subject_unresolved",
+    subject: grounding.named ?? "",
+    reason: grounding.basis === "ambiguous" ? "ambiguous_catalog" : grounding.basis === "conflict" ? "conflict" : "not_in_catalog",
+    inCart: grounding.basis === "ambiguous" ? (grounding.candidates ?? []) : (options.cartLines?.map((l) => l.title) ?? []),
+    stage: "offer_selection",
+  };
+}
+
 function compileCommerce(ir: BarryIR, known: Record<string, string>, options: CompileOptions = {}): CompileOutcome | undefined {
   const commerce = ir.commerce!;
   const lastIds = known[SCRATCH_KEYS.commerceLastProductIds]?.split(",").filter(Boolean) ?? [];
@@ -113,7 +168,12 @@ function compileCommerce(ir: BarryIR, known: Record<string, string>, options: Co
       );
 
     case "select": {
-      const productId = resolveShownProduct(commerce, known);
+      // A NAMED item is bound to exactly one real product (shown, in the cart, or looked up in the
+      // catalog by that name) — never to a pending choice, the only shown item or a nearby product.
+      // Ungrounded or ambiguous: nothing is added; the customer hears exactly why.
+      const named = commerce.subject?.trim() ? resolveNamedProduct(commerce, known, options) : undefined;
+      if (named && !named.productId) return unresolvedNamedAdd(named.grounding, options);
+      const productId = named?.productId ?? resolveShownProduct(commerce, known);
       if (!productId) return { kind: "clarify_reference", available: lastIds.length, stage: "offer_selection" };
       // Completing a swap that was waiting on a variant choice.
       const pendingReplace =
@@ -134,8 +194,10 @@ function compileCommerce(ir: BarryIR, known: Record<string, string>, options: Co
     case "inquire": {
       // A question about a shown product is answered from the provider's
       // real data re-read this turn — never from the model's belief.
-      const productId = resolveShownProduct(commerce, known);
-      const product = productId ? options.shownProducts?.find((p) => p.id === productId) : undefined;
+      const named = commerce.subject?.trim() ? resolveNamedProduct(commerce, known, options) : undefined;
+      if (named && !named.productId) return unresolvedNamedAdd(named.grounding, options);
+      const productId = named?.productId ?? resolveShownProduct(commerce, known);
+      const product = productId ? [...(options.shownProducts ?? []), ...(options.namedProducts ?? [])].find((p) => p.id === productId) : undefined;
       if (!product) return { kind: "clarify_reference", available: lastIds.length, stage: "offer_selection" };
       return { kind: "product_info", productTitle: product.title, variants: product.variants, asked: commerce.variant, stage: "offer_selection" };
     }
@@ -216,8 +278,18 @@ function compileCommerce(ir: BarryIR, known: Record<string, string>, options: Co
  */
 function planCommerceGoal(graph: BusinessGraph, known: Record<string, string>, options: CompileOptions): CompileOutcome | undefined {
   const cartId = known[SCRATCH_KEYS.commerceCartId];
-  if (!cartId || !known[SCRATCH_KEYS.commerceCheckoutRequested]) return undefined;
+  if (!cartId) return undefined;
   if (known[SCRATCH_KEYS.paymentRequestId] || known[SCRATCH_KEYS.paid] || known[SCRATCH_KEYS.commerceOrderId]) return undefined;
+  if (!known[SCRATCH_KEYS.commerceCheckoutRequested]) {
+    // A decided customer (per the playbook) is OFFERED checkout once — nothing is collected or priced
+    // until they take it up; their next message is understood like any other.
+    if (known[SCRATCH_KEYS.commerceCheckoutOffered]) {
+      delete known[SCRATCH_KEYS.commerceCheckoutOffered];
+      const total = known[SCRATCH_KEYS.commerceCartTotal] ? (JSON.parse(known[SCRATCH_KEYS.commerceCartTotal]) as { amount: number; currency: string }) : undefined;
+      return { kind: "offer_checkout", ...(total ? { total } : {}), stage: "offer_selection" };
+    }
+    return undefined;
+  }
 
   const missingFields = graph.playbook.commerce.checkoutRequires.filter((field) => !known[field]);
   if (missingFields.length > 0) return { kind: "checkout_needs_info", missingFields, stage: "info_gathering" };
@@ -226,11 +298,61 @@ function planCommerceGoal(graph: BusinessGraph, known: Record<string, string>, o
   if (!supported.ok) return { kind: "capability_unavailable", action: "createCommerceCheckout", missing: supported.missing, stage: "offer_selection" };
 
   const total = known[SCRATCH_KEYS.commerceCartTotal] ? (JSON.parse(known[SCRATCH_KEYS.commerceCartTotal]) as { amount: number; currency: string }) : undefined;
+  // Only a discount the RUNTIME granted (policy-allowed or owner-approved, on this cart) ever prices a
+  // checkout — never the customer's ask or the model's belief.
+  const granted = readGrantedDiscount(known);
   return finalizeAction(
     "createCommerceCheckout",
     // expectedTotal lets policy judge the real amount; the tool refuses if the provider's total differs.
-    { cartId, ...(total ? { expectedTotal: total, amount: total.amount } : {}) },
+    { cartId, ...(total ? { expectedTotal: total, amount: total.amount } : {}), ...(granted && granted.cartId === cartId ? { discountPct: granted.pct, discountItem: granted.item } : {}) },
     "payment",
+    "completePurchase"
+  );
+}
+
+export type GrantedDiscount = { pct: number; item: string; cartId: string };
+
+export function readGrantedDiscount(known: Record<string, string>): GrantedDiscount | undefined {
+  try {
+    const raw = known[SCRATCH_KEYS.discountGranted];
+    const g = raw ? (JSON.parse(raw) as GrantedDiscount) : undefined;
+    return g && typeof g.pct === "number" && g.pct > 0 && typeof g.item === "string" && typeof g.cartId === "string" ? g : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A discount the customer asks for on a cart is a DISCOUNT ACTION with exact terms (percentage, the
+ * item it applies to, the total before and after) — granted by policy when within the business's
+ * automatic limit, else an owner request that resumes exactly this grant once. Never a handoff, never
+ * a checkout, never applied from the ask itself.
+ */
+function planDiscountGrant(ir: BarryIR, known: Record<string, string>, options: CompileOptions): CompileOutcome | undefined {
+  const pct = ir.constraints.discountPct;
+  const cartId = known[SCRATCH_KEYS.commerceCartId];
+  if (!pct || pct <= 0 || pct >= 100 || !cartId || ir.withdrawsRequest) return undefined;
+  if (known[SCRATCH_KEYS.paid] || known[SCRATCH_KEYS.commerceOrderId]) return undefined;
+  const mutating = ir.commerce && ["select", "replace", "change_variant", "change_quantity", "remove"].includes(ir.commerce.intent);
+  if (mutating) return undefined;
+  const already = readGrantedDiscount(known);
+  if (already && already.cartId === cartId && already.pct === pct) return undefined;
+  const lines = options.cartLines ?? [];
+  // The item it applies to: the line the customer named (grounded exactly), else the only line, else the whole cart.
+  let item = "the whole cart";
+  if (ir.commerce?.subject?.trim()) {
+    const g = groundCartSubject({ ...ir.commerce, intent: "change_quantity" }, known, options);
+    if (options.debug) options.debug.cartSubject = g;
+    if (!g.line) return { kind: "cart_subject_unresolved", subject: ir.commerce.subject, reason: g.basis === "ambiguous" ? "ambiguous" : "not_in_cart", inCart: lines.map((l) => l.title), stage: "offer_selection" };
+    item = g.line.title;
+  } else if (lines.length === 1) {
+    item = lines[0].title;
+  }
+  const total = known[SCRATCH_KEYS.commerceCartTotal] ? (JSON.parse(known[SCRATCH_KEYS.commerceCartTotal]) as { amount: number; currency: string }) : undefined;
+  return finalizeAction(
+    "grantDiscount",
+    { cartId, discountPct: pct, item, ...(total ? { currency: total.currency, listAmount: total.amount } : {}) },
+    "offer_selection",
     "completePurchase"
   );
 }
@@ -365,6 +487,8 @@ export type CompileOptions = {
   shownProducts?: ShownProduct[];
   /** The cart's lines as the provider holds them now, with real ids, in the order shown to the customer. */
   cartLines?: NonNullable<GroundedContext["cartLines"]>;
+  /** Catalog products looked up for the item the customer NAMED this turn (real ids), so a name grounds to a catalog item. */
+  namedProducts?: NonNullable<GroundedContext["namedProducts"]>;
   /** Filled by compile(): how a cart change was bound to its line (for the Inspector). */
   debug?: CompileDebugInfo;
 };
@@ -562,6 +686,8 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
       SCRATCH_KEYS.purchaseDecided,
       SCRATCH_KEYS.commerceCheckoutRequested,
       SCRATCH_KEYS.commerceCheckoutOnSuccess,
+      SCRATCH_KEYS.commerceCheckoutOfferOnSuccess,
+      SCRATCH_KEYS.commerceCheckoutOffered,
       SCRATCH_KEYS.slotAccepted,
       SCRATCH_KEYS.offeredStart,
       SCRATCH_KEYS.offeredEnd,
@@ -579,6 +705,8 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
   if (checkoutBlocked) {
     delete known[SCRATCH_KEYS.commerceCheckoutRequested];
     delete known[SCRATCH_KEYS.commerceCheckoutOnSuccess];
+    delete known[SCRATCH_KEYS.commerceCheckoutOfferOnSuccess];
+    delete known[SCRATCH_KEYS.commerceCheckoutOffered];
   }
 
   if (state.stage === "closed") {
@@ -626,6 +754,10 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
     if (item) return { kind: "knowledge_answer", answer: item.content, stage: state.stage };
   }
 
+  // A discount asked on a cart is its own exact action (policy or owner decides) — before any cart planning.
+  const discountStep = planDiscountGrant(ir, known, options);
+  if (discountStep) return discountStep;
+
   if (ir.commerce) {
     // Live failure (gpt-4o-mini, "I'll take it in medium" with ONE shown item):
     // the model filed "I'll take it" as CHECKOUT while the cart was still
@@ -641,8 +773,13 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
     if (c.intent === "search") {
       delete known[SCRATCH_KEYS.commerceCheckoutRequested];
       delete known[SCRATCH_KEYS.commerceCheckoutOnSuccess];
+      delete known[SCRATCH_KEYS.commerceCheckoutOfferOnSuccess];
+      delete known[SCRATCH_KEYS.commerceCheckoutOffered];
     }
-    if ((c.intent === "checkout" || ir.checkoutConsent === true) && !checkoutBlocked) {
+    // Consent given WITH a selection ("add it and check out") scopes to the cart as it stands after that
+    // verified add (the state patch sets it); only consent about the existing cart is scoped here.
+    const selecting = c.intent === "select" || c.intent === "replace";
+    if ((c.intent === "checkout" || ir.checkoutConsent === true) && !checkoutBlocked && !selecting) {
       // Consent is SCOPED: an item the customer pointed at is the whole consent; a reference that
       // doesn't ground to anything real is no consent at all (ask, never check out the whole cart).
       if (c.referenceInvalid) {
@@ -664,16 +801,22 @@ function compileCore(graph: BusinessGraph, state: ConversationState, ir: BarryIR
       if (c.intent === "checkout") known[SCRATCH_KEYS.commerceCheckoutRequested] = "1";
     }
     if (c.intent === "select" || c.intent === "replace" || c.intent === "change_variant" || c.intent === "change_quantity") {
-      // A decision attached to a cart change is only INTENT here: checkout
-      // eligibility follows the verified result of that change (see the
-      // runtime's state patch), never the customer's words alone.
-      // An explicit request to buy it now needs no playbook permission to advance.
-      // A cart change never implies checkout by itself: only a decision to buy (per the playbook) or an
-      // explicit checkout — and never when the customer said not to check out.
-      if (!checkoutBlocked && (cartlessCheckout || (ir.purchaseDecision === true && graph.playbook.commerce.advanceToCheckout === "on_purchase_decision"))) {
+      // CART INTENT is not CHECKOUT INTENT. A cart change carries checkout eligibility ONLY with the
+      // customer's explicit word for checkout/payment (checkoutConsent, or "buy it" with an empty cart
+      // that is a selection) — and even then only once the change verifiably succeeds (see the
+      // runtime's state patch). A decision to buy (purchaseDecision) is never progression: per the
+      // playbook it makes BARRY OFFER checkout after the change, and the customer's answer decides.
+      // "Not ready to check out" (checkoutConsent false) blocks both.
+      if (!checkoutBlocked && (cartlessCheckout || ir.checkoutConsent === true)) {
         known[SCRATCH_KEYS.commerceCheckoutOnSuccess] = "1";
+        delete known[SCRATCH_KEYS.commerceCheckoutOfferOnSuccess];
       } else {
         delete known[SCRATCH_KEYS.commerceCheckoutOnSuccess];
+        if (!checkoutBlocked && ir.purchaseDecision === true && graph.playbook.commerce.advanceToCheckout === "on_purchase_decision") {
+          known[SCRATCH_KEYS.commerceCheckoutOfferOnSuccess] = "1";
+        } else {
+          delete known[SCRATCH_KEYS.commerceCheckoutOfferOnSuccess];
+        }
       }
       if (ir.purchaseDecision === false) delete known[SCRATCH_KEYS.commerceCheckoutRequested];
     }

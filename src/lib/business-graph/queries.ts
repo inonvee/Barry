@@ -26,6 +26,8 @@ export function resourcesByType(graph: BusinessGraph, type: string): Resource[] 
  */
 const IMPLIED_ACTIONS: Record<string, string[]> = {
   verifyPayment: ["createPaymentRequest", "createCommerceCheckout"],
+  // A discount is a term of the payment the business already lets BARRY create; its limit is the discount policy.
+  grantDiscount: ["createPaymentRequest", "createCommerceCheckout"],
 };
 
 export function isActionAvailable(graph: BusinessGraph, actionName: string): boolean {

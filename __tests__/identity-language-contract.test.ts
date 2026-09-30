@@ -167,11 +167,13 @@ class OverreachingComposer implements Reasoner {
 describe("runtime: Rina checkout details in Hebrew, exactly the missing fields", () => {
   const SEARCH = "היי אני מחפשת שמלה במידה מדיום עד 400 ש״ח";
   const TAKE = "אני אקח אותה במדיום";
+  const CHECKOUT = "יאללה לתשלום";
   const NAME = "שירה לוי";
   const PHONE = "0558832177";
   const SCRIPT: Record<string, Partial<BarryIR>> = {
     [SEARCH]: { intent: "search", commerce: { intent: "search", query: { text: SEARCH, category: "dress", budget: { amount: 400, currency: "ILS" } }, variant: { size: "M" } } },
     [TAKE]: { intent: "select", purchaseDecision: true, commerce: { intent: "select", variant: { size: "M" } } },
+    [CHECKOUT]: { intent: "checkout", checkoutConsent: true, commerce: { intent: "checkout" } },
     [NAME]: { intent: "details", customerInfo: { name: NAME }, evidence: { "customerInfo.name": NAME } },
     [PHONE]: { intent: "details", customerInfo: { phone: PHONE }, evidence: { "customerInfo.phone": PHONE } },
   };
@@ -193,7 +195,7 @@ describe("runtime: Rina checkout details in Hebrew, exactly the missing fields",
     const g = freshGraph();
     setReasonerForTests(new ScriptedReasoner(SCRIPT));
     const conv = `conv-${id}`;
-    for (const m of [SEARCH, TAKE]) await handleCustomerMessage(g, conv, "c", m);
+    for (const m of [SEARCH, TAKE, CHECKOUT]) await handleCustomerMessage(g, conv, "c", m);
     const name = await handleCustomerMessage(g, conv, "c", NAME);
     expect(name.state.missingFields).toEqual(["phone"]);
     expect(name.response).toMatch(/טלפון/);
@@ -209,7 +211,8 @@ describe("runtime: Rina checkout details in Hebrew, exactly the missing fields",
     setReasonerForTests(new OverreachingComposer(new ScriptedReasoner(SCRIPT), "Great! Could I get your full name and phone number?"));
     const conv = `conv-${id}`;
     await handleCustomerMessage(g, conv, "c", SEARCH);
-    const take = await handleCustomerMessage(g, conv, "c", TAKE);
+    await handleCustomerMessage(g, conv, "c", TAKE);
+    const take = await handleCustomerMessage(g, conv, "c", CHECKOUT);
     // Caught as the wrong language and/or the wrong fields — either way the deterministic Hebrew request is used.
     expect(take.turn.trace?.reply?.fallback).toMatch(/missing-field contract|language/);
     expect(take.response).not.toMatch(/full name|שם מלא/i);
@@ -222,7 +225,7 @@ describe("runtime: Rina checkout details in Hebrew, exactly the missing fields",
     const g = freshGraph();
     setReasonerForTests(new OverreachingComposer(new ScriptedReasoner(SCRIPT), "תודה! אפשר שם ומספר טלפון?"));
     const conv = `conv-${id}`;
-    for (const m of [SEARCH, TAKE]) await handleCustomerMessage(g, conv, "c", m);
+    for (const m of [SEARCH, TAKE, CHECKOUT]) await handleCustomerMessage(g, conv, "c", m);
     const name = await handleCustomerMessage(g, conv, "c", NAME);
     expect(name.state.missingFields).toEqual(["phone"]);
     expect(name.turn.trace?.reply?.fallback).toMatch(/"name", which is not missing/);

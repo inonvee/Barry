@@ -267,8 +267,25 @@ export type CartSubjectGrounding = {
   named?: string;
   keep?: string[];
   /** How the line was chosen, or why none was. */
-  basis: "subject" | "reference" | "only_line" | "remembered" | "not_in_cart" | "ambiguous" | "conflict" | "keep" | "unreadable" | "no_reference" | "invalid_reference";
+  basis:
+    | "subject"
+    | "reference"
+    | "only_line"
+    | "remembered"
+    | "not_in_cart"
+    | "ambiguous"
+    | "conflict"
+    | "keep"
+    | "unreadable"
+    | "no_reference"
+    | "invalid_reference"
+    /** An item to ADD, named by the customer: grounded to one product BARRY showed / the cart holds ("shown") or one catalog product ("catalog"). */
+    | "shown"
+    | "catalog"
+    | "not_in_catalog";
   line?: { id: string; title: string; options: Record<string, string>; quantity: number };
+  /** For a named item to add: the one catalog product it grounded to. */
+  product?: { id: string; title: string };
   candidates?: string[];
 };
 
@@ -285,7 +302,9 @@ export type CompileOutcome = { stage: ConversationStage; debug?: CompileDebugInf
   /** The customer referred to something that isn't grounded in what BARRY showed them (e.g. "the third one" when only two were shown). */
   | { kind: "clarify_reference"; available: number }
   /** The customer NAMED the item to change, and it grounds to no single cart line: nothing was changed. */
-  | { kind: "cart_subject_unresolved"; subject: string; reason: "not_in_cart" | "ambiguous" | "conflict" | "keep" | "unreadable"; inCart: string[] }
+  | { kind: "cart_subject_unresolved"; subject: string; reason: "not_in_cart" | "ambiguous" | "conflict" | "keep" | "unreadable" | "not_in_catalog" | "ambiguous_catalog"; inCart: string[] }
+  /** The customer decided to buy (per the playbook) but has not asked to check out: BARRY OFFERS checkout and waits for their word. */
+  | { kind: "offer_checkout"; total?: { amount: number; currency: string } }
   /** A product was chosen but a required variant option is missing/unavailable — ask using REAL options only. */
   | { kind: "ask_variant"; productTitle: string; requested?: Record<string, string>; availableOptions: Record<string, string>[] }
   /** The customer asked for a different price. BARRY states the grounded price; it never negotiates on its own authority. */

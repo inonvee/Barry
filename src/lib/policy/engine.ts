@@ -83,6 +83,17 @@ export function decide(graph: BusinessGraph, request: ActionRequest): PolicyDeci
       return { status: "allowed", reason: "Checkout within the automatic payment limit." };
     }
 
+    case "grantDiscount": {
+      // A discount is granted by the business's own limit: within it BARRY may give it; above it the
+      // owner decides on exactly these terms.
+      const pct = (request.params as { discountPct?: number }).discountPct ?? 0;
+      const cap = getPolicy(graph, "max_auto_discount_pct")?.value ?? 0;
+      if (pct > cap) {
+        return { status: "requires_approval", reason: `Requested discount ${pct}% exceeds automatic limit of ${cap}%.`, policyId: "max_auto_discount_pct" };
+      }
+      return { status: "allowed", reason: `Discount ${pct}% is within the automatic limit of ${cap}%.` };
+    }
+
     case "createPaymentRequest": {
       const params = request.params as { amount: number; discountPct?: number; isCustomPrice?: boolean };
 

@@ -46,7 +46,8 @@ const SCRIPT: Record<string, Partial<BarryIR>> = {
     customerInfo: { name: "דנה", phone: "0501234567" },
     evidence: { "customerInfo.name": "דנה", "customerInfo.phone": "0501234567" },
   },
-  "checkout": { intent: "commerce_checkout", commerce: { intent: "checkout" } },
+  "checkout": { intent: "commerce_checkout", commerce: { intent: "checkout" }, checkoutConsent: true },
+  "יאללה לתשלום": { intent: "commerce_checkout", commerce: { intent: "checkout" }, checkoutConsent: true },
   // Two results: 0 = Midnight Wrap Dress (S sold out), 1 = Onyx Slip Dress (M only in stock).
   "show me black dresses": { intent: "commerce_search", commerce: { intent: "search", query: { text: "black dresses", category: "dress", attributes: { color: "black" } } } },
   "add the second one in M": {
@@ -116,32 +117,39 @@ afterEach(() => {
   for (const id of registered.splice(0)) registerCommerceAdapterFactoryForTests(id, undefined);
 });
 
-describe("a decided customer is carried to checkout", () => {
-  it("the live gap: 'I'll take the first in M' adds Onyx M AND sends the checkout link in the same turn", async () => {
+describe("a decided customer is OFFERED checkout; their explicit word starts it", () => {
+  it("'I'll take the first in M' adds Onyx M and offers checkout — the link is sent only on the customer's checkout word", async () => {
     const graph = withPlaybook(buildFashionRetailerGraph(), { checkoutRequires: [] });
-    const { last } = await converse(graph, [SEARCH, TAKE]);
+    const { outs, last } = await converse(graph, [SEARCH, TAKE, "checkout"]);
 
-    expect(last.turn.trace?.steps.map((s) => [s.action, s.trigger, s.result?.ok])).toEqual([
-      ["addToCart", "customer", true],
-      ["createCommerceCheckout", "continuation", true],
-    ]);
+    const take = outs[1];
+    expect(take.turn.trace?.steps.map((s) => [s.action, s.trigger, s.result?.ok])).toEqual([["addToCart", "customer", true]]);
+    expect(take.turn.trace?.stop).toEqual({ reason: "needs_customer", outcome: "offer_checkout" });
+    expect(take.state.knownFields.__commerceCheckoutRequested).toBeUndefined();
+    expect(take.state.knownFields.__paymentRequestId).toBeUndefined();
+    expect(take.response).toMatch(/check out|לתשלום/i);
+
+    expect(last.turn.trace?.steps.map((s) => [s.action, s.trigger, s.result?.ok])).toEqual([["createCommerceCheckout", "customer", true]]);
     expect(last.state.stage).toBe("payment");
     expect(last.rich?.paymentUrl).toMatch(/^https:\/\//);
     const payment = (await getBackend().getPaymentRequest(last.state.knownFields.__paymentRequestId))!;
     expect(payment).toMatchObject({ amount: 390, currency: "ILS", status: "pending" });
-    expect(last.response).toMatch(/Onyx Slip Dress/);
+    expect(take.response).toMatch(/Onyx Slip Dress/);
     expect(last.response).not.toMatch(/if you want to (continue|check ?out)|would you like|shall i continue|let me know/i);
   });
 
-  it("with the business's checkout requirements, BARRY asks only for those — then checks out on the answer", async () => {
-    const { outs, last } = await converse(buildFashionRetailerGraph(), [SEARCH, TAKE, DETAILS]);
+  it("with the business's checkout requirements, BARRY asks only for those once checkout is asked — then checks out on the answer", async () => {
+    const { outs, last } = await converse(buildFashionRetailerGraph(), [SEARCH, TAKE, "יאללה לתשלום", DETAILS]);
     const take = outs[1];
     expect(take.turn.trace?.steps.map((s) => s.action)).toEqual(["addToCart"]);
-    expect(take.turn.trace?.stop).toEqual({ reason: "needs_customer", outcome: "checkout_needs_info" });
-    expect(take.state.missingFields).toEqual(["name", "phone"]);
+    expect(take.turn.trace?.stop).toEqual({ reason: "needs_customer", outcome: "offer_checkout" });
+    expect(take.state.missingFields).toEqual([]);
+    const checkout = outs[2];
+    expect(checkout.turn.trace?.stop).toEqual({ reason: "no_action", outcome: "checkout_needs_info" });
+    expect(checkout.state.missingFields).toEqual(["name", "phone"]);
     // Hebrew conversation -> Hebrew request, for exactly the business's fields.
-    expect(take.response).toMatch(/שם/);
-    expect(take.response).toMatch(/טלפון/);
+    expect(checkout.response).toMatch(/שם/);
+    expect(checkout.response).toMatch(/טלפון/);
 
     expect(last.turn.trace?.steps.map((s) => [s.action, s.trigger])).toEqual([["createCommerceCheckout", "customer"]]);
     expect(last.rich?.paymentUrl).toBeTruthy();
@@ -149,7 +157,7 @@ describe("a decided customer is carried to checkout", () => {
 
   it("verified payment continues to the order; nothing is claimed before the provider confirms", async () => {
     const graph = withPlaybook(buildFashionRetailerGraph(), { checkoutRequires: [] });
-    const { conv, last, payments, graph: g } = await converse(graph, [SEARCH, TAKE]);
+    const { conv, last, payments, graph: g } = await converse(graph, [SEARCH, TAKE, "checkout"]);
     const payment = (await getBackend().getPaymentRequest(last.state.knownFields.__paymentRequestId))!;
 
     const claim = await handleCustomerMessage(g, conv, `c-${conv}`, "I paid");
@@ -191,10 +199,10 @@ describe("the customer and the business stay in control", () => {
       ...base,
       policies: base.policies.map((p) => (p.rule.type === "max_auto_payment_amount" ? { ...p, rule: { type: "max_auto_payment_amount" as const, value: 300 } } : p)),
     };
-    const { last } = await converse(graph, [SEARCH, TAKE]);
-    const [add, checkout] = last.turn.trace!.steps;
-    expect(add.action).toBe("addToCart");
-    expect(checkout).toMatchObject({ action: "createCommerceCheckout", trigger: "continuation", policy: { status: "requires_approval", policyId: "max_auto_payment_amount" }, result: null });
+    const { outs, last } = await converse(graph, [SEARCH, TAKE, "checkout"]);
+    expect(outs[1].turn.trace!.steps.map((s) => s.action)).toEqual(["addToCart"]);
+    const [checkout] = last.turn.trace!.steps;
+    expect(checkout).toMatchObject({ action: "createCommerceCheckout", trigger: "customer", policy: { status: "requires_approval", policyId: "max_auto_payment_amount" }, result: null });
     expect(last.turn.trace?.stop.reason).toBe("owner_approval_required");
     expect(last.state.pendingApprovalId).toBeTruthy();
     expect(last.state.knownFields.__paymentRequestId).toBeUndefined();
@@ -214,9 +222,10 @@ describe("the customer and the business stay in control", () => {
       const graph = withPlaybook(buildFashionRetailerGraph(), { checkoutRequires: [] }, id);
       const profiles = await resolveCapabilityProfiles(graph);
       expect(profiles.commerce.missingOperations).toEqual(expect.arrayContaining(["checkout", "orders"]));
-      const { last } = await converse(graph, [SEARCH, TAKE], { freshCatalog: false });
-      expect(last.turn.trace?.steps.map((s) => s.action)).toEqual(["addToCart"]);
-      expect(last.turn.trace?.stop).toEqual({ reason: "needs_customer", outcome: "capability_unavailable" });
+      const { outs, last } = await converse(graph, [SEARCH, TAKE, "checkout"], { freshCatalog: false });
+      expect(outs[1].turn.trace?.steps.map((s) => s.action)).toEqual(["addToCart"]);
+      expect(last.turn.trace?.steps ?? []).toEqual([]);
+      expect(last.turn.trace?.stop).toEqual({ reason: "no_action", outcome: "capability_unavailable" });
       expect(last.response).toMatch(/follow up|יחזור אלי(?:י)?ך/i);
     } finally {
       registerCommerceAdapterFactoryForTests(id, undefined);
@@ -291,7 +300,7 @@ describe("checkout eligibility follows VERIFIED cart state, never the customer's
       "actually swap it for the first one in S, I'll take that", // fails: S sold out
       DETAILS,
     ]);
-    expect(outs[1].turn.trace?.stop.outcome).toBe("checkout_needs_info");
+    expect(outs[1].turn.trace?.stop.outcome).toBe("offer_checkout");
     expect(outs[2].turn.trace?.stop.reason).toBe("requested_change_not_applied");
     expect(last.turn.trace?.steps.map((st) => st.action) ?? []).not.toContain("createCommerceCheckout");
     expect(last.state.knownFields.__paymentRequestId).toBeUndefined();
@@ -310,11 +319,15 @@ describe("checkout eligibility follows VERIFIED cart state, never the customer's
     expect(change.rich?.paymentUrl).toBeUndefined();
   });
 
-  it("a SUCCESSFUL change with a purchase decision does proceed to checkout (the intent is kept, not lost)", async () => {
+  it("a SUCCESSFUL change with a purchase decision earns a checkout OFFER (never progression); the customer's word checks out", async () => {
     const graph = withPlaybook(buildFashionRetailerGraph(), { checkoutRequires: [] });
-    const { last } = await converse(graph, ["show me black dresses", "I'll take the second one in M"]);
-    expect(last.turn.trace?.steps.map((st) => st.action)).toEqual(["addToCart", "createCommerceCheckout"]);
-    expect(last.state.knownFields.__commerceCheckoutOnSuccess).toBeUndefined();
+    const { outs, last } = await converse(graph, ["show me black dresses", "I'll take the second one in M", "checkout"]);
+    expect(outs[1].turn.trace?.steps.map((st) => st.action)).toEqual(["addToCart"]);
+    expect(outs[1].turn.trace?.stop).toEqual({ reason: "needs_customer", outcome: "offer_checkout" });
+    expect(outs[1].state.knownFields.__commerceCheckoutOnSuccess).toBeUndefined();
+    expect(outs[1].state.knownFields.__commerceCheckoutOfferOnSuccess).toBeUndefined();
+    expect(outs[1].state.knownFields.__commerceCheckoutRequested).toBeUndefined();
+    expect(last.turn.trace?.steps.map((st) => st.action)).toEqual(["createCommerceCheckout"]);
   });
 });
 
@@ -354,10 +367,10 @@ describe("capability gate applies to customer-triggered actions too", () => {
 describe("every turn explains itself (HQ-ready)", () => {
   it("records runtime versions, capability + provider per step, policy, result, and only the NAMES of changed state", async () => {
     const graph = withPlaybook(buildFashionRetailerGraph(), { checkoutRequires: [] });
-    const { last } = await converse(graph, [SEARCH, TAKE]);
+    const { last } = await converse(graph, [SEARCH, TAKE, "checkout"]);
     const trace = last.turn.trace!;
     expect(trace.runtime).toMatchObject({ barryVersion: expect.any(String), constitutionVersion: CONSTITUTION_VERSION, reasoner: "llm" });
-    expect(trace.steps[1]).toMatchObject({
+    expect(trace.steps[0]).toMatchObject({
       action: "createCommerceCheckout",
       capabilities: [
         { capability: "commerce.checkout.create", provider: "memory" },
@@ -367,7 +380,7 @@ describe("every turn explains itself (HQ-ready)", () => {
       result: { ok: true },
       stageAfter: "payment",
     });
-    expect(trace.steps[1].stateKeysChanged).toEqual(expect.arrayContaining(["__paymentRequestId"]));
+    expect(trace.steps[0].stateKeysChanged).toEqual(expect.arrayContaining(["__paymentRequestId"]));
     expect(JSON.stringify(trace)).not.toMatch(/0501234567|https?:\/\//);
   });
 

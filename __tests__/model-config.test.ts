@@ -116,11 +116,13 @@ describe("the target live flow (Rina Studio playbook: name + phone before checko
     const graph = { ...base, business: { ...base.business, id } };
     const SEARCH = "היי אני מחפשת שמלה במידה מדיום עד 400 ש״ח";
     const TAKE = "אני אקח אותה במדיום";
+    const CHECKOUT = "יאללה, לתשלום";
     const DETAILS = "דנה כהן 0501234567";
     // What a competent model emits — note the reference is just "it": no position.
     const script: Record<string, Partial<BarryIR>> = {
       [SEARCH]: { intent: "search", commerce: { intent: "search", query: { text: SEARCH, category: "dress", budget: { amount: 400, currency: "ILS" } }, variant: { size: "M" } } },
       [TAKE]: { intent: "select", purchaseDecision: true, commerce: { intent: "select", variant: { size: "M" } } },
+      [CHECKOUT]: { intent: "checkout", checkoutConsent: true, commerce: { intent: "checkout" } },
       [DETAILS]: { intent: "details", customerInfo: { name: "דנה כהן", phone: "0501234567" }, evidence: { "customerInfo.name": "דנה כהן", "customerInfo.phone": "0501234567" } },
     };
     setReasonerForTests(new ScriptedReasoner(script));
@@ -131,12 +133,16 @@ describe("the target live flow (Rina Studio playbook: name + phone before checko
 
       const take = await handleCustomerMessage(graph, conv, "c", TAKE);
       expect(take.turn.trace?.steps.map((s) => [s.action, s.result?.ok])).toEqual([["addToCart", true]]);
-      expect(take.turn.trace?.stop).toEqual({ reason: "needs_customer", outcome: "checkout_needs_info" });
+      expect(take.turn.trace?.stop).toEqual({ reason: "needs_customer", outcome: "offer_checkout" });
       const cart = await adapter.getCart(take.state.knownFields.__commerceCartId);
       expect(cart?.lines.map((l) => [l.title, l.options.size, l.unitPrice.amount])).toEqual([["Onyx Slip Dress", "M", 390]]);
       expect(take.response).not.toMatch(/which (item|one)|איזה פריט/i);
-      expect(take.response).toMatch(/שם/);
-      expect(take.response).toMatch(/טלפון/);
+
+      // The customer's own checkout word: only then the business's fields are asked for.
+      const checkout = await handleCustomerMessage(graph, conv, "c", CHECKOUT);
+      expect(checkout.turn.trace?.stop).toEqual({ reason: "no_action", outcome: "checkout_needs_info" });
+      expect(checkout.response).toMatch(/שם/);
+      expect(checkout.response).toMatch(/טלפון/);
 
       const pay = await handleCustomerMessage(graph, conv, "c", DETAILS);
       expect(pay.turn.trace?.steps.map((s) => s.action)).toEqual(["createCommerceCheckout"]);

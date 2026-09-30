@@ -114,6 +114,8 @@ export function afterApproval(graph: BusinessGraph, a: ApprovalWithLifecycle): s
     case "createCommerceCheckout":
     case "createPaymentRequest":
       return `BARRY sends the payment link${amount ? ` for ${amount}` : ""} in the chat and waits for the payment provider to confirm payment — it counts as collected only once verified. Nothing else runs on its own.`;
+    case "grantDiscount":
+      return "BARRY tells the customer the discount is approved and prices their checkout with exactly it, once — nothing is sent or charged by the approval itself.";
     case "createBooking":
       return "BARRY books the appointment through your scheduling system and confirms it to the customer.";
     case "refund":
@@ -133,6 +135,11 @@ export function actionWords(graph: BusinessGraph, a: ApprovalWithLifecycle): str
     case "createCommerceCheckout":
     case "createPaymentRequest":
       return `${amount ? `${amount} ` : ""}payment link${typeof terms.discountPct === "number" && terms.discountPct > 0 ? ` with ${terms.discountPct}% off` : ""}`;
+    case "grantDiscount": {
+      const pct = Number(terms.discountPct);
+      const list = typeof terms.listAmount === "number" && typeof terms.currency === "string" ? ` (${money(terms.listAmount, terms.currency)} → ${money(Math.round(terms.listAmount * (100 - pct)) / 100, terms.currency)})` : "";
+      return `${pct}% off ${terms.item === "the whole cart" ? "the whole cart" : String(terms.item ?? "the cart")}${list}`;
+    }
     case "createBooking":
       return "booking";
     case "refund":

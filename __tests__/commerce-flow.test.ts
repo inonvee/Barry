@@ -21,14 +21,19 @@ describe("commerce operator flow", () => {
     expect(search.response).toMatch(/Midnight Wrap Dress/i);
     expect(search.response).not.toMatch(/silk|runs small|flattering/i);
 
-    // A decision, not a request to operate BARRY: it adds the item and moves
-    // straight on toward checkout, asking only for what this business needs.
+    // A decision adds the item and OFFERS checkout; only the customer's own checkout word starts it,
+    // and then BARRY asks only for what this business needs.
     const added = await handleCustomerMessage(graph, conv, cust, "Take the first one in M");
     expect(added.turn.selectedAction?.name).toBe("addToCart");
     expect(added.response).toMatch(/Midnight Wrap Dress/i);
-    expect(added.turn.trace?.stop).toEqual({ reason: "needs_customer", outcome: "checkout_needs_info" });
-    expect(added.response).toMatch(/name/i);
-    expect(added.response).not.toMatch(/would you like|shall i continue|want me to/i);
+    expect(added.turn.trace?.stop).toEqual({ reason: "needs_customer", outcome: "offer_checkout" });
+    expect(added.state.knownFields.__commerceCheckoutRequested).toBeUndefined();
+    expect(added.response).not.toMatch(/name/i);
+
+    const asked = await handleCustomerMessage(graph, conv, cust, "Let's check out");
+    expect(asked.turn.trace?.stop).toEqual({ reason: "no_action", outcome: "checkout_needs_info" });
+    expect(asked.response).toMatch(/name/i);
+    expect(asked.response).not.toMatch(/would you like|shall i continue|want me to/i);
 
     const checkout = await handleCustomerMessage(graph, conv, cust, "My name is Dana and my phone is 0501234567");
     expect(checkout.turn.selectedAction?.name).toBe("createCommerceCheckout");

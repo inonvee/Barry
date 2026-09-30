@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import { useOwnerApi } from "@/components/owner/useOwnerApi";
 import { OwnerShell } from "@/components/owner/OwnerShell";
-import { Empty, Pill, Section, Skeleton, StateNotice, quiet, type Tone } from "@/components/owner/ui";
+import { Pill, Section, Skeleton, StateNotice, quiet, type Tone } from "@/components/owner/ui";
+import { SetupPlan } from "@/components/owner/train-plan";
 import type { getTrainingProfile } from "@/lib/owner/training";
 import type { PilotLevel, ReadinessCheck } from "@/lib/owner/readiness";
 import type { BusinessNeed, NeedArea, SetupStep } from "@/lib/owner/capabilities";
@@ -21,7 +22,6 @@ const LEVEL_SHORT: Record<PilotLevel, string> = { NOT_READY: "Not ready", READY_
 const CHECK_TONE: Record<ReadinessCheck["status"], { tone: Tone; label: string }> = { pass: { tone: "good", label: "Done" }, warn: { tone: "warn", label: "Recommended" }, fail: { tone: "bad", label: "Missing" } };
 const AREA: Record<NeedArea, string> = { sell: "Selling", money: "Money", book: "Booking", support: "Support & your systems", knowledge: "Knowledge", channel: "Channels", platform: "Platform" };
 const AREA_ORDER: NeedArea[] = ["sell", "money", "book", "support", "knowledge", "channel", "platform"];
-const GATE_WORDS: Record<SetupStep["gate"], string> = { testing: "to test BARRY", supervised_pilot: "for the supervised pilot", customer_traffic: "for customer traffic" };
 
 function authorityWords(n: BusinessNeed): string {
   if (n.authority === "never") return "Never";
@@ -102,58 +102,6 @@ function AreaCard({ area, needs, steps }: { area: NeedArea; needs: BusinessNeed[
   );
 }
 
-function SetupPlan({ steps }: { steps: SetupStep[] }) {
-  if (steps.length === 0) return <Empty title="Nothing left to set up">BARRY can do everything your business asks of it, for real.</Empty>;
-  const yours = steps.filter((s) => s.who === "you");
-  const team = steps.filter((s) => s.who !== "you");
-  const Step = ({ s, i }: { s: SetupStep; i: number }) => (
-    <li id={`step-${s.id}`} className="rounded-2xl bg-white p-4 md:p-5">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#1d2939] text-[12px] font-semibold text-white">{i + 1}</span>
-        <p className="text-[15px] font-semibold text-[#101828]">{s.title}</p>
-        <span className="text-[12px] text-[#98a2b3]">{GATE_WORDS[s.gate]}</span>
-      </div>
-      <dl className="mt-3 space-y-2">
-        <div className="grid grid-cols-1 gap-x-4 gap-y-0.5 sm:grid-cols-[9rem_minmax(0,1fr)]">
-          <dt className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#98a2b3] sm:pt-0.5">Why it matters</dt>
-          <dd className="text-[14px] text-[#344054]">{s.why}</dd>
-        </div>
-        <div className="grid grid-cols-1 gap-x-4 gap-y-0.5 sm:grid-cols-[9rem_minmax(0,1fr)]">
-          <dt className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#98a2b3] sm:pt-0.5">How</dt>
-          <dd className="text-[14px] text-[#344054]">{s.how}</dd>
-        </div>
-        <div className="grid grid-cols-1 gap-x-4 gap-y-0.5 sm:grid-cols-[9rem_minmax(0,1fr)]">
-          <dt className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#98a2b3] sm:pt-0.5">Then BARRY can</dt>
-          <dd className="text-[14px] font-medium text-[#067647]">{s.unlocks.join(" · ")}</dd>
-        </div>
-      </dl>
-    </li>
-  );
-  return (
-    <div className="flex flex-col gap-5">
-      {yours.length > 0 && (
-        <div>
-          <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#667085]">What BARRY needs from you</p>
-          <ol className="flex flex-col gap-3">
-            {yours.map((s, i) => (
-              <Step key={s.id} s={s} i={i} />
-            ))}
-          </ol>
-        </div>
-      )}
-      {team.length > 0 && (
-        <div>
-          <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#667085]">With the BARRY team</p>
-          <ol className="flex flex-col gap-3">
-            {team.map((s, i) => (
-              <Step key={s.id} s={s} i={yours.length + i} />
-            ))}
-          </ol>
-        </div>
-      )}
-    </div>
-  );
-}
 
 function Rows({ rows }: { rows: [string, string][] }) {
   return (

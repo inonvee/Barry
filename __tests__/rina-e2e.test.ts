@@ -21,6 +21,7 @@ import { ScriptedReasoner } from "./support/semantic-corpus";
 
 const SEARCH = "היי אני מחפשת שמלה במידה מדיום עד 400 ש״ח";
 const TAKE = "אני אקח אותה במדיום";
+const CHECKOUT = "יאללה, לתשלום";
 const NAME = "שירה לוי";
 const PHONE = "0558832177";
 const PAID = "שילמתי";
@@ -29,6 +30,7 @@ const IN_L = "יש אותה ב-L?";
 const SCRIPT: Record<string, Partial<BarryIR>> = {
   [SEARCH]: { intent: "search", commerce: { intent: "search", query: { text: SEARCH, category: "dress", budget: { amount: 400, currency: "ILS" } }, variant: { size: "M" } } },
   [TAKE]: { intent: "select", purchaseDecision: true, commerce: { intent: "select", variant: { size: "M" } } },
+  [CHECKOUT]: { intent: "checkout", checkoutConsent: true, commerce: { intent: "checkout" } },
   [NAME]: { intent: "details", customerInfo: { name: NAME }, evidence: { "customerInfo.name": NAME } },
   [PHONE]: { intent: "details", customerInfo: { phone: PHONE }, evidence: { "customerInfo.phone": PHONE } },
   [PAID]: { intent: "payment_claim", customerClaims: { paymentCompleted: true } },
@@ -67,17 +69,23 @@ describe("Rina E2E: search → take → name → phone → checkout → payment 
     const search = await say(SEARCH);
     expect(search.rich?.products?.map((p) => p.title)).toEqual(["Onyx Slip Dress"]);
 
-    // Decision: Onyx M goes into a real provider cart; BARRY asks for exactly name + phone.
+    // Decision: Onyx M goes into a real provider cart; BARRY offers checkout and waits for the word.
     const take = await say(TAKE);
     expect(take.turn.trace?.steps.map((s) => [s.action, s.result?.ok])).toEqual([["addToCart", true]]);
-    expect(take.turn.trace?.stop).toEqual({ reason: "needs_customer", outcome: "checkout_needs_info" });
-    expect(take.state.missingFields).toEqual(["name", "phone"]);
+    expect(take.turn.trace?.stop).toEqual({ reason: "needs_customer", outcome: "offer_checkout" });
+    expect(take.state.missingFields).toEqual([]);
     expect(take.turn.trace?.context?.shown).toEqual([{ position: 1, title: "Onyx Slip Dress" }]);
     const cart = await commerce.getCart(take.state.knownFields.__commerceCartId);
     expect(cart?.lines.map((l) => [l.title, l.options.size])).toEqual([["Onyx Slip Dress", "M"]]);
-    expect(take.response).toMatch(ASKS_NAME);
-    expect(take.response).toMatch(/טלפון/);
-    expect(take.response).not.toMatch(/שם מלא|full name/i);
+    expect(take.response).not.toMatch(ASKS_NAME);
+
+    // The customer's checkout word: BARRY asks for exactly name + phone.
+    const checkout = await say(CHECKOUT);
+    expect(checkout.turn.trace?.stop).toEqual({ reason: "no_action", outcome: "checkout_needs_info" });
+    expect(checkout.state.missingFields).toEqual(["name", "phone"]);
+    expect(checkout.response).toMatch(ASKS_NAME);
+    expect(checkout.response).toMatch(/טלפון/);
+    expect(checkout.response).not.toMatch(/שם מלא|full name/i);
 
     // Name accepted; only the phone is still missing — the name is not asked again.
     const name = await say(NAME);
@@ -98,7 +106,7 @@ describe("Rina E2E: search → take → name → phone → checkout → payment 
     expect(phone.state.knownFields.__paid).toBeUndefined();
     expect(phone.response).toMatch(/[א-ת]/);
     expect(phone.response).not.toMatch(ASKS_NAME);
-    for (const out of [take, name, phone]) expect(out.response).not.toMatch(ASKS_TO_CONTINUE);
+    for (const out of [checkout, name, phone]) expect(out.response).not.toMatch(ASKS_TO_CONTINUE);
 
     // "I paid" while the provider says pending: verify only — no order, no "paid".
     const pending = await say(PAID);

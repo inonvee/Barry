@@ -56,7 +56,10 @@ export type SystemHealth = {
   provider: string | null;
   state: "healthy" | "simulated" | "degraded" | "disconnected" | "not_configured";
   lastVerifiedAt: string | null;
+  /** OWNER words. */
   blockers: string[];
+  /** BARRY TEAM technical detail (setting keys). */
+  technical: string[];
 };
 
 export type OwnerApproval = {
@@ -175,7 +178,7 @@ function safeReasoner() {
 function systemHealth(v: ConnectionView): SystemHealth {
   const state: SystemHealth["state"] =
     v.status === "not_configured" ? "not_configured" : v.status === "disconnected" ? "disconnected" : v.status === "error" || v.missing.length > 0 ? "degraded" : v.simulated ? "simulated" : "healthy";
-  return { domain: v.capability, provider: v.provider, state, lastVerifiedAt: v.lastVerifiedAt, blockers: v.missing.map((m) => `Missing setting: ${m}`) };
+  return { domain: v.capability, provider: v.provider, state, lastVerifiedAt: v.lastVerifiedAt, blockers: v.missing.length ? [`${v.missing.length} setting${v.missing.length === 1 ? "" : "s"} for the BARRY team to add`] : [], technical: v.missing.map((m) => `Missing setting: ${m}`) };
 }
 
 const REASON_FOR_APPROVAL = "Your rules say you approve this before BARRY does it.";

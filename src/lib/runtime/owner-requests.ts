@@ -29,7 +29,7 @@ export const OWNER_REQUEST_RESULTS_KEY = "__ownerRequestResults";
 const WITHDRAWN_BY = { withdrawn: "customer:withdrawn", changed: "customer:changed_terms", superseded: "runtime:superseded" } as const;
 
 /** Operations that describe ONE transaction per conversation: a new revision supersedes the older one. */
-const SINGLE_REVISION_ACTIONS = new Set(["createPaymentRequest", "createCommerceCheckout"]);
+const SINGLE_REVISION_ACTIONS = new Set(["createPaymentRequest", "createCommerceCheckout", "grantDiscount"]);
 
 /** Which operation a request is (the capability for generic calls) — revisions of one operation share it. */
 export function operationKey(action: string, input: unknown): string {
@@ -314,6 +314,12 @@ export function describeRequest(action: string, input: unknown): string {
       .filter(([k, v]) => k !== "idempotencyKey" && (typeof v === "string" || typeof v === "number"))
       .map(([, v]) => humanWords(String(v)));
     return `${contract?.purpose ?? "a request"}${terms.length ? ` (${terms.join(", ")})` : ""}`;
+  }
+  if (action === "grantDiscount") {
+    const pct = Number(raw.discountPct);
+    const on = raw.item === "the whole cart" ? "the whole cart" : String(raw.item ?? "the cart");
+    const list = typeof raw.listAmount === "number" && typeof raw.currency === "string" ? ` (${money(raw.listAmount, raw.currency)} → ${money(Math.round(raw.listAmount * (100 - pct)) / 100, raw.currency)})` : "";
+    return `a ${pct}% discount on ${on}${list}`;
   }
   if (typeof raw.amount === "number" && typeof raw.currency === "string") {
     const pct = typeof raw.discountPct === "number" && raw.discountPct > 0 ? ` with a ${raw.discountPct}% discount` : "";

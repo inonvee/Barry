@@ -29,7 +29,7 @@ import { finalWriteGate, type WriteBlock } from "./write-gate";
 import { applyRevalidatedIntent, conversationApprovals, customerIntentHold, unresolvedUnderstanding, describeRequest, findSameRequest, recordReconfirmed, settleChangedTerms, supersedeOlderRevisions, ownerRequestViews, recordOwnerRequestResult, withdrawPendingRequests, type ExistingRequest, type IntentHold } from "./owner-requests";
 import type { ComposeResponseInput } from "@/lib/reasoner/types";
 import { BARRY_RUNTIME_VERSION, runtimeCommit } from "./version";
-import { getCatalogSchema, getCommerceProduct, getOwnedCart } from "@/lib/commerce/capability";
+import { getCatalogSchema, getCommerceProduct, getOwnedCart, searchCommerceProducts } from "@/lib/commerce/capability";
 import { sanitizeComposeInput } from "@/lib/reasoner/compose-sanitization";
 import { verifyIR } from "@/lib/reasoner/verify";
 import {
@@ -43,7 +43,7 @@ import { cancelPaymentRequest } from "@/lib/payments/capability";
 import type { NormalizedOutboundMessage } from "@/lib/channels/types";
 import type { Product } from "@/lib/commerce/types";
 import type { BarryIR } from "@/lib/reasoner/ir";
-import { compile, planCapabilityCall, SCRATCH_KEYS, type CompileOutcome } from "./compiler";
+import { compile, lineNamedBy, planCapabilityCall, SCRATCH_KEYS, type CompileOutcome } from "./compiler";
 import { buildCapabilitySurface } from "@/lib/capabilities/surface";
 import { callFingerprint, INVOKE_CAPABILITY, type CapabilityCallResult } from "@/lib/tools/capability-tool";
 import { askOutcomes, mandatoryAsks } from "./ask-outcomes";
@@ -115,6 +115,7 @@ async function patchStateAfterTool(state: ConversationState, toolName: string, o
         // The requested change did NOT happen: the cart still holds what it
         // held before. Nothing may progress toward checkout on that basis.
         delete known[SCRATCH_KEYS.commerceCheckoutOnSuccess];
+        delete known[SCRATCH_KEYS.commerceCheckoutOfferOnSuccess];
         delete known[SCRATCH_KEYS.commerceCheckoutRequested];
         if (toolName === "addToCart" && result.notAdded) {
           known[SCRATCH_KEYS.commercePendingProductId] = result.notAdded.productId;
@@ -138,6 +139,9 @@ async function patchStateAfterTool(state: ConversationState, toolName: string, o
         delete known[SCRATCH_KEYS.commerceCheckoutRequested];
         delete known[SCRATCH_KEYS.checkoutScope];
       }
+      // A decision to buy (per the playbook) earns the customer an OFFER of checkout — nothing more.
+      if (known[SCRATCH_KEYS.commerceCheckoutOfferOnSuccess]) known[SCRATCH_KEYS.commerceCheckoutOffered] = "1";
+      delete known[SCRATCH_KEYS.commerceCheckoutOfferOnSuccess];
       if (result.cart) {
         known[SCRATCH_KEYS.commerceCartId] = result.cart.id;
         known[SCRATCH_KEYS.commerceCartTotal] = JSON.stringify(result.cart.total);
@@ -153,6 +157,13 @@ async function patchStateAfterTool(state: ConversationState, toolName: string, o
       delete known[SCRATCH_KEYS.commerceCheckoutId];
       delete known[SCRATCH_KEYS.commerceCartSnapshot];
       state.stage = "offer_selection";
+      break;
+    }
+    case "grantDiscount": {
+      // The one record a checkout may be priced from: granted by policy or by the owner, on this cart.
+      const { cartId, discountPct, item } = output as { cartId: string; discountPct: number; item: string };
+      known[SCRATCH_KEYS.discountGranted] = JSON.stringify({ pct: discountPct, item, cartId });
+      known[SCRATCH_KEYS.discountPct] = String(discountPct);
       break;
     }
     case "createCommerceCheckout": {
@@ -389,7 +400,10 @@ export async function handleCustomerMessage(
   const pendingBeforeChange = ir.changesPendingRequest && !ir.withdrawsRequest ? (await conversationApprovals(graph.business.id, conversationId)).filter((a) => a.status === "pending") : [];
   if (withdrawnRequests > 0) grounded.ownerRequests = ownerRequestViews(await conversationApprovals(graph.business.id, conversationId), state);
   state.knownFields.__focusOfferId = ir.selectedOfferId ?? "";
-  let outcome = compile(graph, state, ir, { profiles, shownProducts: grounded?.shownProducts, cartLines: grounded.cartLines });
+  // A NAMED item to add/ask about is looked up in the real catalog by that name (read-only) so the
+  // compiler binds the name to a catalog item — never to whatever product is nearby.
+  grounded.namedProducts = await namedProductCandidates(graph, ir, grounded);
+  let outcome = compile(graph, state, ir, { profiles, shownProducts: grounded?.shownProducts, cartLines: grounded.cartLines, namedProducts: grounded.namedProducts });
   // The customer changed a pending request's terms but this understanding proposed no replacement:
   // ask the model ONCE more, now told exactly which request is being replaced, for the replacement
   // (if the customer asked for one). It is grounded, compiled and authorized like any proposal; when
@@ -446,9 +460,9 @@ export async function handleCustomerMessage(
       }
       const step = await runStep(graph, state, current, ctx, trigger === "customer" ? prevStage : state.stage, trigger, profiles, cartNow, revisionNow);
       steps.push(step);
-      const returned = step.toolResult?.ok ? (step.toolResult.output as { cart?: { lines: { id: string; title: string; options: Record<string, string>; quantity: number }[]; revision?: number } }).cart : undefined;
+      const returned = step.toolResult?.ok ? (step.toolResult.output as { cart?: { lines: { id: string; title: string; options: Record<string, string>; quantity: number; productId?: string }[]; revision?: number } }).cart : undefined;
       // The provider's returned cart is the authoritative post-effect state for every later step this turn.
-      if (returned?.lines) cartNow = returned.lines.map((l, i) => ({ position: i + 1, id: l.id, title: l.title, options: l.options, quantity: l.quantity }));
+      if (returned?.lines) cartNow = returned.lines.map((l, i) => ({ position: i + 1, id: l.id, title: l.title, options: l.options, quantity: l.quantity, ...(l.productId ? { productId: l.productId } : {}) }));
       if (typeof returned?.revision === "number") revisionNow = returned.revision;
       if (step.policyDecision.status !== "allowed") {
         stop = { reason: step.blocked ? "write_blocked" : step.policyDecision.status === "denied" ? "policy_denied" : "owner_approval_required", outcome: current.action.name };
@@ -514,6 +528,8 @@ export async function handleCustomerMessage(
   // The customer asked about the business's policies/facts: replies are checked against its policy texts.
   if (ir.knowledgeTopic) grounded.policyTopic = ir.knowledgeTopic;
   grounded.policyTurn = Boolean(ir.knowledgeTopic) || (ir.asks ?? []).some((a) => a.kind === "question");
+  // An owner request made or reused this turn: the customer's ask is with the owner, by the decision path.
+  const ownerAsked = steps.some((st) => st.policyDecision.status === "requires_approval");
   // ASK COMPLETENESS: what became of every ask — the reply must address each one (guardReply enforces it).
   const askList = askOutcomes({
     graph,
@@ -522,11 +538,13 @@ export async function handleCustomerMessage(
     outcome,
     steps: steps.map((st) => ({ trigger: st.trace.trigger === "continuation" ? "continuation" : "customer", policy: st.policyDecision.status, ok: Boolean(st.toolResult?.ok), blocked: Boolean(st.blocked) })),
     notDone: remainingAsks,
-    handoff: Boolean(ir.handoff),
+    handoff: Boolean(ir.handoff) && !ownerAsked,
   });
   if (askList.length) grounded.askOutcomes = askList;
   // A person is needed: record a real handoff (one open per conversation) — the reply can only say what it is.
-  if (ir.handoff) {
+  // Not when the ask became an owner request this turn: the owner IS being asked, through the one path
+  // that can answer it (a decision card), so a parallel handoff would be a second, dead-end request.
+  if (ir.handoff && !ownerAsked) {
     const unresolved = [...remainingAsks, ...(ir.asks ?? []).filter((a) => a.kind !== "change" && !a.coveredByThisIR).map((a) => a.ask)];
     const refused = steps.some((st) => st.policyDecision.status === "denied") || outcome.kind === "capability_unavailable";
     const { handoff, created } = createHandoff(graph, state, { trigger: refused ? "barry_cannot_help" : "customer_asked", reason: ir.handoff.reason, urgency: ir.handoff.urgency, unresolved });
@@ -704,7 +722,8 @@ async function proposeRecoveredRequest(
   profiles: CapabilityProfiles | undefined,
   grounded: GroundedContext
 ): Promise<RecoveredIntent> {
-  const outcome = compile(graph, state, ir, { profiles, shownProducts: grounded.shownProducts, cartLines: grounded.cartLines });
+  grounded.namedProducts = await namedProductCandidates(graph, ir, grounded);
+  const outcome = compile(graph, state, ir, { profiles, shownProducts: grounded.shownProducts, cartLines: grounded.cartLines, namedProducts: grounded.namedProducts });
   if (outcome.kind !== "action") return { outcome: NEEDS_CUSTOMER_OUTCOMES.has(outcome.kind) ? "needs_info" : "no_replacement" };
   const { name, input } = outcome.action;
   const about = { operation: name, terms: termsOf(name, input) };
@@ -859,6 +878,34 @@ async function understandingUnavailableTurn(args: {
  * the model resolves "the first one" against exactly this, and BARRY maps
  * the position back to the real id. Read-only; failures just omit it.
  */
+/**
+ * Catalog products the item the customer NAMED could be (read-only lookup by that name), so a named
+ * add/inquiry grounds to a real catalog item. Nothing is looked up when the name already identifies a
+ * shown product or a cart line; failures just yield no candidates (the compiler then asks).
+ */
+async function namedProductCandidates(graph: BusinessGraph, ir: BarryIR, grounded: GroundedContext): Promise<NonNullable<GroundedContext["namedProducts"]>> {
+  const named = ir.commerce?.subject?.trim();
+  if (!named || !ir.commerce || !["select", "inquire"].includes(ir.commerce.intent)) return [];
+  const nameOf = (title: string) => lineNamedBy(named, { title, options: {} });
+  if ((grounded.shownProducts ?? []).some((p) => nameOf(p.title)) || (grounded.cartLines ?? []).some((l) => l.productId && nameOf(l.title))) return [];
+  if (!isActionAvailable(graph, "searchProducts")) return [];
+  try {
+    const { products } = await searchCommerceProducts(graph, { text: named });
+    return products
+      .filter((p) => nameOf(p.title))
+      .slice(0, 10)
+      .map((p) => ({
+        id: p.id,
+        position: 0,
+        title: p.title,
+        variants: p.variants.map((v) => ({ options: v.options, price: `${v.price.amount} ${v.price.currency}`, inStock: v.inventory.available > 0 })),
+      }));
+  } catch (err) {
+    console.error("[barry:engine] named product lookup unavailable", err instanceof Error ? err.message : err);
+    return [];
+  }
+}
+
 async function buildGroundedContext(
   graph: BusinessGraph,
   state: ConversationState,
@@ -897,9 +944,10 @@ async function buildGroundedContext(
     });
     if (cartId) {
       const cart = await getOwnedCart({ graph, customerId: ctx.customerId, conversationId: ctx.conversationId }, cartId);
-      grounded.cartLines = cart.lines.map((line, index) => ({ position: index + 1, id: line.id, title: line.title, options: line.options, quantity: line.quantity }));
-      grounded.cart = grounded.cartLines.map(({ id: _id, ...line }) => {
+      grounded.cartLines = cart.lines.map((line, index) => ({ position: index + 1, id: line.id, title: line.title, options: line.options, quantity: line.quantity, productId: line.productId }));
+      grounded.cart = grounded.cartLines.map(({ id: _id, productId: _p, ...line }) => {
         void _id;
+        void _p;
         return line;
       });
       grounded.cartTotal = `${cart.total.amount} ${cart.total.currency}`;
@@ -1002,7 +1050,8 @@ async function continueWithNextAsk(
   if (!u.valid || u.failClosed) return undefined;
   const { verified } = verifyIR(graph, message, u.ir, state, { catalog: context.catalog, capabilities: context.capabilities, capabilityResults: context.capabilityResults, cartLineCount: context.cartLines?.length });
   // The continuation acts on the next ask only; it never withdraws or revises anything by itself.
-  const next = compile(graph, state, { ...verified, withdrawsRequest: undefined, changesPendingRequest: undefined }, { profiles, shownProducts: context.shownProducts, cartLines: context.cartLines });
+  context.namedProducts = await namedProductCandidates(graph, verified, context);
+  const next = compile(graph, state, { ...verified, withdrawsRequest: undefined, changesPendingRequest: undefined }, { profiles, shownProducts: context.shownProducts, cartLines: context.cartLines, namedProducts: context.namedProducts });
   return next.kind === "action" ? next : undefined;
 }
 
@@ -1011,7 +1060,7 @@ export const MAX_STEPS_PER_TURN = 4;
 /** Actions that express a customer's choice: never taken on the customer's behalf. */
 const CUSTOMER_CHOICE_ACTIONS = new Set(["addToCart", "updateCartLine", "searchProducts", "requestApproval"]);
 /** After a chain, these tell the customer the one thing still needed; others are left unsaid. */
-const NEEDS_CUSTOMER_OUTCOMES = new Set<CompileOutcome["kind"]>(["checkout_needs_info", "needs_info", "capability_unavailable", "confirm_purchase", "capability_needs_input"]);
+const NEEDS_CUSTOMER_OUTCOMES = new Set<CompileOutcome["kind"]>(["checkout_needs_info", "needs_info", "capability_unavailable", "confirm_purchase", "offer_checkout", "capability_needs_input"]);
 
 /** Did an action that asks for a change actually make it? (Tool success is not the same thing.) */
 function requestedChangeApplied(action: string, output: unknown): boolean {

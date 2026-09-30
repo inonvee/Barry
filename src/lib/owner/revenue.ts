@@ -54,6 +54,9 @@ export type RevenueSummary = {
   influencedBookings: number;
   potential: Money;
   potentialItems: number;
+  /** Unpaid links on a simulated provider: pending TEST money — shown and labelled, never inside potential. */
+  potentialSimulated: Money;
+  potentialSimulatedItems: number;
   /** Simulated-provider payments and bookings (test/demo) — never part of direct or influenced. */
   simulatedPaid: Money;
   simulatedInfluenced: Money;
@@ -156,43 +159,64 @@ export type RevenueEvidence = {
   at: string;
   /** The record that puts it in this category (or keeps it out of revenue). */
   record: string;
+  /** Test money: on a simulated provider. Shown and labelled, never counted in any real total. */
+  simulated: boolean;
+  source: "payment" | "booking" | "approval";
   customer?: string;
 };
 
 /**
- * Why each amount is (or is NOT) counted — one line per record, so a tester can answer "why is this
- * ₪390 counted here?" and "why isn't this one?". Same rules as revenueSummary.
+ * THE ONE money classification. Every amount BARRY knows about is classified here exactly once, with
+ * the record that proves it — the Money summary, the detail list, money in motion and the Ask BARRY
+ * briefing all derive from this list (revenueSummary sums it), so the same records can never read
+ * differently on two screens.
+ *
+ *  - collected: provider-verified paid on a real provider (the only revenue); recovered marks those
+ *    that followed a failed/cancelled/blocked attempt (already inside Collected).
+ *  - booked_not_collected: the uncollected value of confirmed bookings.
+ *  - open_opportunity: money that could still arrive — an unpaid link (current state, whatever the
+ *    period), an owner request for money. A simulated one is listed too, labelled simulated.
+ *  - simulated: verified-paid or booked on a simulated provider (test money, never revenue).
+ *  - excluded_unverified: marked paid without provider verification — not counted.
  */
 export function revenueEvidence(input: AttributionInput): RevenueEvidence[] {
-  const { graph, payments, bookings, approvals, since } = input;
+  const { graph, conversations, payments, bookings, approvals, since } = input;
   const now = input.now ?? new Date();
   const out: RevenueEvidence[] = [];
   const failedBefore = (p: PaymentRequestRecord) => payments.some((q) => q.conversationId === p.conversationId && q.id !== p.id && (q.status === "failed" || q.status === "cancelled") && q.createdAt < p.createdAt);
+  const blockedBefore = (p: PaymentRequestRecord) => {
+    const convo = conversations.find((c) => c.id === p.conversationId);
+    return convo ? readLedger(convo).some((e) => e.effect === "write.blocked" && e.at < p.createdAt) : false;
+  };
   for (const p of payments) {
-    const ref = `payment request ${p.id.slice(0, 12)} · ${p.provider ?? "no provider"}`;
+    const simulated = isSimulatedPayment(p);
+    const ref = `payment request ${p.id.slice(0, 12)} · ${p.provider ?? "no provider"}${simulated ? " (simulated)" : ""}`;
+    const base = { amount: p.amount, currency: p.currency, conversationId: p.conversationId, simulated, source: "payment" as const };
     if (isVerifiedPaid(p) && after(p.verifiedAt, since)) {
-      if (isSimulatedPayment(p)) out.push({ category: "simulated", amount: p.amount, currency: p.currency, conversationId: p.conversationId, at: p.verifiedAt!, record: `${ref} — paid on a simulated provider: test money, never revenue` });
+      if (simulated) out.push({ ...base, category: "simulated", at: p.verifiedAt!, record: `${ref} — paid on a simulated provider: test money, never revenue` });
       else {
-        out.push({ category: "collected", amount: p.amount, currency: p.currency, conversationId: p.conversationId, at: p.verifiedAt!, record: `${ref} — provider reported PAID, verified ${p.verifiedAt}` });
-        if (failedBefore(p)) out.push({ category: "recovered", amount: p.amount, currency: p.currency, conversationId: p.conversationId, at: p.verifiedAt!, record: `${ref} — paid after an earlier failed/cancelled attempt in the same conversation (already inside Collected)` });
+        out.push({ ...base, category: "collected", at: p.verifiedAt!, record: `${ref} — provider reported PAID, verified ${p.verifiedAt}` });
+        if (failedBefore(p) || blockedBefore(p)) out.push({ ...base, category: "recovered", at: p.verifiedAt!, record: `${ref} — paid after an earlier failed/cancelled/blocked attempt in the same conversation (already inside Collected)` });
       }
     } else if (p.status === "paid" && after(p.createdAt, since)) {
-      out.push({ category: "excluded_unverified", amount: p.amount, currency: p.currency, conversationId: p.conversationId, at: p.createdAt, record: `${ref} — marked paid but never verified: not counted` });
-    } else if (p.status === "pending" && now.getTime() - Date.parse(p.createdAt) <= ABANDON_AFTER_MS && !isSimulatedPayment(p) && after(p.createdAt, since)) {
-      out.push({ category: "open_opportunity", amount: p.amount, currency: p.currency, conversationId: p.conversationId, at: p.createdAt, record: `${ref} — payment link sent, not paid: not revenue` });
-    } else if (p.status === "pending" && isSimulatedPayment(p) && after(p.createdAt, since)) {
-      out.push({ category: "excluded_unverified", amount: p.amount, currency: p.currency, conversationId: p.conversationId, at: p.createdAt, record: `${ref} — simulated payment link, unpaid: not counted` });
+      out.push({ ...base, category: "excluded_unverified", at: p.createdAt, record: `${ref} — marked paid but never verified: not counted` });
+    } else if (p.status === "pending" && now.getTime() - Date.parse(p.createdAt) <= ABANDON_AFTER_MS) {
+      out.push({ ...base, category: "open_opportunity", at: p.createdAt, record: simulated ? `${ref} — simulated payment link, unpaid: test money, pending, not revenue` : `${ref} — payment link sent, not paid: not revenue` });
     }
   }
   for (const b of bookings) {
     if (b.status !== "confirmed" || !after(b.createdAt, since)) continue;
     const offer = graph.offers.find((o) => o.id === b.offerId);
     if (!offer?.price) continue;
-    out.push({ category: isSimulatedBooking(b) ? "simulated" : "booked_not_collected", amount: offer.price, currency: offer.currency, conversationId: b.conversationId, at: b.createdAt, record: `booking ${b.id.slice(0, 12)} · ${offer.name} (${b.provider ?? "no provider"}) — confirmed; value not collected by BARRY${isSimulatedBooking(b) ? " (simulated)" : ""}` });
+    const simulated = isSimulatedBooking(b);
+    const collected = payments.filter((p) => p.conversationId === b.conversationId && isVerifiedPaid(p) && !isSimulatedPayment(p)).reduce((s, p) => s + (p.currency === offer.currency ? p.amount : 0), 0);
+    const remaining = Math.max(0, Math.round((offer.price - collected) * 100) / 100);
+    if (remaining <= 0) continue;
+    out.push({ category: simulated ? "simulated" : "booked_not_collected", amount: remaining, currency: offer.currency, conversationId: b.conversationId, at: b.createdAt, simulated, source: "booking", record: `booking ${b.id.slice(0, 12)} · ${offer.name} (${b.provider ?? "no provider"}) — confirmed; value not collected by BARRY${simulated ? " (simulated)" : ""}` });
   }
   for (const a of approvals) {
     const money = paymentApprovalAmount(a);
-    if (a.status === "pending" && money) out.push({ category: "open_opportunity", amount: money.amount, currency: money.currency, conversationId: a.conversationId, at: a.createdAt, record: `owner request ${a.id.slice(0, 12)} — waiting for your approval: not revenue` });
+    if (a.status === "pending" && money) out.push({ category: "open_opportunity", amount: money.amount, currency: money.currency, conversationId: a.conversationId, at: a.createdAt, simulated: false, source: "approval", record: `owner request ${a.id.slice(0, 12)} — waiting for your approval: not revenue` });
   }
   return out.sort((x, y) => y.at.localeCompare(x.at));
 }
@@ -210,7 +234,7 @@ function ledgerOutcome(e: LedgerEntry): Omit<OutcomeEvent, "at" | "conversationI
 
 /** Revenue and conversion, attributable by evidence. */
 export function revenueSummary(input: AttributionInput): RevenueSummary {
-  const { graph, conversations, payments, bookings, approvals, since } = input;
+  const { conversations, payments, bookings, approvals, since } = input;
   const now = input.now ?? new Date();
   const r: RevenueSummary = {
     direct: {},
@@ -220,6 +244,8 @@ export function revenueSummary(input: AttributionInput): RevenueSummary {
     influencedBookings: 0,
     potential: {},
     potentialItems: 0,
+    potentialSimulated: {},
+    potentialSimulatedItems: 0,
     simulatedPaid: {},
     simulatedInfluenced: {},
     discounts: { granted: 0, refused: 0 },
@@ -229,51 +255,38 @@ export function revenueSummary(input: AttributionInput): RevenueSummary {
     ownerInterventions: 0,
     activeConversations: 0,
   };
-  const paidByConversation = new Map<string, PaymentRequestRecord[]>();
-  for (const p of payments) {
-    if (!isVerifiedPaid(p) || !after(p.verifiedAt, since)) continue;
-    if (isSimulatedPayment(p)) {
-      add(r.simulatedPaid, p.currency, p.amount);
-      continue;
-    }
-    add(r.direct, p.currency, p.amount);
-    r.directPayments++;
-    paidByConversation.set(p.conversationId, [...(paidByConversation.get(p.conversationId) ?? []), p]);
-  }
-  // Recovered: paid after an earlier failed/cancelled attempt or a blocked write in the same conversation.
-  for (const [conversationId, paid] of paidByConversation) {
-    const convo = conversations.find((c) => c.id === conversationId);
-    for (const p of paid) {
-      const earlierFailure = payments.some((q) => q.conversationId === conversationId && q.id !== p.id && (q.status === "failed" || q.status === "cancelled") && q.createdAt < p.createdAt);
-      const earlierBlock = readLedger(convo ?? ({ knownFields: {} } as ConversationState)).some((e) => e.effect === "write.blocked" && e.at < p.createdAt);
-      if (earlierFailure || earlierBlock) add(r.recovered, p.currency, p.amount);
-    }
-  }
-  for (const b of bookings) {
-    if (b.status !== "confirmed" || !after(b.createdAt, since)) continue;
-    const offer = graph.offers.find((o) => o.id === b.offerId);
-    if (!offer?.price) continue;
-    const collected = payments.filter((p) => p.conversationId === b.conversationId && isVerifiedPaid(p) && !isSimulatedPayment(p)).reduce((s, p) => s + (p.currency === offer.currency ? p.amount : 0), 0);
-    const remaining = Math.max(0, offer.price - collected);
-    if (remaining > 0 && isSimulatedBooking(b)) {
-      add(r.simulatedInfluenced, offer.currency, remaining);
-    } else if (remaining > 0) {
-      add(r.influenced, offer.currency, remaining);
-      r.influencedBookings++;
-    }
-  }
-  for (const p of payments) {
-    if (p.status === "pending" && now.getTime() - Date.parse(p.createdAt) <= ABANDON_AFTER_MS && !isSimulatedPayment(p)) {
-      add(r.potential, p.currency, p.amount);
-      r.potentialItems++;
+  // Every money figure below is a SUM over the one classification (revenueEvidence) — never a second rule.
+  for (const e of revenueEvidence(input)) {
+    switch (e.category) {
+      case "collected":
+        add(r.direct, e.currency, e.amount);
+        r.directPayments++;
+        break;
+      case "recovered":
+        add(r.recovered, e.currency, e.amount);
+        break;
+      case "booked_not_collected":
+        add(r.influenced, e.currency, e.amount);
+        r.influencedBookings++;
+        break;
+      case "simulated":
+        if (e.source === "payment") add(r.simulatedPaid, e.currency, e.amount);
+        else add(r.simulatedInfluenced, e.currency, e.amount);
+        break;
+      case "open_opportunity":
+        if (e.simulated) {
+          add(r.potentialSimulated, e.currency, e.amount);
+          r.potentialSimulatedItems++;
+        } else {
+          add(r.potential, e.currency, e.amount);
+          r.potentialItems++;
+        }
+        break;
+      case "excluded_unverified":
+        break;
     }
   }
   for (const a of approvals) {
-    const money = paymentApprovalAmount(a);
-    if (a.status === "pending" && money) {
-      add(r.potential, money.currency, money.amount);
-      r.potentialItems++;
-    }
     const pct = Number(((a.requestedInput ?? {}) as Record<string, unknown>).discountPct ?? 0);
     if (pct > 0 && after(a.resolution?.decidedAt, since)) {
       if (a.status === "approved") r.discounts.granted++;
