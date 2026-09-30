@@ -138,6 +138,66 @@ describe.skipIf(!LIVE)("LIVE paid-pilot checks", () => {
   }, 120_000);
 });
 
+describe.skipIf(!LIVE)("LIVE QA-pass proof (Mission 20)", () => {
+  afterEach(() => {
+    setReasonerForTests(undefined);
+    resetDemoHelpdeskForTests();
+  });
+
+  it("A. sale-item policy: exchange-only stays exchange-allowed", async () => {
+    setReasonerForTests(new OpenAIReasoner());
+    const g = getBusinessGraph("fashion-retailer");
+    const out = await handleCustomerMessage(g, conv("sale"), "c", "אם אקנה משהו בסייל ולא יתאים לי, אפשר להחליף או להחזיר?");
+    const saysNoExchange = /(?:לא|אי אפשר)[^.]{0,20}(?:להחליף|החלפה)/.test(out.response) && !/(?:רק|בלבד)/.test(out.response);
+    record("policy_exchange_only", !saysNoExchange, out.response.slice(0, 220));
+  }, 120_000);
+
+  it("B-C. C301 → C302 correction: the customer hears 'waiting for approval', never 'opened'", async () => {
+    setReasonerForTests(new OpenAIReasoner());
+    const g = getBusinessGraph(LOGISTICS_DEMO_ID);
+    const id = conv("narration");
+    await handleCustomerMessage(g, id, "c", "Different parcel Q4-C301 now, delayed. Create one owner approval for a delay case only.");
+    const out = await handleCustomerMessage(g, id, "c", "Wait, that's Q4-C302, not C301. It arrived damaged, not delayed. Replace the pending request.");
+    const pending = (await approvals(g.business.id, id)).filter((a) => a.status === "pending");
+    const claimsOpened = /\b(?:opened|created|submitted) (?:a |the )?(?:new )?(?:support )?case\b/i.test(out.response) && !/wait|approval|owner/i.test(out.response);
+    record("approval_narration", !claimsOpened && demoHelpdeskTickets().length === 0, `pending=${pending.length} reply=${out.response.slice(0, 220)}`);
+  }, 180_000);
+
+  it("D. one mutation + one policy question in one message", async () => {
+    setReasonerForTests(new OpenAIReasoner());
+    const g = getBusinessGraph("fashion-retailer");
+    const id = conv("mix");
+    await handleCustomerMessage(g, id, "c", "מחפשת שמלה שחורה");
+    const out = await handleCustomerMessage(g, id, "c", "תוסיפי את Onyx במידה M לסל, ומה המדיניות להחזרות על פריטי סייל?");
+    const added = readLedger(out.state).some((e) => e.effect === "cart.line_added");
+    record("mutation_plus_policy", added && /14|החלפה|להחליף/.test(out.response), out.response.slice(0, 220));
+  }, 180_000);
+
+  it("E-F. Owner Barry answers what happened today; an unverified payment stays out of collected", async () => {
+    setReasonerForTests(new OpenAIReasoner());
+    const g = getBusinessGraph("fashion-retailer");
+    const { askOwnerBarry } = await import("@/lib/owner/ask");
+    const a = await askOwnerBarry(g, "What happened today, and how much did we actually collect?");
+    const ws = await getOwnerWorkspace(g);
+    record("owner_barry", a.answer.length > 0 && !/I've (?:applied|changed|approved)/i.test(a.answer), `${a.source}: ${a.answer.slice(0, 200)}`);
+    record("revenue_unverified_excluded", ws.revenueEvidence.every((e) => e.category !== "collected" || /verified/.test(e.record)), JSON.stringify(ws.revenue.direct));
+  }, 120_000);
+
+  it("H. QA forced understanding failure holds the approval (real model before and after)", async () => {
+    setReasonerForTests(new OpenAIReasoner());
+    const g = getBusinessGraph(LOGISTICS_DEMO_ID);
+    const id = conv("qa-hold");
+    await handleCustomerMessage(g, id, "c", "Different parcel Q4-C301 now, delayed. Create one owner approval for a delay case only.");
+    const [pending] = await approvals(g.business.id, id);
+    const state = (await getConversationStore().get(id))!;
+    state.knownFields.__qaForceUnderstandingFailure = "1";
+    await getConversationStore().save(state);
+    await handleCustomerMessage(g, id, "c", "Wait C302, not301 — damaged. Replace it.");
+    const held = await resumeAfterApproval(g, pending.id, "approved", "owner");
+    record("qa_forced_hold", held.turn.trace?.stop.reason === "approval_held_customer_intent_unverified" || (await approvals(g.business.id, id)).find((a) => a.id === pending.id)?.status !== "approved", `stop=${held.turn.trace?.stop.reason}`);
+  }, 180_000);
+});
+
 describe("pilot live harness (runs without a key)", () => {
   it("is skipped unless OPENAI_API_KEY and BARRY_LIVE_EVAL=1 are set", () => {
     expect(LIVE).toBe(Boolean(process.env.OPENAI_API_KEY && process.env.BARRY_LIVE_EVAL === "1"));

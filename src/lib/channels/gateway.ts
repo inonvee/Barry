@@ -50,7 +50,8 @@ function readList<T>(value: string | undefined): T[] {
 /** Render BARRY's reply (text + rich parts) as plain channel text — every channel can carry this. */
 export function renderForTextChannel(out: NormalizedOutboundMessage): string {
   const parts = [out.text];
-  for (const p of out.rich?.products ?? []) parts.push(`• ${p.title}${p.price ? ` — ${p.price}` : ""}${p.url ? `\n  ${p.url}` : ""}`);
+  // Products the reply already names aren't repeated; links are still given.
+  for (const p of out.rich?.products ?? []) if (out.text.includes(p.title)) { if (p.url) parts.push(p.url); } else parts.push(`• ${p.title}${p.price ? ` — ${p.price}` : ""}${p.url ? `\n  ${p.url}` : ""}`);
   if (out.rich?.paymentUrl) parts.push(out.rich.paymentUrl);
   return parts.join("\n");
 }

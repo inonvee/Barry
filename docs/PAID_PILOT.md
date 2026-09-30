@@ -187,3 +187,46 @@ Founder Barry (conversational HQ) is **not built**.
    - entered with the founder, with no self-serve editing yet.
 6. **Owner replies to handed-off customers** are not possible from the dashboard.
 7. **Scale.** The owner read model loads the business's full conversation states. That is fine for a pilot, not for large volumes: it needs aggregate queries later.
+
+## 10. QA on Preview (testing cockpit)
+
+Every testing surface shares one navigation and status strip:
+- **Surfaces:** Customer simulator, Owner, Train BARRY, Connections, Learn business, QA tools, HQ.
+- **Status strip:** the current business, environment, AI health, model, storage, owner access, WhatsApp, payments and build SHA. Status comes from `/api/qa/status`, which contains no secrets and is 404 on Vercel Production.
+
+**Owner access (one-time Preview setup, done by someone with Vercel access):**
+- Set the variable below for the **Preview** environment only, then redeploy.
+- Use one random token per business, at least 16 characters; `openssl rand -hex 24` generates one.
+- Never reuse the founder token.
+- Keep the tokens out of the repo and share them with testers privately.
+
+```
+BARRY_OWNER_TOKENS=fashion-retailer:<token-A>,barry-logistics-demo:<token-B>,spa:<token-C>
+```
+
+**Signing in:**
+- Owner → select the business → paste its token → **Sign in**. This sets a 12-hour httpOnly session for that business only; the token is never stored or shown by the page.
+- Switching to another business shows "signed in to a different business" until you sign in with that business's token.
+- Signing in with another business's token is refused.
+- **Sign out** clears the session.
+
+**QA mode:**
+- On Vercel Preview and in development, QA tools are on (`BARRY_QA_MODE=0` turns them off).
+- On Vercel Production they never exist: the gate is hard-off and the routes return 404.
+- Every QA action needs the owner session for that business.
+
+**Recipes:**
+- **Forced understanding failure (F31 fail-closed branch):**
+  1. In the simulator (Logistics), create a support case that needs approval.
+  2. In QA tools, arm "fail next message". The conversation id defaults to the simulator's current one.
+  3. Send the correction in the simulator. The Inspector shows `qa_forced_understanding_failure`, and Owner → Approvals shows the request **HELD** with no Approve button.
+  4. Press **Re-check conversation**. The correction is applied (the old request becomes SUPERSEDED) or, if unrelated, the hold is released.
+- **WhatsApp dry run:** QA tools → Simulate inbound WhatsApp.
+  - It builds a real Cloud API payload and runs it through the real adapter and gateway.
+  - **Replay same message id** shows DUPLICATE: the message is processed once.
+  - The reply is recorded as `dry_run` and nothing is sent to Meta.
+  - This does not replace a real Meta end-to-end test.
+- **Tenant isolation:** sign in with Rina's token and select Logistics. Everything is refused, including Owner APIs, Ask BARRY, readiness and simulator approvals.
+- **Handoff:** in the simulator, ask for a person. In Owner → Health → Handoffs it appears OPEN; **Acknowledge**, then **Mark resolved**. BARRY never replies on the team's behalf.
+- **Revenue:** Owner → Today → "Why these numbers" lists every amount, its category (COLLECTED / RECOVERED / BOOKED, NOT COLLECTED / OPEN OPPORTUNITIES / SIMULATED / NOT COUNTED) and the record that proves it.
+- **Live proof** (needs `OPENAI_API_KEY`): `npm run eval:pilot`.
