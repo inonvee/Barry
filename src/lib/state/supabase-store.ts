@@ -1,5 +1,5 @@
 import { getSupabaseClient } from "@/lib/store/supabase-client";
-import { createInitialConversationState } from "./types";
+import { ConversationScopeError, createInitialConversationState } from "./types";
 import type { ConversationMessage, ConversationState, ConversationStore, ConversationSummary, TurnActivity, TurnLog } from "./types";
 
 // Tracks, per in-memory ConversationState object, how many messages/turns
@@ -84,6 +84,7 @@ export class SupabaseConversationStore implements ConversationStore {
 
   async getOrCreate(id: string, businessId: string, customerId: string): Promise<ConversationState> {
     const existing = await this.get(id);
+    if (existing && existing.businessId !== businessId) throw new ConversationScopeError(id);
     if (existing) return existing;
 
     const fresh = createInitialConversationState(id, businessId, customerId);

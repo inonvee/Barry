@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getBusinessGraph } from "@/lib/fixtures";
 import { handlePaymentOutcome } from "@/lib/runtime";
+import { ConversationScopeError } from "@/lib/state";
 
 const BodySchema = z.object({
   businessId: z.string(),
@@ -17,6 +18,11 @@ export async function POST(req: NextRequest) {
   }
   const { businessId, conversationId, paymentRequestId, outcome } = parsed.data;
   const graph = getBusinessGraph(businessId);
-  const result = await handlePaymentOutcome(graph, conversationId, paymentRequestId, outcome);
-  return NextResponse.json(result);
+  try {
+    const result = await handlePaymentOutcome(graph, conversationId, paymentRequestId, outcome);
+    return NextResponse.json(result);
+  } catch (err) {
+    if (err instanceof ConversationScopeError) return NextResponse.json({ error: err.message }, { status: 404 });
+    throw err;
+  }
 }

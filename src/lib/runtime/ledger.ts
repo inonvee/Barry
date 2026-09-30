@@ -56,7 +56,25 @@ export type LedgerEntry = {
   messageIndex?: number;
   /** For an `understanding.revalidated` entry: which failed-understanding entry it re-interpreted, and whether
    *  that message (now understood) withdrew or changed requests pending on the owner. */
-  revalidation?: { of: number; affectsRequests: boolean };
+  revalidation?: { of: number; affectsRequests: boolean; recovered?: RecoveredIntent };
+  /**
+   * For an `understanding.failed` entry: the immutable record of the customer turn that could not be
+   * understood — enough to replay THAT SAME turn later through the normal reasoner (nothing in it is
+   * parsed or trusted while it is ununderstood).
+   */
+  failedTurn?: { conversationId: string; turnId: string; message: string; reason: string; pendingRequestIds: string[] };
+};
+
+/**
+ * What a re-understood failed customer turn turned out to ask, and what the runtime did with it.
+ * "Old request invalidated" and "new request handled" are separate obligations: this records the second.
+ */
+export type RecoveredIntent = {
+  outcome: "withdrawn" | "proposed" | "reused" | "not_executed" | "blocked" | "needs_info" | "no_replacement" | "unrelated";
+  /** The new owner request, when one was proposed (or an identical one was already waiting). */
+  requestId?: string;
+  operation?: string;
+  terms?: Record<string, string | number>;
 };
 
 export const LEDGER_KEY = "__effectLedger";

@@ -9,7 +9,7 @@ import { BARRY_CONSTITUTION } from "./constitution";
 import type { CommerceSemantics } from "./ir";
 import { composeDeterministic } from "./deterministic-compose";
 import { logReasonerFailure } from "./diagnostics";
-import type { BarryIR, ComposeResponseInput, ModelCallFailure, PolicyContradiction, Reasoner, ReasonerContext, UnderstandingResult } from "./types";
+import type { AskOutcome, BarryIR, ComposeResponseInput, ModelCallFailure, PolicyContradiction, Reasoner, ReasonerContext, UnderstandingResult } from "./types";
 export type { UnderstandingResult } from "./types";
 import { sanitizeComposeInput } from "./compose-sanitization";
 import { businessFacts, customerFacts, transactionFacts } from "./compose-facts";
@@ -227,7 +227,7 @@ YOUR TASK NOW: understand the customer's latest message in context and describe 
 - slotAccepted / slotDeclined: only when awaitingSlotConfirmation is true and they accept or decline the offered time.
 - selectedOfferId / offerCandidateIds: for services in "offers"; several plausible -> candidates. offerChangeRequested only for an explicit change of mind to a different real offer.
 - requestedCapability: "ask_price" | "ask_duration" | "ask_deposit" when they ask that about an offer; else null.
-- asks: every distinct thing the customer asks in THIS message, in order, as a short phrase in their words; kind "change" (add/remove/change/book/buy/open/cancel — anything that would change something), "question" (facts, policy, price), "status" (what happened to something), "other". coveredByThisIR is true for the ask(s) the other fields of this IR describe (one change at a time), false for the rest. A plain message is one ask.
+- asks: every distinct thing the customer asks in THIS message, in order, as a short phrase in their words; kind "change" (add/remove/change/book/buy/open/cancel — anything that would change something), "question" (facts, policy, price), "status" (what happened to something), "other". coveredByThisIR is true for the ask(s) the other fields of this IR describe (one change at a time), false for the rest. topic: for a question about something covered by one of knowledgeTopics, that exact topic string (else null) — set it even when the message also changes something. A plain message is one ask.
 - handoffRequested: true when the customer asks for a human/the owner/"someone", or needs something that isn't in capabilitySurface/offers and only a person could resolve (a complaint, a dispute, an exception). handoffReason: one short line of why, in plain words. handoffUrgency "urgent" only for something time-critical or a serious complaint. BARRY's runtime records the handoff; you never promise anything yourself.
 - alreadyDoneThisTurn / remainingAsks (when non-empty): part of this message was already carried out. Describe ONLY the first of remainingAsks in the action fields (commerce / capabilityRequest / …) and mark it coveredByThisIR; never repeat what is already done. If it can't be described (needs a choice or a detail), leave the action fields null.
 - Output strict JSON only.`;
@@ -242,6 +242,20 @@ YOUR TASK NOW: understand the customer's latest message in context and describe 
  */
 const POLICY_CHECK_PROMPT = `You check a customer-service reply against the business's OWN policy texts (any language).
 List every sentence of the reply that states a business policy DIFFERENTLY from the texts: a limitation turned into a prohibition or the reverse ("exchange only" means exchanges ARE allowed and refunds are not), a scope word dropped (only / except / within / unless), a condition or time limit changed, or a policy detail the texts don't contain stated as fact. Paraphrase and translation are fine when the meaning is the same. Sentences that aren't about policy are not contradictions. Return {"contradictions": []} when everything agrees.`;
+
+const ASK_COVERAGE_PROMPT = `You check whether a customer-service reply addresses EVERY one of the customer's asks (any language).
+Each ask has a status saying what really happened. An ask is addressed when the reply deals with it consistently with its status (answers the question, reports the change, says it awaits approval, says what is needed, or says plainly it can't/didn't happen). Return the indexes (0-based) of asks the reply does NOT address at all: {"missing": []} when all are addressed.`;
+
+const ASK_COVERAGE_SCHEMA = {
+  name: "ask_coverage",
+  strict: true,
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    properties: { missing: { type: "array", items: { type: "integer" } } },
+    required: ["missing"],
+  },
+};
 
 const POLICY_CHECK_SCHEMA = {
   name: "policy_check",
@@ -286,6 +300,7 @@ export const COMPOSE_SYSTEM_PROMPT =
   "`facts.provenance` says where each group of facts comes from; general knowledge about businesses of this kind is never a fact about THIS business. " +
   "Opening hours, days, dates, deadlines and policy details (e.g. when a returns period starts) come ONLY from `facts`: if facts don't state it, say you don't have that detail — never fill it in from general knowledge. " +
   "If `handoff` is present, BARRY passed this conversation to the business's team: say so in one line. If handoff.responseCommitted is true, you may say how the team follows up exactly as handoff.how says; if false, say the team can see the conversation but you can't promise when or how they'll reply. Never promise a call, email or contact the handoff doesn't state. " +
+  "If `customerAsks` is present, address EVERY ask in it according to its status — answered (answer it; answerFromPolicy is the business's own text, restated faithfully), completed (say it's done), awaiting_approval (waiting for the owner), needs_info (ask for what's needed), blocked (say it can't be done), handoff (the team will see it), not_done (say plainly you don't have that / didn't do it). Never drop an ask to fix another part of the reply. " +
   "If `notDone` is present, those things the customer asked for were NOT done this turn: say so plainly for each (and offer to do them next) — never imply they happened. " +
   "Never narrate an action that no receipt shows happening THIS turn — not as done, not as \"now doing\", not as \"next I'll\". If the customer asked for several things and only some were done, say which were done and which were not (and offer to do the rest). " +
   "Use `customer` (their name, how to address them): never ask for something already there, and never ask for contact details unless outcome/next asks for them. Answer every question in lastCustomerMessage; if one can't be answered from facts, say so. If they asked for a yes/no, a price only, or no more suggestions, do exactly that. " +
@@ -412,7 +427,7 @@ export function sanitizeIR(graph: BusinessGraph, raw: LlmIR): BarryIR {
     checkoutConsent: raw.checkoutConsent ?? undefined,
     withdrawScope: raw.withdrawScope?.length ? raw.withdrawScope : undefined,
     handoff: raw.handoffRequested ? { reason: (raw.handoffReason ?? "").slice(0, 300) || "the customer asked for a person", urgency: raw.handoffUrgency === "urgent" ? "urgent" : "normal" } : undefined,
-    asks: raw.asks.length ? raw.asks.slice(0, 8).map((a) => ({ ask: a.ask.slice(0, 200), kind: a.kind, coveredByThisIR: a.coveredByThisIR })) : undefined,
+    asks: raw.asks.length ? raw.asks.slice(0, 8).map((a) => ({ ask: a.ask.slice(0, 200), kind: a.kind, coveredByThisIR: a.coveredByThisIR, ...(a.topic ? { topic: a.topic.slice(0, 200) } : {}) })) : undefined,
   };
 }
 
@@ -632,6 +647,8 @@ export function buildComposeSummary(context: ComposeSummaryContext, input: Compo
     handoff: sanitizedInput.handoff ?? undefined,
     // Things the customer asked for in this message that BARRY did NOT do (their words): say plainly they weren't done.
     notDone: sanitizedInput.notDone?.length ? sanitizedInput.notDone : undefined,
+    // EVERY ask in the customer's message and what really became of it — address each one (see the reply rules).
+    customerAsks: sanitizedInput.asks?.length ? sanitizedInput.asks.map((a) => ({ ask: a.ask, status: a.status, ...(a.answer ? { answerFromPolicy: a.answer.text } : {}) })) : undefined,
     // The customer changed a pending request but no valid replacement exists: nothing is pending now.
     revisionWithoutReplacement: sanitizedInput.revisionWithoutReplacement || undefined,
     // THE amounts: the authoritative quantity-aware quote (never compute a total yourself).
@@ -979,6 +996,29 @@ export class OpenAIReasoner implements Reasoner {
     } catch (err) {
       const failure = classifyProviderError(err);
       logReasonerFailure("openai_api_error", { kind: failure.kind, status: failure.status, during: "checkPolicyConsistency" });
+      return undefined;
+    }
+  }
+
+  async checkAskCoverage(ctx: ReasonerContext, reply: string, asks: AskOutcome[]): Promise<number[] | undefined> {
+    if (this.configError || asks.length === 0) return asks.length === 0 ? [] : undefined;
+    try {
+      const completion = await createCompletion(this.client, {
+        model: this.composerModel,
+        messages: [
+          { role: "system", content: ASK_COVERAGE_PROMPT },
+          { role: "user", content: JSON.stringify({ asks: asks.map((a, index) => ({ index, ask: a.ask, status: a.status })), reply }) },
+        ],
+        response_format: { type: "json_schema", json_schema: ASK_COVERAGE_SCHEMA },
+        ...samplingParams(this.composerModel, "composer", 0, this.composerReasoningEffort),
+      });
+      const raw = completion.choices[0]?.message?.content;
+      if (!raw) return undefined;
+      const parsed = JSON.parse(raw) as { missing?: unknown };
+      return Array.isArray(parsed.missing) ? parsed.missing.filter((i): i is number => Number.isInteger(i) && i >= 0 && i < asks.length) : undefined;
+    } catch (err) {
+      const failure = classifyProviderError(err);
+      logReasonerFailure("openai_api_error", { kind: failure.kind, status: failure.status, during: "checkAskCoverage" });
       return undefined;
     }
   }

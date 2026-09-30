@@ -96,6 +96,8 @@ export type TurnTrace = {
   reply?: { language: string; basis: string; fallback?: string; composerFailures?: ModelCallFailureTrace[] };
   /** Asks from this message that were never carried out (told to the customer as not done). */
   notDone?: string[];
+  /** ASK COMPLETENESS: each customer ask of this turn and what became of it (answered / completed / awaiting approval / …). */
+  asks?: { ask: string; kind: string; status: string; topic?: string }[];
   /** Earlier not-understood customer messages re-interpreted at the start of this turn (and how many remain). */
   revalidation?: { revalidated: number; stillUnresolved: number; changedRequests: number };
   /** An owner approval that was NOT executed because the customer's intent after it is unverified. */
@@ -141,7 +143,7 @@ export type TurnLog = {
     };
     customerClaims?: unknown;
     /** Every ask the model found in the message, and whether this understanding covered it. */
-    asks?: { ask: string; kind: string; coveredByThisIR: boolean }[];
+    asks?: { ask: string; kind: string; coveredByThisIR: boolean; topic?: string }[];
     knowledgeTopic?: string;
     /** The grounded capability proposal this turn (capability, input as grounded, purpose). */
     capabilityRequest?: { capability: string; input: Record<string, unknown>; purpose: string };
@@ -213,8 +215,26 @@ export type TurnActivity = {
   trace: TurnTrace | null;
 };
 
+/**
+ * A conversation belongs to exactly one business. Asking for it under any other business is refused —
+ * never answered with the other business's data, and never continued under the wrong business graph.
+ */
+export class ConversationScopeError extends Error {
+  constructor(readonly conversationId: string) {
+    super(`Conversation ${conversationId} not found for this business`);
+    this.name = "ConversationScopeError";
+  }
+}
+
+/** The conversation only when it belongs to `businessId`; a foreign id reads as not found. */
+export async function getConversationForBusiness(store: Pick<ConversationStore, "get">, id: string, businessId: string): Promise<ConversationState | undefined> {
+  const state = await store.get(id);
+  return state && state.businessId === businessId ? state : undefined;
+}
+
 export interface ConversationStore {
   get(id: string): Promise<ConversationState | undefined>;
+  /** Throws ConversationScopeError when `id` already exists under a different business. */
   getOrCreate(id: string, businessId: string, customerId: string): Promise<ConversationState>;
   save(state: ConversationState): Promise<void>;
   listByBusiness(businessId: string): Promise<ConversationState[]>;

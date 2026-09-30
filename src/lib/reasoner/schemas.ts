@@ -129,7 +129,7 @@ export const LlmIRSchema = z.object({
    * Every distinct thing the customer asked in THIS message, in order, in their own words — and whether
    * the other fields of this IR describe it. Lets the runtime know what was asked but not done.
    */
-  asks: z.array(z.object({ ask: z.string(), kind: z.enum(["change", "question", "status", "other"]), coveredByThisIR: z.boolean() })).default([]),
+  asks: z.array(z.object({ ask: z.string(), kind: z.enum(["change", "question", "status", "other"]), coveredByThisIR: z.boolean(), topic: z.string().nullable().default(null) })).default([]),
   /** The customer wants a person, or needs something BARRY can't do here (the runtime records a handoff). */
   handoffRequested: z.boolean().nullable().default(null),
   handoffReason: z.string().nullable().default(null),
@@ -288,8 +288,9 @@ export function irJsonSchema() {
               ask: { type: "string" },
               kind: { type: "string", enum: ["change", "question", "status", "other"] },
               coveredByThisIR: { type: "boolean" },
+              topic: { type: ["string", "null"] },
             },
-            required: ["ask", "kind", "coveredByThisIR"],
+            required: ["ask", "kind", "coveredByThisIR", "topic"],
           },
         },
       },

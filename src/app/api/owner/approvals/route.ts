@@ -5,6 +5,8 @@ import { getBackend } from "@/lib/store";
 import { getConversationStore } from "@/lib/state";
 import { resumeAfterApproval } from "@/lib/runtime";
 import { revalidateUnresolvedTurns } from "@/lib/runtime/engine";
+import { revalidatedChangeText } from "@/lib/reasoner/deterministic-compose";
+import { SCRATCH_KEYS } from "@/lib/runtime/compiler";
 
 const Body = z.object({ businessId: z.string().min(1), approvalId: z.string().min(1), action: z.enum(["approve", "decline", "recheck"]) });
 
@@ -26,6 +28,8 @@ export async function POST(req: NextRequest) {
       const state = await getConversationStore().get(approval.conversationId);
       if (!state) return Response.json({ error: "Conversation not found" }, { status: 404 });
       const result = await revalidateUnresolvedTurns(g.graph, state);
+      // The customer hears what became of their earlier message (the old request, and the corrected one).
+      if (result.changedRequests > 0) state.messages.push({ role: "barry", content: revalidatedChangeText(state.knownFields[SCRATCH_KEYS.conversationLanguage], result.recovered.find((x) => x.outcome !== "unrelated")), at: new Date().toISOString() });
       await getConversationStore().save(state);
       return Response.json({ recheck: result });
     }

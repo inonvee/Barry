@@ -48,3 +48,55 @@ export function setStoredConversationId(businessId: string, conversationId: stri
 export function createConversationId(): string {
   return randomId("conv");
 }
+
+/**
+ * THE SIMULATOR'S BUSINESS-SCOPED VIEW MODEL.
+ *
+ * Every piece of data the simulator loads is stored together with the business (and, for the
+ * conversation, the conversation id) it was loaded FOR. What the page renders is derived by
+ * `simulatorView` from the CURRENT business only: data loaded for another business — or a late
+ * response that arrives after the owner switched — is never shown, no matter which component
+ * would render it (chat, cart, payment prompt, Inspector, approvals, graph).
+ */
+export type SimulatorScope = { businessId: string; conversationId: string; customerId: string };
+
+export type SimulatorData<State, Approval, Graph> = {
+  scope: SimulatorScope | null;
+  conversation: { businessId: string; conversationId: string; state: State | null } | null;
+  approvals: { businessId: string; list: Approval[]; locked: boolean } | null;
+  graph: { businessId: string; graph: Graph | null } | null;
+};
+
+export type SimulatorView<State, Approval, Graph> = {
+  scope: SimulatorScope | null;
+  state: State | null;
+  approvals: Approval[];
+  approvalsLocked: boolean;
+  graph: Graph | null;
+};
+
+export function simulatorView<State extends { id: string; businessId: string }, Approval extends { businessId: string }, Graph extends { business: { id: string } }>(
+  data: SimulatorData<State, Approval, Graph>,
+  businessId: string | null
+): SimulatorView<State, Approval, Graph> {
+  const scope = businessId && data.scope?.businessId === businessId ? data.scope : null;
+  const c = data.conversation;
+  const state =
+    scope && c && c.businessId === businessId && c.conversationId === scope.conversationId && c.state && c.state.id === scope.conversationId && c.state.businessId === businessId
+      ? c.state
+      : null;
+  const a = businessId && data.approvals?.businessId === businessId ? data.approvals : null;
+  const g = businessId && data.graph?.businessId === businessId && data.graph.graph?.business.id === businessId ? data.graph.graph : null;
+  return {
+    scope,
+    state,
+    approvals: a ? a.list.filter((x) => x.businessId === businessId) : [],
+    approvalsLocked: a?.locked ?? false,
+    graph: g,
+  };
+}
+
+/** Key for remounting business-scoped components (drafts, selected Inspector turn) when the scope changes. */
+export function scopeKey(scope: SimulatorScope | null): string {
+  return scope ? `${scope.businessId}/${scope.conversationId}` : "none";
+}

@@ -208,7 +208,7 @@ export type BarryIR = {
    * the IR does not cover were NOT acted on by this understanding — the runtime continues with them
    * (bounded) or tells the customer they weren't done.
    */
-  asks?: { ask: string; kind: "change" | "question" | "status" | "other"; coveredByThisIR: boolean }[];
+  asks?: { ask: string; kind: "change" | "question" | "status" | "other"; coveredByThisIR: boolean; /** For a question: the business knowledge topic it is about (grounded by the runtime). */ topic?: string }[];
   /** The customer wants a person, or needs something BARRY can't do here: the runtime records a handoff. */
   handoff?: { reason: string; urgency: "normal" | "urgent" };
 };

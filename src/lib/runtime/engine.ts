@@ -5,7 +5,7 @@ import { decide, type PolicyDecision } from "@/lib/policy";
 import { getReasoner } from "@/lib/reasoner";
 import { callTool, listTools } from "@/lib/tools";
 import type { ToolCallResult, ToolContext } from "@/lib/tools";
-import { getConversationStore } from "@/lib/state";
+import { ConversationScopeError, getConversationForBusiness, getConversationStore } from "@/lib/state";
 import type { ConversationState, TurnLog } from "@/lib/state";
 import { getBackend } from "@/lib/store";
 import { ApprovalAlreadyResolvedError, type ApprovalRecord } from "@/lib/store/types";
@@ -23,7 +23,7 @@ import { QA_FORCE_UNDERSTANDING_FAILURE, qaEnabled } from "@/lib/qa/mode";
 import { findInternalLeak, internalVocabulary } from "@/lib/reasoner/reply-hygiene";
 import { claimEvidence, findMisattributedReferences, findUnsupportedClaims, languageMismatch, trimClosers } from "@/lib/reasoner/claim-grounding";
 import { renderStatus } from "@/lib/reasoner/status-render";
-import { appendLedger, classifyBlocked, classifyExecution, readLedger, requestEntry, type CartLineSnapshot, type LedgerEntry } from "./ledger";
+import { appendLedger, classifyBlocked, classifyExecution, readLedger, requestEntry, termsOf, type CartLineSnapshot, type LedgerEntry, type RecoveredIntent } from "./ledger";
 import { currentQuote } from "./pricing";
 import { finalWriteGate, type WriteBlock } from "./write-gate";
 import { applyRevalidatedIntent, conversationApprovals, customerIntentHold, unresolvedUnderstanding, describeRequest, findSameRequest, recordReconfirmed, settleChangedTerms, supersedeOlderRevisions, ownerRequestViews, recordOwnerRequestResult, withdrawPendingRequests, type ExistingRequest, type IntentHold } from "./owner-requests";
@@ -46,6 +46,7 @@ import type { BarryIR } from "@/lib/reasoner/ir";
 import { compile, planCapabilityCall, SCRATCH_KEYS, type CompileOutcome } from "./compiler";
 import { buildCapabilitySurface } from "@/lib/capabilities/surface";
 import { callFingerprint, INVOKE_CAPABILITY, type CapabilityCallResult } from "@/lib/tools/capability-tool";
+import { askOutcomes, mandatoryAsks } from "./ask-outcomes";
 import { capabilityFailureMessage, readCapabilityResults, recordCapabilityResult } from "./capability-state";
 
 /**
@@ -510,6 +511,17 @@ export async function handleCustomerMessage(
   // The customer asked about the business's policies/facts: replies are checked against its policy texts.
   if (ir.knowledgeTopic) grounded.policyTopic = ir.knowledgeTopic;
   grounded.policyTurn = Boolean(ir.knowledgeTopic) || (ir.asks ?? []).some((a) => a.kind === "question");
+  // ASK COMPLETENESS: what became of every ask — the reply must address each one (guardReply enforces it).
+  const askList = askOutcomes({
+    graph,
+    asks: ir.asks,
+    knowledgeTopic: ir.knowledgeTopic,
+    outcome,
+    steps: steps.map((st) => ({ trigger: st.trace.trigger === "continuation" ? "continuation" : "customer", policy: st.policyDecision.status, ok: Boolean(st.toolResult?.ok), blocked: Boolean(st.blocked) })),
+    notDone: remainingAsks,
+    handoff: Boolean(ir.handoff),
+  });
+  if (askList.length) grounded.askOutcomes = askList;
   // A person is needed: record a real handoff (one open per conversation) — the reply can only say what it is.
   if (ir.handoff) {
     const unresolved = [...remainingAsks, ...(ir.asks ?? []).filter((a) => a.kind !== "change" && !a.coveredByThisIR).map((a) => a.ask)];
@@ -584,6 +596,7 @@ export async function handleCustomerMessage(
       runtime: runtimeTrace(reasoner),
       understanding: understandingTrace(understanding),
       ...(grounded.notDone?.length ? { notDone: grounded.notDone } : {}),
+      ...(grounded.askOutcomes?.length ? { asks: grounded.askOutcomes.map((a) => ({ ask: a.ask, kind: a.kind, status: a.status, ...(a.answer ? { topic: a.answer.topic } : {}) })) } : {}),
       ...(revalidation && (revalidation.revalidated > 0 || revalidation.stillUnresolved > 0) ? { revalidation } : {}),
       rejectedClaims: verification.rejected.map((r) => ({ claim: r.claim, reason: r.reason })),
       steps: steps.map((st) => st.trace),
@@ -617,40 +630,89 @@ export async function handleCustomerMessage(
  * If understanding is still unavailable, nothing changes: the requests stay held.
  * Runs before the next customer turn, before an owner's approval executes, and on an owner's re-check.
  */
-export async function revalidateUnresolvedTurns(graph: BusinessGraph, state: ConversationState): Promise<{ revalidated: number; stillUnresolved: number; changedRequests: number }> {
+export type RevalidationResult = { revalidated: number; stillUnresolved: number; changedRequests: number; recovered: RecoveredIntent[] };
+
+export async function revalidateUnresolvedTurns(graph: BusinessGraph, state: ConversationState): Promise<RevalidationResult> {
   const pending = (await conversationApprovals(graph.business.id, state.id)).filter((a) => a.status === "pending");
   const unresolved = unresolvedUnderstanding(readLedger(state)).slice(-3);
-  if (pending.length === 0 || unresolved.length === 0) return { revalidated: 0, stillUnresolved: unresolved.length, changedRequests: 0 };
+  if (pending.length === 0 || unresolved.length === 0) return { revalidated: 0, stillUnresolved: unresolved.length, changedRequests: 0, recovered: [] };
   const reasoner = getReasoner();
+  const profiles = await resolveCapabilityProfiles(graph).catch(() => undefined);
+  const ctx: ToolContext = { graph, conversationId: state.id, customerId: state.customerId };
   let revalidated = 0;
   let changedRequests = 0;
+  const recoveredAll: RecoveredIntent[] = [];
   for (const failure of unresolved) {
     const at = (failure.messageIndex ?? 0) - 1;
     const said = state.messages[at];
     if (!said || said.role !== "customer") continue;
+    // The SAME customer turn, replayed: its preserved words, in the conversation as it was when it was sent.
+    const message = failure.failedTurn?.message ?? said.content;
     const then: ConversationState = { ...state, messages: state.messages.slice(0, at + 1) };
-    const grounded: GroundedContext = {
-      ownerRequests: ownerRequestViews(await conversationApprovals(graph.business.id, state.id), state),
-      capabilities: await buildCapabilitySurface(graph).catch(() => []),
-      capabilityResults: readCapabilityResults(state),
-    };
-    const u = await understandTurn(reasoner, { graph, state: then, customerMessage: said.content, grounded });
+    const grounded: GroundedContext = (await buildGroundedContext(graph, state, ctx, profiles).catch(() => undefined)) ?? {};
+    grounded.ownerRequests = ownerRequestViews(await conversationApprovals(graph.business.id, state.id), state);
+    grounded.capabilities = await buildCapabilitySurface(graph).catch(() => []);
+    grounded.capabilityResults = readCapabilityResults(state);
+    const u = await understandTurn(reasoner, { graph, state: then, customerMessage: message, grounded });
     if (!u.valid) continue;
-    const withdraws = u.ir.withdrawsRequest === true;
-    const changes = u.ir.changesPendingRequest === true || Boolean(u.failClosed);
-    const applied = withdraws || changes ? await applyRevalidatedIntent(graph, state, failure.seq, { withdraws, changes, scope: u.ir.withdrawScope }) : 0;
+    const { verified: ir } = verifyIR(graph, message, u.ir, then, { catalog: grounded.catalog, capabilities: grounded.capabilities, capabilityResults: grounded.capabilityResults, cartLineCount: grounded.cartLines?.length });
+    const withdraws = ir.withdrawsRequest === true;
+    const changes = ir.changesPendingRequest === true || Boolean(u.failClosed);
+    const applied = withdraws || changes ? await applyRevalidatedIntent(graph, state, failure.seq, { withdraws, changes, scope: ir.withdrawScope }) : 0;
     changedRequests += applied;
+    // Invalidating the old request is ONE obligation; handling what the customer asked instead is another.
+    const recovered: RecoveredIntent = withdraws
+      ? { outcome: "withdrawn" }
+      : changes && !u.failClosed
+        ? await proposeRecoveredRequest(graph, state, ir, ctx, profiles, grounded)
+        : changes
+          ? { outcome: "no_replacement" }
+          : { outcome: "unrelated" };
+    recoveredAll.push(recovered);
     appendLedger(state, {
       operation: "understand",
       effect: "understanding.revalidated",
       status: "no_effect",
-      describes: applied > 0 ? "an earlier customer message, now understood, withdrew or changed a pending request" : "an earlier customer message, now understood, left the pending requests unchanged",
+      describes:
+        recovered.outcome === "proposed"
+          ? "an earlier customer message, now understood, replaced a pending request: the corrected request was sent to the owner"
+          : applied > 0
+            ? "an earlier customer message, now understood, withdrew or changed a pending request"
+            : "an earlier customer message, now understood, left the pending requests unchanged",
       terms: {},
-      revalidation: { of: failure.seq, affectsRequests: withdraws || changes },
+      revalidation: { of: failure.seq, affectsRequests: withdraws || changes, recovered },
     });
     revalidated++;
   }
-  return { revalidated, stillUnresolved: unresolved.length - revalidated, changedRequests };
+  return { revalidated, stillUnresolved: unresolved.length - revalidated, changedRequests, recovered: recoveredAll };
+}
+
+/**
+ * The corrected request in a re-understood customer turn, compiled and authorized exactly as a live
+ * turn would. Recovery PROPOSES (an owner request, through the normal final-write gate and authority)
+ * but never executes an action directly: the customer was not present for this moment, so an action
+ * that would run without the owner is reported as not done for the customer to confirm.
+ */
+async function proposeRecoveredRequest(
+  graph: BusinessGraph,
+  state: ConversationState,
+  ir: BarryIR,
+  ctx: ToolContext,
+  profiles: CapabilityProfiles | undefined,
+  grounded: GroundedContext
+): Promise<RecoveredIntent> {
+  const outcome = compile(graph, state, ir, { profiles, shownProducts: grounded.shownProducts, cartLines: grounded.cartLines });
+  if (outcome.kind !== "action") return { outcome: NEEDS_CUSTOMER_OUTCOMES.has(outcome.kind) ? "needs_info" : "no_replacement" };
+  const { name, input } = outcome.action;
+  const about = { operation: name, terms: termsOf(name, input) };
+  if (!actionSupported(profiles, name).ok) return { outcome: "blocked", ...about };
+  const authority = decide(graph, { action: name, params: input });
+  if (authority.status === "denied") return { outcome: "blocked", ...about };
+  if (authority.status === "allowed") return { outcome: "not_executed", ...about };
+  const step = await runStep(graph, state, outcome, ctx, state.stage, "customer", profiles, grounded.cartLines);
+  if (step.blocked || step.policyDecision.status !== "requires_approval") return { outcome: "blocked", ...about };
+  if (step.existing) return { outcome: step.existing === "still_pending" ? "reused" : "blocked", ...(state.pendingApprovalId ? { requestId: state.pendingApprovalId } : {}), ...about };
+  return state.pendingApprovalId ? { outcome: "proposed", requestId: state.pendingApprovalId, ...about } : { outcome: "blocked", ...about };
 }
 
 /**
@@ -735,7 +797,13 @@ async function understandingUnavailableTurn(args: {
   const { graph, state, message, language, reasoner, grounded, understanding } = args;
   const store = getConversationStore();
   const startSeq = readLedger(state).length;
-  appendLedger(state, understandingEntry("failed"));
+  const id = turnId();
+  // The immutable record of THIS customer turn, so a re-check can replay the very same turn later.
+  const pendingRequestIds = (await conversationApprovals(graph.business.id, state.id)).filter((a) => a.status === "pending").map((a) => a.id);
+  appendLedger(state, {
+    ...understandingEntry("failed"),
+    failedTurn: { conversationId: state.id, turnId: id, message, reason: understanding.failure?.kind ?? "unknown", pendingRequestIds },
+  });
   // Two customer messages in a row BARRY couldn't understand: a person should look — hand off (once).
   const previousFailed = state.turns.at(-1)?.trace?.understanding?.valid === false;
   const handedOff = previousFailed
@@ -753,7 +821,7 @@ async function understandingUnavailableTurn(args: {
   const response = handedOff ? `${base}\n${handoffText({ status: handedOff.created ? "created" : "already_open", responseCommitted: handedOff.handoff.responseCommitted, how: handoffPath(graph) }, language.code)}` : base;
   state.messages.push({ role: "barry", content: response, at: new Date().toISOString() });
   const turn: TurnLog = {
-    id: turnId(),
+    id,
     at: new Date().toISOString(),
     customerMessage: message,
     understood: {
@@ -1052,6 +1120,7 @@ async function composeTurn(
     ...(policyItem ? { policyQuote: { topic: policyItem.topic, text: policyItem.content } } : {}),
     ...(rctx.grounded?.notDone?.length ? { notDone: rctx.grounded.notDone } : {}),
     ...(rctx.grounded?.handoff ? { handoff: rctx.grounded.handoff } : {}),
+    ...(rctx.grounded?.askOutcomes?.length ? { asks: rctx.grounded.askOutcomes } : {}),
   };
   let input: ComposeResponseInput;
   // The composer and every check see the ledger as it stands after this turn's steps, the current
@@ -1154,7 +1223,8 @@ async function guardReply(
   text: string
 ): Promise<{ text: string; fallback?: string }> {
   if (reasoner.name !== "llm") return { text };
-  const problems = [...replyProblems(rctx, input, text), ...(await policyProblems(reasoner, rctx, text))];
+  const check = async (reply: string) => [...replyProblems(rctx, input, reply), ...(await policyProblems(reasoner, rctx, reply)), ...(await completenessProblems(reasoner, rctx, input, reply))];
+  const problems = await check(text);
   if (problems.length === 0) return { text: trimClosers(text) };
   let repaired: string | undefined;
   try {
@@ -1162,8 +1232,23 @@ async function guardReply(
   } catch {
     repaired = undefined;
   }
-  if (repaired && replyProblems(rctx, input, repaired).length === 0 && (await policyProblems(reasoner, rctx, repaired)).length === 0) return { text: trimClosers(repaired), fallback: `${problems.join("; ")} -> regenerated` };
+  // A regenerated reply must pass EVERY check again — including still addressing every ask.
+  if (repaired && (await check(repaired)).length === 0) return { text: trimClosers(repaired), fallback: `${problems.join("; ")} -> regenerated` };
+  // The deterministic reply renders every ask's grounded representation (composeDeterministic): the
+  // rejected clause is replaced, the customer's other asks are kept.
   return { text: composeDeterministic(withStatus(rctx, input)), fallback: `${problems.join("; ")} -> deterministic` };
+}
+
+/**
+ * ASK COMPLETENESS: when the customer asked several things, the reply must address each with its real
+ * status (answered / completed / awaiting approval / not done …). Checked semantically by the model
+ * against the runtime's ask list — a reply that silently drops an ask is a problem like a false claim.
+ */
+async function completenessProblems(reasoner: ReturnType<typeof getReasoner>, rctx: ReasonerContext, input: ComposeResponseInput, text: string): Promise<string[]> {
+  const asks = mandatoryAsks(input.asks);
+  if (asks.length < 2 || !reasoner.checkAskCoverage) return [];
+  const missing = await reasoner.checkAskCoverage(rctx, text, asks).catch(() => undefined);
+  return (missing ?? []).filter((i) => asks[i]).map((i) => `completeness: the reply does not address the customer's ask "${asks[i].ask}" (${asks[i].status.replace(/_/g, " ")})`);
 }
 
 /**
@@ -1304,8 +1389,8 @@ export async function handlePaymentOutcome(
   outcome: "paid" | "failed"
 ): Promise<TurnOutcome> {
   const store = getConversationStore();
-  const state = await store.get(conversationId);
-  if (!state) throw new Error(`Conversation ${conversationId} not found`);
+  const state = await getConversationForBusiness(store, conversationId, graph.business.id);
+  if (!state) throw new ConversationScopeError(conversationId);
 
   // The webhook must name THIS conversation's own outstanding payment
   // request — never trust the caller-supplied conversationId/
@@ -1479,7 +1564,7 @@ export async function resumeAfterApproval(
       const r = await revalidateUnresolvedTurns(graph, convo);
       if (r.revalidated > 0) {
         if (r.changedRequests > 0) {
-          const note = revalidatedChangeText(convo.knownFields[SCRATCH_KEYS.conversationLanguage]);
+          const note = revalidatedChangeText(convo.knownFields[SCRATCH_KEYS.conversationLanguage], r.recovered.find((x) => x.outcome !== "unrelated"));
           convo.messages.push({ role: "barry", content: note, at: new Date().toISOString() });
         }
         await getConversationStore().save(convo);

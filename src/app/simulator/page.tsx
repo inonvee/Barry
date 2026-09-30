@@ -14,136 +14,132 @@ import {
   createConversationId,
   getOrCreateCustomerId,
   getStoredConversationId,
+  scopeKey,
   setStoredConversationId,
+  simulatorView,
+  type SimulatorData,
+  type SimulatorScope,
 } from "@/lib/simulator-session";
 
 type Tab = "chat" | "inspector" | "approvals" | "graph";
 
+type Data = SimulatorData<ConversationState, ApprovalView, BusinessGraph>;
+const EMPTY: Data = { scope: null, conversation: null, approvals: null, graph: null };
+
 export default function SimulatorPage() {
   const { businessId: sharedBusinessId, business } = useBusiness();
   const businessId = sharedBusinessId || null;
-  const [graph, setGraph] = useState<BusinessGraph | null>(null);
-  const [state, setState] = useState<ConversationState | null>(null);
-  const [approvals, setApprovals] = useState<ApprovalView[]>([]);
-  // null until the per-business restore effect below resolves them — every
-  // action that needs these already gates on businessId/graph being ready,
-  // so a brief null window here causes no bad requests.
-  const [conversationId, setConversationId] = useState<string | null>(null);
-  const [customerId, setCustomerId] = useState<string | null>(null);
+  // Everything loaded is tagged with the business (and conversation) it belongs to; what renders is
+  // derived from the CURRENT business only (simulatorView), so a business switch can never leave
+  // another business's conversation, cart, approvals or Inspector data on screen.
+  const [data, setData] = useState<Data>(EMPTY);
+  const view = simulatorView(data, businessId);
+  const { scope, state, approvals, approvalsLocked, graph } = view;
+  const conversationId = scope?.conversationId ?? null;
   const [tab, setTab] = useState<Tab>("chat");
   const [sending, setSending] = useState(false);
   const [busyApprovalId, setBusyApprovalId] = useState<string | null>(null);
-  const [approvalsLocked, setApprovalsLocked] = useState(false);
-
 
   const refreshApprovals = useCallback((bizId: string) => {
-    fetch(`/api/simulator/approvals?businessId=${bizId}`)
+    fetch(`/api/simulator/approvals?businessId=${encodeURIComponent(bizId)}`)
       .then(async (r) => ({ ok: r.ok, d: await r.json().catch(() => ({})) }))
       .then(({ ok, d }) => {
-        setApprovals(Array.isArray(d.approvals) ? d.approvals : []);
-        setApprovalsLocked(!ok);
+        setData((prev) => ({ ...prev, approvals: { businessId: bizId, list: Array.isArray(d.approvals) ? d.approvals : [], locked: !ok } }));
       });
   }, []);
 
-  // Restore (or create) this business's conversation identity from
-  // localStorage whenever the active business changes — this is what
-  // makes a page refresh, or leaving and reopening the simulator, resume
-  // the same conversation instead of silently starting a new one the
-  // server has never heard of. This is a legitimate synchronization with
-  // an external system (browser storage), which is exactly what effects
-  // are for; there is no render-time-safe way to read localStorage (it
-  // doesn't exist during server rendering), so the usual "derive during
-  // render" alternative to this lint rule isn't available here.
+  const setConversation = useCallback((at: SimulatorScope, next: ConversationState | null) => {
+    setData((prev) => (prev.scope?.businessId === at.businessId && prev.scope.conversationId === at.conversationId ? { ...prev, conversation: { businessId: at.businessId, conversationId: at.conversationId, state: next } } : prev));
+  }, []);
+
+  // Restore (or create) THIS business's own conversation identity from localStorage whenever the
+  // active business changes (keys are per business, see simulator-session). Everything that belonged
+  // to the previous business is dropped here too — and would be hidden by simulatorView regardless.
   useEffect(() => {
     if (!businessId) return;
-    const resolvedCustomerId = getOrCreateCustomerId(businessId);
+    const customerId = getOrCreateCustomerId(businessId);
     const existing = getStoredConversationId(businessId);
     const resolvedConversationId = existing ?? createConversationId();
     if (!existing) setStoredConversationId(businessId, resolvedConversationId);
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setCustomerId(resolvedCustomerId);
-    setConversationId(resolvedConversationId);
+    setData({ scope: { businessId, conversationId: resolvedConversationId, customerId }, conversation: null, approvals: null, graph: null });
   }, [businessId]);
 
-  // Once we know which conversation this business/browser was already in
-  // the middle of, load its actual history from the server (a no-op,
-  // empty-history conversation if it's brand new).
+  // Load the scoped conversation's history — the server answers only under its own business.
   useEffect(() => {
-    if (!conversationId) return;
+    if (!scope) return;
     let cancelled = false;
-    fetch(`/api/simulator/conversation?conversationId=${conversationId}`)
+    fetch(`/api/simulator/conversation?businessId=${encodeURIComponent(scope.businessId)}&conversationId=${encodeURIComponent(scope.conversationId)}`)
       .then((r) => r.json())
+      .catch(() => ({}))
       .then((d) => {
-        if (!cancelled) setState(d.state ?? null);
+        if (!cancelled) setConversation(scope, d.state ?? null);
       });
     return () => {
       cancelled = true;
     };
-  }, [conversationId]);
+  }, [scope, setConversation]);
 
   useEffect(() => {
     if (!businessId) return;
-    fetch(`/api/simulator/graph?businessId=${businessId}`)
+    fetch(`/api/simulator/graph?businessId=${encodeURIComponent(businessId)}`)
       .then((r) => r.json())
-      .then((d) => setGraph(d.graph));
+      .then((d) => setData((prev) => ({ ...prev, graph: { businessId, graph: d.graph ?? null } })));
     refreshApprovals(businessId);
   }, [businessId, refreshApprovals]);
 
-
   function startNewConversation() {
-    if (!businessId) return;
+    if (!scope) return;
     const fresh = createConversationId();
-    setStoredConversationId(businessId, fresh);
-    setState(null);
-    setConversationId(fresh);
+    setStoredConversationId(scope.businessId, fresh);
+    setData((prev) => ({ ...prev, scope: { ...scope, conversationId: fresh }, conversation: null }));
   }
 
   async function sendMessage(message: string) {
-    if (!businessId || !conversationId || !customerId) return;
+    if (!scope) return;
+    const at = scope;
     setSending(true);
-    setState((prev) =>
-      prev
-        ? { ...prev, messages: [...prev.messages, { role: "customer", content: message, at: new Date().toISOString() }] }
-        : prev
-    );
+    if (state) setConversation(at, { ...state, messages: [...state.messages, { role: "customer", content: message, at: new Date().toISOString() }] });
     try {
       const res = await fetch("/api/simulator/message", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ businessId, conversationId, customerId, message }),
+        body: JSON.stringify({ businessId: at.businessId, conversationId: at.conversationId, customerId: at.customerId, message }),
       });
-      const data = await res.json();
-      if (data.state) setState(data.state);
+      const d = await res.json().catch(() => ({}));
+      if (d.state) setConversation(at, d.state);
       // Every turn can create, reuse, supersede or withdraw a request — always show the current lifecycle.
-      refreshApprovals(businessId);
+      refreshApprovals(at.businessId);
     } finally {
       setSending(false);
     }
   }
 
   async function simulatePayment(outcome: "paid" | "failed") {
-    if (!businessId || !conversationId || !paymentPrompt) return;
+    if (!scope || !paymentPrompt) return;
+    const at = scope;
     const res = await fetch("/api/simulator/payment", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ businessId, conversationId, paymentRequestId: paymentPrompt.paymentRequestId, outcome }),
+      body: JSON.stringify({ businessId: at.businessId, conversationId: at.conversationId, paymentRequestId: paymentPrompt.paymentRequestId, outcome }),
     });
-    const data = await res.json();
-    if (data.state) setState(data.state);
+    const d = await res.json().catch(() => ({}));
+    if (d.state) setConversation(at, d.state);
   }
 
   async function decideApproval(approvalId: string, decision: "approved" | "declined") {
-    if (!businessId) return;
+    if (!scope) return;
+    const at = scope;
     setBusyApprovalId(approvalId);
     try {
       const res = await fetch("/api/simulator/approvals", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ businessId, approvalId, decision, decidedBy: "owner (simulator)" }),
+        body: JSON.stringify({ businessId: at.businessId, approvalId, decision, decidedBy: "owner (simulator)" }),
       });
-      const data = await res.json();
-      refreshApprovals(businessId);
-      if (data.state && data.state.id === conversationId) setState(data.state);
+      const d = await res.json().catch(() => ({}));
+      refreshApprovals(at.businessId);
+      if (d.state) setConversation(at, d.state);
     } finally {
       setBusyApprovalId(null);
     }
@@ -160,6 +156,7 @@ export default function SimulatorPage() {
     return { paymentRequestId, amount, currency: offer.currency };
   }
   const paymentPrompt = computePaymentPrompt();
+  const viewKey = scopeKey(scope);
 
   const pendingApprovalCount = approvals.filter((a) => ["active", "held"].includes(a.lifecycle ?? (a.status === "pending" ? "active" : a.status))).length;
 
@@ -220,6 +217,7 @@ export default function SimulatorPage() {
       <main className="flex-1 min-h-0">
         {tab === "chat" && (
           <ChatPanel
+            key={viewKey}
             messages={state?.messages ?? []}
             onSend={sendMessage}
             sending={sending}
@@ -227,7 +225,7 @@ export default function SimulatorPage() {
             onSimulatePayment={simulatePayment}
           />
         )}
-        {tab === "inspector" && <InspectorPanel state={state} />}
+        {tab === "inspector" && <InspectorPanel key={viewKey} state={state} />}
         {tab === "approvals" && approvalsLocked && (
           <p className="m-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
             Owner access is configured on this deployment: sign in as this business&apos;s owner in{" "}
@@ -238,7 +236,7 @@ export default function SimulatorPage() {
           </p>
         )}
         {tab === "approvals" && (
-          <ApprovalsPanel approvals={approvals} onDecide={decideApproval} busyId={busyApprovalId} currentConversationId={conversationId} />
+          <ApprovalsPanel key={viewKey} approvals={approvals} onDecide={decideApproval} busyId={busyApprovalId} currentConversationId={conversationId} />
         )}
         {tab === "graph" && <GraphPanel graph={graph} />}
       </main>

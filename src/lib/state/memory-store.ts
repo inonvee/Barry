@@ -1,4 +1,4 @@
-import { createInitialConversationState, type ConversationState, type ConversationStore, type ConversationSummary, type TurnActivity } from "./types";
+import { ConversationScopeError, createInitialConversationState, type ConversationState, type ConversationStore, type ConversationSummary, type TurnActivity } from "./types";
 
 /**
  * In-memory implementation of ConversationStore. Process-scoped — good for
@@ -14,6 +14,7 @@ export class MemoryConversationStore implements ConversationStore {
 
   async getOrCreate(id: string, businessId: string, customerId: string): Promise<ConversationState> {
     const existing = this.conversations.get(id);
+    if (existing && existing.businessId !== businessId) throw new ConversationScopeError(id);
     if (existing) return existing;
     const fresh = createInitialConversationState(id, businessId, customerId);
     this.conversations.set(id, fresh);

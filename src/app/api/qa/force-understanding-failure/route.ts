@@ -2,7 +2,7 @@ import type { NextRequest } from "next/server";
 import { z } from "zod";
 import { ownerAuthError } from "@/lib/owner-auth";
 import { qaEnabled, QA_FORCE_UNDERSTANDING_FAILURE } from "@/lib/qa/mode";
-import { getConversationStore } from "@/lib/state";
+import { ConversationScopeError, getConversationStore } from "@/lib/state";
 import { graphOrNull } from "@/lib/learn-business/http";
 
 /**
@@ -21,8 +21,11 @@ export async function POST(req: NextRequest) {
   const graph = graphOrNull(parsed.data.businessId);
   if (!graph) return Response.json({ error: "Unknown business" }, { status: 404 });
   const store = getConversationStore();
-  const state = await store.getOrCreate(parsed.data.conversationId, graph.business.id, "qa-customer");
-  if (state.businessId !== graph.business.id) return Response.json({ error: "Conversation not found" }, { status: 404 });
+  const state = await store.getOrCreate(parsed.data.conversationId, graph.business.id, "qa-customer").catch((err) => {
+    if (err instanceof ConversationScopeError) return undefined;
+    throw err;
+  });
+  if (!state) return Response.json({ error: "Conversation not found" }, { status: 404 });
   if (parsed.data.active) state.knownFields[QA_FORCE_UNDERSTANDING_FAILURE] = "1";
   else delete state.knownFields[QA_FORCE_UNDERSTANDING_FAILURE];
   await store.save(state);

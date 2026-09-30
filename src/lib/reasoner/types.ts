@@ -52,6 +52,8 @@ export type GroundedContext = {
   /** The knowledge topic the customer asked about (verbatim fallback). */
   policyTopic?: string;
   /** Asks from this message that were never carried out (runtime truth, for the reply). */
+  /** What became of every ask in the customer's message (see runtime/ask-outcomes). */
+  askOutcomes?: AskOutcome[];
   notDone?: string[];
   /** A handoff created (or already open) this turn, for the reply. */
   handoff?: { status: "created" | "already_open"; responseCommitted: boolean; how?: string };
@@ -135,6 +137,16 @@ export type ModelCallFailure = {
 };
 
 export type PolicyContradiction = { sentence: string; policy: string; why: string };
+
+/** What became of one customer ask this turn (decided by the runtime from state, receipts and grounding — never by the model). */
+export type AskStatus = "answered" | "completed" | "blocked" | "needs_info" | "awaiting_approval" | "handoff" | "not_done";
+export type AskOutcome = {
+  ask: string;
+  kind: "change" | "question" | "status" | "other";
+  status: AskStatus;
+  /** The grounded answer for an informational ask: the business's own text, quoted verbatim when needed. */
+  answer?: { topic: string; text: string };
+};
 
 /** Understanding plus what it took: whether it is usable, how it failed, what was salvaged. */
 export type UnderstandingResult = {
@@ -228,6 +240,11 @@ export type ComposeResponseInput = {
   next?: CompileOutcome;
   /** Things the customer asked for in this message that were NOT done (their words) — say so; never imply them. */
   notDone?: string[];
+  /**
+   * ASK COMPLETENESS: every distinct thing the customer asked in this message, with what really became of
+   * it. The reply must address each one; a repaired or fallback reply may fix a clause but never drop an ask.
+   */
+  asks?: AskOutcome[];
   /** The business's own policy text for what the customer asked (quoted verbatim when a reply can't be verified). */
   policyQuote?: { topic: string; text: string };
   /** The conversation is with the business's team (a recorded handoff): what may be promised about it. */
@@ -257,6 +274,11 @@ export interface Reasoner {
    * undefined = the check could not run (the reply is then judged by the other checks only).
    */
   checkPolicyConsistency?(ctx: ReasonerContext, reply: string, policies: { topic: string; text: string }[]): Promise<PolicyContradiction[] | undefined>;
+  /**
+   * Semantic completeness check: which of the customer's asks (by index) the reply does NOT address
+   * according to its status. undefined when the check itself is unavailable.
+   */
+  checkAskCoverage?(ctx: ReasonerContext, reply: string, asks: AskOutcome[]): Promise<number[] | undefined>;
   /** The underlying understanding model id, when there is one (recorded in turn traces). */
   readonly model?: string;
   /** The model that words replies, when different. */

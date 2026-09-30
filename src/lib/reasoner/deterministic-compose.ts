@@ -43,8 +43,32 @@ export function money(amount: number | string, currency: string | undefined, lan
 
 export function composeDeterministic(input: ComposeResponseInput): string {
   const base = composeDeterministicCore(input);
+  const he = input.language?.code === "he";
   // A policy the customer asked about is quoted exactly as the business wrote it — never paraphrased.
-  const core = input.policyQuote && input.outcome.kind !== "knowledge_answer" ? `${base} ${input.language?.code === "he" ? "המדיניות שלנו" : "Our policy"}: “${input.policyQuote.text}”` : base;
+  const quoted = new Set<string>();
+  const quote = (text: string) => `${he ? "המדיניות שלנו" : "Our policy"}: “${text}”`;
+  const parts = [base];
+  if (input.policyQuote && input.outcome.kind !== "knowledge_answer") {
+    parts.push(quote(input.policyQuote.text));
+    quoted.add(input.policyQuote.text);
+  }
+  // ASK COMPLETENESS: when the message asked several things, every informational ask gets its grounded
+  // representation here — so a reply rebuilt after a guard rejection can never silently drop one.
+  const asks = (input.asks ?? []).filter((a) => a.kind !== "other");
+  if (asks.length > 1) {
+    const answeredInline = input.outcome.kind === "knowledge_answer" ? input.outcome.answer : undefined;
+    for (const a of asks) {
+      if (a.kind !== "question") continue;
+      if (a.answer) {
+        if (quoted.has(a.answer.text) || a.answer.text === answeredInline) continue;
+        quoted.add(a.answer.text);
+        parts.push(quote(a.answer.text));
+      } else if (a.status === "not_done") {
+        parts.push(he ? `לגבי „${a.ask}”: אין לי מידע מאושר על זה.` : `About “${a.ask}”: I don't have confirmed information on that.`);
+      }
+    }
+  }
+  const core = parts.join(" ");
   const text = input.handoff ? `${core} ${handoffText(input.handoff, input.language?.code)}` : core;
   if (!input.notDone?.length) return text;
   // What the customer asked for and was NOT done is always said — partial work is never presented as complete.
@@ -113,8 +137,17 @@ export function handoffText(h: NonNullable<ComposeResponseInput["handoff"]>, lan
 }
 
 /** An earlier not-understood message, now understood, withdrew/changed a pending request: tell the customer. */
-export function revalidatedChangeText(lang: string | undefined): string {
-  return lang === "he"
+export function revalidatedChangeText(lang: string | undefined, recovered?: { outcome: string }): string {
+  const he = lang === "he";
+  if (recovered?.outcome === "proposed" || recovered?.outcome === "reused")
+    return he
+      ? "עכשיו הצלחתי לעבד את ההודעה הקודמת שלך: הבקשה הקודמת הוחלפה ושום דבר ממנה לא בוצע, והבקשה המתוקנת ממתינה לאישור בעל העסק."
+      : "I've now been able to process your earlier message: the earlier request was replaced and nothing from it was carried out. Your corrected request is waiting for the owner's approval.";
+  if (recovered?.outcome === "not_executed")
+    return he
+      ? "עכשיו הצלחתי לעבד את ההודעה הקודמת שלך: הבקשה הקודמת בוטלה ושום דבר ממנה לא בוצע. עוד לא ביצעתי את הבקשה המתוקנת — לאשר שאמשיך איתה?"
+      : "I've now been able to process your earlier message: the earlier request was cancelled and nothing from it was carried out. I haven't done the corrected request yet — shall I go ahead with it?";
+  return he
     ? "עכשיו הצלחתי לעבד את ההודעה הקודמת שלך: הבקשה הקודמת בוטלה כמו שביקשת, ושום דבר ממנה לא בוצע. אם צריך בקשה מתוקנת, כתבו לי את הפרטים."
     : "I've now been able to process your earlier message: the earlier request was cancelled as you asked, and nothing from it was carried out. If you'd like a corrected request, send me the details.";
 }

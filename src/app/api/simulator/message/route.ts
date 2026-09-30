@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getBusinessGraph } from "@/lib/fixtures";
 import { handleCustomerMessage } from "@/lib/runtime";
+import { ConversationScopeError } from "@/lib/state";
 
 const BodySchema = z.object({
   businessId: z.string(),
@@ -24,6 +25,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `Unknown business: ${businessId}` }, { status: 404 });
   }
 
-  const outcome = await handleCustomerMessage(graph, conversationId, customerId, message);
-  return NextResponse.json(outcome);
+  try {
+    const outcome = await handleCustomerMessage(graph, conversationId, customerId, message);
+    return NextResponse.json(outcome);
+  } catch (err) {
+    // A conversation id that belongs to another business is never continued under this one.
+    if (err instanceof ConversationScopeError) return NextResponse.json({ error: err.message }, { status: 404 });
+    throw err;
+  }
 }

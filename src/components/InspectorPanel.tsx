@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { ConversationState, TurnLog } from "@/lib/state";
+import { readLedgerField, recoveryChains, type RecoveryChain } from "@/lib/inspector/recovery-chain";
 
 /**
  * The QA view of one BARRY turn: which models ran, what the model
@@ -110,6 +111,8 @@ function TurnSummary({ turn }: { turn: TurnLog }) {
   const u = t?.understanding;
   const asks = turn.understood.asks ?? [];
   const notDone = new Set(t?.notDone ?? []);
+  // ASK COMPLETENESS: what the runtime says became of each ask (the reply had to address all of them).
+  const statusOf = asks.map((a, i) => (t?.asks?.[i]?.ask === a.ask ? t.asks[i].status : undefined));
   return (
     <section className="m-3 rounded-lg border border-neutral-200 bg-neutral-50 p-3 text-sm dark:border-neutral-800 dark:bg-neutral-900">
       <p className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">What BARRY thought the customer wanted</p>
@@ -120,6 +123,7 @@ function TurnSummary({ turn }: { turn: TurnLog }) {
           {asks.map((a, i) => (
             <li key={i} className="flex flex-wrap items-center gap-1.5">
               <Chip tone={a.kind === "change" ? (notDone.has(a.ask) ? "bad" : "good") : "neutral"}>{a.kind === "change" ? (notDone.has(a.ask) ? "not done" : a.coveredByThisIR ? "acted on" : "continued") : a.kind}</Chip>
+              {statusOf[i] && <Chip tone={["blocked", "not_done"].includes(statusOf[i]!) ? "bad" : statusOf[i] === "answered" || statusOf[i] === "completed" ? "good" : "neutral"}>{statusOf[i]!.replace(/_/g, " ").toUpperCase()}</Chip>}
               <span>{a.ask}</span>
             </li>
           ))}
@@ -355,6 +359,40 @@ export function TurnView({ state, turn, isLatest }: { state: ConversationState; 
   );
 }
 
+const RECOVERED: Record<string, string> = {
+  proposed: "CORRECTED REQUEST SENT — awaiting owner approval",
+  reused: "CORRECTED REQUEST already waiting for the owner",
+  withdrawn: "customer withdrew the request",
+  not_executed: "corrected action NOT done — the customer must confirm it",
+  blocked: "corrected request can't be done here",
+  needs_info: "corrected request needs more details from the customer",
+  no_replacement: "no corrected request in the message",
+  unrelated: "message didn't concern the held request — hold released",
+};
+
+/** FAILED CUSTOMER TURN → HELD APPROVAL → RE-CHECK → RECOVERED INTENT → OLD SUPERSEDED → NEW ACTIVE. */
+function RecoveryCard({ chain }: { chain: RecoveryChain }) {
+  const r = chain.recheck?.recovered;
+  const step = (label: string, value: React.ReactNode) => (
+    <li className="text-sm">
+      <span className="font-semibold uppercase text-[11px] tracking-wide text-neutral-500">{label}</span> <span className="break-words">{value}</span>
+    </li>
+  );
+  return (
+    <Section title="Recovery · failed customer turn">
+      <ol className="space-y-1">
+        {step("Failed customer turn", <>“{chain.message ?? "?"}” <span className="text-neutral-500">({chain.reason ?? "unknown"})</span></>)}
+        {step("Held approval", chain.heldRequestIds.length ? chain.heldRequestIds.join(", ") : "none pending")}
+        {step("Re-check", chain.recheck ? new Date(chain.recheck.at).toLocaleString() : "not yet — still HELD")}
+        {chain.recheck && step("Recovered intent", r ? RECOVERED[r.outcome] ?? r.outcome : "understood")}
+        {chain.superseded.length > 0 && step("Old request superseded", chain.superseded.join(", "))}
+        {chain.withdrawn.length > 0 && step("Old request withdrawn", chain.withdrawn.join(", "))}
+        {r?.requestId && step("New request", <>{r.requestId} · {Object.entries(r.terms ?? {}).map(([k, v]) => `${k}: ${v}`).join(", ")} · sent to the owner (see Approvals for its current state)</>)}
+      </ol>
+    </Section>
+  );
+}
+
 export function InspectorPanel({ state }: { state: ConversationState | null }) {
   const [picked, setPicked] = useState<number | null>(null);
   if (!state) {
@@ -382,6 +420,9 @@ export function InspectorPanel({ state }: { state: ConversationState | null }) {
           </select>
         </label>
       )}
+      {recoveryChains(readLedgerField(state.knownFields)).map((c) => (
+        <RecoveryCard key={c.failedSeq} chain={c} />
+      ))}
       {turn ? <TurnView state={state} turn={turn} isLatest={index === count - 1} /> : <p className="text-sm text-neutral-500">No turns yet.</p>}
     </div>
   );
