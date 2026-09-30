@@ -17,7 +17,8 @@ import type { TurnStep, TurnTrace } from "@/lib/state";
 import { CONSTITUTION_VERSION } from "@/lib/reasoner/constitution";
 import { resolveReplyLanguage, type ReplyLanguage } from "@/lib/reasoner/language";
 import { checkInfoRequest, infoRequestFields } from "@/lib/reasoner/reply-contract";
-import { composeDeterministic, understandingUnavailableText, intentHeldText, revalidatedChangeText } from "@/lib/reasoner/deterministic-compose";
+import { composeDeterministic, handoffText, understandingUnavailableText, intentHeldText, revalidatedChangeText } from "@/lib/reasoner/deterministic-compose";
+import { createHandoff, handoffPath } from "./handoff";
 import { findInternalLeak, internalVocabulary } from "@/lib/reasoner/reply-hygiene";
 import { claimEvidence, findMisattributedReferences, findUnsupportedClaims, languageMismatch, trimClosers } from "@/lib/reasoner/claim-grounding";
 import { renderStatus } from "@/lib/reasoner/status-render";
@@ -505,6 +506,13 @@ export async function handleCustomerMessage(
   if (understanding.failClosed) appendLedger(state, understandingEntry("partial"));
 
   if (remainingAsks.length > 0) grounded.notDone = remainingAsks;
+  // A person is needed: record a real handoff (one open per conversation) — the reply can only say what it is.
+  if (ir.handoff) {
+    const unresolved = [...remainingAsks, ...(ir.asks ?? []).filter((a) => a.kind !== "change" && !a.coveredByThisIR).map((a) => a.ask)];
+    const refused = steps.some((st) => st.policyDecision.status === "denied") || outcome.kind === "capability_unavailable";
+    const { handoff, created } = createHandoff(graph, state, { trigger: refused ? "barry_cannot_help" : "customer_asked", reason: ir.handoff.reason, urgency: ir.handoff.urgency, unresolved });
+    grounded.handoff = { status: created ? "created" : "already_open", responseCommitted: handoff.responseCommitted, ...(handoffPath(graph) ? { how: handoffPath(graph) } : {}) };
+  }
 
   if (pendingBeforeChange.length > 0) {
     const settled = await settleChangedTerms(graph, state, pendingBeforeChange);
@@ -703,11 +711,21 @@ async function understandingUnavailableTurn(args: {
   const store = getConversationStore();
   const startSeq = readLedger(state).length;
   appendLedger(state, understandingEntry("failed"));
+  // Two customer messages in a row BARRY couldn't understand: a person should look — hand off (once).
+  const previousFailed = state.turns.at(-1)?.trace?.understanding?.valid === false;
+  const handedOff = previousFailed
+    ? createHandoff(graph, state, {
+        trigger: "ai_unavailable",
+        reason: "BARRY couldn't understand the customer's last messages (AI understanding unavailable)",
+        unresolved: state.messages.filter((m) => m.role === "customer").slice(-2).map((m) => m.content.slice(0, 200)),
+      })
+    : undefined;
   const requests = ownerRequestViews(await conversationApprovals(graph.business.id, state.id), state);
   const ledger = readLedger(state);
   const consequential = ledger.some((e) => e.status === "effected" && !/\.(read|searched)$|^(availability|stock|catalog)\./.test(e.effect));
   const status = requests.length > 0 || consequential ? renderStatus({ requests, ledger, lang: language.code }) : undefined;
-  const response = understandingUnavailableText(language.code, { status, held: requests.some((r) => r.lifecycle === "held") });
+  const base = understandingUnavailableText(language.code, { status, held: requests.some((r) => r.lifecycle === "held") });
+  const response = handedOff ? `${base}\n${handoffText({ status: handedOff.created ? "created" : "already_open", responseCommitted: handedOff.handoff.responseCommitted, how: handoffPath(graph) }, language.code)}` : base;
   state.messages.push({ role: "barry", content: response, at: new Date().toISOString() });
   const turn: TurnLog = {
     id: turnId(),
@@ -1004,7 +1022,10 @@ async function composeTurn(
 ): Promise<{ text: string; fallback?: string }> {
   const graph = rctx.graph;
   const last = steps[steps.length - 1];
-  const notDone = rctx.grounded?.notDone?.length ? { notDone: rctx.grounded.notDone } : {};
+  const notDone = {
+    ...(rctx.grounded?.notDone?.length ? { notDone: rctx.grounded.notDone } : {}),
+    ...(rctx.grounded?.handoff ? { handoff: rctx.grounded.handoff } : {}),
+  };
   let input: ComposeResponseInput;
   // The composer and every check see the ledger as it stands after this turn's steps, the current
   // owner requests, and the one authoritative quote.

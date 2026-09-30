@@ -161,6 +161,11 @@ export function effectClaimKinds(e: LedgerEntry): ClaimKind[] {
     case "availability.found":
     case "stock.available":
       return ["availability"];
+    case "handoff.created":
+      // "The team will get back to you" is true only when the business declared how its team responds.
+      return e.outcome?.responseCommitted ? ["callback"] : [];
+    case "handoff.resolved":
+      return [];
   }
   if (e.effect.startsWith("request.") || e.effect.endsWith(".read") || e.effect.endsWith(".failed")) return [];
   // A confirmed consequential capability effect: its kind comes from BARRY's own operation id.

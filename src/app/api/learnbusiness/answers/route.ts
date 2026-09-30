@@ -12,9 +12,9 @@ const AnswerSchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-  const denied = ownerAuthError(req);
-  if (denied) return denied;
   const parsed = AnswerSchema.safeParse(await req.json().catch(() => null));
+  const denied = ownerAuthError(req, parsed.success ? parsed.data.businessId : undefined);
+  if (denied) return denied;
   if (!parsed.success) return Response.json({ error: "Invalid answer" }, { status: 400 });
   const graph = graphOrNull(parsed.data.businessId);
   if (!graph) return Response.json({ error: "Unknown business" }, { status: 404 });

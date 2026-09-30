@@ -5,9 +5,9 @@ import { generateOperatingStrategy, getLearningWorkspace } from "@/lib/learn-bus
 import { graphOrNull, learnErrorResponse } from "@/lib/learn-business/http";
 
 export async function POST(req: NextRequest) {
-  const denied = ownerAuthError(req);
-  if (denied) return denied;
   const parsed = z.object({ businessId: z.string().min(1) }).safeParse(await req.json().catch(() => null));
+  const denied = ownerAuthError(req, parsed.success ? parsed.data.businessId : undefined);
+  if (denied) return denied;
   if (!parsed.success) return Response.json({ error: "Invalid request" }, { status: 400 });
   const graph = graphOrNull(parsed.data.businessId);
   if (!graph) return Response.json({ error: "Unknown business" }, { status: 404 });

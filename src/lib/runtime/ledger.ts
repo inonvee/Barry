@@ -267,6 +267,10 @@ export function effectPhrase(e: LedgerEntry): string {
       return "submitted, but the system has NOT confirmed it happened";
   }
   switch (e.effect) {
+    case "handoff.created":
+      return e.outcome?.responseCommitted ? "handed to the business's team, who follow up as the business states" : "handed to the business's team (they can see the conversation; no reply time is promised)";
+    case "handoff.resolved":
+      return "the business's team closed the handoff";
     case "write.blocked":
       return "NOT created — it would break the customer's own consent or limits; nothing was sent or charged";
     case "cart.change_not_verified":

@@ -130,6 +130,10 @@ export const LlmIRSchema = z.object({
    * the other fields of this IR describe it. Lets the runtime know what was asked but not done.
    */
   asks: z.array(z.object({ ask: z.string(), kind: z.enum(["change", "question", "status", "other"]), coveredByThisIR: z.boolean() })).default([]),
+  /** The customer wants a person, or needs something BARRY can't do here (the runtime records a handoff). */
+  handoffRequested: z.boolean().nullable().default(null),
+  handoffReason: z.string().nullable().default(null),
+  handoffUrgency: z.enum(["normal", "urgent"]).nullable().default(null),
 });
 export type LlmIR = z.infer<typeof LlmIRSchema>;
 
@@ -272,6 +276,9 @@ export function irJsonSchema() {
         readRequested: { type: ["boolean", "null"] },
         checkoutConsent: { type: ["boolean", "null"] },
         withdrawScope: { type: ["array", "null"], items: { type: "string" } },
+        handoffRequested: { type: ["boolean", "null"] },
+        handoffReason: { type: ["string", "null"] },
+        handoffUrgency: { type: ["string", "null"], enum: ["normal", "urgent", null] },
         asks: {
           type: "array",
           items: {
@@ -308,6 +315,9 @@ export function irJsonSchema() {
         "checkoutConsent",
         "withdrawScope",
         "asks",
+        "handoffRequested",
+        "handoffReason",
+        "handoffUrgency",
       ],
     },
   };

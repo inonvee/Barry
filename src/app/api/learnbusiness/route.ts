@@ -5,7 +5,7 @@ import { getLearningWorkspace, runLearning } from "@/lib/learn-business/service"
 import { graphOrNull, learnErrorResponse } from "@/lib/learn-business/http";
 
 export async function GET(req: NextRequest) {
-  const denied = ownerAuthError(req);
+  const denied = ownerAuthError(req, req.nextUrl.searchParams.get("businessId") ?? undefined);
   if (denied) return denied;
   const graph = graphOrNull(req.nextUrl.searchParams.get("businessId"));
   if (!graph) return Response.json({ error: "Unknown business" }, { status: 404 });
@@ -25,9 +25,9 @@ const RunSchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-  const denied = ownerAuthError(req);
-  if (denied) return denied;
   const parsed = RunSchema.safeParse(await req.json().catch(() => null));
+  const denied = ownerAuthError(req, parsed.success ? parsed.data.businessId : undefined);
+  if (denied) return denied;
   if (!parsed.success) return Response.json({ error: "Invalid request: approve 1-8 source URLs" }, { status: 400 });
   const graph = graphOrNull(parsed.data.businessId);
   if (!graph) return Response.json({ error: "Unknown business" }, { status: 404 });

@@ -5,7 +5,7 @@ import { resolveCapabilityProfiles } from "@/lib/capabilities";
 import { graphOrNull } from "@/lib/learn-business/http";
 
 export async function GET(req: NextRequest) {
-  const denied = ownerAuthError(req);
+  const denied = ownerAuthError(req, req.nextUrl.searchParams.get("businessId") ?? undefined);
   if (denied) return denied;
   const graph = graphOrNull(req.nextUrl.searchParams.get("businessId"));
   if (!graph) return Response.json({ error: "Unknown business" }, { status: 404 });

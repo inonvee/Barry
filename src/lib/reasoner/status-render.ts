@@ -76,12 +76,15 @@ export function renderStatus(input: { requests: OwnerRequestView[]; ledger: Ledg
   const order = effected.find((e) => e.effect === "order.created" || e.effect === "order.fulfilled");
   const enquiry = effected.find((e) => e.effect === "enquiry.created");
   const blocked = input.ledger.filter((e) => e.effect === "write.blocked").at(-1);
+  const lastHandoff = input.ledger.filter((e) => e.effect === "handoff.created" || e.effect === "handoff.resolved").at(-1);
+  const handoffOpen = lastHandoff?.effect === "handoff.created";
   if (lang === "he") {
     lines.push(booked ? `יש תור מאושר${booked.reference ? ` (${booked.reference})` : ""}.` : "אין תור מאושר.");
     lines.push(paid ? "התשלום אומת." : linkSent ? "נשלח קישור לתשלום, והתשלום עוד לא אומת." : "לא נגבה תשלום.");
     if (order) lines.push(`ההזמנה נוצרה${order.reference ? ` (${order.reference})` : ""}.`);
     if (enquiry) lines.push("הפנייה שלך רשומה אצל הצוות (אי אפשר לערוך אותה מכאן).");
     if (blocked) lines.push("קישור התשלום האחרון לא נוצר, כי הוא לא עמד בתנאים שלך.");
+    if (handoffOpen) lines.push("השיחה הועברה לצוות של העסק.");
     if (!input.requests.some((r) => r.lifecycle === "active" || r.lifecycle === "held")) lines.push("אין בקשה שממתינה לבעל העסק.");
   } else {
     lines.push(booked ? `You have a confirmed appointment${booked.reference ? ` (${booked.reference})` : ""}.` : "Nothing is booked.");
@@ -89,6 +92,7 @@ export function renderStatus(input: { requests: OwnerRequestView[]; ledger: Ledg
     if (order) lines.push(`Your order was placed${order.reference ? ` (${order.reference})` : ""}.`);
     if (enquiry) lines.push("Your enquiry is recorded for the team (it can't be edited from here).");
     if (blocked) lines.push("The last payment link was not created, because it didn't meet your conditions.");
+    if (handoffOpen) lines.push("This conversation has been passed to the business's team.");
     if (!input.requests.some((r) => r.lifecycle === "active" || r.lifecycle === "held")) lines.push("Nothing is waiting on the owner.");
   }
   if (input.quote) lines.push(quoteText(input.quote, lang));

@@ -209,6 +209,8 @@ export type BarryIR = {
    * (bounded) or tells the customer they weren't done.
    */
   asks?: { ask: string; kind: "change" | "question" | "status" | "other"; coveredByThisIR: boolean }[];
+  /** The customer wants a person, or needs something BARRY can't do here: the runtime records a handoff. */
+  handoff?: { reason: string; urgency: "normal" | "urgent" };
 };
 
 export type CapabilityRequest = { capability: string; input: Record<string, unknown>; purpose: string };

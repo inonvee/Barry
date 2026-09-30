@@ -42,7 +42,8 @@ export function money(amount: number | string, currency: string | undefined, lan
 }
 
 export function composeDeterministic(input: ComposeResponseInput): string {
-  const text = composeDeterministicCore(input);
+  const core = composeDeterministicCore(input);
+  const text = input.handoff ? `${core} ${handoffText(input.handoff, input.language?.code)}` : core;
   if (!input.notDone?.length) return text;
   // What the customer asked for and was NOT done is always said — partial work is never presented as complete.
   const list = input.notDone.join("; ");
@@ -95,6 +96,18 @@ export function understandingUnavailableText(lang: string | undefined, opts: { s
     : "";
   const ask = he ? "אפשר לשלוח את זה שוב?" : "Could you send that again?";
   return [lead, opts.status ?? "", held, ask].filter(Boolean).join(he ? "\n" : "\n");
+}
+
+/** What BARRY may truthfully say about a recorded handoff. */
+export function handoffText(h: NonNullable<ComposeResponseInput["handoff"]>, lang: string | undefined): string {
+  if (lang === "he") {
+    return h.responseCommitted
+      ? `העברתי את השיחה לצוות של העסק${h.how ? ` (${h.how})` : ""}.`
+      : "העברתי את השיחה לצוות של העסק והם יכולים לראות אותה, אבל אני לא יכול להבטיח מתי או איך יחזרו אליך כאן.";
+  }
+  return h.responseCommitted
+    ? `I've passed this to the business's team${h.how ? ` (${h.how})` : ""}.`
+    : "I've passed this to the business's team and they can see this conversation, but I can't promise when or how they'll reply here.";
 }
 
 /** An earlier not-understood message, now understood, withdrew/changed a pending request: tell the customer. */

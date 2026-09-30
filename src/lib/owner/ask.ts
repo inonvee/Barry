@@ -1,0 +1,149 @@
+import OpenAI from "openai";
+import type { BusinessGraph } from "@/lib/business-graph";
+import { createCompletion, modelFor, samplingParams } from "@/lib/reasoner/model-config";
+import { classifyProviderError } from "@/lib/reasoner/openai-reasoner";
+import { findUnsupportedClaims, type ClaimEvidence } from "@/lib/reasoner/claim-grounding";
+import { money } from "@/lib/reasoner/deterministic-compose";
+import type { ModelCallFailure } from "@/lib/reasoner/types";
+import { getOwnerWorkspace, type OwnerWorkspace } from "./service";
+import { revenueSummary, type Money } from "./revenue";
+import { getConversationStore } from "@/lib/state";
+import { getBackend } from "@/lib/store";
+import { assessPilotReadiness, type PilotReadiness } from "./readiness";
+
+/**
+ * OWNER BARRY (read-only MVP) — the business owner's assistant, not the customer's.
+ *
+ * It answers questions about THIS business ("what happened today?", "who needs me?", "how much did you
+ * make me this week?", "why did this fail?") from one briefing built by the same read model the owner
+ * dashboard uses. It has no tools and no write path: it cannot approve, change a rule, send a message
+ * or run anything — a request to do so is answered with where the owner does it. Future mutations
+ * become structured proposals through the same authority system, never free-form actions.
+ *
+ * Every answer is checked before it is shown: each number must come from the briefing, and it may not
+ * claim to have done anything. Otherwise (or with no model available) the owner gets the factual
+ * briefing itself — never an improvised answer.
+ */
+
+export type OwnerBriefing = ReturnType<typeof buildBriefing>;
+
+const fmt = (m: Money) => Object.entries(m).map(([c, v]) => money(v, c)).join(" + ") || "none";
+
+export function buildBriefing(ws: OwnerWorkspace, week: ReturnType<typeof revenueSummary>, readiness: PilotReadiness) {
+  return {
+    business: ws.business.name,
+    today: {
+      conversations: ws.today.conversations,
+      handledWithoutYou: ws.today.handledAutonomously,
+      needYourAttention: ws.today.needYou,
+      approvalsWaiting: ws.today.approvalsWaiting,
+      handoffsOpen: ws.today.handoffsOpen,
+      completedOutcomes: ws.today.completedOutcomes,
+      blockedOrFailed: ws.today.blockedOrFailed,
+    },
+    revenueToday: revenueWords(ws.revenue),
+    revenueLast7Days: revenueWords(week),
+    waitingForYou: [
+      ...ws.approvals.filter((a) => a.actionable || a.lifecycle === "held").map((a) => ({ type: "approval", customer: a.customer, what: a.what, ...(a.amount ? { amount: a.amount } : {}), ...(a.newerContext ? { note: a.newerContext } : {}) })),
+      ...ws.handoffs.filter((h) => h.status === "open").map((h) => ({ type: "handoff", customer: h.customer, what: h.reason, urgency: h.urgency })),
+    ].slice(0, 15),
+    conversationsNeedingAttention: ws.conversations.filter((c) => c.status === "needs_you").slice(0, 10).map((c) => ({ customer: c.customer, why: c.attention, lastMessage: c.lastMessage?.text })),
+    recentOutcomes: ws.outcomes.slice(0, 20).map((o) => ({ what: o.label, customer: ws.conversations.find((c) => c.id === o.conversationId)?.customer ?? "a customer", ...(o.amount !== undefined && o.currency ? { amount: money(o.amount, o.currency) } : {}), ...(o.reference ? { reference: o.reference } : {}), when: o.at, ...(o.simulated ? { simulated: true } : {}) })),
+    aiHealth: ws.health.ai.summary,
+    systems: ws.health.systems.map((s) => `${s.domain}: ${s.state}${s.blockers.length ? ` (${s.blockers.join("; ")})` : ""}`),
+    readiness: { level: readiness.label, blockers: readiness.next?.blockers.map((b) => `${b.label}: ${b.detail}`) ?? [] },
+  };
+}
+
+function revenueWords(r: ReturnType<typeof revenueSummary>) {
+  return {
+    collectedByBarry: fmt(r.direct),
+    paymentsCollected: r.directPayments,
+    recoveredAfterAFailedAttempt: fmt(r.recovered),
+    bookedValueNotYetCollected: fmt(r.influenced),
+    openOpportunities: fmt(r.potential),
+    simulatedTestMoney: fmt(r.simulatedPaid),
+    conversationsWithPurchaseIntent: r.purchaseIntentConversations,
+    converted: r.convertedConversations,
+    lostOpportunities: r.lostOpportunities,
+    discountsGranted: r.discounts.granted,
+    discountsRefused: r.discounts.refused,
+    conversationsThatNeededYou: r.ownerInterventions,
+    activeConversations: r.activeConversations,
+  };
+}
+
+/** The briefing as plain text — the answer when a model can't be used or its answer can't be verified. */
+export function briefingText(b: OwnerBriefing): string {
+  const lines = [
+    `Today at ${b.business}: ${b.today.conversations} customer conversation${b.today.conversations === 1 ? "" : "s"}, ${b.today.handledWithoutYou} handled without you, ${b.today.needYourAttention} need you.`,
+    `Collected by BARRY today: ${b.revenueToday.collectedByBarry} (${b.revenueToday.paymentsCollected} payment${b.revenueToday.paymentsCollected === 1 ? "" : "s"}). Last 7 days: ${b.revenueLast7Days.collectedByBarry}.`,
+    b.revenueToday.bookedValueNotYetCollected !== "none" ? `Booked but not yet collected: ${b.revenueToday.bookedValueNotYetCollected}.` : "",
+    b.revenueToday.openOpportunities !== "none" ? `Open opportunities (not revenue yet): ${b.revenueToday.openOpportunities}.` : "",
+    b.waitingForYou.length ? `Waiting for you: ${b.waitingForYou.map((w) => `${w.customer} — ${w.what}${"amount" in w && w.amount ? ` (${w.amount})` : ""}`).join("; ")}.` : "Nothing is waiting for you.",
+    `AI: ${b.aiHealth}`,
+    `Readiness: ${b.readiness.level}.`,
+  ];
+  return lines.filter(Boolean).join("\n");
+}
+
+const OWNER_PROMPT = `You are BARRY's owner assistant: you help the owner of ONE business understand what BARRY did for them. You are READ-ONLY.
+Answer the owner's question using ONLY the JSON briefing. Rules:
+- Every number, amount, name and status you state must appear in the briefing. If the briefing doesn't contain it, say you don't have that information.
+- Keep money categories apart: "collectedByBarry" is money actually collected and verified; "bookedValueNotYetCollected" is value secured but not collected; "openOpportunities" is NOT revenue; "simulatedTestMoney" is test money, never revenue. Never add them together.
+- You cannot do anything: you never approve, decline, change rules, send messages, give discounts or run actions. If asked to, say you can't do that from here and where the owner does it (Approvals, the inbox, or with the BARRY team for rule changes).
+- Never say you did, changed, sent or approved something.
+- Be brief and concrete: lead with the answer, then at most a few supporting lines. Plain text, no JSON, no headers. Reply in the owner's language.`;
+
+export type OwnerAnswer = { answer: string; source: "model" | "briefing"; reason?: string; failure?: ModelCallFailure };
+
+function numbersIn(text: string): string[] {
+  return [...text.matchAll(/\d[\d,]*(?:\.\d+)?/g)].map((m) => m[0].replace(/,/g, ""));
+}
+
+/** Every figure in the answer must be one the briefing (or the question) contains; no action claims. */
+export function checkOwnerAnswer(answer: string, briefing: OwnerBriefing, question: string): string | undefined {
+  const allowed = new Set([...numbersIn(JSON.stringify(briefing)), ...numbersIn(question)]);
+  const stray = numbersIn(answer).filter((n) => !allowed.has(n) && !allowed.has(String(Number(n))));
+  if (stray.length) return `figures not in the briefing: ${[...new Set(stray)].join(", ")}`;
+  const none: ClaimEvidence = { kinds: new Set(), ownerRequestExists: false, ownerRequestWaiting: false, amounts: [], mentioned: [], percentages: [], factText: "", customerText: "", reportedText: "", knownItems: [], addedThisTurn: [], times: [] };
+  const claims = findUnsupportedClaims(answer, { ...none, amounts: numbersIn(JSON.stringify(briefing)).map(Number), times: [] }).filter((c) => c.why.startsWith("claims a"));
+  return claims.length ? `claims an action: ${claims[0].why}` : undefined;
+}
+
+export async function askOwnerBarry(graph: BusinessGraph, question: string, opts: { client?: Pick<OpenAI, "chat">; now?: Date } = {}): Promise<OwnerAnswer & { briefing: OwnerBriefing }> {
+  const now = opts.now ?? new Date();
+  const ws = await getOwnerWorkspace(graph, { now });
+  const weekSince = new Date(now.getTime() - 7 * 24 * 3600 * 1000).toISOString();
+  const [conversations, payments, bookings, orders, approvals] = await Promise.all([
+    getConversationStore().listByBusiness(graph.business.id).catch(() => []),
+    getBackend().listPaymentRequests(graph.business.id).catch(() => []),
+    getBackend().listBookings(graph.business.id).catch(() => []),
+    getBackend().listCommerceOrders(graph.business.id).catch(() => []),
+    getBackend().listApprovals(graph.business.id).catch(() => []),
+  ]);
+  const week = revenueSummary({ graph, conversations, payments, bookings, orders, approvals, since: weekSince, now });
+  const readiness = await assessPilotReadiness(graph, { conversations });
+  const briefing = buildBriefing(ws, week, readiness);
+  const client = opts.client ?? (process.env.BARRY_REASONER === "openai" && process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY, maxRetries: 2 }) : undefined);
+  if (!client) return { answer: briefingText(briefing), source: "briefing", reason: "no AI model configured — showing the factual summary", briefing };
+  const model = modelFor("composer");
+  try {
+    const completion = await createCompletion(client as OpenAI, {
+      model,
+      messages: [
+        { role: "system", content: OWNER_PROMPT },
+        { role: "user", content: JSON.stringify({ briefing, question: question.slice(0, 1000) }) },
+      ],
+      ...samplingParams(model, "composer", 0.2),
+    });
+    const text = completion.choices[0]?.message?.content?.trim();
+    if (!text) return { answer: briefingText(briefing), source: "briefing", reason: "the AI returned nothing — showing the factual summary", briefing };
+    const problem = checkOwnerAnswer(text, briefing, question);
+    if (problem) return { answer: briefingText(briefing), source: "briefing", reason: `the AI's answer couldn't be verified (${problem}) — showing the factual summary`, briefing };
+    return { answer: text, source: "model", briefing };
+  } catch (err) {
+    const failure = classifyProviderError(err);
+    return { answer: briefingText(briefing), source: "briefing", reason: "AI unavailable — showing the factual summary", failure, briefing };
+  }
+}

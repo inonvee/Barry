@@ -49,6 +49,8 @@ export type GroundedContext = {
   remainingAsks?: string[];
   /** Asks from this message that were never carried out (runtime truth, for the reply). */
   notDone?: string[];
+  /** A handoff created (or already open) this turn, for the reply. */
+  handoff?: { status: "created" | "already_open"; responseCommitted: boolean; how?: string };
   /** The requests the customer's changed terms are replacing (revision continuation): propose the replacement. */
   replacingRequests?: OwnerRequestView[];
   /** This turn changed a pending request's terms and no valid replacement was created. */
@@ -218,6 +220,8 @@ export type ComposeResponseInput = {
   next?: CompileOutcome;
   /** Things the customer asked for in this message that were NOT done (their words) — say so; never imply them. */
   notDone?: string[];
+  /** The conversation is with the business's team (a recorded handoff): what may be promised about it. */
+  handoff?: { status: "created" | "already_open"; responseCommitted: boolean; how?: string };
   /** The conversation's reply language (resolved by the runtime; never from a digits-only message). */
   language?: ReplyLanguage;
 };

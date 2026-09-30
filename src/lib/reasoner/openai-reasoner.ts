@@ -228,6 +228,7 @@ YOUR TASK NOW: understand the customer's latest message in context and describe 
 - selectedOfferId / offerCandidateIds: for services in "offers"; several plausible -> candidates. offerChangeRequested only for an explicit change of mind to a different real offer.
 - requestedCapability: "ask_price" | "ask_duration" | "ask_deposit" when they ask that about an offer; else null.
 - asks: every distinct thing the customer asks in THIS message, in order, as a short phrase in their words; kind "change" (add/remove/change/book/buy/open/cancel — anything that would change something), "question" (facts, policy, price), "status" (what happened to something), "other". coveredByThisIR is true for the ask(s) the other fields of this IR describe (one change at a time), false for the rest. A plain message is one ask.
+- handoffRequested: true when the customer asks for a human/the owner/"someone", or needs something that isn't in capabilitySurface/offers and only a person could resolve (a complaint, a dispute, an exception). handoffReason: one short line of why, in plain words. handoffUrgency "urgent" only for something time-critical or a serious complaint. BARRY's runtime records the handoff; you never promise anything yourself.
 - alreadyDoneThisTurn / remainingAsks (when non-empty): part of this message was already carried out. Describe ONLY the first of remainingAsks in the action fields (commerce / capabilityRequest / …) and mark it coveredByThisIR; never repeat what is already done. If it can't be described (needs a choice or a detail), leave the action fields null.
 - Output strict JSON only.`;
 
@@ -258,6 +259,7 @@ export const COMPOSE_SYSTEM_PROMPT =
   "`business.name` is the BUSINESS, never the customer: address the customer only by `customer.name` (or not by name at all). " +
   "`facts.provenance` says where each group of facts comes from; general knowledge about businesses of this kind is never a fact about THIS business. " +
   "Opening hours, days, dates, deadlines and policy details (e.g. when a returns period starts) come ONLY from `facts`: if facts don't state it, say you don't have that detail — never fill it in from general knowledge. " +
+  "If `handoff` is present, BARRY passed this conversation to the business's team: say so in one line. If handoff.responseCommitted is true, you may say how the team follows up exactly as handoff.how says; if false, say the team can see the conversation but you can't promise when or how they'll reply. Never promise a call, email or contact the handoff doesn't state. " +
   "If `notDone` is present, those things the customer asked for were NOT done this turn: say so plainly for each (and offer to do them next) — never imply they happened. " +
   "Never narrate an action that no receipt shows happening THIS turn — not as done, not as \"now doing\", not as \"next I'll\". If the customer asked for several things and only some were done, say which were done and which were not (and offer to do the rest). " +
   "Use `customer` (their name, how to address them): never ask for something already there, and never ask for contact details unless outcome/next asks for them. Answer every question in lastCustomerMessage; if one can't be answered from facts, say so. If they asked for a yes/no, a price only, or no more suggestions, do exactly that. " +
@@ -383,6 +385,7 @@ export function sanitizeIR(graph: BusinessGraph, raw: LlmIR): BarryIR {
     readRequested: raw.readRequested ? true : undefined,
     checkoutConsent: raw.checkoutConsent ?? undefined,
     withdrawScope: raw.withdrawScope?.length ? raw.withdrawScope : undefined,
+    handoff: raw.handoffRequested ? { reason: (raw.handoffReason ?? "").slice(0, 300) || "the customer asked for a person", urgency: raw.handoffUrgency === "urgent" ? "urgent" : "normal" } : undefined,
     asks: raw.asks.length ? raw.asks.slice(0, 8).map((a) => ({ ask: a.ask.slice(0, 200), kind: a.kind, coveredByThisIR: a.coveredByThisIR })) : undefined,
   };
 }
@@ -599,6 +602,8 @@ export function buildComposeSummary(context: ComposeSummaryContext, input: Compo
     ledger: context.ledger ?? [],
     // The final-write gate stopped the payment/checkout: nothing was created; say why with these numbers.
     writeBlocked: sanitizedInput.writeBlocked ?? undefined,
+    // A handoff to the business's team exists for this conversation (see the reply rules for handoff).
+    handoff: sanitizedInput.handoff ?? undefined,
     // Things the customer asked for in this message that BARRY did NOT do (their words): say plainly they weren't done.
     notDone: sanitizedInput.notDone?.length ? sanitizedInput.notDone : undefined,
     // The customer changed a pending request but no valid replacement exists: nothing is pending now.
