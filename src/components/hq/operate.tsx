@@ -2,7 +2,7 @@ import Link from "next/link";
 import type { BusinessStatusDetail } from "@/lib/hq/fleet";
 import type { LaunchGate } from "@/lib/hq/launch";
 import type { Incident } from "@/lib/hq/incidents";
-import { NEXT_MOVE_WORDS, isOpen } from "@/lib/operator/obligations";
+import { NEXT_MOVE_WORDS, isOpen } from "@/lib/operator/obligation-model";
 import { describeChange } from "@/lib/hq/fleet";
 import type { FinancialImpact, ProfitOpportunity } from "@/lib/finance/impact";
 import { Badge, Card, Kv, type Tone } from "./ui";

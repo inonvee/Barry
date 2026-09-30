@@ -195,7 +195,7 @@ export function summarizeFleet(businesses: BusinessStatus[]): FleetSummary {
       })),
     broke: businesses.flatMap((b) => b.incidents.open.filter((i) => i.severity !== "low" || supervised(b)).map((incident) => ({ id: b.id, name: b.name, incident }))),
     changed: businesses.flatMap((b) => [
-      ...b.recentChanges.map((a) => ({ id: b.id, name: b.name, what: `founder: ${describeChange(a)}`, at: a.at })),
+      ...b.recentChanges.map((a) => ({ id: b.id, name: b.name, what: `${a.by.startsWith("qa:") ? "QA" : a.by}: ${describeChange(a)}`, at: a.at })),
       ...(b.conversations.last24h ? [{ id: b.id, name: b.name, what: `${b.conversations.last24h} conversation${b.conversations.last24h === 1 ? "" : "s"} active`, at: b.conversations.latestActivityAt ?? "" }] : []),
     ]).sort((x, y) => y.at.localeCompare(x.at)),
     moneyBlocked: businesses.filter((b) => hasMoney(b.money.stuckWithOwner) || hasMoney(b.money.atRisk)).map((b) => ({ id: b.id, name: b.name, stuckWithOwner: b.money.stuckWithOwner, atRisk: b.money.atRisk })),
@@ -210,7 +210,7 @@ export function describeChange(a: ControlAudit): string {
   if (typeof a.change.approvalRequiredForAll === "boolean") parts.push(a.change.approvalRequiredForAll ? "human-only (approval for everything)" : "approval-for-everything lifted");
   if (a.change.pausedCapabilities) parts.push(a.change.pausedCapabilities.length ? `paused: ${a.change.pausedCapabilities.join(", ")}` : "no capabilities paused");
   if (a.change.disabledChannels) parts.push(a.change.disabledChannels.length ? `channels disabled: ${a.change.disabledChannels.join(", ")}` : "all channels enabled");
-  return `${parts.join("; ") || "no change"} — ${a.reason}`;
+  return parts.length ? `${parts.join("; ")} — ${a.reason}` : a.reason;
 }
 
 export async function getFleet(opts: { now?: Date } = {}): Promise<Fleet> {

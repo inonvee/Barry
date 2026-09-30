@@ -20,7 +20,7 @@ import { launchChecklist } from "@/lib/hq/launch";
 import { deriveObligations, reconcileObligations, isOpen } from "@/lib/operator/obligations";
 import type { AiHealth } from "@/lib/owner/service";
 import type { ApprovalRecord, PaymentRequestRecord } from "@/lib/store/types";
-import { ScriptedModel, approvalsOf, conv, isolatedRetailer, ticket } from "./support/scripted-model";
+import { ScriptedModel, approvalsOf, conv, isolatedRetailer } from "./support/scripted-model";
 
 /**
  * CHECKPOINT 1 + 3 + 4 — founder control plane (controls tighten authority; incidents; fleet), the
@@ -38,7 +38,6 @@ afterEach(() => {
   dispose = undefined;
 });
 
-const MIDNIGHT = "Midnight Wrap Dress";
 const NOW = new Date("2026-09-30T12:00:00.000Z");
 const hoursAgo = (h: number, from = NOW) => new Date(from.getTime() - h * 3600_000).toISOString();
 

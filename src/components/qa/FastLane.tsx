@@ -28,6 +28,7 @@ export function TestOwnerSignIn({ api }: { api: Api }) {
     try {
       await api.call("/api/qa/owner-session", { body: { businessId } });
       api.setBusinessId(businessId);
+      api.refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "failed");
     } finally {

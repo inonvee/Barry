@@ -73,10 +73,19 @@ export class MemoryBackend implements BarryBackend {
   async purgeQaRecords(businessId: string, conversationPrefix: string): Promise<QaPurgeResult> {
     const mine = <T extends { businessId: string; conversationId: string }>(r: T) => r.businessId === businessId && r.conversationId.startsWith(conversationPrefix);
     const out: QaPurgeResult = { payment_requests: 0, approvals: 0, bookings: 0, commerce_carts: 0, commerce_orders: 0, follow_ups: 0 };
-    for (const [k, r] of this.paymentRequests) if (mine(r)) (this.paymentRequests.delete(k), out.payment_requests++);
-    for (const [k, r] of this.approvals) if (mine(r)) (this.approvals.delete(k), out.approvals++);
-    for (const [k, r] of this.commerceCarts) if (mine(r)) (this.commerceCarts.delete(k), out.commerce_carts++);
-    for (const [k, r] of this.commerceOrders) if (mine(r)) (this.commerceOrders.delete(k), out.commerce_orders++);
+    const purge = <T extends { businessId: string; conversationId: string }>(map: Map<string, T>): number => {
+      let n = 0;
+      for (const [k, r] of map) {
+        if (!mine(r)) continue;
+        map.delete(k);
+        n++;
+      }
+      return n;
+    };
+    out.payment_requests = purge(this.paymentRequests);
+    out.approvals = purge(this.approvals);
+    out.commerce_carts = purge(this.commerceCarts);
+    out.commerce_orders = purge(this.commerceOrders);
     const bookingsBefore = this.bookings.length;
     this.bookings = this.bookings.filter((b) => !mine(b));
     out.bookings = bookingsBefore - this.bookings.length;

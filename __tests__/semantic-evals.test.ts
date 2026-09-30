@@ -214,12 +214,14 @@ describe("grounding rejects what the model can't support", () => {
 describe("universality: BARRY's core has no industry-specific behavior", () => {
   const SRC = path.join(__dirname, "..", "src", "lib");
   const OFFLINE_STAND_IN = new Set(["reasoner/mock-reasoner.ts", "reasoner/mock-commerce.ts", "reasoner/entities.ts"]);
+  // QA scenario fixtures and the per-build acceptance manifest describe TEST businesses by name (they are fixtures, not runtime).
+  const QA_FIXTURES = new Set(["qa/scenarios.ts", "release/current.ts"]);
   function walk(dir: string): string[] {
     return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(dir, e.name)) : e.name.endsWith(".ts") ? [path.join(dir, e.name)] : []));
   }
   const core = walk(SRC)
     .map((f) => path.relative(SRC, f).split(path.sep).join("/"))
-    .filter((rel) => !rel.startsWith("fixtures/") && !OFFLINE_STAND_IN.has(rel));
+    .filter((rel) => !rel.startsWith("fixtures/") && !OFFLINE_STAND_IN.has(rel) && !QA_FIXTURES.has(rel));
 
   it.each(core)("%s names no industry", (rel) => {
     const text = fs.readFileSync(path.join(SRC, rel), "utf8");

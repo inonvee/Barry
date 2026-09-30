@@ -10,6 +10,11 @@ import { AuditCard, ControlsCard, IncidentsCard, LaunchCard, ObligationsCard, Op
 import { financialImpact, profitOpportunities } from "@/lib/finance/impact";
 import { getOwnerWorkspace } from "@/lib/owner/service";
 
+/** The 30-day window start (computed outside render so the page stays pure). */
+function thirtyDaysAgo(): string {
+  return new Date(Date.now() - 30 * 24 * 3600_000).toISOString();
+}
+
 const when = (iso: string | null) => (iso ? new Date(iso).toISOString().replace("T", " ").slice(0, 16) : "—");
 
 export default async function HqBusinessPage({ params }: { params: Promise<{ businessId: string }> }) {
@@ -22,7 +27,7 @@ export default async function HqBusinessPage({ params }: { params: Promise<{ bus
   const gate = await launchChecklist(graph, { controls: status.controls, conversations: await getConversationStore().listByBusiness(businessId).catch(() => []) });
   // Profit foundation: no cost evidence is connected yet — zero opportunities, verified revenue only.
   const opportunities = profitOpportunities(businessId, []);
-  const impact = financialImpact((await getOwnerWorkspace(graph, { since: new Date(Date.now() - 30 * 24 * 3600_000).toISOString(), label: "last 30 days" })).revenue, opportunities);
+  const impact = financialImpact((await getOwnerWorkspace(graph, { since: thirtyDaysAgo(), label: "last 30 days" })).revenue, opportunities);
   const convoHref = (id: string) => `/hq/${encodeURIComponent(b.id)}/conversations/${encodeURIComponent(id)}`;
 
   return (

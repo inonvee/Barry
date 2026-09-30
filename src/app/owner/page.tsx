@@ -7,7 +7,7 @@ import { useOwnerApi } from "@/components/owner/useOwnerApi";
 import { OwnerShell, type OwnerSection } from "@/components/owner/OwnerShell";
 import { Empty, Pill, Section, Skeleton, Stat, StateNotice, btn, formatMoney, primary, quiet, timeAgo, type Tone } from "@/components/owner/ui";
 import { InterventionCard, InterventionQueue, MoneyInMotion, OpportunityRow, StoryView, type Act, NextExpectedAction, WatchingList } from "@/components/owner/operating";
-import { isOpen } from "@/lib/operator/obligations";
+import { isOpen } from "@/lib/operator/obligation-model";
 import type { OwnerWorkspace, OwnerConversationRow, OwnerApproval } from "@/lib/owner/service";
 import type { OutcomeEvent } from "@/lib/owner/revenue";
 import type { Intervention, InterventionAction } from "@/lib/owner/interventions";
@@ -233,7 +233,7 @@ function TodayView({ ws, act, busyId, loading, onOpen, onIntervention, onTab }: 
   const setupSteps = ws.capabilities.steps.filter((s) => s.gate !== "customer_traffic").slice(0, 2);
   // Approvals, held requests and handoffs already have their cards above: here BARRY shows the rest it is watching.
   const watching = ws.obligations.filter((o) => isOpen(o) && !["approval_blocking_transaction", "held_request_recheck", "unresolved_handoff"].includes(o.kind));
-  const due = watching.filter((o) => o.dueAt && Date.parse(o.dueAt) <= Date.now());
+  const due = watching.filter((o) => o.status === "actionable");
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
   return (

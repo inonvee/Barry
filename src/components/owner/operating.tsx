@@ -4,7 +4,7 @@ import { useState } from "react";
 import type { Intervention, InterventionAction, InterventionKind } from "@/lib/owner/interventions";
 import type { Opportunity, OpportunitySummary } from "@/lib/owner/opportunities";
 import type { ConversationStory } from "@/lib/owner/story";
-import { NEXT_MOVE_WORDS, isOpen, type Obligation } from "@/lib/operator/obligations";
+import { NEXT_MOVE_WORDS, isOpen, type Obligation } from "@/lib/operator/obligation-model";
 import { Empty, Pill, btn, danger, formatMoney, primary, quiet, timeAgo, type Tone } from "./ui";
 
 /**

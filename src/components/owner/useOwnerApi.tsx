@@ -70,12 +70,15 @@ export function useOwnerApi() {
     [businessId]
   );
 
+  /** Re-read the session (after a sign-in made elsewhere, e.g. the QA test-owner sign-in). */
+  const refresh = useCallback(() => setVersion((v) => v + 1), []);
+
   const signOut = useCallback(async () => {
     await fetch("/api/owner/session", { method: "DELETE" });
     setVersion((v) => v + 1);
   }, []);
 
-  return { businessId, setBusinessId, businesses, business, session, authorized, call, signIn, signOut };
+  return { businessId, setBusinessId, businesses, business, session, authorized, call, signIn, signOut, refresh };
 }
 
 /** The owner workspace header: page title + the owner session for the current business (sign in / out). */
