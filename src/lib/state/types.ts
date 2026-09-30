@@ -94,6 +94,8 @@ export type TurnTrace = {
   };
   /** Reply language and why; `fallback` when the model's reply broke a contract and the deterministic reply was used. */
   reply?: { language: string; basis: string; fallback?: string; composerFailures?: ModelCallFailureTrace[] };
+  /** Asks from this message that were never carried out (told to the customer as not done). */
+  notDone?: string[];
   /** Earlier not-understood customer messages re-interpreted at the start of this turn (and how many remain). */
   revalidation?: { revalidated: number; stillUnresolved: number; changedRequests: number };
   /** An owner approval that was NOT executed because the customer's intent after it is unverified. */
@@ -138,6 +140,8 @@ export type TurnLog = {
       quantity: number | null;
     };
     customerClaims?: unknown;
+    /** Every ask the model found in the message, and whether this understanding covered it. */
+    asks?: { ask: string; kind: string; coveredByThisIR: boolean }[];
     knowledgeTopic?: string;
     /** The grounded capability proposal this turn (capability, input as grounded, purpose). */
     capabilityRequest?: { capability: string; input: Record<string, unknown>; purpose: string };

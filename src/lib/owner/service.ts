@@ -5,9 +5,9 @@ import { getReasoner } from "@/lib/reasoner";
 import { describeBusinessConnections, type ConnectionView } from "@/lib/connections/status";
 import { resolveCapabilityProfiles } from "@/lib/capabilities";
 import { withLifecycle, type ApprovalWithLifecycle } from "@/lib/runtime/owner-requests";
-import { readLedger, termsAmount } from "@/lib/runtime/ledger";
+import { readLedger, termsAmount, termsOf } from "@/lib/runtime/ledger";
 import { readHandoffs, type HandoffRecord } from "@/lib/runtime/handoff";
-import { outcomeEvents, revenueSummary, type OutcomeEvent, type RevenueSummary } from "./revenue";
+import { outcomeEvents, revenueEvidence, revenueSummary, type OutcomeEvent, type RevenueEvidence, type RevenueSummary } from "./revenue";
 
 /**
  * THE OWNER'S VIEW OF THEIR BUSINESS — read model for the owner dashboard (and for Owner Barry).
@@ -71,6 +71,12 @@ export type OwnerApproval = {
   /** The customer said something after this request that matters (held requests). */
   newerContext?: string;
   result?: string;
+  /** The exact terms the request would run with (customer-safe: references, reasons, quantities, items). */
+  terms: Record<string, string | number>;
+  /** The business action in plain words. */
+  action: string;
+  /** The business reference an executed request produced (e.g. the ticket number). */
+  resultReference?: string;
 };
 
 export type OwnerWorkspace = {
@@ -86,6 +92,8 @@ export type OwnerWorkspace = {
     blockedOrFailed: number;
   };
   revenue: RevenueSummary;
+  /** Every amount behind the money figures, with the record that proves it. */
+  revenueEvidence: RevenueEvidence[];
   conversations: OwnerConversationRow[];
   approvals: OwnerApproval[];
   outcomes: OutcomeEvent[];
@@ -184,7 +192,9 @@ function approvalView(a: ApprovalWithLifecycle, customer: string): OwnerApproval
               : "The customer sent a message after this request that BARRY couldn't understand. Held until it is re-checked.",
         }
       : {}),
-    ...(a.result ? { result: a.result.result } : {}),
+    ...(a.result ? { result: a.result.result, ...(a.result.reference ? { resultReference: a.result.reference } : {}) } : {}),
+    terms: termsOf(a.requestedAction, a.requestedInput),
+    action: a.requestedAction === "invokeCapability" ? String(((a.requestedInput ?? {}) as Record<string, unknown>).capability ?? "") : a.requestedAction,
   };
 }
 
@@ -216,6 +226,7 @@ export async function getOwnerWorkspace(graph: BusinessGraph, opts: { since?: st
   const attribution = { graph, conversations, payments, bookings, orders, approvals: approvalsRaw, now };
   const outcomes = outcomeEvents({ ...attribution, since });
   const revenue = revenueSummary({ ...attribution, since });
+  const evidence = revenueEvidence({ ...attribution, since }).map((e) => ({ ...e, customer: byId.get(e.conversationId) ? customerLabel(byId.get(e.conversationId)!) : "Customer" }));
 
   const rows: OwnerConversationRow[] = conversations
     .map((c): OwnerConversationRow => {
@@ -226,7 +237,7 @@ export async function getOwnerWorkspace(graph: BusinessGraph, opts: { since?: st
       const attention: AttentionReason[] = [];
       if (mine.some((a) => a.lifecycle === "active")) attention.push("approval_waiting");
       if (mine.some((a) => a.lifecycle === "held")) attention.push("approval_held");
-      if (handoffs.some((h) => h.status === "open")) attention.push("handoff_open");
+      if (handoffs.some((h) => h.status !== "resolved")) attention.push("handoff_open");
       if (lastTurn?.trace?.understanding?.valid === false) attention.push("ai_unavailable");
       const lastEffect = ledger.at(-1);
       if (lastEffect?.status === "failed" && lastEffect.operation !== "understand") attention.push("action_failed");
@@ -252,7 +263,7 @@ export async function getOwnerWorkspace(graph: BusinessGraph, opts: { since?: st
     .sort((a, b) => Number(b.status === "needs_you") - Number(a.status === "needs_you") || b.lastActivityAt.localeCompare(a.lastActivityAt));
 
   const inWindow = rows.filter((r) => byId.get(r.id)!.messages.some((m) => m.role === "customer" && m.at >= since));
-  const handoffs = conversations.flatMap((c) => readHandoffs(c).map((h) => ({ ...h, customer: customerLabel(c) }))).sort((a, b) => Number(b.status === "open") - Number(a.status === "open") || b.createdAt.localeCompare(a.createdAt));
+  const handoffs = conversations.flatMap((c) => readHandoffs(c).map((h) => ({ ...h, customer: customerLabel(c) }))).sort((a, b) => Number(b.status !== "resolved") - Number(a.status !== "resolved") || b.createdAt.localeCompare(a.createdAt));
   const profiles = await safe("capability profiles", () => resolveCapabilityProfiles(graph), undefined);
   const connections = await safe("connections", () => describeBusinessConnections(businessId, profiles), [] as ConnectionView[]);
 
@@ -264,11 +275,12 @@ export async function getOwnerWorkspace(graph: BusinessGraph, opts: { since?: st
       handledAutonomously: inWindow.filter((r) => r.handledAutonomously).length,
       needYou: rows.filter((r) => r.status === "needs_you").length,
       approvalsWaiting: approvals.filter((a) => a.lifecycle === "active" || a.lifecycle === "held").length,
-      handoffsOpen: handoffs.filter((h) => h.status === "open").length,
+      handoffsOpen: handoffs.filter((h) => h.status !== "resolved").length,
       completedOutcomes: outcomes.filter((o) => (o.kind === "paid" || o.kind === "booked" || o.kind === "order_created" || o.kind === "case_created") && !o.simulated).length,
       blockedOrFailed: outcomes.filter((o) => o.kind === "blocked" || o.kind === "failed").length,
     },
     revenue,
+    revenueEvidence: evidence,
     conversations: rows,
     approvals: approvals
       .map((a) => approvalView(a, byId.get(a.conversationId) ? customerLabel(byId.get(a.conversationId)!) : "Customer"))

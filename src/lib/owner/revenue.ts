@@ -142,10 +142,59 @@ export function outcomeEvents(input: AttributionInput): OutcomeEvent[] {
       if (ev) events.push({ ...ev, at: e.at, conversationId: c.id });
     }
     for (const h of readHandoffs(c)) {
-      if (after(h.createdAt, since)) events.push({ at: h.createdAt, conversationId: c.id, kind: "handoff", label: `Handed to your team: ${h.reason}`, evidence: h.status === "open" ? "open handoff" : "handoff resolved" });
+      if (after(h.createdAt, since)) events.push({ at: h.createdAt, conversationId: c.id, kind: "handoff", label: `Handed to your team: ${h.reason}`, evidence: h.status === "resolved" ? "handoff resolved" : h.status === "acknowledged" ? "handoff acknowledged by the team" : "open handoff" });
     }
   }
   return events.sort((x, y) => y.at.localeCompare(x.at));
+}
+
+export type RevenueEvidence = {
+  category: "collected" | "recovered" | "booked_not_collected" | "open_opportunity" | "simulated" | "excluded_unverified";
+  amount: number;
+  currency: string;
+  conversationId: string;
+  at: string;
+  /** The record that puts it in this category (or keeps it out of revenue). */
+  record: string;
+  customer?: string;
+};
+
+/**
+ * Why each amount is (or is NOT) counted — one line per record, so a tester can answer "why is this
+ * ₪390 counted here?" and "why isn't this one?". Same rules as revenueSummary.
+ */
+export function revenueEvidence(input: AttributionInput): RevenueEvidence[] {
+  const { graph, payments, bookings, approvals, since } = input;
+  const now = input.now ?? new Date();
+  const out: RevenueEvidence[] = [];
+  const failedBefore = (p: PaymentRequestRecord) => payments.some((q) => q.conversationId === p.conversationId && q.id !== p.id && (q.status === "failed" || q.status === "cancelled") && q.createdAt < p.createdAt);
+  for (const p of payments) {
+    const ref = `payment request ${p.id.slice(0, 12)} · ${p.provider ?? "no provider"}`;
+    if (isVerifiedPaid(p) && after(p.verifiedAt, since)) {
+      if (isSimulatedPayment(p)) out.push({ category: "simulated", amount: p.amount, currency: p.currency, conversationId: p.conversationId, at: p.verifiedAt!, record: `${ref} — paid on a simulated provider: test money, never revenue` });
+      else {
+        out.push({ category: "collected", amount: p.amount, currency: p.currency, conversationId: p.conversationId, at: p.verifiedAt!, record: `${ref} — provider reported PAID, verified ${p.verifiedAt}` });
+        if (failedBefore(p)) out.push({ category: "recovered", amount: p.amount, currency: p.currency, conversationId: p.conversationId, at: p.verifiedAt!, record: `${ref} — paid after an earlier failed/cancelled attempt in the same conversation (already inside Collected)` });
+      }
+    } else if (p.status === "paid" && after(p.createdAt, since)) {
+      out.push({ category: "excluded_unverified", amount: p.amount, currency: p.currency, conversationId: p.conversationId, at: p.createdAt, record: `${ref} — marked paid but never verified: not counted` });
+    } else if (p.status === "pending" && now.getTime() - Date.parse(p.createdAt) <= ABANDON_AFTER_MS && !isSimulatedPayment(p) && after(p.createdAt, since)) {
+      out.push({ category: "open_opportunity", amount: p.amount, currency: p.currency, conversationId: p.conversationId, at: p.createdAt, record: `${ref} — payment link sent, not paid: not revenue` });
+    } else if (p.status === "pending" && isSimulatedPayment(p) && after(p.createdAt, since)) {
+      out.push({ category: "excluded_unverified", amount: p.amount, currency: p.currency, conversationId: p.conversationId, at: p.createdAt, record: `${ref} — simulated payment link, unpaid: not counted` });
+    }
+  }
+  for (const b of bookings) {
+    if (b.status !== "confirmed" || !after(b.createdAt, since)) continue;
+    const offer = graph.offers.find((o) => o.id === b.offerId);
+    if (!offer?.price) continue;
+    out.push({ category: isSimulatedBooking(b) ? "simulated" : "booked_not_collected", amount: offer.price, currency: offer.currency, conversationId: b.conversationId, at: b.createdAt, record: `booking ${b.id.slice(0, 12)} · ${offer.name} (${b.provider ?? "no provider"}) — confirmed; value not collected by BARRY${isSimulatedBooking(b) ? " (simulated)" : ""}` });
+  }
+  for (const a of approvals) {
+    const money = paymentApprovalAmount(a);
+    if (a.status === "pending" && money) out.push({ category: "open_opportunity", amount: money.amount, currency: money.currency, conversationId: a.conversationId, at: a.createdAt, record: `owner request ${a.id.slice(0, 12)} — waiting for your approval: not revenue` });
+  }
+  return out.sort((x, y) => y.at.localeCompare(x.at));
 }
 
 /** Outcomes the ledger alone proves (the typed money/booking effects come from provider records above). */

@@ -9,7 +9,7 @@ import { BARRY_CONSTITUTION } from "./constitution";
 import type { CommerceSemantics } from "./ir";
 import { composeDeterministic } from "./deterministic-compose";
 import { logReasonerFailure } from "./diagnostics";
-import type { BarryIR, ComposeResponseInput, ModelCallFailure, Reasoner, ReasonerContext, UnderstandingResult } from "./types";
+import type { BarryIR, ComposeResponseInput, ModelCallFailure, PolicyContradiction, Reasoner, ReasonerContext, UnderstandingResult } from "./types";
 export type { UnderstandingResult } from "./types";
 import { sanitizeComposeInput } from "./compose-sanitization";
 import { businessFacts, customerFacts, transactionFacts } from "./compose-facts";
@@ -240,6 +240,30 @@ YOUR TASK NOW: understand the customer's latest message in context and describe 
  * summary however it liked. `toolSucceeded`/`toolOutput` being present
  * means the action is DONE; the model only ever describes the result.
  */
+const POLICY_CHECK_PROMPT = `You check a customer-service reply against the business's OWN policy texts (any language).
+List every sentence of the reply that states a business policy DIFFERENTLY from the texts: a limitation turned into a prohibition or the reverse ("exchange only" means exchanges ARE allowed and refunds are not), a scope word dropped (only / except / within / unless), a condition or time limit changed, or a policy detail the texts don't contain stated as fact. Paraphrase and translation are fine when the meaning is the same. Sentences that aren't about policy are not contradictions. Return {"contradictions": []} when everything agrees.`;
+
+const POLICY_CHECK_SCHEMA = {
+  name: "policy_check",
+  strict: true,
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      contradictions: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: { sentence: { type: "string" }, policy: { type: "string" }, why: { type: "string" } },
+          required: ["sentence", "policy", "why"],
+        },
+      },
+    },
+    required: ["contradictions"],
+  },
+};
+
 export const COMPOSE_SYSTEM_PROMPT =
   `${BARRY_CONSTITUTION}\n\nYOUR TASK NOW: write BARRY's next message to the customer, as an employee of \`business\` would. ` +
   // ── What you're given
@@ -257,6 +281,8 @@ export const COMPOSE_SYSTEM_PROMPT =
   "Prices, deposits, durations, policies, product details and availability come ONLY from `facts`, receipts/toolOutput and scheduling. Quote prices exactly as written in facts. Never say something is available/in stock unless a receipt that looked up times or stock shows it now (or facts.shownProducts says so). Never state a measurement, colour, fit or specification that isn't in facts — say you don't have that detail. Never recommend something above a budget the customer stated; say nothing fits it instead. A total is computed only from those prices, the quantity and the business's own stated discount/shipping rules, and answering it never requires contact details. " +
   "Recaps and status questions (\"what did we agree\", \"is it booked\", \"did you send a link\") are answered from `transaction` and `ownerRequests` — the latest correction wins; answer yes/no first when asked. " +
   "`business.name` is the BUSINESS, never the customer: address the customer only by `customer.name` (or not by name at all). " +
+  "Business policies (facts.knowledge) are restated FAITHFULLY: keep every scope word (only, except, within, unless) and never turn a limitation into a prohibition or the reverse — \"sale items can be exchanged only\" means exchanges ARE allowed and refunds are not. If unsure, quote the policy. " +
+  "LIFECYCLE: a request waiting for the owner is AWAITING APPROVAL — say it's waiting for approval (you may say you updated or sent the request); never say it was opened, created, booked, sent, paid or refunded until a receipt shows it done. A handoff means the team can see the conversation — never that someone already contacted the customer. " +
   "`facts.provenance` says where each group of facts comes from; general knowledge about businesses of this kind is never a fact about THIS business. " +
   "Opening hours, days, dates, deadlines and policy details (e.g. when a returns period starts) come ONLY from `facts`: if facts don't state it, say you don't have that detail — never fill it in from general knowledge. " +
   "If `handoff` is present, BARRY passed this conversation to the business's team: say so in one line. If handoff.responseCommitted is true, you may say how the team follows up exactly as handoff.how says; if false, say the team can see the conversation but you can't promise when or how they'll reply. Never promise a call, email or contact the handoff doesn't state. " +
@@ -932,6 +958,29 @@ export class OpenAIReasoner implements Reasoner {
 
     logReasonerFailure("semantic_validation_error", { message: "understanding unavailable this turn", kind: lastFailure?.kind });
     return { ir: emptyIR("understanding_failed"), valid: false, attempts, ...(lastFailure ? { failure: lastFailure } : {}), latencyMs: Date.now() - started, usage, model: this.model };
+  }
+
+  async checkPolicyConsistency(ctx: ReasonerContext, reply: string, policies: { topic: string; text: string }[]): Promise<PolicyContradiction[] | undefined> {
+    if (this.configError || policies.length === 0) return policies.length === 0 ? [] : undefined;
+    try {
+      const completion = await createCompletion(this.client, {
+        model: this.composerModel,
+        messages: [
+          { role: "system", content: POLICY_CHECK_PROMPT },
+          { role: "user", content: JSON.stringify({ businessPolicies: policies, reply }) },
+        ],
+        response_format: { type: "json_schema", json_schema: POLICY_CHECK_SCHEMA },
+        ...samplingParams(this.composerModel, "composer", 0, this.composerReasoningEffort),
+      });
+      const raw = completion.choices[0]?.message?.content;
+      if (!raw) return undefined;
+      const parsed = JSON.parse(raw) as { contradictions?: PolicyContradiction[] };
+      return Array.isArray(parsed.contradictions) ? parsed.contradictions.slice(0, 5) : undefined;
+    } catch (err) {
+      const failure = classifyProviderError(err);
+      logReasonerFailure("openai_api_error", { kind: failure.kind, status: failure.status, during: "checkPolicyConsistency" });
+      return undefined;
+    }
   }
 
   async composeResponse(ctx: ReasonerContext, input: ComposeResponseInput): Promise<string> {

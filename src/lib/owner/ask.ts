@@ -45,7 +45,7 @@ export function buildBriefing(ws: OwnerWorkspace, week: ReturnType<typeof revenu
     revenueLast7Days: revenueWords(week),
     waitingForYou: [
       ...ws.approvals.filter((a) => a.actionable || a.lifecycle === "held").map((a) => ({ type: "approval", customer: a.customer, what: a.what, ...(a.amount ? { amount: a.amount } : {}), ...(a.newerContext ? { note: a.newerContext } : {}) })),
-      ...ws.handoffs.filter((h) => h.status === "open").map((h) => ({ type: "handoff", customer: h.customer, what: h.reason, urgency: h.urgency })),
+      ...ws.handoffs.filter((h) => h.status !== "resolved").map((h) => ({ type: "handoff", customer: h.customer, what: h.reason, urgency: h.urgency })),
     ].slice(0, 15),
     conversationsNeedingAttention: ws.conversations.filter((c) => c.status === "needs_you").slice(0, 10).map((c) => ({ customer: c.customer, why: c.attention, lastMessage: c.lastMessage?.text })),
     recentOutcomes: ws.outcomes.slice(0, 20).map((o) => ({ what: o.label, customer: ws.conversations.find((c) => c.id === o.conversationId)?.customer ?? "a customer", ...(o.amount !== undefined && o.currency ? { amount: money(o.amount, o.currency) } : {}), ...(o.reference ? { reference: o.reference } : {}), when: o.at, ...(o.simulated ? { simulated: true } : {}) })),
@@ -76,6 +76,7 @@ function revenueWords(r: ReturnType<typeof revenueSummary>) {
 /** The briefing as plain text — the answer when a model can't be used or its answer can't be verified. */
 export function briefingText(b: OwnerBriefing): string {
   const lines = [
+    "I can report on your business, but I'm read-only: I can't change settings, approve requests or run actions from here (use Approvals, or ask the BARRY team for rule changes).",
     `Today at ${b.business}: ${b.today.conversations} customer conversation${b.today.conversations === 1 ? "" : "s"}, ${b.today.handledWithoutYou} handled without you, ${b.today.needYourAttention} need you.`,
     `Collected by BARRY today: ${b.revenueToday.collectedByBarry} (${b.revenueToday.paymentsCollected} payment${b.revenueToday.paymentsCollected === 1 ? "" : "s"}). Last 7 days: ${b.revenueLast7Days.collectedByBarry}.`,
     b.revenueToday.bookedValueNotYetCollected !== "none" ? `Booked but not yet collected: ${b.revenueToday.bookedValueNotYetCollected}.` : "",
@@ -97,6 +98,8 @@ Answer the owner's question using ONLY the JSON briefing. Rules:
 
 export type OwnerAnswer = { answer: string; source: "model" | "briefing"; reason?: string; failure?: ModelCallFailure };
 
+const FIRST_PERSON_ACTION = /\bI(?:'ve| have|'ll| will)?\s+(?:just\s+|now\s+|already\s+)?(?:applied|changed|updated|set|approved|declined|sent|given|gave|created|cancell?ed|raised|lowered|refunded|booked|made|turned on|enabled|disabled|added|removed)\b|(?:^|\s)(?:החלתי|עדכנתי|שיניתי|אישרתי|דחיתי|שלחתי|נתתי|יצרתי|ביטלתי|הפעלתי|הוספתי|הסרתי)(?:\s|$|[.,!])/i;
+
 function numbersIn(text: string): string[] {
   return [...text.matchAll(/\d[\d,]*(?:\.\d+)?/g)].map((m) => m[0].replace(/,/g, ""));
 }
@@ -108,7 +111,10 @@ export function checkOwnerAnswer(answer: string, briefing: OwnerBriefing, questi
   if (stray.length) return `figures not in the briefing: ${[...new Set(stray)].join(", ")}`;
   const none: ClaimEvidence = { kinds: new Set(), ownerRequestExists: false, ownerRequestWaiting: false, amounts: [], mentioned: [], percentages: [], factText: "", customerText: "", reportedText: "", knownItems: [], addedThisTurn: [], times: [] };
   const claims = findUnsupportedClaims(answer, { ...none, amounts: numbersIn(JSON.stringify(briefing)).map(Number), times: [] }).filter((c) => c.why.startsWith("claims a"));
-  return claims.length ? `claims an action: ${claims[0].why}` : undefined;
+  if (claims.length) return `claims an action: ${claims[0].why}`;
+  // Owner Barry is read-only: a first-person claim of having DONE something is never true.
+  if (FIRST_PERSON_ACTION.test(answer)) return "claims an action: a read-only assistant can't have done that";
+  return undefined;
 }
 
 export async function askOwnerBarry(graph: BusinessGraph, question: string, opts: { client?: Pick<OpenAI, "chat">; now?: Date } = {}): Promise<OwnerAnswer & { briefing: OwnerBriefing }> {

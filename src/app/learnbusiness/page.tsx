@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { OwnerBar, useOwnerApi } from "@/components/owner/useOwnerApi";
+import { TestShell } from "@/components/shell/TestShell";
 import type { LearnedFactRecord, LearningRunRecord, OperatingStrategyRecord } from "@/lib/store/types";
 import type { CapabilityReportEntry } from "@/lib/learn-business/strategy";
 
@@ -150,8 +151,9 @@ export default function LearnBusinessPage() {
   const runSummary = workspace?.run?.summary as { learner?: string; sources?: { url: string; ok: boolean; error?: string; stored?: number; rejected?: { key: string; reason: string }[] }[] } | undefined;
 
   return (
-    <main className="min-h-screen bg-[#f7f7f4] px-4 py-6 text-[#171717] md:px-5 md:py-8">
-      <section className="mx-auto max-w-6xl space-y-6">
+    <main className="min-h-screen bg-[#f9fafb] text-[#171717]">
+      <TestShell active="learn" />
+      <section className="mx-auto max-w-6xl space-y-6 px-4 py-6 md:px-5 md:py-8">
         <OwnerBar
           api={api}
           title="Learn your business"

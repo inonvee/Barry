@@ -99,6 +99,68 @@ function UnderstandingStatus({ u }: { u: UnderstandingTrace }) {
   );
 }
 
+const STEP_WORDS: Record<string, string> = { allowed: "allowed", requires_approval: "needs owner approval", denied: "not allowed" };
+
+/**
+ * The first screen of a turn: what BARRY thought the customer wanted, what actually happened (from the
+ * ledger, never from the reply), and why the reply says what it says.
+ */
+function TurnSummary({ turn }: { turn: TurnLog }) {
+  const t = turn.trace;
+  const u = t?.understanding;
+  const asks = turn.understood.asks ?? [];
+  const notDone = new Set(t?.notDone ?? []);
+  return (
+    <section className="m-3 rounded-lg border border-neutral-200 bg-neutral-50 p-3 text-sm dark:border-neutral-800 dark:bg-neutral-900">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">What BARRY thought the customer wanted</p>
+      {u && !u.valid ? (
+        <p className="mt-1 font-medium text-red-700 dark:text-red-400">Nothing — understanding failed ({u.failure?.kind.replace(/_/g, " ") ?? "unknown"}). No action was taken.</p>
+      ) : asks.length ? (
+        <ul className="mt-1 space-y-0.5">
+          {asks.map((a, i) => (
+            <li key={i} className="flex flex-wrap items-center gap-1.5">
+              <Chip tone={a.kind === "change" ? (notDone.has(a.ask) ? "bad" : "good") : "neutral"}>{a.kind === "change" ? (notDone.has(a.ask) ? "not done" : a.coveredByThisIR ? "acted on" : "continued") : a.kind}</Chip>
+              <span>{a.ask}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mt-1">{turn.understood.intent}</p>
+      )}
+      <p className="mt-3 text-[11px] font-semibold uppercase tracking-wide text-neutral-500">What actually happened</p>
+      {t?.steps.length ? (
+        <ul className="mt-1 space-y-0.5">
+          {t.steps.map((st, i) => (
+            <li key={i} className="flex flex-wrap items-center gap-1.5">
+              <span className="font-mono text-xs">{st.generic?.capability ?? st.action}</span>
+              <Chip tone={policyTone(st.policy.status)}>{STEP_WORDS[st.policy.status] ?? st.policy.status}</Chip>
+              {st.ownerRequest && <Chip tone="warn">{st.ownerRequest === "requested" ? "sent to owner" : st.ownerRequest.replace(/_/g, " ")}</Chip>}
+              {st.result && <Chip tone={st.result.ok ? "good" : "bad"}>{st.result.ok ? "executed" : "failed"}</Chip>}
+              {st.generic?.executed && <Chip tone={st.generic.verified ? "good" : "neutral"}>{st.generic.verified ? "provider-verified" : "not verified"}</Chip>}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mt-1 text-neutral-600 dark:text-neutral-400">No action this turn{t ? ` (${t.stop.reason.replace(/_/g, " ")})` : ""}.</p>
+      )}
+      {t?.effects?.length ? (
+        <p className="mt-1 text-xs text-neutral-600 dark:text-neutral-400">
+          Effects: {t.effects.map((e) => `${e.effect} · ${e.status}${e.reference ? ` (${e.reference})` : ""}`).join(" · ")}
+        </p>
+      ) : null}
+      {t?.hold && <p className="mt-1 text-xs font-medium text-amber-700 dark:text-amber-400">Approval held, not executed — {t.hold.reason}</p>}
+      <p className="mt-3 text-[11px] font-semibold uppercase tracking-wide text-neutral-500">Why BARRY said that</p>
+      <p className="mt-1 text-xs">
+        {t?.reply?.fallback
+          ? `The reply was replaced for safety: ${t.reply.fallback}`
+          : t
+            ? "The model's reply passed every check (effects, owner state, amounts, policy, language, internal terms)."
+            : "Not traced."}
+      </p>
+    </section>
+  );
+}
+
 export function TurnView({ state, turn, isLatest }: { state: ConversationState; turn: TurnLog; isLatest: boolean }) {
   const trace = turn.trace;
   const rt = trace?.runtime;
@@ -111,19 +173,10 @@ export function TurnView({ state, turn, isLatest }: { state: ConversationState; 
 
   return (
     <>
-      <Section title="Models & runtime">
-        <div className="flex flex-wrap gap-1.5 mb-2">
-          <Chip tone={turn.reasoner === "llm" ? "accent" : "neutral"}>{turn.reasoner === "llm" ? "LLM" : "Mock"}</Chip>
-          {rt?.configError && <Chip tone="bad">config error</Chip>}
-        </div>
-        <Kv k="Reasoner model" v={`${dash(rt?.model)}${rt?.reasoningEffort ? ` · effort ${rt.reasoningEffort}` : ""}`} />
-        <Kv k="Composer model" v={`${dash(rt?.composerModel)}${rt?.composerReasoningEffort ? ` · effort ${rt.composerReasoningEffort}` : ""}`} />
-        <Kv k="Runtime" v={`${dash(rt?.barryVersion)}${rt?.commit ? ` @ ${rt.commit.slice(0, 7)}` : ""}`} />
-        <Kv k="Constitution" v={dash(rt?.constitutionVersion)} />
-        {rt?.configError && <p className="text-xs text-red-600 dark:text-red-400 mt-1">{rt.configError}</p>}
-      </Section>
+      <TurnSummary turn={turn} />
 
-      <Section title="Understanding">
+
+      <Section title="1 · Understanding">
         {trace?.understanding && <UnderstandingStatus u={trace.understanding} />}
         <Kv k="Raw intent" v={turn.understood.intent} />
         <Kv k="Purchase decision" v={turn.understood.purchaseDecision === undefined ? "—" : String(turn.understood.purchaseDecision)} />
@@ -154,7 +207,7 @@ export function TurnView({ state, turn, isLatest }: { state: ConversationState; 
         )}
       </Section>
 
-      <Section title="Customer facts">
+      <Section title="1 · Understanding · Customer facts">
         {facts.length === 0 && <p className="text-xs text-neutral-500">None proposed this turn.</p>}
         <div className="space-y-2">
           {facts.map((f, i) => (
@@ -174,7 +227,7 @@ export function TurnView({ state, turn, isLatest }: { state: ConversationState; 
       </Section>
 
       {rejected.length > 0 && (
-        <Section title="Grounding rejected">
+        <Section title="2 · Grounding · rejected">
           {rejected.map((r, i) => (
             <Kv key={i} k={r.claim} v={r.reason} />
           ))}
@@ -182,7 +235,7 @@ export function TurnView({ state, turn, isLatest }: { state: ConversationState; 
       )}
 
       {trace?.context && (
-        <Section title="What BARRY saw">
+        <Section title="2 · Grounding · what BARRY saw">
           {trace.context.shown.length > 0 && (
             <ol className="text-sm list-none space-y-0.5">
               {trace.context.shown.map((p) => (
@@ -205,7 +258,7 @@ export function TurnView({ state, turn, isLatest }: { state: ConversationState; 
       )}
 
       {trace && (
-        <Section title="Operator steps">
+        <Section title="3–4 · Authority & execution">
           {trace.steps.length === 0 && <p className="text-xs text-neutral-500">No action this turn.</p>}
           <div className="space-y-2">
             {trace.steps.map((step, i) => (
@@ -245,7 +298,7 @@ export function TurnView({ state, turn, isLatest }: { state: ConversationState; 
       )}
 
       {trace?.effects && trace.effects.length > 0 && (
-        <Section title="Business effects (ledger)">
+        <Section title="5–6 · Verification & effect (ledger)">
           {trace.effects.map((e) => (
             <p key={e.seq} className="text-xs font-mono">
               #{e.seq} {e.operation} → <span className={e.status === "effected" ? "text-green-700 dark:text-green-400" : "text-amber-700 dark:text-amber-400"}>{e.effect} · {e.status}</span>
@@ -256,7 +309,7 @@ export function TurnView({ state, turn, isLatest }: { state: ConversationState; 
         </Section>
       )}
 
-      <Section title="Reply contract">
+      <Section title="7 · Reply · safety & contract">
         <Kv k="Missing fields" v={missing === undefined ? "not recorded" : missing.length ? missing.join(", ") : "none"} />
         {trace?.reply && <Kv k="Reply language" v={`${trace.reply.language} (${trace.reply.basis.replace(/_/g, " ")})`} />}
         {trace?.reply?.fallback && <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">Deterministic reply used — {trace.reply.fallback}</p>}
@@ -278,12 +331,26 @@ export function TurnView({ state, turn, isLatest }: { state: ConversationState; 
         </Section>
       )}
 
-      <Section title="Reply">
+      <Section title="7 · Reply">
         <p className="text-sm whitespace-pre-wrap">{turn.response}</p>
         {turn.compiled?.resolvedSchedulingWindow && <Json label="Resolved scheduling window (UTC)" value={turn.compiled.resolvedSchedulingWindow} />}
         {turn.responseFacts && <Json label="Response facts" value={turn.responseFacts} />}
         {turn.toolResult && <Json label="Last tool output" value={turn.toolResult.output ?? turn.toolResult.error} />}
       </Section>
+      <details className="px-3 pb-3">
+        <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-neutral-500">Technical detail · models & runtime</summary>
+        <Section title="Models & runtime">
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          <Chip tone={turn.reasoner === "llm" ? "accent" : "neutral"}>{turn.reasoner === "llm" ? "LLM" : "Mock"}</Chip>
+          {rt?.configError && <Chip tone="bad">config error</Chip>}
+        </div>
+        <Kv k="Reasoner model" v={`${dash(rt?.model)}${rt?.reasoningEffort ? ` · effort ${rt.reasoningEffort}` : ""}`} />
+        <Kv k="Composer model" v={`${dash(rt?.composerModel)}${rt?.composerReasoningEffort ? ` · effort ${rt.composerReasoningEffort}` : ""}`} />
+        <Kv k="Runtime" v={`${dash(rt?.barryVersion)}${rt?.commit ? ` @ ${rt.commit.slice(0, 7)}` : ""}`} />
+        <Kv k="Constitution" v={dash(rt?.constitutionVersion)} />
+        {rt?.configError && <p className="text-xs text-red-600 dark:text-red-400 mt-1">{rt.configError}</p>}
+        </Section>
+      </details>
     </>
   );
 }

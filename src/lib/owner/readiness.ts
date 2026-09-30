@@ -43,8 +43,25 @@ export type ReadinessCheck = {
   status: "pass" | "fail" | "warn";
   detail: string;
   fix?: string;
+  /** Why it matters for a pilot (plain words). */
+  why?: string;
   gate: Gate;
 };
+
+const WHY: [RegExp, string][] = [
+  [/^knowledge\.offers/, "BARRY can only sell or book what it knows exists."],
+  [/^knowledge\.goals/, "Goals decide what BARRY moves each conversation toward."],
+  [/^knowledge\.(policies|hours)/, "Customers ask; without the real answer BARRY must say it doesn't know."],
+  [/^knowledge\./, "Customers ask about this before buying; BARRY must quote your rule, not guess."],
+  [/^ai\./, "Without working AI understanding BARRY can't understand customers — it replies safely but does nothing."],
+  [/^platform\.persistence/, "Without durable storage, conversations, approvals and payments disappear on the next restart."],
+  [/^platform\.owner_access/, "Someone must be able to approve requests and see what BARRY did — and only for their own business."],
+  [/^systems\./, "BARRY acts through your real systems; a simulator means nothing real happens."],
+  [/^payments\./, "Money must be verified by your real payment provider before anyone counts it as paid."],
+  [/^authority\./, "Consequential actions (money, cancellations, cases) must follow your limits."],
+  [/^handoff\./, "When a customer needs a person, BARRY must say honestly what will happen next."],
+  [/^channel\./, "Customers can only reach BARRY through a connected channel."],
+];
 
 export type PilotReadiness = {
   level: PilotLevel;
@@ -70,7 +87,7 @@ function ownerAccess(businessId: string): { scoped: boolean; global: boolean } {
 export async function assessPilotReadiness(graph: BusinessGraph, opts: { conversations?: ConversationState[] } = {}): Promise<PilotReadiness> {
   const businessId = graph.business.id;
   const checks: ReadinessCheck[] = [];
-  const add = (c: ReadinessCheck) => checks.push(c);
+  const add = (c: ReadinessCheck) => checks.push({ ...c, why: c.why ?? WHY.find(([re]) => re.test(c.id))?.[1] });
   const activeOffers = graph.offers.filter((o) => o.active);
 
   // ── Testing: BARRY knows the business ────────────────────────────────

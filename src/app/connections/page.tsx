@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { OwnerBar, useOwnerApi } from "@/components/owner/useOwnerApi";
+import { TestShell } from "@/components/shell/TestShell";
 import type { ConnectionView } from "@/lib/connections/status";
 
 function statusLabel(c: ConnectionView): { text: string; tone: string } {
@@ -40,8 +41,9 @@ export default function ConnectionsPage() {
   }, [businessId, call]);
 
   return (
-    <main className="min-h-screen bg-[#f7f7f4] px-4 py-6 text-[#171717] md:px-5 md:py-8">
-      <section className="mx-auto max-w-5xl space-y-6">
+    <main className="min-h-screen bg-[#f9fafb] text-[#171717]">
+      <TestShell active="connections" />
+      <section className="mx-auto max-w-5xl space-y-6 px-4 py-6 md:px-5 md:py-8">
         <OwnerBar
           api={api}
           title="Connections"

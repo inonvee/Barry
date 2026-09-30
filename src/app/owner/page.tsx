@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { OwnerBar, useOwnerApi } from "@/components/owner/useOwnerApi";
-import { Empty, OwnerNav, Pill, Section, Stat, btn, card, danger, formatMoney, primary, timeAgo, type Tone } from "@/components/owner/ui";
+import { TestShell } from "@/components/shell/TestShell";
+import { Empty, Pill, Section, Stat, btn, card, danger, formatMoney, primary, timeAgo, type Tone } from "@/components/owner/ui";
 import type { OwnerWorkspace, OwnerConversationRow, OwnerApproval, AttentionReason } from "@/lib/owner/service";
 import type { OutcomeEvent } from "@/lib/owner/revenue";
 
@@ -45,17 +46,47 @@ const OUTCOME: Record<OutcomeEvent["kind"], { tone: Tone; label: string }> = {
   declined_by_owner: { tone: "neutral", label: "You declined" },
 };
 
-const LIFECYCLE: Record<string, { tone: Tone; label: string }> = {
-  active: { tone: "warn", label: "Waiting for you" },
-  held: { tone: "bad", label: "Held — needs revalidation" },
-  executed: { tone: "good", label: "Done" },
-  executed_unconfirmed: { tone: "warn", label: "Submitted, not confirmed" },
-  failed: { tone: "bad", label: "Approved, didn't go through" },
-  declined: { tone: "neutral", label: "You declined" },
-  withdrawn: { tone: "neutral", label: "Customer withdrew" },
-  superseded: { tone: "neutral", label: "Replaced by a newer request" },
-  approved: { tone: "info", label: "Approved" },
+const LIFECYCLE: Record<string, { tone: Tone; label: string; explain: string }> = {
+  active: { tone: "warn", label: "ACTIVE", explain: "Waiting for your decision." },
+  held: { tone: "bad", label: "HELD", explain: "Can't be approved until the conversation is re-checked." },
+  executed: { tone: "good", label: "EXECUTED", explain: "Approved and carried out; the business system confirmed it." },
+  executed_unconfirmed: { tone: "warn", label: "EXECUTED · UNCONFIRMED", explain: "Submitted, but the system hasn't confirmed it happened." },
+  failed: { tone: "bad", label: "FAILED", explain: "Approved, but carrying it out didn't go through (or was blocked by the customer's limits)." },
+  declined: { tone: "neutral", label: "DECLINED", explain: "You declined it." },
+  withdrawn: { tone: "neutral", label: "WITHDRAWN", explain: "The customer withdrew it." },
+  superseded: { tone: "neutral", label: "SUPERSEDED", explain: "Replaced by a newer request (the customer changed its details)." },
+  approved: { tone: "info", label: "APPROVED", explain: "Approved." },
 };
+
+function Terms({ a }: { a: OwnerApproval }) {
+  const entries = Object.entries(a.terms).filter(([k]) => k !== "currency");
+  return (
+    <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 rounded-lg bg-white/70 px-3 py-2 text-sm">
+      <dt className="text-[#667085]">Customer</dt>
+      <dd className="break-words">{a.customer}</dd>
+      <dt className="text-[#667085]">Action</dt>
+      <dd className="break-words font-mono text-xs leading-5">{a.action}</dd>
+      {entries.map(([k, v]) => (
+        <div key={k} className="contents">
+          <dt className="text-[#667085]">{k.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/_/g, " ")}</dt>
+          <dd className="break-words">{String(v)}</dd>
+        </div>
+      ))}
+      {a.amount && (
+        <>
+          <dt className="text-[#667085]">Amount</dt>
+          <dd className="font-semibold tabular-nums">{a.amount}</dd>
+        </>
+      )}
+      {a.resultReference && (
+        <>
+          <dt className="text-[#667085]">Result</dt>
+          <dd className="font-medium">{a.resultReference}</dd>
+        </>
+      )}
+    </dl>
+  );
+}
 
 const CHANNEL: Record<OwnerConversationRow["channel"], string> = { whatsapp: "WhatsApp", web: "Web chat", instagram: "Instagram", simulator: "Simulator" };
 
@@ -63,11 +94,13 @@ export default function OwnerDashboard() {
   const api = useOwnerApi();
   const [tab, setTab] = useState<Tab>("today");
   const [range, setRange] = useState<"today" | "7d" | "30d">("today");
-  const [ws, setWs] = useState<OwnerWorkspace | null>(null);
+  const [loaded, setWs] = useState<OwnerWorkspace | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const { businessId, call } = api;
+  const { businessId, call, authorized } = api;
+  // Nothing of a business is shown without that business's owner session.
+  const ws = authorized && loaded?.business.id === businessId ? loaded : null;
   const fetchWorkspace = useCallback(() => call<OwnerWorkspace>(`/api/owner/workspace?businessId=${encodeURIComponent(businessId)}&window=${range}`), [businessId, call, range]);
 
   const load = useCallback(async () => {
@@ -85,7 +118,7 @@ export default function OwnerDashboard() {
   }, [businessId, fetchWorkspace]);
 
   useEffect(() => {
-    if (!businessId) return;
+    if (!businessId || !authorized) return;
     let cancelled = false;
     fetchWorkspace()
       .then((data) => {
@@ -101,18 +134,18 @@ export default function OwnerDashboard() {
     return () => {
       cancelled = true;
     };
-  }, [businessId, fetchWorkspace]);
+  }, [businessId, authorized, fetchWorkspace]);
 
   const needs = ws?.conversations.filter((c) => c.status === "needs_you") ?? [];
   const pendingApprovals = ws?.approvals.filter((a) => a.actionable || a.lifecycle === "held") ?? [];
 
   return (
     <main className="min-h-screen bg-[#f9fafb] text-[#101828]">
+      <TestShell active="owner" />
       <div className="mx-auto flex max-w-6xl flex-col gap-5 px-4 py-6 md:py-10">
-        <OwnerNav active="dashboard" />
         <OwnerBar api={api} title={ws ? ws.business.name : "Your business"} subtitle="What BARRY did for your business, what needs you, and how it's performing." />
 
-        {error && <p className="rounded-lg border border-[#fecdca] bg-[#fef3f2] px-4 py-3 text-sm text-[#b42318]">{error}</p>}
+        {authorized && error && <p className="rounded-lg border border-[#fecdca] bg-[#fef3f2] px-4 py-3 text-sm text-[#b42318]">{error}</p>}
         {ws && (ws.health.ai.status === "unavailable" || ws.health.ai.status === "degraded") && (
           <div className={`rounded-xl border px-4 py-3 text-sm ${ws.health.ai.status === "unavailable" ? "border-[#fecdca] bg-[#fef3f2] text-[#b42318]" : "border-[#fedf89] bg-[#fffaeb] text-[#b54708]"}`} role="status">
             <p className="font-semibold">{ws.health.ai.status === "unavailable" ? "AI understanding temporarily unavailable" : "AI understanding degraded"}</p>
@@ -143,7 +176,8 @@ export default function OwnerDashboard() {
           </div>
         </div>
 
-        {!ws && !error && <p className="text-sm text-[#667085]">{loading ? "Loading your business…" : "Choose a business."}</p>}
+        {!authorized && api.session && <p className="rounded-xl border border-dashed border-[#d0d5dd] bg-white px-4 py-6 text-center text-sm text-[#475467]">Sign in as this business&apos;s owner (above) to see its conversations, approvals, outcomes and money.</p>}
+        {authorized && !ws && !error && <p className="text-sm text-[#667085]">{loading ? "Loading your business…" : "Loading…"}</p>}
         {ws && tab === "today" && <TodayView ws={ws} onOpen={() => setTab("inbox")} onApprovals={() => setTab("approvals")} />}
         {ws && tab === "inbox" && <InboxView ws={ws} api={api} />}
         {ws && tab === "approvals" && <ApprovalsView ws={ws} api={api} reload={load} />}
@@ -156,6 +190,55 @@ export default function OwnerDashboard() {
 }
 
 type Api = ReturnType<typeof useOwnerApi>;
+
+const REVENUE_CATEGORIES: { id: OwnerWorkspace["revenueEvidence"][number]["category"]; label: string; explain: string }[] = [
+  { id: "collected", label: "COLLECTED", explain: "Provider-verified paid money only — the only real revenue." },
+  { id: "recovered", label: "RECOVERED", explain: "Collected money that followed an earlier failed or cancelled attempt (already inside Collected)." },
+  { id: "booked_not_collected", label: "BOOKED, NOT COLLECTED", explain: "Value of bookings BARRY made; not cash." },
+  { id: "open_opportunity", label: "OPEN OPPORTUNITIES", explain: "Unpaid payment links and requests waiting for you — not revenue." },
+  { id: "simulated", label: "SIMULATED", explain: "Test money on simulated providers — never counted." },
+  { id: "excluded_unverified", label: "NOT COUNTED", explain: "Marked paid without verification, or unpaid simulated links — never counted." },
+];
+
+function RevenueReconciliation({ ws }: { ws: OwnerWorkspace }) {
+  const items = ws.revenueEvidence;
+  return (
+    <Section title="Why these numbers" subtitle="Every amount, the category it's in, and the record that puts it there.">
+      {items.length === 0 ? (
+        <Empty>No money records in this period.</Empty>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {REVENUE_CATEGORIES.filter((c) => items.some((i) => i.category === c.id)).map((c) => {
+            const rows = items.filter((i) => i.category === c.id);
+            const totals: Record<string, number> = {};
+            for (const r of rows) totals[r.currency] = Math.round(((totals[r.currency] ?? 0) + r.amount) * 100) / 100;
+            return (
+              <details key={c.id} className="rounded-lg border border-[#eaecf0] p-3">
+                <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-2">
+                  <span className="flex flex-wrap items-center gap-2">
+                    <Pill tone={c.id === "collected" || c.id === "recovered" ? "good" : c.id === "booked_not_collected" ? "info" : "neutral"}>{c.label}</Pill>
+                    <span className="text-xs text-[#667085]">{c.explain}</span>
+                  </span>
+                  <span className="font-semibold tabular-nums">{formatMoney(totals)}</span>
+                </summary>
+                <ul className="mt-2 divide-y divide-[#f2f4f7] text-sm">
+                  {rows.map((r, i) => (
+                    <li key={i} className="flex flex-col gap-0.5 py-1.5 sm:flex-row sm:justify-between">
+                      <span className="min-w-0 break-words text-[#344054]">
+                        {r.customer} — <span className="text-[#667085]">{r.record}</span>
+                      </span>
+                      <span className="shrink-0 tabular-nums">{formatMoney({ [r.currency]: r.amount })}</span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            );
+          })}
+        </div>
+      )}
+    </Section>
+  );
+}
 
 function TodayView({ ws, onOpen, onApprovals }: { ws: OwnerWorkspace; onOpen: () => void; onApprovals: () => void }) {
   const r = ws.revenue;
@@ -189,6 +272,8 @@ function TodayView({ ws, onOpen, onApprovals }: { ws: OwnerWorkspace; onOpen: ()
           )}
         </div>
       </Section>
+
+      <RevenueReconciliation ws={ws} />
 
       <Section title="Needs you" right={<button className={btn} onClick={onOpen}>Open inbox</button>}>
         {ws.conversations.filter((c) => c.status === "needs_you").length === 0 ? (
@@ -336,7 +421,7 @@ function ConversationPanel({ id, api }: { id: string; api: Api }) {
   if (!data) return <Section title="Conversation"><p className="text-sm text-[#667085]">Loading…</p></Section>;
   return (
     <Section title={data.customer} subtitle={data.channel === "simulator" ? "Simulator conversation" : data.channel} right={<label className="flex items-center gap-1.5 text-xs text-[#475467]"><input type="checkbox" checked={advanced} onChange={(e) => setAdvanced(e.target.checked)} /> Technical detail</label>}>
-      {data.handoffs.filter((h) => h.status === "open").map((h) => (
+      {data.handoffs.filter((h) => h.status !== "resolved").map((h) => (
         <div key={h.id} className="mb-3 rounded-lg border border-[#b2ddff] bg-[#eff8ff] p-3 text-sm text-[#175cd3]">
           <p className="font-semibold">Needs a person{h.urgency === "urgent" ? " — urgent" : ""}</p>
           <p className="mt-0.5">{h.summary}</p>
@@ -434,8 +519,9 @@ function ApprovalsView({ ws, api, reload }: { ws: OwnerWorkspace; api: Api; relo
                   <span className="text-xs text-[#667085]">{timeAgo(a.createdAt)}</span>
                 </div>
                 <p className="mt-2 text-[15px] text-[#101828]">{a.what}</p>
-                {a.amount && <p className="mt-1 text-lg font-semibold tabular-nums">{a.amount}</p>}
-                <p className="mt-1 text-sm text-[#475467]">Why you&apos;re asked: {a.whyApproval}</p>
+                <p className="mt-0.5 text-xs text-[#667085]">{LIFECYCLE[a.lifecycle].explain}</p>
+                <Terms a={a} />
+                <p className="mt-2 text-sm text-[#475467]">Why you&apos;re asked: {a.whyApproval}</p>
                 {a.newerContext && <p className="mt-2 rounded-lg bg-[#fef3f2] px-3 py-2 text-sm text-[#b42318]">{a.newerContext}</p>}
                 <div className="mt-3 flex flex-wrap gap-2">
                   {a.actionable && (
@@ -470,8 +556,13 @@ function ApprovalsView({ ws, api, reload }: { ws: OwnerWorkspace; api: Api; relo
                     <span className="font-medium">{a.customer}</span>
                   </div>
                   <p className="mt-1 text-sm text-[#475467]">{a.what}</p>
+                  <p className="text-xs text-[#667085]">{(LIFECYCLE[a.lifecycle] ?? { explain: "" }).explain}{a.resultReference ? ` Result: ${a.resultReference}.` : ""}</p>
+                  <details className="mt-1">
+                    <summary className="cursor-pointer text-xs text-[#475467]">Exact terms</summary>
+                    <Terms a={a} />
+                  </details>
                 </div>
-                <span className="text-xs text-[#667085]">{timeAgo(a.createdAt)}</span>
+                <span className="shrink-0 text-xs text-[#667085]">{timeAgo(a.createdAt)}</span>
               </li>
             ))}
           </ul>
@@ -522,10 +613,10 @@ const AI_STATE: Record<string, { tone: Tone; label: string }> = {
 function HealthView({ ws, api, reload }: { ws: OwnerWorkspace; api: Api; reload: () => Promise<void> }) {
   const ai = ws.health.ai;
   const [busy, setBusy] = useState<string | null>(null);
-  const resolve = async (conversationId: string, handoffId: string) => {
+  const resolve = async (conversationId: string, handoffId: string, action: "acknowledge" | "resolve") => {
     setBusy(handoffId);
     try {
-      await api.call("/api/owner/handoffs", { body: { businessId: api.businessId, conversationId, handoffId } });
+      await api.call("/api/owner/handoffs", { body: { businessId: api.businessId, conversationId, handoffId, action } });
       await reload();
     } finally {
       setBusy(null);
@@ -588,7 +679,7 @@ function HealthView({ ws, api, reload }: { ws: OwnerWorkspace; api: Api; reload:
                 <li key={h.id} className="rounded-xl border border-[#e4e7ec] p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex flex-wrap items-center gap-2">
-                      <Pill tone={h.status === "open" ? (h.urgency === "urgent" ? "bad" : "info") : "neutral"}>{h.status === "open" ? (h.urgency === "urgent" ? "Urgent" : "Open") : "Resolved"}</Pill>
+                      <Pill tone={h.status === "resolved" ? "neutral" : h.urgency === "urgent" ? "bad" : "info"}>{h.status === "resolved" ? "RESOLVED" : h.status === "acknowledged" ? "ACKNOWLEDGED" : h.urgency === "urgent" ? "OPEN · URGENT" : "OPEN"}</Pill>
                       <span className="font-medium">{h.customer}</span>
                     </div>
                     <span className="text-xs text-[#667085]">{timeAgo(h.createdAt)}</span>
@@ -596,10 +687,18 @@ function HealthView({ ws, api, reload }: { ws: OwnerWorkspace; api: Api; reload:
                   <p className="mt-1.5 text-sm text-[#344054]">{h.summary}</p>
                   {h.unresolved.length > 0 && <p className="mt-1 text-sm text-[#475467]">Still open: {h.unresolved.join("; ")}</p>}
                   {h.transaction.length > 0 && <p className="mt-1 text-xs text-[#667085]">{h.transaction.join(" · ")}</p>}
-                  {h.status === "open" && (
-                    <button className={`${btn} mt-2`} disabled={busy === h.id} onClick={() => void resolve(h.conversationId, h.id)}>
-                      Mark resolved
-                    </button>
+                  <p className="mt-1 text-xs text-[#667085]">{h.responseCommitted ? "BARRY told the customer your team follows up as your playbook says." : "BARRY told the customer your team can see this, without promising a reply time."} BARRY can&apos;t send your reply for you yet — answer the customer in your own channel.</p>
+                  {h.status !== "resolved" && (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {h.status === "open" && (
+                        <button className={btn} disabled={busy === h.id} onClick={() => void resolve(h.conversationId, h.id, "acknowledge")}>
+                          Acknowledge
+                        </button>
+                      )}
+                      <button className={btn} disabled={busy === h.id} onClick={() => void resolve(h.conversationId, h.id, "resolve")}>
+                        Mark resolved
+                      </button>
+                    </div>
                   )}
                 </li>
               ))}
@@ -611,7 +710,7 @@ function HealthView({ ws, api, reload }: { ws: OwnerWorkspace; api: Api; reload:
   );
 }
 
-const SUGGESTIONS = ["What happened today?", "Who needs me?", "How much did you collect this week?", "Which opportunities did we lose?", "Why did a request fail?"];
+const SUGGESTIONS = ["What happened today?", "How much did we actually collect?", "Who needs me?", "What failed?", "Which opportunities did we lose?", "Give everyone 20% off."];
 
 function AskView({ api }: { api: Api }) {
   const [q, setQ] = useState("");

@@ -1,9 +1,12 @@
 import type { ComposeResponseInput, ReasonerContext } from "./types";
 import { operationKinds } from "./receipts";
-import type { LedgerEntry } from "@/lib/runtime/ledger";
+import { ledgerView, type LedgerEntry } from "@/lib/runtime/ledger";
 
 /** What a claim asserts happened — each is satisfied only by a matching domain effect in the ledger. */
-export type ClaimKind = "refund" | "update" | "cancel" | "send" | "create" | "booking" | "payment" | "availability" | "delivery" | "callback" | "cart_empty";
+export type ClaimKind = "refund" | "update" | "cancel" | "send" | "create" | "booking" | "payment" | "availability" | "delivery" | "callback" | "cart_empty" | "human_contact";
+
+/** Claims that a consequential business effect is DONE — they must be bound to that very effect. */
+const COMPLETION_KINDS = new Set<ClaimKind>(["create", "booking", "payment", "send", "refund", "delivery"]);
 
 /**
  * Claim grounding — the last check between a model-written reply and the customer.
@@ -44,7 +47,44 @@ export type ClaimEvidence = {
   addedThisTurn: string[];
   /** Times of day (minutes after midnight) BARRY's records, facts, scheduling or the customer state. */
   times: number[];
+  /** Effect kinds actually carried out THIS turn. */
+  thisTurnKinds?: Set<ClaimKind>;
+  /** Kinds of operations that are only REQUESTED — waiting for the owner, not done. */
+  pendingKinds?: Set<ClaimKind>;
+  /** Every recorded subject (a request or an effect): its identifiers and the effect kinds really done for it. */
+  subjects?: { ids: string[]; done: Set<ClaimKind>; state: string }[];
+  /** References produced by done effects, per kind (a recap naming one is about that effect). */
+  doneReferences?: Partial<Record<ClaimKind, string[]>>;
 };
+
+const idTokens = (text: string) => (text.match(/[\p{L}\p{N}]+/gu) ?? []).filter((t) => /\p{N}/u.test(t) && t.length >= 3).map((t) => t.toLowerCase());
+
+/** What kind of effect an operation WOULD have (from BARRY's own operation ids). */
+function operationClaimKinds(e: LedgerEntry): ClaimKind[] {
+  const kinds = (e.operation.includes(".") ? operationKinds("invokeCapability", e.operation) : operationKinds(e.operation)).filter((k) => k !== "read") as ClaimKind[];
+  if (/booking/i.test(e.operation)) kinds.push("booking");
+  return kinds;
+}
+
+/** Lifecycle evidence: what is merely requested vs actually done, bound to each subject's own identifiers. */
+function lifecycleEvidence(ledger: LedgerEntry[], turnStartSeq: number) {
+  const thisTurnKinds = new Set(ledger.filter((e) => e.seq > turnStartSeq).flatMap(effectClaimKinds));
+  const pendingKinds = new Set(ledgerView(ledger).filter((e) => e.status === "awaiting_owner").flatMap(operationClaimKinds));
+  const groups = new Map<string, LedgerEntry[]>();
+  for (const e of ledger) {
+    if (e.operation === "understand" || e.operation === "handoff") continue;
+    const key = e.requestId ?? `seq:${e.seq}`;
+    groups.set(key, [...(groups.get(key) ?? []), e]);
+  }
+  const subjects = [...groups.values()].map((entries) => ({
+    ids: [...new Set(entries.flatMap((e) => Object.values(e.terms).filter((v): v is string => typeof v === "string").flatMap(idTokens)))],
+    done: new Set(entries.flatMap(effectClaimKinds)),
+    state: entries.at(-1)!.status,
+  }));
+  const doneReferences: Partial<Record<ClaimKind, string[]>> = {};
+  for (const e of ledger) if (e.reference) for (const k of effectClaimKinds(e)) (doneReferences[k] ??= []).push(e.reference);
+  return { thisTurnKinds, pendingKinds, subjects: subjects.filter((s) => s.ids.length > 0), doneReferences };
+}
 
 const NEGATED = /\b(not|n't|never|no|can't|cannot|unable|won't|haven't|hasn't|wasn't|isn't|didn't)\b|לא |אין |אי אפשר|אינו|אינה|טרם/i;
 const MODAL = /\b(will|'ll|can|could|would|may|might|if|once|after|when|before|want|like to|shall|should|able to|going to)\b|\?$|^(אם|האם) /i;
@@ -93,6 +133,8 @@ const RULES: ClaimRule[] = [
   // recorded enquiry is not an arranged CALLBACK.
   { kind: "delivery", en: /\b(?:emailed|e-mailed|sent (?:it |the link |this |you )?(?:to|at) your (?:e-?mail|inbox|address)|(?:to|in) your (?:e-?mail|inbox))\b/i, he: /(נשלח(?:ה)? ל(?:כתובת ה)?(?:אימייל|מייל)|שלחתי (?:לך )?ל(?:מייל|אימייל)|לתיבת הדואר|ישלח(?:ו)? למייל)/, promiseToo: true },
   { kind: "callback", en: /\b(?:(?:the |our )?team|someone|we|they|a (?:salesperson|representative|specialist))(?: will|'ll)? (?:reach out|call you|contact you|get back to you|be in touch|follow up with you)\b/i, he: /(יחזרו אליך|יצרו (?:איתך|אתך) קשר|ניצור (?:איתך|אתך) קשר|נחזור אליך|יתקשרו אליך|יחזור אליך)/, promiseToo: true },
+  // Nothing records a person replying to the customer: "the team has already contacted you" is never true.
+  { kind: "human_contact", en: /\b(?:the |our )?(?:team|owner|manager|someone|staff|a (?:person|human|colleague|representative))\b[^.!?]*\b(?:has|have|already|just)\s+(?:already\s+)?(?:contacted|called|messaged|emailed|replied to|reached out to|responded to|spoken (?:to|with))\s+you\b/i, he: /(הצוות|בעל העסק|בעלת העסק|נציג|נציגה)[^.!?]*(?:כבר )?(?:יצר|יצרה|יצרו) (?:איתך|אתך) קשר|(הצוות|נציג|נציגה|בעל העסק)[^.!?]*(?:כבר )?(?:ענה|ענתה|ענו|חזר|חזרה|חזרו) אליך/ },
   { kind: "payment", en: /\bpayment\b[^.!?]*\b(?:verified|received|confirmed|completed?|went through|successful|settled)\b|\b(?:paid|payment) (?:is |has been )?(?:verified|confirmed|received)\b/i, he: /(התשלום (?:אומת|התקבל|עבר|אושר)|קיבלתי את התשלום|שולם בהצלחה)/ },
   { kind: "availability", en: /\b(?:is|are|it's|we have|there's|there is|there are)\b[^.!?]*\b(?:available|in stock)\b|\b(?:slots?|openings?|times?|spots?) (?:available|free|open)\b/i, he: /(פנוי|פנויה|פנויים|פנויות|זמין|זמינה|זמינים|זמינות|במלאי|יש מקום)/ },
   { kind: "owner_waiting", en: /\b(?:waiting|wait) (?:for|on) (?:their|his|her|the|an?) ?(?:response|answer|reply|approval|decision|ok|sign-?off)\b|\b(?:pending|awaiting) (?:approval|sign-?off)\b|\b(owner|manager|boss)\b.*\b(waiting|pending|hear back|haven't heard|still)\b|\b(waiting|pending|still)\b.*\b(owner|manager|boss)('s)?\b|\b(?:owner|manager|boss)\b[^.!?]*\b(?:is |are )?(?:currently )?(?:reviewing|looking (?:into|at)|considering|checking)\b/i, he: /(?:מחכה|ממתין|ממתינה|ממתינים) (?:ל)?(?:תשובה|אישור|לאישור|לתשובה)|(מחכה|ממתין|ממתינה|עדיין).*(בעל העסק|בעלת העסק|הבעלים|המנהל|האחראי)|(בעל העסק|בעלת העסק|הבעלים|המנהל|האחראי).*(מחכה|ממתין|ממתינה|עדיין|בודק|בודקת|שוקל)/ },
@@ -186,6 +228,10 @@ export function claimEvidence(ctx: ReasonerContext, input: ComposeResponseInput,
     }
   }
   if (input.outcome.kind === "withdrawn" && input.outcome.withdrawnRequests > 0) kinds.add("cancel");
+  // A revision THIS turn (an older request superseded and its replacement sent to the owner) is an
+  // update of the REQUEST — "I've updated the request" is true; the effect itself is still only requested.
+  const thisTurnEntries = ledger.filter((e) => e.seq > turnStartSeq);
+  if (thisTurnEntries.some((e) => e.status === "superseded") && thisTurnEntries.some((e) => e.status === "awaiting_owner")) kinds.add("update");
   // The cart is empty only if the provider's latest cart says so: the last cart receipt's after-state,
   // or (no cart change recorded) the cart as re-read this turn.
   const lastCart = [...ledger].reverse().find((e) => e.outcome && typeof e.outcome.cartAfter === "string");
@@ -263,7 +309,7 @@ export function claimEvidence(ctx: ReasonerContext, input: ComposeResponseInput,
   ].join("\n");
   const times = [...new Set(timesIn(timeSources))];
 
-  return { kinds, ownerRequestExists, ownerRequestWaiting, amounts: [...new Set(base.filter((n) => Number.isFinite(n) && n > 0))], mentioned, percentages: [...percentages], factText, customerText, reportedText, knownItems, addedThisTurn, times };
+  return { kinds, ownerRequestExists, ownerRequestWaiting, amounts: [...new Set(base.filter((n) => Number.isFinite(n) && n > 0))], mentioned, percentages: [...percentages], factText, customerText, reportedText, knownItems, addedThisTurn, times, ...lifecycleEvidence(ledger, turnStartSeq) };
 }
 
 function derivable(x: number, ev: ClaimEvidence): boolean {
@@ -369,7 +415,24 @@ function checkClause(sentence: string, fullSentence: string, ownerSentence: bool
         if (rule.needsCompletion && !rule.he.test(sentence) && !COMPLETION_EN.test(sentence)) continue;
         // A callback promise is kept when BARRY really will come back (an owner request that resumes the chat).
         if (rule.kind === "callback" && ev.ownerRequestWaiting) continue;
-        if (!ev.kinds.has(rule.kind as ClaimKind)) out.push({ sentence: fullSentence, why: `claims a ${rule.kind} that no recorded business effect shows` });
+        const kind = rule.kind as ClaimKind;
+        if (!ev.kinds.has(kind)) {
+          out.push({ sentence: fullSentence, why: `claims a ${rule.kind} that no recorded business effect shows` });
+          continue;
+        }
+        if (!COMPLETION_KINDS.has(kind)) continue;
+        // SUBJECT-BOUND: a completion claim naming a request's own identifier needs THAT request's effect.
+        const said = idTokens(fullSentence);
+        const named = (ev.subjects ?? []).filter((s) => s.ids.some((id) => said.includes(id)));
+        if (named.length > 0 && !named.some((s) => s.done.has(kind))) {
+          out.push({ sentence: fullSentence, why: `claims a ${rule.kind} for ${named[0].ids.find((id) => said.includes(id))!.toUpperCase()}, but that request is ${named[0].state === "awaiting_owner" ? "only waiting for the owner's approval" : "not done"}` });
+          continue;
+        }
+        // LIFECYCLE: while an operation of this kind is only requested, "done" needs an effect THIS turn —
+        // or a recap naming the reference of the earlier effect it is about.
+        if (ev.pendingKinds?.has(kind) && !ev.thisTurnKinds?.has(kind) && !(ev.doneReferences?.[kind] ?? []).some((ref) => fullSentence.includes(ref))) {
+          out.push({ sentence: fullSentence, why: `claims a ${rule.kind} while that request is only waiting for the owner's approval` });
+        }
       }
     }
   }

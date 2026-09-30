@@ -2,9 +2,9 @@ import type { NextRequest } from "next/server";
 import { z } from "zod";
 import { ownerFailure, ownerGraph } from "@/lib/owner/http";
 import { getConversationStore } from "@/lib/state";
-import { resolveHandoff } from "@/lib/runtime/handoff";
+import { acknowledgeHandoff, resolveHandoff } from "@/lib/runtime/handoff";
 
-const Body = z.object({ businessId: z.string().min(1), conversationId: z.string().min(1), handoffId: z.string().min(1) });
+const Body = z.object({ businessId: z.string().min(1), conversationId: z.string().min(1), handoffId: z.string().min(1), action: z.enum(["acknowledge", "resolve"]).default("resolve") });
 
 /** The team closes a handoff. (Replying to the customer happens in the team's own channel today.) */
 export async function POST(req: NextRequest) {
@@ -16,8 +16,8 @@ export async function POST(req: NextRequest) {
     const store = getConversationStore();
     const state = await store.get(parsed.data.conversationId);
     if (!state || state.businessId !== g.graph.business.id) return Response.json({ error: "Conversation not found" }, { status: 404 });
-    const resolved = resolveHandoff(state, parsed.data.handoffId, "owner");
-    if (!resolved) return Response.json({ error: "This handoff is already closed" }, { status: 409 });
+    const resolved = parsed.data.action === "acknowledge" ? acknowledgeHandoff(state, parsed.data.handoffId, "owner") : resolveHandoff(state, parsed.data.handoffId, "owner");
+    if (!resolved) return Response.json({ error: parsed.data.action === "acknowledge" ? "This handoff was already acknowledged or closed" : "This handoff is already closed" }, { status: 409 });
     await store.save(state);
     return Response.json({ handoff: resolved });
   } catch (err) {

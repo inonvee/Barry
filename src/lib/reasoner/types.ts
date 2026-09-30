@@ -47,6 +47,10 @@ export type GroundedContext = {
   /** Multi-ask continuation: what was already carried out this turn, and the customer's asks not yet done. */
   doneThisTurn?: string[];
   remainingAsks?: string[];
+  /** The customer asked about the business's policies/facts this turn: replies are checked against the policy texts. */
+  policyTurn?: boolean;
+  /** The knowledge topic the customer asked about (verbatim fallback). */
+  policyTopic?: string;
   /** Asks from this message that were never carried out (runtime truth, for the reply). */
   notDone?: string[];
   /** A handoff created (or already open) this turn, for the reply. */
@@ -114,7 +118,9 @@ export type ModelCallFailureKind =
   | "empty_completion"
   | "json_parse_error"
   | "schema_validation_error"
-  | "invalid_model_config";
+  | "invalid_model_config"
+  /** QA tool only (never in Vercel Production): a deliberately failed understanding, to test the runtime after one. */
+  | "qa_forced_understanding_failure";
 
 export type ModelCallFailure = {
   kind: ModelCallFailureKind;
@@ -127,6 +133,8 @@ export type ModelCallFailure = {
   /** Whether a retry could plausibly succeed (rate limit, 5xx, timeout, malformed output). */
   transient: boolean;
 };
+
+export type PolicyContradiction = { sentence: string; policy: string; why: string };
 
 /** Understanding plus what it took: whether it is usable, how it failed, what was salvaged. */
 export type UnderstandingResult = {
@@ -220,6 +228,8 @@ export type ComposeResponseInput = {
   next?: CompileOutcome;
   /** Things the customer asked for in this message that were NOT done (their words) — say so; never imply them. */
   notDone?: string[];
+  /** The business's own policy text for what the customer asked (quoted verbatim when a reply can't be verified). */
+  policyQuote?: { topic: string; text: string };
   /** The conversation is with the business's team (a recorded handoff): what may be promised about it. */
   handoff?: { status: "created" | "already_open"; responseCommitted: boolean; how?: string };
   /** The conversation's reply language (resolved by the runtime; never from a digits-only message). */
@@ -240,6 +250,13 @@ export interface Reasoner {
   /** understand() with its outcome: validity, classified failure, salvage. The runtime prefers this. */
   understandDetailed?(ctx: ReasonerContext): Promise<UnderstandingResult>;
   composeResponse(ctx: ReasonerContext, input: ComposeResponseInput): Promise<string>;
+  /**
+   * Semantic check of a reply against the business's OWN policy texts: which sentences state a policy
+   * differently from what the business wrote (a limit turned into a prohibition, "exchange only" turned
+   * into "no exchanges", a condition dropped). The model judges meaning; the runtime decides what happens.
+   * undefined = the check could not run (the reply is then judged by the other checks only).
+   */
+  checkPolicyConsistency?(ctx: ReasonerContext, reply: string, policies: { topic: string; text: string }[]): Promise<PolicyContradiction[] | undefined>;
   /** The underlying understanding model id, when there is one (recorded in turn traces). */
   readonly model?: string;
   /** The model that words replies, when different. */

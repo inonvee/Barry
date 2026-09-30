@@ -19,6 +19,7 @@ import { resolveReplyLanguage, type ReplyLanguage } from "@/lib/reasoner/languag
 import { checkInfoRequest, infoRequestFields } from "@/lib/reasoner/reply-contract";
 import { composeDeterministic, handoffText, understandingUnavailableText, intentHeldText, revalidatedChangeText } from "@/lib/reasoner/deterministic-compose";
 import { createHandoff, handoffPath } from "./handoff";
+import { QA_FORCE_UNDERSTANDING_FAILURE, qaEnabled } from "@/lib/qa/mode";
 import { findInternalLeak, internalVocabulary } from "@/lib/reasoner/reply-hygiene";
 import { claimEvidence, findMisattributedReferences, findUnsupportedClaims, languageMismatch, trimClosers } from "@/lib/reasoner/claim-grounding";
 import { renderStatus } from "@/lib/reasoner/status-render";
@@ -366,7 +367,7 @@ export async function handleCustomerMessage(
   grounded.turnStartSeq = readLedger(state).length;
   // Model-call failures the reasoner recovers from (e.g. a composer call that fell back) land here for the trace.
   const diagnostics = { composerFailures: [] as ModelCallFailure[] };
-  const understanding = await understandTurn(reasoner, { graph, state, customerMessage: message, grounded, diagnostics });
+  const understanding = await qaForcedFailure(state, reasoner) ?? (await understandTurn(reasoner, { graph, state, customerMessage: message, grounded, diagnostics }));
   // An understanding that failed is NOT a turn to compile: an empty IR would read as "the customer
   // said nothing" and become a generic greeting. Nothing is done, the reply says so truthfully, and
   // the reason is in the trace.
@@ -506,6 +507,9 @@ export async function handleCustomerMessage(
   if (understanding.failClosed) appendLedger(state, understandingEntry("partial"));
 
   if (remainingAsks.length > 0) grounded.notDone = remainingAsks;
+  // The customer asked about the business's policies/facts: replies are checked against its policy texts.
+  if (ir.knowledgeTopic) grounded.policyTopic = ir.knowledgeTopic;
+  grounded.policyTurn = Boolean(ir.knowledgeTopic) || (ir.asks ?? []).some((a) => a.kind === "question");
   // A person is needed: record a real handoff (one open per conversation) — the reply can only say what it is.
   if (ir.handoff) {
     const unresolved = [...remainingAsks, ...(ir.asks ?? []).filter((a) => a.kind !== "change" && !a.coveredByThisIR).map((a) => a.ask)];
@@ -560,6 +564,7 @@ export async function handleCustomerMessage(
       },
       ...(ir.customerClaims ? { customerClaims: ir.customerClaims } : {}),
       ...(ir.knowledgeTopic ? { knowledgeTopic: ir.knowledgeTopic } : {}),
+      ...(ir.asks?.length ? { asks: ir.asks } : {}),
       ...(ir.capabilityRequest ? { capabilityRequest: ir.capabilityRequest } : {}),
     },
     retrieved: { offerIds, knowledgeIds },
@@ -578,6 +583,7 @@ export async function handleCustomerMessage(
     trace: {
       runtime: runtimeTrace(reasoner),
       understanding: understandingTrace(understanding),
+      ...(grounded.notDone?.length ? { notDone: grounded.notDone } : {}),
       ...(revalidation && (revalidation.revalidated > 0 || revalidation.stillUnresolved > 0) ? { revalidation } : {}),
       rejectedClaims: verification.rejected.map((r) => ({ claim: r.claim, reason: r.reason })),
       steps: steps.map((st) => st.trace),
@@ -645,6 +651,25 @@ export async function revalidateUnresolvedTurns(graph: BusinessGraph, state: Con
     revalidated++;
   }
   return { revalidated, stillUnresolved: unresolved.length - revalidated, changedRequests };
+}
+
+/**
+ * QA tool (never in Vercel Production): the one-shot forced understanding failure set on this conversation.
+ * It is consumed here; outside QA mode a stray flag is dropped and ignored.
+ */
+function qaForcedFailure(state: ConversationState, reasoner: Reasoner): UnderstandingResult | undefined {
+  if (state.knownFields[QA_FORCE_UNDERSTANDING_FAILURE] === undefined) return undefined;
+  delete state.knownFields[QA_FORCE_UNDERSTANDING_FAILURE];
+  if (!qaEnabled()) return undefined;
+  return {
+    ir: { intent: "understanding_failed", entities: {}, constraints: {}, customerInfo: {} },
+    valid: false,
+    attempts: 0,
+    failure: { kind: "qa_forced_understanding_failure", message: "forced by the QA tool for this one message", transient: false },
+    latencyMs: 0,
+    usage: { promptTokens: 0, completionTokens: 0, reasoningTokens: 0 },
+    model: reasoner.model ?? reasoner.name,
+  };
 }
 
 /** Understanding with its outcome. A reasoner without detailed reporting is taken at its word. */
@@ -1022,7 +1047,9 @@ async function composeTurn(
 ): Promise<{ text: string; fallback?: string }> {
   const graph = rctx.graph;
   const last = steps[steps.length - 1];
-  const notDone = {
+  const policyItem = rctx.grounded?.policyTopic ? graph.knowledge.find((k) => k.topic === rctx.grounded?.policyTopic) : undefined;
+  const extras = {
+    ...(policyItem ? { policyQuote: { topic: policyItem.topic, text: policyItem.content } } : {}),
     ...(rctx.grounded?.notDone?.length ? { notDone: rctx.grounded.notDone } : {}),
     ...(rctx.grounded?.handoff ? { handoff: rctx.grounded.handoff } : {}),
   };
@@ -1044,7 +1071,7 @@ async function composeTurn(
       writeBlocked: blockedStep.blocked,
       language,
       quote,
-      ...notDone,
+      ...extras,
       ...(before.length ? { steps: before.map((st) => ({ outcome: st.outcome, toolResult: st.toolResult, existingOwnerRequest: st.existing })) } : {}),
     };
     return { text: composeDeterministic(input), fallback: "write blocked -> deterministic" };
@@ -1052,13 +1079,13 @@ async function composeTurn(
   if (steps.length <= 1 && !next) {
     if (last?.policyDecision.status === "denied") {
       // The rule's text stays in the trace; the customer hears what it means for them.
-      input = { outcome, toolResult: null, refused: true, language, quote, ...notDone };
+      input = { outcome, toolResult: null, refused: true, language, quote, ...extras };
       return await guardReply(reasoner, rctx, input, await reasoner.composeResponse(rctx, input));
     }
     if (last?.policyDecision.status === "requires_approval") {
       input = last.existing
-        ? { outcome, toolResult: null, existingOwnerRequest: last.existing, language, quote, ...notDone }
-        : { outcome, toolResult: null, policyReason: last.policyDecision.reason, language, quote, ...notDone };
+        ? { outcome, toolResult: null, existingOwnerRequest: last.existing, language, quote, ...extras }
+        : { outcome, toolResult: null, policyReason: last.policyDecision.reason, language, quote, ...extras };
       return await guardReply(reasoner, rctx, input, await reasoner.composeResponse(rctx, input));
     }
     input = sanitizeComposeInput({ outcome, toolResult: last?.toolResult ?? null, scheduling: buildSchedulingDisplay(graph, outcome, last?.toolResult ?? null, message, language), language, quote });
@@ -1084,7 +1111,7 @@ async function composeTurn(
   }
   if (outcome.kind === "conversation" && rctx.grounded?.ownerRequests?.length) input = { ...input, ownerRequests: rctx.grounded.ownerRequests };
   if (rctx.grounded?.revisionWithoutReplacement) input = { ...input, revisionWithoutReplacement: true };
-  input = { ...input, ...notDone };
+  input = { ...input, ...extras };
   const guarded = await guardReply(reasoner, rctx, input, await reasoner.composeResponse(rctx, input));
   if (guarded.fallback) return guarded;
   const text = guarded.text;
@@ -1127,7 +1154,7 @@ async function guardReply(
   text: string
 ): Promise<{ text: string; fallback?: string }> {
   if (reasoner.name !== "llm") return { text };
-  const problems = replyProblems(rctx, input, text);
+  const problems = [...replyProblems(rctx, input, text), ...(await policyProblems(reasoner, rctx, text))];
   if (problems.length === 0) return { text: trimClosers(text) };
   let repaired: string | undefined;
   try {
@@ -1135,8 +1162,20 @@ async function guardReply(
   } catch {
     repaired = undefined;
   }
-  if (repaired && replyProblems(rctx, input, repaired).length === 0) return { text: trimClosers(repaired), fallback: `${problems.join("; ")} -> regenerated` };
+  if (repaired && replyProblems(rctx, input, repaired).length === 0 && (await policyProblems(reasoner, rctx, repaired)).length === 0) return { text: trimClosers(repaired), fallback: `${problems.join("; ")} -> regenerated` };
   return { text: composeDeterministic(withStatus(rctx, input)), fallback: `${problems.join("; ")} -> deterministic` };
+}
+
+/**
+ * POLICY GROUNDING: on a turn where the customer asked about the business's policies/facts, the reply is
+ * checked (semantically, by the model) against the business's OWN policy texts. A contradiction is a
+ * problem like any unsupported claim: the reply is regenerated, else the policy is quoted verbatim.
+ */
+async function policyProblems(reasoner: ReturnType<typeof getReasoner>, rctx: ReasonerContext, text: string): Promise<string[]> {
+  if (!rctx.grounded?.policyTurn || !reasoner.checkPolicyConsistency) return [];
+  const policies = rctx.graph.knowledge.map((k) => ({ topic: k.topic, text: k.content }));
+  const found = await reasoner.checkPolicyConsistency(rctx, text, policies).catch(() => undefined);
+  return (found ?? []).map((c) => `policy: "${c.sentence}" contradicts the business's policy "${c.policy}" (${c.why})`);
 }
 
 function replyProblems(rctx: ReasonerContext, input: ComposeResponseInput, text: string): string[] {

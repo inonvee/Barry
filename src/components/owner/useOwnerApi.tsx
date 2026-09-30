@@ -1,102 +1,150 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useBusiness, type BusinessSummary } from "@/components/shell/useBusiness";
 
-const TOKEN_KEY = "barry.ownerToken";
-const BUSINESS_KEY = "barry.ownerBusiness";
+export type { BusinessSummary };
 
-function read(key: string): string {
-  try {
-    return window.sessionStorage.getItem(key) ?? "";
-  } catch {
-    return "";
-  }
-}
-function write(key: string, value: string) {
-  try {
-    window.sessionStorage.setItem(key, value);
-  } catch {
-    // storage unavailable — the value just isn't remembered
-  }
-}
+/**
+ * Owner workspace access: the shared current business + the owner SESSION for it (an httpOnly cookie set by
+ * signing in once with that business's owner token — the token is never stored or rendered by the page).
+ * `call` changes identity when the session changes, so pages reload after signing in or out.
+ */
 
-export type BusinessSummary = { id: string; name: string };
+export type OwnerSession = {
+  configured: boolean;
+  open: boolean;
+  signedIn: boolean;
+  scope: "open" | "operator" | "business" | null;
+  businessId: string | null;
+  authorized: boolean | null;
+  setup?: { variable: string; shape: string; note: string; businessIds: string[] };
+};
 
-/** Owner token (kept in this tab's session only) + business selection + an authenticated fetch helper. */
 export function useOwnerApi() {
-  const [token, setTokenState] = useState("");
-  const [businessId, setBusinessIdState] = useState("");
-  const [businesses, setBusinesses] = useState<BusinessSummary[]>([]);
+  const { businesses, businessId, setBusinessId, business } = useBusiness();
+  const [session, setSession] = useState<OwnerSession | null>(null);
+  const [version, setVersion] = useState(0);
 
   useEffect(() => {
-    fetch("/api/simulator/businesses")
+    if (!businessId) return;
+    let cancelled = false;
+    fetch(`/api/owner/session?businessId=${encodeURIComponent(businessId)}`)
       .then((r) => r.json())
-      .then((data: { businesses: BusinessSummary[] }) => {
-        setTokenState(read(TOKEN_KEY));
-        const saved = read(BUSINESS_KEY);
-        setBusinesses(data.businesses);
-        setBusinessIdState(saved && data.businesses.some((b) => b.id === saved) ? saved : data.businesses[0]?.id ?? "");
+      .then((s: OwnerSession) => {
+        if (!cancelled) setSession(s);
       })
-      .catch(() => setBusinesses([]));
-  }, []);
+      .catch(() => {
+        if (!cancelled) setSession(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [businessId, version]);
 
-  const setToken = (value: string) => {
-    setTokenState(value);
-    write(TOKEN_KEY, value);
-  };
-  const setBusinessId = (value: string) => {
-    setBusinessIdState(value);
-    write(BUSINESS_KEY, value);
-  };
-
+  const authorized = Boolean(session?.authorized);
   const call = useCallback(
     async <T,>(url: string, init?: { method?: string; body?: unknown }): Promise<T> => {
       const res = await fetch(url, {
         method: init?.method ?? (init?.body ? "POST" : "GET"),
-        headers: { "content-type": "application/json", ...(token ? { "x-barry-owner-token": token } : {}) },
+        headers: { "content-type": "application/json" },
         body: init?.body ? JSON.stringify(init.body) : undefined,
+        credentials: "same-origin",
       });
       const data = (await res.json().catch(() => ({}))) as T & { error?: string };
       if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
       return data;
     },
-    [token]
+    // The session is part of every call's identity: signing in/out reloads the page's data.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [authorized, version]
   );
 
-  return { token, setToken, businessId, setBusinessId, businesses, call };
+  const signIn = useCallback(
+    async (token: string): Promise<string | undefined> => {
+      const res = await fetch("/api/owner/session", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ businessId, token }) });
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      setVersion((v) => v + 1);
+      return res.ok ? undefined : (data.error ?? "Sign-in failed");
+    },
+    [businessId]
+  );
+
+  const signOut = useCallback(async () => {
+    await fetch("/api/owner/session", { method: "DELETE" });
+    setVersion((v) => v + 1);
+  }, []);
+
+  return { businessId, setBusinessId, businesses, business, session, authorized, call, signIn, signOut };
 }
 
+/** The owner workspace header: page title + the owner session for the current business (sign in / out). */
 export function OwnerBar({ api, title, subtitle }: { api: ReturnType<typeof useOwnerApi>; title: string; subtitle: string }) {
+  const [token, setToken] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const s = api.session;
+  const submit = async () => {
+    setBusy(true);
+    const err = await api.signIn(token);
+    setBusy(false);
+    setError(err ?? "");
+    if (!err) setToken("");
+  };
   return (
-    <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+    <header className="flex flex-col gap-3">
       <div>
-        <p className="text-sm font-medium uppercase tracking-[0.18em] text-[#667085]">Owner workspace</p>
-        <h1 className="mt-2 text-2xl font-semibold md:text-3xl">{title}</h1>
-        <p className="mt-2 max-w-2xl text-sm text-[#475467] md:text-base">{subtitle}</p>
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#667085]">Owner workspace · {api.business?.name ?? "—"}</p>
+        <h1 className="mt-1 text-2xl font-semibold md:text-3xl">{title}</h1>
+        <p className="mt-1 max-w-2xl text-sm text-[#475467]">{subtitle}</p>
       </div>
-      <div className="flex flex-col gap-2 sm:flex-row">
-        <select
-          aria-label="Business"
-          value={api.businessId}
-          onChange={(e) => api.setBusinessId(e.target.value)}
-          className="rounded-md border border-[#d0d5dd] bg-white px-3 py-2 text-sm"
-        >
-          {api.businesses.map((b) => (
-            <option key={b.id} value={b.id}>
-              {b.name}
-            </option>
-          ))}
-        </select>
-        <input
-          aria-label="Owner token"
-          type="password"
-          value={api.token}
-          onChange={(e) => api.setToken(e.target.value)}
-          placeholder="Owner token"
-          autoComplete="off"
-          className="rounded-md border border-[#d0d5dd] bg-white px-3 py-2 text-sm"
-        />
-      </div>
+      {s && !s.configured && !s.open && (
+        <div className="rounded-xl border border-[#fecdca] bg-[#fef3f2] p-4 text-sm text-[#7a271a]">
+          <p className="font-semibold">Owner access isn&apos;t configured on this deployment.</p>
+          <p className="mt-1">Set this environment variable (Preview only), then redeploy — one random token per business, never the founder token:</p>
+          <pre className="mt-2 overflow-x-auto rounded-lg bg-white p-2 text-xs text-[#344054]">{`${s.setup?.variable}=${s.setup?.shape}`}</pre>
+          <p className="mt-1 text-xs">Business ids: {s.setup?.businessIds.join(", ")}</p>
+        </div>
+      )}
+      {s && (s.configured || s.open) && (
+        <div className={`flex flex-col gap-2 rounded-xl border p-3 sm:flex-row sm:items-center sm:justify-between ${s.authorized ? "border-[#abefc6] bg-[#f6fef9]" : "border-[#fedf89] bg-[#fffcf5]"}`}>
+          <p className="text-sm">
+            {s.open ? (
+              <span className="font-medium text-[#067647]">● Open (local development — no owner tokens configured)</span>
+            ) : s.authorized ? (
+              <span className="font-medium text-[#067647]">● Connected as {s.scope === "operator" ? "operator (all businesses)" : `owner of ${api.business?.name ?? api.businessId}`}</span>
+            ) : s.signedIn ? (
+              <span className="font-medium text-[#b42318]">● Signed in to a different business — this one needs its own owner token</span>
+            ) : (
+              <span className="font-medium text-[#b54708]">● Not signed in to {api.business?.name ?? "this business"}</span>
+            )}
+          </p>
+          {!s.open && (
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              {!s.authorized && (
+                <form
+                  className="flex gap-2"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void submit();
+                  }}
+                >
+                  <input aria-label="Owner token" type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="Owner token for this business" autoComplete="off" className="min-w-0 flex-1 rounded-md border border-[#d0d5dd] bg-white px-3 py-1.5 text-sm" />
+                  <button disabled={busy || !token.trim()} className="rounded-md bg-[#1d2939] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50">
+                    Sign in
+                  </button>
+                </form>
+              )}
+              {s.signedIn && (
+                <button onClick={() => void api.signOut()} className="rounded-md border border-[#d0d5dd] bg-white px-3 py-1.5 text-sm font-medium text-[#344054]">
+                  Sign out
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+      {error && <p className="text-sm text-[#b42318]">{error}</p>}
     </header>
   );
 }

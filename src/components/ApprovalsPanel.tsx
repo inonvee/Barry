@@ -80,7 +80,7 @@ export function ApprovalsPanel({
           <Meta a={a} currentConversationId={currentConversationId} />
           {a.summary && <p className="text-sm mt-1">{a.summary}</p>}
           <p className="text-xs text-neutral-600 dark:text-neutral-400 mt-1">{a.reason}</p>
-          {a.hold && <p className="text-xs text-orange-700 dark:text-orange-400 mt-1">{holdText(a.hold)}</p>}
+          {a.hold && <p className="text-xs text-orange-700 dark:text-orange-400 mt-1">{holdText(a.hold)} Re-check it in Owner → Approvals.</p>}
           <pre className="mt-2 text-xs bg-white/60 dark:bg-black/20 rounded-lg p-2 overflow-x-auto">{JSON.stringify(a.requestedInput, null, 2)}</pre>
           <div className="mt-3 flex gap-2">
             <button

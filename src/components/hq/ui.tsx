@@ -23,6 +23,12 @@ export function HqHeader({ crumbs }: { crumbs: { href?: string; label: string }[
             </span>
           ))}
         </nav>
+        <nav className="hidden md:flex items-center gap-3 text-xs text-neutral-500">
+          <Link href="/simulator" className="hover:underline">Simulator</Link>
+          <Link href="/owner" className="hover:underline">Owner</Link>
+          <Link href="/owner/train" className="hover:underline">Train</Link>
+          <Link href="/qa" className="hover:underline">QA</Link>
+        </nav>
         <span className="hidden sm:inline text-xs rounded-full bg-neutral-100 dark:bg-neutral-800 px-2 py-0.5 text-neutral-600 dark:text-neutral-300">read-only</span>
         <form action="/api/hq/logout" method="post">
           <button className="text-xs text-neutral-500 hover:underline">Sign out</button>

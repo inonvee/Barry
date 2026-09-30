@@ -42,7 +42,9 @@ export function money(amount: number | string, currency: string | undefined, lan
 }
 
 export function composeDeterministic(input: ComposeResponseInput): string {
-  const core = composeDeterministicCore(input);
+  const base = composeDeterministicCore(input);
+  // A policy the customer asked about is quoted exactly as the business wrote it — never paraphrased.
+  const core = input.policyQuote && input.outcome.kind !== "knowledge_answer" ? `${base} ${input.language?.code === "he" ? "המדיניות שלנו" : "Our policy"}: “${input.policyQuote.text}”` : base;
   const text = input.handoff ? `${core} ${handoffText(input.handoff, input.language?.code)}` : core;
   if (!input.notDone?.length) return text;
   // What the customer asked for and was NOT done is always said — partial work is never presented as complete.

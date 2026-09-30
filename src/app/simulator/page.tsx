@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { BusinessSwitcher } from "@/components/BusinessSwitcher";
+import Link from "next/link";
+import { TestShell } from "@/components/shell/TestShell";
+import { useBusiness } from "@/components/shell/useBusiness";
 import { ChatPanel } from "@/components/ChatPanel";
 import { InspectorPanel } from "@/components/InspectorPanel";
 import { ApprovalsPanel, type ApprovalView } from "@/components/ApprovalsPanel";
@@ -15,12 +17,11 @@ import {
   setStoredConversationId,
 } from "@/lib/simulator-session";
 
-type BusinessSummary = { id: string; name: string; description: string };
 type Tab = "chat" | "inspector" | "approvals" | "graph";
 
 export default function SimulatorPage() {
-  const [businesses, setBusinesses] = useState<BusinessSummary[]>([]);
-  const [businessId, setBusinessId] = useState<string | null>(null);
+  const { businessId: sharedBusinessId, business } = useBusiness();
+  const businessId = sharedBusinessId || null;
   const [graph, setGraph] = useState<BusinessGraph | null>(null);
   const [state, setState] = useState<ConversationState | null>(null);
   const [approvals, setApprovals] = useState<ApprovalView[]>([]);
@@ -32,20 +33,16 @@ export default function SimulatorPage() {
   const [tab, setTab] = useState<Tab>("chat");
   const [sending, setSending] = useState(false);
   const [busyApprovalId, setBusyApprovalId] = useState<string | null>(null);
+  const [approvalsLocked, setApprovalsLocked] = useState(false);
 
-  useEffect(() => {
-    fetch("/api/simulator/businesses")
-      .then((r) => r.json())
-      .then((d) => {
-        setBusinesses(d.businesses);
-        if (d.businesses[0]) setBusinessId(d.businesses[0].id);
-      });
-  }, []);
 
   const refreshApprovals = useCallback((bizId: string) => {
     fetch(`/api/simulator/approvals?businessId=${bizId}`)
-      .then((r) => r.json())
-      .then((d) => setApprovals(d.approvals));
+      .then(async (r) => ({ ok: r.ok, d: await r.json().catch(() => ({})) }))
+      .then(({ ok, d }) => {
+        setApprovals(Array.isArray(d.approvals) ? d.approvals : []);
+        setApprovalsLocked(!ok);
+      });
   }, []);
 
   // Restore (or create) this business's conversation identity from
@@ -92,12 +89,6 @@ export default function SimulatorPage() {
     refreshApprovals(businessId);
   }, [businessId, refreshApprovals]);
 
-  function switchBusiness(id: string) {
-    setState(null);
-    setConversationId(null);
-    setBusinessId(id);
-    setTab("chat");
-  }
 
   function startNewConversation() {
     if (!businessId) return;
@@ -174,17 +165,33 @@ export default function SimulatorPage() {
 
   return (
     <div className="flex h-dvh flex-col bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100">
-      <header className="border-b border-neutral-200 dark:border-neutral-800 p-3 space-y-2 shrink-0">
-        <div className="flex items-center justify-between">
-          <h1 className="text-base font-semibold">BARRY Simulator</h1>
-          <button
-            onClick={startNewConversation}
-            className="text-xs rounded-full bg-neutral-100 dark:bg-neutral-800 px-3 py-1.5 font-medium"
-          >
-            New conversation
-          </button>
+      <div className="shrink-0">
+        <TestShell active="simulator" />
+      </div>
+      <header className="shrink-0 border-b border-neutral-200 px-3 py-2 dark:border-neutral-800">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-2">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold">Customer chat · {business?.name ?? "—"}</p>
+            <p className="truncate font-mono text-[11px] text-neutral-500" title={conversationId ?? ""}>
+              conversation {conversationId ?? "—"} · stage {state?.stage ?? "new"}
+              {state?.pendingApprovalId ? " · waiting on owner" : ""}
+            </p>
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+            <Link href="/owner" className="rounded-md border border-neutral-300 px-2.5 py-1 text-xs font-medium dark:border-neutral-700">
+              Owner approvals
+            </Link>
+            <Link href="/owner/train" className="rounded-md border border-neutral-300 px-2.5 py-1 text-xs font-medium dark:border-neutral-700">
+              Train
+            </Link>
+            <button onClick={startNewConversation} className="rounded-md bg-neutral-900 px-2.5 py-1 text-xs font-medium text-white dark:bg-neutral-100 dark:text-neutral-900">
+              New conversation
+            </button>
+          </div>
         </div>
-        <BusinessSwitcher businesses={businesses} activeId={businessId} onSelect={switchBusiness} />
+        {state?.knownFields.__qaForceUnderstandingFailure && (
+          <p className="mx-auto mt-1.5 max-w-6xl rounded-md bg-amber-100 px-2 py-1 text-xs font-medium text-amber-900">QA: the next message in this conversation will FAIL understanding (armed in QA tools).</p>
+        )}
       </header>
 
       <nav className="flex border-b border-neutral-200 dark:border-neutral-800 shrink-0">
@@ -221,6 +228,15 @@ export default function SimulatorPage() {
           />
         )}
         {tab === "inspector" && <InspectorPanel state={state} />}
+        {tab === "approvals" && approvalsLocked && (
+          <p className="m-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+            Owner access is configured on this deployment: sign in as this business&apos;s owner in{" "}
+            <Link href="/owner" className="underline">
+              Owner
+            </Link>{" "}
+            to see and decide its requests here.
+          </p>
+        )}
         {tab === "approvals" && (
           <ApprovalsPanel approvals={approvals} onDecide={decideApproval} busyId={busyApprovalId} currentConversationId={conversationId} />
         )}

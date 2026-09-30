@@ -31,7 +31,9 @@ export type HandoffRecord = {
   transaction: string[];
   /** The business declared how its team responds — only then may BARRY promise a reply. */
   responseCommitted: boolean;
-  status: "open" | "resolved";
+  /** open → acknowledged (the team has seen it) → resolved. BARRY never replies on the team's behalf. */
+  status: "open" | "acknowledged" | "resolved";
+  acknowledgedAt?: string;
   createdAt: string;
   resolvedAt?: string;
   resolvedBy?: string;
@@ -53,7 +55,19 @@ function writeHandoffs(state: ConversationState, all: HandoffRecord[]): void {
 }
 
 export function openHandoff(state: ConversationState): HandoffRecord | undefined {
-  return readHandoffs(state).find((h) => h.status === "open");
+  return readHandoffs(state).find((h) => h.status === "open" || h.status === "acknowledged");
+}
+
+/** The team has seen it (it stays open until resolved). */
+export function acknowledgeHandoff(state: ConversationState, handoffId: string, by: string): HandoffRecord | undefined {
+  const all = readHandoffs(state);
+  const h = all.find((x) => x.id === handoffId);
+  if (!h || h.status !== "open") return undefined;
+  h.status = "acknowledged";
+  h.acknowledgedAt = new Date().toISOString();
+  h.resolvedBy = by;
+  writeHandoffs(state, all);
+  return h;
 }
 
 /** How this business's team responds to a handoff, when it declared one. */
@@ -126,7 +140,7 @@ export function createHandoff(
 export function resolveHandoff(state: ConversationState, handoffId: string, by: string): HandoffRecord | undefined {
   const all = readHandoffs(state);
   const h = all.find((x) => x.id === handoffId);
-  if (!h || h.status !== "open") return undefined;
+  if (!h || h.status === "resolved") return undefined;
   h.status = "resolved";
   h.resolvedAt = new Date().toISOString();
   h.resolvedBy = by;
