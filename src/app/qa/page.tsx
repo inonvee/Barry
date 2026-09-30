@@ -6,6 +6,7 @@ import { OwnerBar, useOwnerApi } from "@/components/owner/useOwnerApi";
 import { TestShell, useQaStatus } from "@/components/shell/TestShell";
 import { Pill, Section, btn, primary } from "@/components/owner/ui";
 import { getStoredConversationId } from "@/lib/simulator-session";
+import { ManifestView, ScenarioFactory, TestOwnerSignIn } from "@/components/qa/FastLane";
 
 /**
  * QA TOOLS (Preview/dev only — the APIs refuse on Vercel Production): deployment status, the one-shot
@@ -69,6 +70,10 @@ export default function QaPage() {
         <OwnerBar api={api} title="QA tools" subtitle="Test-only controls for this Preview. They never exist on Production and every action needs owner access to the business." />
         {status && !status.qaMode && <p className="rounded-lg border border-[#fecdca] bg-[#fef3f2] px-4 py-3 text-sm text-[#b42318]">QA mode is OFF on this deployment ({status.environment}). The tools below will be refused.</p>}
         {error && <p className="rounded-lg border border-[#fecdca] bg-[#fef3f2] px-4 py-3 text-sm text-[#b42318]">{error}</p>}
+
+        <TestOwnerSignIn api={api} />
+        <ScenarioFactory api={api} />
+        <ManifestView />
 
         <Section title="Deployment status" subtitle="What is really configured — never secrets.">
           {status ? <pre className="overflow-x-auto rounded-lg bg-[#f9fafb] p-3 text-xs">{JSON.stringify(status, null, 2)}</pre> : <p className="text-sm text-[#667085]">Status unavailable.</p>}

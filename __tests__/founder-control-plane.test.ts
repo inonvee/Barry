@@ -122,7 +122,7 @@ describe("founder controls tighten authority, never loosen it", () => {
     await applyControlChange(g.business.id, { disabledChannels: ["whatsapp"] }, { by: "founder", reason: "number compromised" });
     let sent = 0;
     const sender = { channel: "whatsapp" as const, mode: "dry_run" as const, send: async () => (sent++, {}) };
-    const msg = { businessId: g.business.id, conversationId: `wa:${conv("chan")}`, identity: { channel: "whatsapp" as const, channelUserId: "972500000001" }, text: "hello", inboundId: `m-${Date.now()}` };
+    const msg = { businessId: g.business.id, conversationId: `wa:${conv("chan")}`, identity: { channel: "whatsapp" as const, channelUserId: "972500000001" }, text: "hello", receivedAt: new Date().toISOString(), inboundId: `m-${Date.now()}` };
     const blocked = await processInbound(msg, sender);
     expect(blocked).toMatchObject({ status: "failed", error: /disabled by the founder/ });
     expect(await getConversationStore().get(msg.conversationId)).toBeUndefined();

@@ -10,10 +10,26 @@ export { OpenAIReasoner } from "./openai-reasoner";
 
 let singleton: Reasoner | undefined;
 let testOverride: Reasoner | undefined;
+let qaOverride: Reasoner | undefined;
 
 /** Test-only: run the real pipeline with a scripted/live model in place of the configured one. */
 export function setReasonerForTests(reasoner: Reasoner | undefined): void {
   testOverride = reasoner;
+}
+
+/**
+ * QA ONLY (the caller must check qaEnabled()): run `fn` with a scripted reasoner in place of the
+ * configured one — so a QA scenario builds the same acceptance state whatever model is configured.
+ * Scoped to the call; the override is cleared even when `fn` throws.
+ */
+export async function withQaReasoner<T>(reasoner: Reasoner, fn: () => Promise<T>): Promise<T> {
+  const previous = qaOverride;
+  qaOverride = reasoner;
+  try {
+    return await fn();
+  } finally {
+    qaOverride = previous;
+  }
 }
 
 /**
@@ -28,6 +44,7 @@ export function setReasonerForTests(reasoner: Reasoner | undefined): void {
  */
 export function getReasoner(): Reasoner {
   if (testOverride) return testOverride;
+  if (qaOverride) return qaOverride;
   if (singleton) return singleton;
 
   const configuredForOpenAI = process.env.BARRY_REASONER === "openai";
