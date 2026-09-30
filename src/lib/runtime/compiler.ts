@@ -1,7 +1,7 @@
 import type { BusinessGraph, Goal, Offer } from "@/lib/business-graph";
 import { findOffer } from "@/lib/business-graph";
 import { getTool } from "@/lib/tools";
-import type { BarryIR, CompileDebugInfo, CompileOutcome, OfferFact } from "@/lib/reasoner/ir";
+import type { BarryIR, CartSubjectGrounding, CompileDebugInfo, CompileOutcome, OfferFact } from "@/lib/reasoner/ir";
 import { normalizeCustomerInfoField } from "@/lib/reasoner/customer-fields";
 import type { ConversationStage, ConversationState } from "@/lib/state";
 import { resolveSchedulingWindow } from "@/lib/scheduling/resolver";
@@ -145,9 +145,14 @@ function compileCommerce(ir: BarryIR, known: Record<string, string>, options: Co
       if (!cartId || !lineId) return compileCommerce({ ...ir, commerce: { ...commerce, intent: "select" } }, known, options);
       const productId = !commerce.referenceInvalid && commerce.reference?.type === "previous_result" ? lastIds[commerce.reference.index] : undefined;
       if (!productId) return { kind: "clarify_reference", available: lastIds.length, stage: "offer_selection" };
+      // The line being replaced: the one the customer named (never another), else the only/remembered line.
+      const replaced = resolveCartLine({ ...commerce, reference: undefined }, known, options);
+      const g = options.debug?.cartSubject;
+      if (!replaced && commerce.subject && g) return { kind: "cart_subject_unresolved", subject: commerce.subject, reason: g.basis as "not_in_cart", inCart: options.cartLines?.map((l) => l.title) ?? [], stage: "offer_selection" };
+      if (!replaced) return { kind: "clarify_reference", available: options.cartLines?.length ?? 0, stage: "offer_selection" };
       return finalizeAction(
         "addToCart",
-        { productId, options: commerce.variant, quantity: commerce.quantity ?? 1, replaceLine: { cartId, lineId } },
+        { productId, options: commerce.variant, quantity: commerce.quantity ?? 1, replaceLine: { cartId, lineId: replaced } },
         "offer_selection",
         "completePurchase"
       );
@@ -157,6 +162,12 @@ function compileCommerce(ir: BarryIR, known: Record<string, string>, options: Co
     case "change_quantity":
     case "remove": {
       const targetLine = resolveCartLine(commerce, known, options);
+      // A NAMED target that grounds to no single line: nothing is changed, and the customer hears exactly why.
+      const unresolved = options.debug?.cartSubject;
+      if (!targetLine && commerce.subject && unresolved && ["not_in_cart", "ambiguous", "conflict", "keep", "unreadable"].includes(unresolved.basis)) {
+        return { kind: "cart_subject_unresolved", subject: commerce.subject, reason: unresolved.basis as "not_in_cart", inCart: options.cartLines?.map((l) => l.title) ?? [], stage: "offer_selection" };
+      }
+      if (!targetLine && unresolved?.basis === "keep") return { kind: "clarify_reference", available: options.cartLines?.length ?? 0, stage: "offer_selection" };
       // BARRY just asked which option the customer wants for a pending
       // item; an option named without pointing at a cart line answers it.
       if (commerce.intent === "change_variant" && known[SCRATCH_KEYS.commercePendingProductId] && commerce.reference?.type !== "cart_line") {
@@ -354,26 +365,89 @@ export type CompileOptions = {
   shownProducts?: ShownProduct[];
   /** The cart's lines as the provider holds them now, with real ids, in the order shown to the customer. */
   cartLines?: NonNullable<GroundedContext["cartLines"]>;
+  /** Filled by compile(): how a cart change was bound to its line (for the Inspector). */
+  debug?: CompileDebugInfo;
 };
 
 /**
- * The exact cart line a mutation targets: the line the customer's reference grounds to — by its
- * position in the REAL cart — or the only line when there is exactly one. Several lines and no
- * reference: nothing is guessed (the customer is asked). Never "the last line BARRY touched".
+ * THE exact cart line a mutation targets — the one canonical binding of a cart change to a line.
+ *
+ * - The customer NAMED the target (commerce.subject): only a cart line that name identifies may be
+ *   changed. No such line -> nothing is changed (not_in_cart); several -> ambiguous; a position that
+ *   points at a different line -> conflict. Never the only line, the last-touched line or a position.
+ * - An item the customer said to KEEP is never the target (contrast evidence against inversion).
+ * - Otherwise: the line their position grounds to in the REAL cart, or the only line when there is
+ *   exactly one. Several lines and no reference: nothing is guessed. Unreadable cart + named target:
+ *   nothing is changed. Name matching is structural (all of the name's words appear in the line's
+ *   title/options, any script) — never language rules.
  */
-function resolveCartLine(commerce: NonNullable<BarryIR["commerce"]>, known: Record<string, string>, options: CompileOptions): string | undefined {
+const nameWords = (text: string) => (text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter((w) => w.length > 1 || /\p{N}/u.test(w));
+
+type CartLine = NonNullable<CompileOptions["cartLines"]>[number];
+
+export function lineNamedBy(name: string, line: Pick<CartLine, "title" | "options">): boolean {
+  const wanted = nameWords(name);
+  if (wanted.length === 0) return false;
+  const have = new Set(nameWords([line.title, ...Object.values(line.options ?? {})].join(" ")));
+  return wanted.every((w) => have.has(w));
+}
+
+export function groundCartSubject(commerce: NonNullable<BarryIR["commerce"]>, known: Record<string, string>, options: CompileOptions): CartSubjectGrounding {
   const lines = options.cartLines;
-  if (!lines) return known[SCRATCH_KEYS.commerceCartLineId];
-  if (commerce.referenceInvalid) return undefined;
-  if (commerce.reference?.type === "cart_line") return lines[commerce.reference.index]?.id;
-  return lines.length === 1 ? lines[0].id : undefined;
+  const named = commerce.subject?.trim() || undefined;
+  const keep = commerce.keep?.filter((k) => k.trim()) ?? [];
+  const base = { ...(named ? { named } : {}), ...(keep.length ? { keep } : {}) };
+  const view = (l: CartLine) => ({ id: l.id, title: l.title, options: l.options, quantity: l.quantity });
+  if (!lines) {
+    if (named || keep.length) return { ...base, basis: "unreadable" };
+    const remembered = known[SCRATCH_KEYS.commerceCartLineId];
+    return remembered ? { ...base, basis: "remembered", line: { id: remembered, title: "", options: {}, quantity: 0 } } : { ...base, basis: "no_reference" };
+  }
+  const titles = lines.map((l) => l.title + (Object.keys(l.options).length ? ` (${Object.values(l.options).join(" / ")})` : ""));
+  if (commerce.referenceInvalid) return { ...base, basis: "invalid_reference", candidates: titles };
+  const byReference = commerce.reference?.type === "cart_line" ? lines[commerce.reference.index] : undefined;
+  let chosen: CartLine | undefined;
+  let basis: CartSubjectGrounding["basis"];
+  if (named) {
+    let matches = lines.filter((l) => lineNamedBy(named, l));
+    if (matches.length === 0) return { ...base, basis: "not_in_cart", candidates: titles };
+    // Requested options narrow several same-named lines (e.g. two sizes of one product).
+    if (matches.length > 1 && commerce.variant && commerce.intent !== "change_variant") {
+      const narrowed = matches.filter((l) => Object.entries(commerce.variant!).every(([k, v]) => Object.entries(l.options).some(([lk, lv]) => lk.toLowerCase() === k.toLowerCase() && lv.toLowerCase() === v.toLowerCase())));
+      if (narrowed.length > 0) matches = narrowed;
+    }
+    if (byReference && !matches.includes(byReference)) return { ...base, basis: "conflict", candidates: matches.map((l) => l.title) };
+    if (matches.length > 1 && !byReference) return { ...base, basis: "ambiguous", candidates: matches.map((l) => l.title + (Object.keys(l.options).length ? ` (${Object.values(l.options).join(" / ")})` : "")) };
+    chosen = byReference ?? matches[0];
+    basis = "subject";
+  } else if (commerce.reference?.type === "cart_line") {
+    chosen = byReference;
+    basis = "reference";
+    if (!chosen) return { ...base, basis: "invalid_reference", candidates: titles };
+  } else if (lines.length === 1) {
+    chosen = lines[0];
+    basis = "only_line";
+  } else {
+    return { ...base, basis: "no_reference", candidates: titles };
+  }
+  // A line the customer said to keep is never the one changed.
+  if (keep.some((k) => lineNamedBy(k, chosen!))) {
+    return { ...base, basis: "keep", line: view(chosen), candidates: titles };
+  }
+  return { ...base, basis, line: view(chosen) };
+}
+
+function resolveCartLine(commerce: NonNullable<BarryIR["commerce"]>, known: Record<string, string>, options: CompileOptions): string | undefined {
+  const g = groundCartSubject(commerce, known, options);
+  if (options.debug) options.debug.cartSubject = g;
+  return g.line?.id;
 }
 
 type ShownProduct = NonNullable<GroundedContext["shownProducts"]>[number];
 
 export function compile(graph: BusinessGraph, state: ConversationState, ir: BarryIR, options: CompileOptions = {}): CompileOutcome {
   const debug: CompileDebugInfo = { appliedCustomerInfo: {} };
-  const outcome = compileCore(graph, state, ir, debug, options);
+  const outcome = compileCore(graph, state, ir, debug, { ...options, debug });
   return { ...outcome, debug };
 }
 

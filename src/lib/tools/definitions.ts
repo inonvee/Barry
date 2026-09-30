@@ -183,6 +183,7 @@ const cartSchema = z.object({
   total: moneySchema,
   status: z.enum(["open", "checkout", "ordered"]),
   providerCartId: z.string().optional(),
+  revision: z.number().int().optional(),
 });
 /** A selection that could not be executed as asked — reported with REAL alternatives; nothing is substituted. */
 const notAddedSchema = z.object({

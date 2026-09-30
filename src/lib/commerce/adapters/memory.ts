@@ -105,9 +105,16 @@ export class MemoryCommerceAdapter implements CommerceAdapter {
   async createCart(input: { businessId: string; customerId: string; conversationId: string }): Promise<Cart> {
     const existing = [...this.carts.values()].find((c) => c.businessId === input.businessId && c.conversationId === input.conversationId && c.status !== "ordered");
     if (existing) return clone(existing);
-    const cart: Cart = { id: id("cart"), ...input, lines: [], total: money(0, "ILS"), status: "open" };
+    const cart: Cart = { id: id("cart"), ...input, lines: [], total: money(0, "ILS"), status: "open", revision: 1 };
     this.carts.set(cart.id, cart);
     return clone(cart);
+  }
+
+  /** This simulator lives in one process; BARRY's durable snapshot reinstates a cart it doesn't hold (or holds older). */
+  async restoreCart(cart: Cart): Promise<void> {
+    const held = this.carts.get(cart.id);
+    if (held && (held.revision ?? 0) >= (cart.revision ?? 0)) return;
+    this.carts.set(cart.id, clone(cart));
   }
 
   async getCart(cartId: string): Promise<Cart | undefined> {
@@ -139,6 +146,7 @@ export class MemoryCommerceAdapter implements CommerceAdapter {
       });
     }
     cart.total = cartTotal(cart.lines);
+    cart.revision = (cart.revision ?? 0) + 1;
     this.carts.set(cart.id, cart);
     return clone(cart);
   }
@@ -150,6 +158,7 @@ export class MemoryCommerceAdapter implements CommerceAdapter {
     cart.status = "open";
     cart.lines = input.quantity <= 0 ? cart.lines.filter((l) => l.id !== input.lineId) : cart.lines.map((l) => l.id === input.lineId ? { ...l, quantity: input.quantity } : l);
     cart.total = cartTotal(cart.lines);
+    cart.revision = (cart.revision ?? 0) + 1;
     this.carts.set(cart.id, cart);
     return clone(cart);
   }
@@ -158,6 +167,7 @@ export class MemoryCommerceAdapter implements CommerceAdapter {
     const cart = this.carts.get(input.cartId);
     if (!cart || cart.lines.length === 0) throw new Error("Cart is empty");
     cart.status = "checkout";
+    cart.revision = (cart.revision ?? 0) + 1;
     this.carts.set(cart.id, cart);
     return { id: id("checkout"), cartId: cart.id, amount: clone(cart.total), status: "pending" };
   }
@@ -175,6 +185,7 @@ export class MemoryCommerceAdapter implements CommerceAdapter {
       variant.inventory.available -= line.quantity;
     }
     cart.status = "ordered";
+    cart.revision = (cart.revision ?? 0) + 1;
     const order: Order = {
       id: id("order"),
       businessId: cart.businessId,

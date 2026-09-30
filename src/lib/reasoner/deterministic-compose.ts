@@ -201,10 +201,12 @@ function ownerDeclinedText(lang: string | undefined): string {
 export function writeBlockedText(b: NonNullable<ComposeResponseInput["writeBlocked"]>, lang: string | undefined): string {
   const amt = (n: number | undefined) => (n === undefined ? "" : money(n, b.currency, lang === "he" ? "he" : "en"));
   if (lang === "he") {
+    if (b.reason === "stale_cart") return `לא יצרתי קישור לתשלום: לא הצלחתי לאמת את המצב העדכני של העגלה. לא נשלח ולא חויב שום דבר — נסו שוב בעוד רגע.`;
     if (b.reason === "over_budget") return `לא יצרתי קישור לתשלום: הסכום יוצא ${amt(b.total)}, מעל התקרה שלך של ${amt(b.cap)}. לא נשלח ולא חויב שום דבר.`;
     if (b.reason === "shipping_unknown") return `לא יצרתי קישור לתשלום: עלות המשלוח לא ידועה לי, אז אני לא יכול להבטיח שהסכום הכולל יישאר עד ${amt(b.cap)}. לא נשלח ולא חויב שום דבר.`;
     return `לא יצרתי קישור לתשלום: בסל יש גם ${b.extraItems?.join(", ")}, שלא אישרת לקנות. להסיר אותם קודם?`;
   }
+  if (b.reason === "stale_cart") return `I haven't created a payment link: I couldn't confirm your cart's current state. Nothing was sent or charged — please try again in a moment.`;
   if (b.reason === "over_budget") return `I haven't created a payment link: the total comes to ${amt(b.total)}, above your ${amt(b.cap)} limit. Nothing was sent or charged.`;
   if (b.reason === "shipping_unknown") return `I haven't created a payment link: I don't know the shipping cost, so I can't guarantee the total stays within ${amt(b.cap)}. Nothing was sent or charged.`;
   return `I haven't created a payment link: your cart also has ${b.extraItems?.join(", ")}, which you didn't ask to buy. Want me to remove those first?`;
@@ -354,6 +356,12 @@ function composeHebrew(input: ComposeResponseInput): string | undefined {
       return `לשלוח לך קישור מאובטח לתשלום עבור ${outcome.offerName}?`;
     case "clarify_reference":
       return outcome.available > 0 ? `לאיזה מהם התכוונת? הצגתי ${outcome.available} אפשרויות.` : `מה מחפשים? אחפש בקטלוג.`;
+    case "cart_subject_unresolved": {
+      const inCart = outcome.inCart.length ? outcome.inCart.join(", ") : "כלום";
+      if (outcome.reason === "not_in_cart") return `„${outcome.subject}” לא נמצא כרגע בעגלה — בעגלה יש: ${inCart}. לא שיניתי כלום.`;
+      if (outcome.reason === "unreadable") return `לא הצלחתי לקרוא את העגלה כרגע, אז לא שיניתי כלום. נסו שוב בעוד רגע.`;
+      return `לא ברור לי לאיזה פריט בעגלה התכוונת (${inCart}), אז לא שיניתי כלום. איזה מהם?`;
+    }
     case "capability_unavailable":
       return `את השלב הזה אני עוד לא יכול להשלים כאן — רשמתי את הבחירה שלך והצוות יחזור אליך כדי לסיים.`;
     case "no_payment_to_verify":
@@ -512,6 +520,12 @@ function composeSingle(input: ComposeResponseInput): string {
       return outcome.available > 0
         ? `Which one did you mean? I showed you ${outcome.available} option${outcome.available === 1 ? "" : "s"}.`
         : `What are you looking for? I'll search the catalog for you.`;
+    case "cart_subject_unresolved": {
+      const inCart = outcome.inCart.length ? outcome.inCart.join(", ") : "nothing";
+      if (outcome.reason === "not_in_cart") return `“${outcome.subject}” isn't in your cart right now — your cart has: ${inCart}. I didn't change anything.`;
+      if (outcome.reason === "unreadable") return `I couldn't read your cart just now, so I didn't change anything. Please try again in a moment.`;
+      return `I'm not sure which item in your cart you meant (${inCart}), so I didn't change anything. Which one?`;
+    }
     case "ask_variant":
       return askVariantText(outcome.productTitle, outcome.requested, outcome.availableOptions);
     case "price_request":

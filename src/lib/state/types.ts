@@ -113,7 +113,7 @@ export type TurnTrace = {
    */
   context?: {
     shown: { position: number; title: string }[];
-    cart?: { lines: { position: number; title: string; options: Record<string, string>; quantity: number }[]; total: string | null };
+    cart?: { lines: { position: number; title: string; options: Record<string, string>; quantity: number }[]; total: string | null; revision?: number };
   };
 };
 

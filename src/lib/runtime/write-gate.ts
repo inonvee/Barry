@@ -1,5 +1,5 @@
 import type { BusinessGraph } from "@/lib/business-graph";
-import { getOwnedCart } from "@/lib/commerce/capability";
+import { getOwnedCart, StaleCartError } from "@/lib/commerce/capability";
 import type { ConversationState } from "@/lib/state";
 import type { ToolContext } from "@/lib/tools";
 import { buildQuote } from "./pricing";
@@ -20,7 +20,7 @@ import { SCRATCH_KEYS } from "./compiler";
  */
 
 export type WriteBlock = {
-  reason: "outside_consent_scope" | "over_budget" | "shipping_unknown";
+  reason: "outside_consent_scope" | "over_budget" | "shipping_unknown" | "stale_cart";
   total?: number;
   currency?: string;
   cap?: number;
@@ -63,7 +63,14 @@ export async function finalWriteGate(graph: BusinessGraph, state: ConversationSt
 
   if (action === "createCommerceCheckout") {
     const cartId = String(input.cartId ?? state.knownFields[SCRATCH_KEYS.commerceCartId] ?? "");
-    const cart = await getOwnedCart({ graph, customerId: ctx.customerId, conversationId: ctx.conversationId }, cartId);
+    let cart;
+    try {
+      cart = await getOwnedCart({ graph, customerId: ctx.customerId, conversationId: ctx.conversationId }, cartId);
+    } catch (err) {
+      // The provider served a cart older than the recorded revision: nothing is priced from it.
+      if (err instanceof StaleCartError) return { reason: "stale_cart" };
+      throw err;
+    }
     const label = (l: { title: string; options: Record<string, string>; quantity: number }) => `${l.quantity} × ${l.title}${Object.keys(l.options).length ? ` (${Object.values(l.options).join(" / ")})` : ""}`;
     const scope = readScope(state);
     if (scope !== "all") {

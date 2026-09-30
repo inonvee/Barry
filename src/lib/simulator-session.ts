@@ -96,6 +96,23 @@ export function simulatorView<State extends { id: string; businessId: string }, 
   };
 }
 
+/**
+ * A conversation state arriving from the server replaces the shown one only when it is for the same
+ * business + conversation AND not older: a delayed response (fewer turns, or an earlier save) can never
+ * overwrite a newer authoritative state — its cart, approvals or messages.
+ */
+export function acceptConversation<State extends { id: string; businessId: string; turns: unknown[]; updatedAt: string }>(
+  current: { businessId: string; conversationId: string; state: State | null } | null,
+  at: { businessId: string; conversationId: string },
+  next: State | null
+): boolean {
+  if (next && (next.businessId !== at.businessId || next.id !== at.conversationId)) return false;
+  const held = current && current.businessId === at.businessId && current.conversationId === at.conversationId ? current.state : null;
+  if (!held || !next) return true;
+  if (next.turns.length !== held.turns.length) return next.turns.length > held.turns.length;
+  return next.updatedAt >= held.updatedAt;
+}
+
 /** Key for remounting business-scoped components (drafts, selected Inspector turn) when the scope changes. */
 export function scopeKey(scope: SimulatorScope | null): string {
   return scope ? `${scope.businessId}/${scope.conversationId}` : "none";

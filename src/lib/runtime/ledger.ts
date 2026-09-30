@@ -158,7 +158,7 @@ function referenceOf(output: unknown): string | undefined {
  * The DOMAIN outcome of one executed call: effect type + status + reference + outcome. This is the
  * one place transport results become business effects.
  */
-export function classifyExecution(action: string, input: unknown, result: ToolCallResult, cartBefore?: CartLineSnapshot[]): Omit<LedgerEntry, "seq" | "at"> {
+export function classifyExecution(action: string, input: unknown, result: ToolCallResult, cartBefore?: CartLineSnapshot[], revisionBefore?: number): Omit<LedgerEntry, "seq" | "at"> {
   const base = { operation: operationOf(action, input), describes: describe(action, input), terms: termsOf(action, input) };
   if (!result.ok) {
     const cap = (result as { capability?: { executed?: boolean } }).capability;
@@ -226,7 +226,14 @@ export function classifyExecution(action: string, input: unknown, result: ToolCa
         quantityBefore: before?.quantity ?? 0,
         quantityAfter: removing ? (after.find((l) => l.id === targetId)?.quantity ?? 0) : (afterLine?.quantity ?? 0),
       };
-      const outcome = { cartAfter: cartLabel(after) };
+      const returned = out.cart as { revision?: number; total?: { amount: number; currency: string } } | undefined;
+      // The provider's authoritative post-effect cart: its lines, total and revision (N -> N+1).
+      const outcome = {
+        cartAfter: cartLabel(after),
+        ...(returned?.total ? { cartTotalAfter: money(returned.total.amount, returned.total.currency) } : {}),
+        ...(typeof returned?.revision === "number" ? { revisionAfter: returned.revision } : {}),
+        ...(typeof revisionBefore === "number" ? { revisionBefore } : {}),
+      };
       if (out.added === false) return { ...base, terms, effect: "cart.not_changed", status: "no_effect", outcome };
       if (action === "updateCartLine") {
         // The requested change must be visible on the resulting line in the returned cart: its quantity,

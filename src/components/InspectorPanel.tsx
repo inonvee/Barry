@@ -165,6 +165,41 @@ function TurnSummary({ turn }: { turn: TurnLog }) {
   );
 }
 
+const SUBJECT_BASIS: Record<string, string> = {
+  subject: "named by the customer",
+  reference: "by position in the cart",
+  only_line: "the only line (no name given)",
+  remembered: "last line (cart unreadable, no name given)",
+  not_in_cart: "SUBJECT NOT PRESENT — no write",
+  ambiguous: "AMBIGUOUS — no write",
+  conflict: "name and position disagree — no write",
+  keep: "customer said to keep it — no write",
+  unreadable: "cart unreadable — no write",
+  no_reference: "no target — no write",
+  invalid_reference: "position outside the cart — no write",
+};
+
+/** CUSTOMER SUBJECT → GROUNDED LINE → BEFORE → EFFECT → AUTHORITATIVE AFTER → REVISION. */
+function CartChange({ state, turn }: { state: ConversationState; turn: TurnLog }) {
+  const g = turn.compiled?.cartSubject;
+  const seqs = new Set((turn.trace?.effects ?? []).filter((e) => e.effect.startsWith("cart.")).map((e) => e.seq));
+  const receipts = readLedgerField(state.knownFields).filter((e) => seqs.has(e.seq));
+  if (!g && receipts.length === 0) return null;
+  const before = turn.trace?.context?.cart;
+  const r = receipts.at(-1);
+  return (
+    <Section title="Cart change">
+      {g?.named && <Kv k="Customer subject" v={g.named} />}
+      {g?.keep?.length ? <Kv k="Customer said keep" v={g.keep.join(", ")} /> : null}
+      {g && <Kv k="Grounded cart line" v={g.line ? `${g.line.title || g.line.id} · ${g.line.id} (${SUBJECT_BASIS[g.basis] ?? g.basis})` : <span className="text-red-700 dark:text-red-400">{SUBJECT_BASIS[g.basis] ?? g.basis}{g.candidates?.length ? ` · in cart: ${g.candidates.join(", ")}` : ""}</span>} />}
+      {before && <Kv k="Before" v={`${before.lines.map((l) => `${l.title} ×${l.quantity}`).join(", ") || "empty"} · ${before.total ?? "—"}`} />}
+      {r && <Kv k="Effect" v={`${r.effect} · ${String(r.terms.item ?? "")} ${r.terms.quantityBefore ?? "?"}→${r.terms.quantityAfter ?? "?"}`} />}
+      {r?.outcome && <Kv k="Authoritative after" v={`${String(r.outcome.cartAfter ?? "")}${r.outcome.cartTotalAfter ? ` · ${r.outcome.cartTotalAfter}` : ""}`} />}
+      {(before?.revision !== undefined || r?.outcome?.revisionAfter !== undefined) && <Kv k="Cart revision" v={`${r?.outcome?.revisionBefore ?? before?.revision ?? "?"} → ${r?.outcome?.revisionAfter ?? "unchanged"}`} />}
+    </Section>
+  );
+}
+
 export function TurnView({ state, turn, isLatest }: { state: ConversationState; turn: TurnLog; isLatest: boolean }) {
   const trace = turn.trace;
   const rt = trace?.runtime;
@@ -178,6 +213,7 @@ export function TurnView({ state, turn, isLatest }: { state: ConversationState; 
   return (
     <>
       <TurnSummary turn={turn} />
+      <CartChange state={state} turn={turn} />
 
 
       <Section title="1 · Understanding">

@@ -420,6 +420,7 @@ export async function handleCustomerMessage(
   // The cart as it stands before each step (re-read at turn start, then taken from each mutation's
   // returned cart) — every cart receipt freezes the exact line and its before/after quantity.
   let cartNow: CartLineSnapshot[] | undefined = grounded.cartLines;
+  let revisionNow: number | undefined = grounded.cartRevision;
   // Changes the customer asked for in this message that this understanding did not describe: after the
   // first one succeeds, the model is re-asked (bounded) for the next — the customer's own words, grounded,
   // compiled and authorized exactly like the first. What is never reached is told as NOT done.
@@ -443,10 +444,12 @@ export async function handleCustomerMessage(
         stop = { reason: "capability_unavailable", outcome: current.action.name };
         break;
       }
-      const step = await runStep(graph, state, current, ctx, trigger === "customer" ? prevStage : state.stage, trigger, profiles, cartNow);
+      const step = await runStep(graph, state, current, ctx, trigger === "customer" ? prevStage : state.stage, trigger, profiles, cartNow, revisionNow);
       steps.push(step);
-      const returnedCart = (step.toolResult?.ok ? (step.toolResult.output as { cart?: { lines: { id: string; title: string; options: Record<string, string>; quantity: number }[] } }).cart : undefined)?.lines;
-      if (returnedCart) cartNow = returnedCart.map((l, i) => ({ position: i + 1, id: l.id, title: l.title, options: l.options, quantity: l.quantity }));
+      const returned = step.toolResult?.ok ? (step.toolResult.output as { cart?: { lines: { id: string; title: string; options: Record<string, string>; quantity: number }[]; revision?: number } }).cart : undefined;
+      // The provider's returned cart is the authoritative post-effect state for every later step this turn.
+      if (returned?.lines) cartNow = returned.lines.map((l, i) => ({ position: i + 1, id: l.id, title: l.title, options: l.options, quantity: l.quantity }));
+      if (typeof returned?.revision === "number") revisionNow = returned.revision;
       if (step.policyDecision.status !== "allowed") {
         stop = { reason: step.blocked ? "write_blocked" : step.policyDecision.status === "denied" ? "policy_denied" : "owner_approval_required", outcome: current.action.name };
         break;
@@ -608,7 +611,7 @@ export async function handleCustomerMessage(
         ? {
             context: {
               shown: (grounded.shownResults ?? []).map((p) => ({ position: p.position, title: p.title })),
-              ...(grounded.cart ? { cart: { lines: grounded.cart, total: grounded.cartTotal ?? null } } : {}),
+              ...(grounded.cart ? { cart: { lines: grounded.cart, total: grounded.cartTotal ?? null, ...(grounded.cartRevision !== undefined ? { revision: grounded.cartRevision } : {}) } } : {}),
             },
           }
         : {}),
@@ -900,6 +903,7 @@ async function buildGroundedContext(
         return line;
       });
       grounded.cartTotal = `${cart.total.amount} ${cart.total.currency}`;
+      if (typeof cart.revision === "number") grounded.cartRevision = cart.revision;
     }
   } catch (err) {
     console.error("[barry:engine] grounded context unavailable", err instanceof Error ? err.message : err);
@@ -1035,7 +1039,8 @@ async function runStep(
   restoreStage: ConversationState["stage"],
   trigger: TurnStep["trigger"],
   profiles: CapabilityProfiles | undefined,
-  cartBefore?: CartLineSnapshot[]
+  cartBefore?: CartLineSnapshot[],
+  revisionBefore?: number
 ): Promise<ExecutedStep> {
   const before = { ...state.knownFields };
   const stageBefore = state.stage;
@@ -1050,7 +1055,7 @@ async function runStep(
     appendLedger(state, { ...classifyBlocked(outcome.action.name, outcome.action.input), outcome: { reason: blocked.reason, ...(blocked.total !== undefined ? { total: blocked.total } : {}), ...(blocked.cap !== undefined ? { cap: blocked.cap } : {}) } });
   }
   // The domain effect of this step, frozen in the ledger — transport success is never recorded as a business effect.
-  if (toolResult) appendLedger(state, classifyExecution(outcome.action.name, outcome.action.input, toolResult, cartBefore));
+  if (toolResult) appendLedger(state, classifyExecution(outcome.action.name, outcome.action.input, toolResult, cartBefore, revisionBefore));
   else if (requestId) appendLedger(state, requestEntry(outcome.action.name, outcome.action.input, requestId, "awaiting_owner"));
   const after = state.knownFields;
   const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((k) => before[k] !== after[k]).sort();

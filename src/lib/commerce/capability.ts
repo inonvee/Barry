@@ -98,20 +98,57 @@ export function resolveVariant(product: Product, options: Record<string, string>
   return { ok: true, variant: matchingInStock[0] };
 }
 
-async function recordCartSnapshot(ctx: Ctx, cart: Cart): Promise<void> {
+/** BARRY's durable record of a cart: the last post-effect state, with its revision. */
+async function durableCart(ctx: Ctx, cartId: string): Promise<Cart | undefined> {
+  const record = (await getBackend().listCommerceCarts(ctx.graph.business.id)).find((r) => r.cartId === cartId && r.conversationId === ctx.conversationId);
+  return record?.data as Cart | undefined;
+}
+
+/**
+ * Persist the provider's post-effect cart as the authoritative current state, with its REVISION: the
+ * provider's own, or (for a provider that doesn't version carts) one more than the last recorded
+ * revision whenever the cart's content changed.
+ */
+async function recordCartSnapshot(ctx: Ctx, cart: Cart): Promise<Cart> {
+  const previous = await durableCart(ctx, cart.id);
+  const revision = cart.revision ?? (previous?.revision ?? 0) + (previous && cartSnapshotHash(previous) === cartSnapshotHash(cart) && previous.status === cart.status ? 0 : 1);
+  const stored: Cart = { ...cart, revision };
   await getBackend().upsertCommerceCart({
     businessId: ctx.graph.business.id,
     conversationId: ctx.conversationId,
     customerId: ctx.customerId,
     cartId: cart.id,
     status: cart.status,
-    data: cart,
+    data: stored,
   });
+  return stored;
+}
+
+export class StaleCartError extends Error {}
+
+/**
+ * THE authoritative current cart. A process-local simulated provider that doesn't hold the cart (a
+ * different serverless instance, a cold start) or holds an older revision is first reinstated from
+ * BARRY's durable snapshot — so every reader in every process sees the same cart revision. A provider
+ * read OLDER than the recorded revision is stale and refused: nothing is built on it.
+ */
+async function currentCart(adapter: CommerceAdapter, ctx: Ctx, cartId: string): Promise<Cart | undefined> {
+  let cart = await adapter.getCart(cartId);
+  const durable = await durableCart(ctx, cartId);
+  if (durable && adapter.restoreCart && (!cart || (cart.revision ?? 0) < (durable.revision ?? 0))) {
+    await adapter.restoreCart(durable);
+    cart = await adapter.getCart(cartId);
+  }
+  if (cart && durable?.revision !== undefined && cart.revision !== undefined && cart.revision < durable.revision) {
+    throw new StaleCartError(`Cart read is stale (revision ${cart.revision} < ${durable.revision})`);
+  }
+  if (cart && cart.revision === undefined && durable?.revision !== undefined && cartSnapshotHash(cart) === cartSnapshotHash(durable)) cart = { ...cart, revision: durable.revision };
+  return cart;
 }
 
 /** Fetch the provider's cart and prove it belongs to this business + conversation. */
 async function ownedProviderCart(adapter: CommerceAdapter, ctx: Ctx, cartId: string): Promise<Cart> {
-  const cart = await adapter.getCart(cartId);
+  const cart = await currentCart(adapter, ctx, cartId);
   if (!cart) throw new CommerceError("Cart not found");
   if (cart.businessId !== ctx.graph.business.id || cart.conversationId !== ctx.conversationId) {
     throw new CommerceError("Cart does not belong to this conversation");
@@ -128,20 +165,18 @@ async function ensureProviderCart(adapter: CommerceAdapter, ctx: Ctx): Promise<C
   const records = await getBackend().listCommerceCarts(ctx.graph.business.id);
   const pointer = records.find((r) => r.conversationId === ctx.conversationId && r.status !== "ordered");
   if (pointer) {
-    const live = await adapter.getCart(pointer.cartId);
+    const live = await currentCart(adapter, ctx, pointer.cartId);
     if (live && live.status !== "ordered") return live;
   }
   const cart = await adapter.createCart({ businessId: ctx.graph.business.id, customerId: ctx.customerId, conversationId: ctx.conversationId });
-  await recordCartSnapshot(ctx, cart);
-  return cart;
+  return recordCartSnapshot(ctx, cart);
 }
 
 export async function addCommerceItem(ctx: Ctx & { productId: string; variantId: string; quantity: number }): Promise<Cart> {
   const adapter = await resolveCommerceAdapterForBusiness(ctx.graph.business.id);
   const cart = await ensureProviderCart(adapter, ctx);
   const updated = await adapter.addToCart({ cartId: cart.id, productId: ctx.productId, variantId: ctx.variantId, quantity: ctx.quantity });
-  await recordCartSnapshot(ctx, updated);
-  return updated;
+  return recordCartSnapshot(ctx, updated);
 }
 
 export async function setCommerceLineQuantity(ctx: Ctx & { cartId: string; lineId: string; quantity: number }): Promise<Cart> {
@@ -149,8 +184,7 @@ export async function setCommerceLineQuantity(ctx: Ctx & { cartId: string; lineI
   const cart = await ownedProviderCart(adapter, ctx, ctx.cartId);
   if (!cart.lines.some((l) => l.id === ctx.lineId)) throw new CommerceError("Cart line not found");
   const updated = await adapter.updateQuantity({ cartId: cart.id, lineId: ctx.lineId, quantity: ctx.quantity });
-  await recordCartSnapshot(ctx, updated);
-  return updated;
+  return recordCartSnapshot(ctx, updated);
 }
 
 /**
@@ -168,8 +202,7 @@ export async function replaceCommerceLineVariant(ctx: Ctx & { cartId: string; li
   }
   const withNew = await adapter.addToCart({ cartId: cart.id, productId: line.productId, variantId: ctx.variantId, quantity: ctx.quantity });
   const updated = await adapter.updateQuantity({ cartId: withNew.id, lineId: line.id, quantity: 0 });
-  await recordCartSnapshot(ctx, updated);
-  return updated;
+  return recordCartSnapshot(ctx, updated);
 }
 
 export type CommerceCheckoutResult = {
@@ -190,8 +223,8 @@ export async function createCommerceCheckout(ctx: Ctx & { cartId: string }): Pro
   ) {
     throw new CommerceError("Checkout total does not match cart");
   }
-  const priced = { ...cart, status: "checkout" as const };
-  await recordCartSnapshot(ctx, priced);
+  // The checkout is priced from THIS cart revision; the recorded post-checkout state is the provider's own.
+  const priced = await recordCartSnapshot(ctx, { ...((await adapter.getCart(cart.id)) ?? cart), status: "checkout" as const });
   return { checkoutId: checkout.id, cart: priced, snapshotHash: cartSnapshotHash(cart), checkoutUrl: checkout.checkoutUrl };
 }
 

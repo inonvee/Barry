@@ -69,6 +69,14 @@ export type CommerceSemantics = {
     budget?: { amount: number; currency?: string };
   };
   reference?: SemanticReference;
+  /**
+   * The item the customer explicitly NAMED as the target of a cart change ("remove the Midnight"), in
+   * the words shown to them. When present it is binding: grounding may only mutate the one cart line it
+   * names — never the only line, the last-added line or a position that points elsewhere.
+   */
+  subject?: string;
+  /** Items the customer explicitly said to keep unchanged in this message: a target that is one of them is never mutated. */
+  keep?: string[];
   /** Set by grounding when the model's explicit reference points outside what BARRY showed / holds: BARRY asks, never guesses. */
   referenceInvalid?: boolean;
   /** Variant options the customer asked for, e.g. { size: "M" }. */
@@ -249,7 +257,19 @@ export type OfferFact =
  */
 export type CompileDebugInfo = {
   appliedCustomerInfo: Record<string, string>;
+  /** How a cart change was bound to one exact cart line (or why nothing was changed). */
+  cartSubject?: CartSubjectGrounding;
   resolvedSchedulingWindow?: { earliest: string; latest: string; anomaly?: "nonexistent" | "ambiguous" };
+};
+
+export type CartSubjectGrounding = {
+  /** What the customer named as the target, and what they said to keep. */
+  named?: string;
+  keep?: string[];
+  /** How the line was chosen, or why none was. */
+  basis: "subject" | "reference" | "only_line" | "remembered" | "not_in_cart" | "ambiguous" | "conflict" | "keep" | "unreadable" | "no_reference" | "invalid_reference";
+  line?: { id: string; title: string; options: Record<string, string>; quantity: number };
+  candidates?: string[];
 };
 
 export type CompileOutcome = { stage: ConversationStage; debug?: CompileDebugInfo } & (
@@ -264,6 +284,8 @@ export type CompileOutcome = { stage: ConversationStage; debug?: CompileDebugInf
   | { kind: "offer_fact"; offerName: string; fact: OfferFact }
   /** The customer referred to something that isn't grounded in what BARRY showed them (e.g. "the third one" when only two were shown). */
   | { kind: "clarify_reference"; available: number }
+  /** The customer NAMED the item to change, and it grounds to no single cart line: nothing was changed. */
+  | { kind: "cart_subject_unresolved"; subject: string; reason: "not_in_cart" | "ambiguous" | "conflict" | "keep" | "unreadable"; inCart: string[] }
   /** A product was chosen but a required variant option is missing/unavailable — ask using REAL options only. */
   | { kind: "ask_variant"; productTitle: string; requested?: Record<string, string>; availableOptions: Record<string, string>[] }
   /** The customer asked for a different price. BARRY states the grounded price; it never negotiates on its own authority. */

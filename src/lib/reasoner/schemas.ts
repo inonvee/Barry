@@ -73,6 +73,10 @@ export const LlmCommerceSchema = z.object({
   referenceType: z.enum(["previous_result", "cart_line"]).nullable(),
   /** 1-based, exactly as numbered to the customer (shownResults[].position / cart[].position). */
   referencePosition: z.number().nullable(),
+  /** The item the customer NAMED as the target of this change (as it appears in cart / shownResults), or null. */
+  subjectTitle: z.string().nullable().default(null),
+  /** Items the customer explicitly said to KEEP / leave unchanged in this message (contrast evidence), by name. */
+  keepTitles: z.array(z.string()).default([]),
   variant: z.array(KeyValuePairSchema),
   quantity: z.number().nullable(),
   requestedPriceAmount: z.number().nullable(),
@@ -237,6 +241,8 @@ export function irJsonSchema() {
             budgetCurrency: { type: ["string", "null"] },
             referenceType: { type: ["string", "null"], enum: ["previous_result", "cart_line", null] },
             referencePosition: { type: ["number", "null"] },
+            subjectTitle: { type: ["string", "null"] },
+            keepTitles: { type: "array", items: { type: "string" } },
             variant: { type: "array", items: kvSchema() },
             quantity: { type: ["number", "null"] },
             requestedPriceAmount: { type: ["number", "null"] },
@@ -251,6 +257,8 @@ export function irJsonSchema() {
             "budgetCurrency",
             "referenceType",
             "referencePosition",
+            "subjectTitle",
+            "keepTitles",
             "variant",
             "quantity",
             "requestedPriceAmount",

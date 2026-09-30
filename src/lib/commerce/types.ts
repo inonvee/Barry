@@ -56,6 +56,12 @@ export type Cart = {
   total: Money;
   status: "open" | "checkout" | "ordered";
   providerCartId?: string;
+  /**
+   * CART REVISION: increases by one with every change to the cart (lines, quantities, status). Set by
+   * the provider when it versions carts; otherwise by BARRY's durable snapshot. A read older than the
+   * last recorded revision is stale and is never used as the basis of anything.
+   */
+  revision?: number;
 };
 
 export type Checkout = {
@@ -97,4 +103,9 @@ export type CommerceAdapter = {
   createCheckout(input: { cartId: string }): Promise<Checkout>;
   createOrder(input: { cartId: string; idempotencyKey: string }): Promise<Order>;
   getOrder(orderId: string): Promise<Order | undefined>;
+  /**
+   * Only for a process-local SIMULATED provider: reinstate a cart from BARRY's durable snapshot when
+   * this process doesn't hold it (or holds an older revision). A real provider is its own source of truth.
+   */
+  restoreCart?(cart: Cart): Promise<void>;
 };

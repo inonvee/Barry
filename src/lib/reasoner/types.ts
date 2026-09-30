@@ -38,6 +38,8 @@ export type GroundedContext = {
   /** Internal (never given to the model): the same cart lines with their real ids, re-read from the provider. */
   cartLines?: { position: number; id: string; title: string; options: Record<string, string>; quantity: number }[];
   cartTotal?: string;
+  /** The authoritative cart's revision when this turn read it. */
+  cartRevision?: number;
   /** The business-specific capability surface the model may propose from (safe summary; no systems or credentials). */
   capabilities?: CapabilitySurfaceEntry[];
   /** Results of capabilities BARRY already ran in this conversation (most recent last). */

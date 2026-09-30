@@ -202,6 +202,7 @@ YOUR TASK NOW: understand the customer's latest message in context and describe 
   - If they just say "it" / "that one" / "אותה" / "זה" without saying which, set referenceType and referencePosition to null. BARRY resolves it only when exactly one item could be meant, and asks otherwise — so never guess a position.
   - If awaitingVariantChoiceFor is set and they only name an option ("M"), that answers BARRY's question: select, no reference, the option in variant.
   - Options they ask for (size, color, ...) go in variant, as catalog values.
+  - subjectTitle: when they NAME the item a change applies to ("remove the Midnight", "make the black one an L"), that item's name exactly as it appears in cart[].title (or shownResults[].title); if what they named isn't in the cart, their own words for it. null when they didn't name it. keepTitles: items they explicitly say to keep/leave as they are in this message ("keep the Onyx"), by name. Never swap the two.
   EXAMPLES (shownResults with 1 item): "אני אקח אותה במדיום" -> select, reference null, variant {size: M}, purchaseDecision true. "יש אותה ב-L?" -> inquire, reference null, variant {size: L}, purchaseDecision false.
   EXAMPLES (shownResults with 3 items): "אני אקח את השנייה" -> select, previous_result position 2, purchaseDecision true. "עזוב, תביא את האחרונה" -> select, position 3. "אני אקח אותה" with nothing singling one out -> select, reference null (BARRY will ask). "תוסיף אותה לעגלה אבל אני עוד מסתכלת" -> select, purchaseDecision false. "היא יפה" -> commerce null.
 - customerFacts: details the customer states about THEMSELVES in this message. One item per detail: { field, value, evidence }.
@@ -467,6 +468,8 @@ function unflattenCommerce(raw: LlmCommerce): CommerceSemantics {
       // IR is 0-based. A non-integer or < 1 position becomes an invalid index
       // that grounding rejects — it is never repaired.
       raw.referenceType && raw.referencePosition !== null ? { type: raw.referenceType, index: raw.referencePosition - 1 } : undefined,
+    ...(raw.subjectTitle?.trim() ? { subject: raw.subjectTitle.trim().slice(0, 120) } : {}),
+    ...(raw.keepTitles?.length ? { keep: raw.keepTitles.map((t) => t.trim().slice(0, 120)).filter(Boolean).slice(0, 10) } : {}),
     variant: nonEmptyRecord(raw.variant),
     quantity: raw.quantity ?? undefined,
     requestedPrice: raw.requestedPriceAmount ? { amount: raw.requestedPriceAmount, currency: raw.requestedPriceCurrency ?? undefined } : undefined,

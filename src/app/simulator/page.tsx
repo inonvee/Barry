@@ -11,6 +11,7 @@ import { GraphPanel } from "@/components/GraphPanel";
 import type { ConversationState } from "@/lib/state";
 import type { BusinessGraph } from "@/lib/business-graph";
 import {
+  acceptConversation,
   createConversationId,
   getOrCreateCustomerId,
   getStoredConversationId,
@@ -49,7 +50,11 @@ export default function SimulatorPage() {
   }, []);
 
   const setConversation = useCallback((at: SimulatorScope, next: ConversationState | null) => {
-    setData((prev) => (prev.scope?.businessId === at.businessId && prev.scope.conversationId === at.conversationId ? { ...prev, conversation: { businessId: at.businessId, conversationId: at.conversationId, state: next } } : prev));
+    setData((prev) =>
+      prev.scope?.businessId === at.businessId && prev.scope.conversationId === at.conversationId && acceptConversation(prev.conversation, at, next)
+        ? { ...prev, conversation: { businessId: at.businessId, conversationId: at.conversationId, state: next } }
+        : prev
+    );
   }, []);
 
   // Restore (or create) THIS business's own conversation identity from localStorage whenever the
