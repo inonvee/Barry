@@ -1,41 +1,71 @@
 export type Fact = {label: string; value: string};
+export type Chip = {label: string; value?: string};
 
 export type Copy = {
   lang: 'he' | 'en';
   brand: string;
-  open: {l1: string; l2: string; l3: string; l4: string; emph: string};
-  chat: {store: string; status: string; delivered: string};
-  verify: {
-    c1: string; b1: string; facts: Fact[]; verified: string; h1: string; h2: string; h1dim: string; h2emph: string;
-  };
-  operate: {
-    c2: string; b2: string; linkChip: string;
-    rows: {label: string; value: string}[]; // cart, total, consent, authority
-    payLabel: string; payPreparing: string; payDone: string;
-    flashes: {title: string; detail: string}[];
+  barry: string; // how Barry's name appears in UI
+  activeNow: string;
+  customerOf: string; // e.g. "Customer · Onyx Studio"
+  now: string;
+
+  morning: {
+    employee: string; employeeMsg: string;
+    b1: string; b2: string; b3: string;
+    log: {t: string; text: string}[];
     t1: string; t2: string;
   };
-  authority: {
-    c3: string; hold: string; b3: string; cardTitle: string;
-    customer: Fact; request: Fact; order: Fact; authority: Fact;
-    decision: string; approve: string; decline: string; approved: string;
+  dress: {
+    customer: string;
+    c1: string; b1: string;
+    facts: Fact[];
+    c2: string; b2: string;
+    link: {title: string; sub: string; price: string};
+    paid: string;
+    ledger: Fact[]; // cart, total, consent, payment, order
+    paymentCreated: string; paymentVerified: string;
+  };
+  patience: {
+    customer: string; messages: string;
+    history: {who: 'c' | 'b'; text: string; time: string}[];
+    burst: string[];
+    reply: string;
+    track: {warehouse: string; courier: string; you: string; checked: string; transit: string; eta: string; etaValue: string};
     t1: string; t2: string;
+  };
+  close5: {
+    customer: string;
+    c1: string; b1: string; c2: string;
+    orderValue: Fact; authority: string; discount: Fact; margin: Fact;
+    after: Fact[]; // converted, payment, order
+  };
+  escalate: {
+    customer: string;
+    c1: string; b1: string; c2: string; b2: string; paid: string;
+    card: {title: string; from: string; rows: Fact[]; approve: string; keep: string; approved: string};
+    t1: string; t2: string;
+  };
+  owner: {
+    q1: string; b1: string; b2: string; b3: string;
+    strip: Fact[];
+    q2: string; b4: string;
+    outcomes: {label: string; value: string; unit: string}[];
+    verified: string;
   };
   supplier: {
     ownerLabel: string; ownerMsg: string; reply: string; usual: string; understood: string;
-    nodes: Fact[]; supA: {name: string; tag: string; price: string; lead: string; fit: string};
-    supB: {name: string; tag: string; price: string; lead: string; fit: string};
+    nodes: Fact[];
+    supA: {name: string; tag: string; units: string; price: string; eta: string};
+    supB: {name: string; tag: string; units: string; price: string; eta: string};
+    reasons: string[];
     poTitle: string; poPreparing: string; poAuth: string; poSubmitted: string; poEta: string;
-    done: {l1: string; l2: string; l3: string};
+    done: {l1: string; l2: string};
   };
-  owner: {
-    q1: string; title: string;
-    items: {n: string; text: string; sub?: string; tag: string; tone: 'potential' | 'hold' | 'alert'}[];
-    q2: string;
-    outcomes: {label: string; value: string; unit: string; tag: string}[];
-    disclaimer: string;
-  };
-  scale: {words: string[]; one1: string; one2: string};
-  brandEnd: {t1: string; t2: string; soon: string; micro: string; t2emph: string};
+  montage: {kind: string; name: string; msg: string; chips: string[]}[];
+  systems: {modules: string[]; w1: string; w2: string; w3: string};
+  adapt: {l1: string; l2: string};
+  night: {events: Fact[]; t: string};
+  nextDay: {b1: string; b2: string; employeeMsg: string};
+  brandEnd: {works: string; soon: string};
   demo: string;
 };

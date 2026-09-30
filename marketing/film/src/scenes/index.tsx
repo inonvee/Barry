@@ -1,23 +1,31 @@
 import React from 'react';
 import type {SceneId} from '../timing';
-import {OpenScene} from './OpenScene';
-import {VerifyScene} from './VerifyScene';
-import {BrandScene} from './BrandScene';
-import {OperateScene} from './OperateScene';
-import {SupplierScene} from './SupplierScene';
+import {MorningScene} from './MorningScene';
+import {DressScene} from './DressScene';
+import {PatienceScene} from './PatienceScene';
+import {Close5Scene} from './Close5Scene';
+import {EscalateScene} from './EscalateScene';
 import {OwnerScene} from './OwnerScene';
-import {ScaleScene} from './ScaleScene';
-import {AuthorityScene} from './AuthorityScene';
-
-const Todo: React.FC = () => <div style={{background: '#050506', width: '100%', height: '100%'}} />;
+import {SupplierScene} from './SupplierScene';
+import {MontageScene} from './MontageScene';
+import {SystemsScene} from './SystemsScene';
+import {AdaptScene} from './AdaptScene';
+import {NightScene} from './NightScene';
+import {NextDayScene} from './NextDayScene';
+import {BrandScene} from './BrandScene';
 
 export const SCENES: Record<SceneId, React.FC> = {
-  open: OpenScene,
-  verify: VerifyScene,
-  operate: OperateScene,
-  authority: AuthorityScene,
-  supplier: SupplierScene,
+  morning: MorningScene,
+  dress: DressScene,
+  patience: PatienceScene,
+  close5: Close5Scene,
+  escalate: EscalateScene,
   owner: OwnerScene,
-  scale: ScaleScene,
+  supplier: SupplierScene,
+  montage: MontageScene,
+  systems: SystemsScene,
+  adapt: AdaptScene,
+  night: NightScene,
+  nextDay: NextDayScene,
   brand: BrandScene,
 };

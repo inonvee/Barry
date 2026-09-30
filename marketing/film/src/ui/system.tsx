@@ -18,6 +18,11 @@ const PATHS: Record<string, string[]> = {
   person: ['M12 4.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7z', 'M5 20c0-4 3-6 7-6s7 2 7 6'],
   check: ['M5 12.5l4.5 4.5L19 7.5'],
   stack: ['M12 4l9 4.5-9 4.5L3 8.5z', 'M3 12.5l9 4.5 9-4.5', 'M3 16.5l9 4.5 9-4.5'],
+  mail: ['M4.5 6h15A1.5 1.5 0 0 1 21 7.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 16.5v-9A1.5 1.5 0 0 1 4.5 6z', 'M3.5 7l8.5 6 8.5-6'],
+  doc: ['M7 3h7l4 4v14H7z', 'M14 3v4h4', 'M10 12h5', 'M10 16h5'],
+  store: ['M4 9l1.5-5h13L20 9', 'M4 9h16v1.5a2.7 2.7 0 0 1-5.3 0 2.7 2.7 0 0 1-5.4 0 2.7 2.7 0 0 1-5.3 0z', 'M5.5 12v8h13v-8', 'M10 20v-5h4v5'],
+  grid: ['M4 4h7v7H4z', 'M13 4h7v7h-7z', 'M4 13h7v7H4z', 'M13 13h7v7h-7z'],
+  factory: ['M3 20V10l5 3v-3l5 3V6h8v14z', 'M3 20h18'],
 };
 
 export const Glyph: React.FC<{name: keyof typeof PATHS | string; size?: number; color?: string; draw?: number; stroke?: number}> = ({

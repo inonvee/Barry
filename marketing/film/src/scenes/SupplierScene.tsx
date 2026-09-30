@@ -2,22 +2,25 @@ import React from 'react';
 import {interpolate, useCurrentFrame} from 'remotion';
 import {C} from '../theme';
 import {EASE, cameraPush, clamp, connectionTravel, prog, systemPulse} from '../motion';
-import {Q} from '../timing';
+import {CLOCK, Q} from '../timing';
 import {useLang} from '../lang';
 import {Backdrop, Enter, Label, Mixed, Mono, SceneRoot} from '../ui/base';
-import {PhoneBubble, PhoneFrame, TypingDots} from '../ui/chat';
+import {DayClock, PhoneFrame, Thread, type ThreadItem} from '../ui/chat';
 import {DemoTag, PurchaseOrder, SupplierCard} from '../ui/cards';
 import {BarryCore, CapabilityNode, Glyph, SystemConnection} from '../ui/system';
+import {Mixed as MixedText} from '../ui/base';
 
 const CORE = {x: 960, y: 540};
 const NODE_POS = [
-  {x: 690, y: 190, g: 'box'},
-  {x: 1230, y: 175, g: 'chart'},
-  {x: 1575, y: 355, g: 'receipt'},
-  {x: 1610, y: 690, g: 'shield'},
-  {x: 1300, y: 900, g: 'calendar'},
-  {x: 800, y: 905, g: 'stack'},
-  {x: 470, y: 720, g: 'card'},
+  {x: 560, y: 250, g: 'box'},
+  {x: 960, y: 150, g: 'chart'},
+  {x: 1360, y: 190, g: 'receipt'},
+  {x: 1690, y: 380, g: 'doc'},
+  {x: 1720, y: 700, g: 'card'},
+  {x: 1400, y: 900, g: 'calendar'},
+  {x: 960, y: 940, g: 'shield'},
+  {x: 540, y: 860, g: 'stack'},
+  {x: 470, y: 560, g: 'factory'},
 ];
 const edge = (from: {x: number; y: number}, r: number) => {
   const dx = CORE.x - from.x, dy = CORE.y - from.y, d = Math.hypot(dx, dy);
@@ -53,6 +56,23 @@ export const SupplierScene: React.FC = () => {
   const cardB = {x: mx(1310), y: 500};
   const hub = CORE;
   const submitPulse = prog(frame, q.submitted, 26);
+  const phoneItems: ThreadItem[] = [
+    {kind: 'msg', who: 'owner', side: 'end', at: q.ownerMsg, text: s.ownerMsg, time: '21:16', ticks: true},
+    {kind: 'typing', side: 'start', at: q.typing, out: q.barryReply - 1},
+    {kind: 'msg', who: 'barry', side: 'start', at: q.barryReply, text: s.reply, time: '21:16'},
+    {
+      kind: 'msg', who: 'barry', side: 'start', at: q.done, time: '21:19',
+      node: (
+        <div style={{display: 'flex', flexDirection: 'column', gap: 6}}>
+          <div style={{display: 'flex', alignItems: 'flex-start', gap: 10}}>
+            <span style={{flex: 'none', paddingTop: 6}}><Glyph name="check" size={26} color="#0a0a0b" stroke={2.4} draw={prog(frame, q.done + 8, 14)} /></span>
+            <span><MixedText text={s.done.l1} /></span>
+          </div>
+          <span style={{fontWeight: 700}}><MixedText text={s.done.l2} /></span>
+        </div>
+      ),
+    },
+  ];
 
   return (
     <SceneRoot backdrop={<Backdrop grid={0.55 * coreIn * (1 - worldOut)} bloom={0.5 + 0.5 * coreIn} bloomY={50} bloomSize={70} />}>
@@ -106,10 +126,20 @@ export const SupplierScene: React.FC = () => {
               <SystemConnection a={{x: mx(860), y: 520}} b={{x: hub.x + 36 * sx * -1, y: hub.y}} curve={-24} draw={prog(frame, q.suppliers + 14, 24, EASE.inOut) * (1 - aside)} travel={connectionTravel(frame, q.select, 24)} opacity={0.14 + 0.36 * selectP} />
               <SystemConnection a={{x: mx(1060), y: 520}} b={{x: hub.x + 36 * sx, y: hub.y}} curve={24} draw={prog(frame, q.suppliers + 14, 24, EASE.inOut) * (1 - aside)} opacity={0.25 * (1 - selectP * 0.7)} />
               <div style={{position: 'absolute', left: cardA.x - 250, top: cardA.y - 220, translate: `${aside * 250 * sx}px 0`, scale: 1 - aside * 0.3, opacity: 1 - aside, filter: aside > 0.02 ? `blur(${aside * 3}px)` : undefined}}>
-                <SupplierCard at={q.suppliers} name={s.supA.name} tag={s.supA.tag} price={s.supA.price} lead={s.supA.lead} fit={s.supA.fit} chosen select={selectP} />
+                <SupplierCard at={q.suppliers} name={s.supA.name} tag={s.supA.tag} units={s.supA.units} price={s.supA.price} eta={s.supA.eta} chosen select={selectP} />
+                <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px 18px', marginTop: 26, width: 470}}>
+                  {s.reasons.map((r, i) => (
+                    <Enter key={i} at={q.reasonStart + i * q.reasonGap} y={10} blur={6} dur={18}>
+                      <div style={{display: 'flex', alignItems: 'center', gap: 10}}>
+                        <Glyph name="check" size={22} color={C.verify} stroke={2.2} draw={prog(frame, q.reasonStart + i * q.reasonGap + 4, 10)} />
+                        <span style={{fontSize: 22, color: C.dim}}><MixedText text={r} /></span>
+                      </div>
+                    </Enter>
+                  ))}
+                </div>
               </div>
               <div style={{position: 'absolute', left: cardB.x - 250, top: cardB.y - 220, opacity: 1 - Math.min(1, aside * 1.6), translate: `${aside * -120 * sx}px 0`}}>
-                <SupplierCard at={q.suppliers + 8} name={s.supB.name} tag={s.supB.tag} price={s.supB.price} lead={s.supB.lead} fit={s.supB.fit} dim={selectP} />
+                <SupplierCard at={q.suppliers + 8} name={s.supB.name} tag={s.supB.tag} units={s.supB.units} price={s.supB.price} eta={s.supB.eta} dim={selectP} />
               </div>
             </div>
 
@@ -129,34 +159,19 @@ export const SupplierScene: React.FC = () => {
         <div style={{position: 'absolute', left: phoneX - 235, top: 90, scale: 1 - 0.46 * away, opacity: 1 - 0.5 * away, filter: away > 0.02 ? `blur(${away * 2.5}px)` : undefined, transformOrigin: 'center center'}}>
           <Enter at={q.phoneIn} y={40} blur={16} dur={40} scale={0.94}>
             <PhoneFrame rotateY={-9 * sx * (1 - away * 0.6)} rotateX={3}>
-              <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: 14, borderBottom: `1px solid ${C.line}`}}>
-                <Label size={13} color={C.dim}>{s.ownerLabel}</Label>
-                <Mono size={13} color={C.faint}>07:42</Mono>
+              <div style={{display: 'flex', alignItems: 'center', gap: 14, paddingBottom: 18, borderBottom: `1px solid ${C.line}`}}>
+                <span style={{width: 40, height: 40, borderRadius: '50%', border: '1px solid rgba(244,217,174,0.5)', background: 'rgba(244,217,174,0.1)', display: 'grid', placeItems: 'center'}}>
+                  <span style={{width: 9, height: 9, borderRadius: '50%', background: C.warm, boxShadow: '0 0 12px rgba(244,217,174,0.9)'}} />
+                </span>
+                <span style={{fontSize: 24, fontWeight: 500}}>{t.barry}</span>
               </div>
-              <PhoneBubble who="owner" at={q.ownerMsg}><Mixed text={s.ownerMsg} /></PhoneBubble>
-              <div style={{position: 'relative', height: 84}}>
-                <div style={{position: 'absolute', insetInlineStart: 0, top: 0}}>
-                  <TypingDots at={q.typing} out={q.barryReply} />
-                </div>
-                <div style={{position: 'absolute', insetInlineStart: 0, top: 0}}>
-                  <PhoneBubble who="barry" at={q.barryReply}>{s.reply}</PhoneBubble>
-                </div>
-              </div>
-              <PhoneBubble who="barry" at={q.done}>
-                <div style={{display: 'flex', flexDirection: 'column', gap: 6}}>
-                  <div style={{display: 'flex', alignItems: 'center', gap: 12, fontWeight: 700, fontSize: 36}}>
-                    <Glyph name="check" size={32} color="#0a0a0b" stroke={2.2} draw={prog(frame, q.done + 8, 14)} />
-                    {s.done.l1}
-                  </div>
-                  <span>{s.done.l2}</span>
-                  <span style={{fontWeight: 700}}><Mixed text={s.done.l3} /></span>
-                </div>
-              </PhoneBubble>
+              <Thread items={phoneItems} height={700} width={410} size={27} maxWidth={330} fade={30} />
             </PhoneFrame>
           </Enter>
         </div>
       </div>
       <DemoTag at={30} />
+      <DayClock clock={CLOCK.supplier} />
     </SceneRoot>
   );
 };
