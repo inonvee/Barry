@@ -44,6 +44,11 @@ export type GroundedContext = {
   capabilityResults?: CapabilityResultSummary[];
   /** Every request BARRY sent to the owner in this conversation, with its real status and outcome (customer-safe). */
   ownerRequests?: OwnerRequestView[];
+  /** Multi-ask continuation: what was already carried out this turn, and the customer's asks not yet done. */
+  doneThisTurn?: string[];
+  remainingAsks?: string[];
+  /** Asks from this message that were never carried out (runtime truth, for the reply). */
+  notDone?: string[];
   /** The requests the customer's changed terms are replacing (revision continuation): propose the replacement. */
   replacingRequests?: OwnerRequestView[];
   /** This turn changed a pending request's terms and no valid replacement was created. */
@@ -211,6 +216,8 @@ export type ComposeResponseInput = {
   steps?: ComposeStep[];
   /** The one thing still needed from the customer after those steps, if any. */
   next?: CompileOutcome;
+  /** Things the customer asked for in this message that were NOT done (their words) — say so; never imply them. */
+  notDone?: string[];
   /** The conversation's reply language (resolved by the runtime; never from a digits-only message). */
   language?: ReplyLanguage;
 };

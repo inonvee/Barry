@@ -42,8 +42,16 @@ export function money(amount: number | string, currency: string | undefined, lan
 }
 
 export function composeDeterministic(input: ComposeResponseInput): string {
+  const text = composeDeterministicCore(input);
+  if (!input.notDone?.length) return text;
+  // What the customer asked for and was NOT done is always said — partial work is never presented as complete.
+  const list = input.notDone.join("; ");
+  return input.language?.code === "he" ? `${text} עוד לא טיפלתי ב: ${list}. להמשיך עם זה?` : `${text} Not done yet: ${list}. Want me to go ahead with that?`;
+}
+
+function composeDeterministicCore(input: ComposeResponseInput): string {
   if (input.revisionWithoutReplacement) {
-    const rest = composeDeterministic({ ...input, revisionWithoutReplacement: false });
+    const rest = composeDeterministicCore({ ...input, revisionWithoutReplacement: false });
     const lead =
       input.language?.code === "he"
         ? "ביטלתי את הבקשה הקודמת כי הפרטים השתנו, וכרגע שום דבר לא ממתין לבעל העסק."
@@ -87,6 +95,13 @@ export function understandingUnavailableText(lang: string | undefined, opts: { s
     : "";
   const ask = he ? "אפשר לשלוח את זה שוב?" : "Could you send that again?";
   return [lead, opts.status ?? "", held, ask].filter(Boolean).join(he ? "\n" : "\n");
+}
+
+/** An earlier not-understood message, now understood, withdrew/changed a pending request: tell the customer. */
+export function revalidatedChangeText(lang: string | undefined): string {
+  return lang === "he"
+    ? "עכשיו הצלחתי לעבד את ההודעה הקודמת שלך: הבקשה הקודמת בוטלה כמו שביקשת, ושום דבר ממנה לא בוצע. אם צריך בקשה מתוקנת, כתבו לי את הפרטים."
+    : "I've now been able to process your earlier message: the earlier request was cancelled as you asked, and nothing from it was carried out. If you'd like a corrected request, send me the details.";
 }
 
 /** The owner approved, but the customer's intent after the request is unverified: ask before doing it. */

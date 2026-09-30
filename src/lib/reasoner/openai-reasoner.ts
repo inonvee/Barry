@@ -159,6 +159,10 @@ export function buildUnderstandingContext(ctx: ReasonerContext) {
     // questions, withdrawals and changed terms (see withdrawsRequest / changesPendingRequest).
     pendingOwnerRequests: (ctx.grounded?.ownerRequests ?? []).filter((r) => r.status === "waiting_on_owner"),
     ownerRequests: ctx.grounded?.ownerRequests ?? [],
+    // Set when this message asked for several changes and some were already carried out THIS turn:
+    // describe the next one from remainingAsks (see asks).
+    alreadyDoneThisTurn: ctx.grounded?.doneThisTurn ?? [],
+    remainingAsks: ctx.grounded?.remainingAsks ?? [],
     // Set when the customer just changed a pending request's terms: these requests are being replaced.
     replacingRequests: ctx.grounded?.replacingRequests ?? [],
     // What this business's catalog can be searched by — map the customer's words onto these values.
@@ -223,6 +227,8 @@ YOUR TASK NOW: understand the customer's latest message in context and describe 
 - slotAccepted / slotDeclined: only when awaitingSlotConfirmation is true and they accept or decline the offered time.
 - selectedOfferId / offerCandidateIds: for services in "offers"; several plausible -> candidates. offerChangeRequested only for an explicit change of mind to a different real offer.
 - requestedCapability: "ask_price" | "ask_duration" | "ask_deposit" when they ask that about an offer; else null.
+- asks: every distinct thing the customer asks in THIS message, in order, as a short phrase in their words; kind "change" (add/remove/change/book/buy/open/cancel — anything that would change something), "question" (facts, policy, price), "status" (what happened to something), "other". coveredByThisIR is true for the ask(s) the other fields of this IR describe (one change at a time), false for the rest. A plain message is one ask.
+- alreadyDoneThisTurn / remainingAsks (when non-empty): part of this message was already carried out. Describe ONLY the first of remainingAsks in the action fields (commerce / capabilityRequest / …) and mark it coveredByThisIR; never repeat what is already done. If it can't be described (needs a choice or a detail), leave the action fields null.
 - Output strict JSON only.`;
 
 /**
@@ -250,7 +256,9 @@ export const COMPOSE_SYSTEM_PROMPT =
   "Prices, deposits, durations, policies, product details and availability come ONLY from `facts`, receipts/toolOutput and scheduling. Quote prices exactly as written in facts. Never say something is available/in stock unless a receipt that looked up times or stock shows it now (or facts.shownProducts says so). Never state a measurement, colour, fit or specification that isn't in facts — say you don't have that detail. Never recommend something above a budget the customer stated; say nothing fits it instead. A total is computed only from those prices, the quantity and the business's own stated discount/shipping rules, and answering it never requires contact details. " +
   "Recaps and status questions (\"what did we agree\", \"is it booked\", \"did you send a link\") are answered from `transaction` and `ownerRequests` — the latest correction wins; answer yes/no first when asked. " +
   "`business.name` is the BUSINESS, never the customer: address the customer only by `customer.name` (or not by name at all). " +
+  "`facts.provenance` says where each group of facts comes from; general knowledge about businesses of this kind is never a fact about THIS business. " +
   "Opening hours, days, dates, deadlines and policy details (e.g. when a returns period starts) come ONLY from `facts`: if facts don't state it, say you don't have that detail — never fill it in from general knowledge. " +
+  "If `notDone` is present, those things the customer asked for were NOT done this turn: say so plainly for each (and offer to do them next) — never imply they happened. " +
   "Never narrate an action that no receipt shows happening THIS turn — not as done, not as \"now doing\", not as \"next I'll\". If the customer asked for several things and only some were done, say which were done and which were not (and offer to do the rest). " +
   "Use `customer` (their name, how to address them): never ask for something already there, and never ask for contact details unless outcome/next asks for them. Answer every question in lastCustomerMessage; if one can't be answered from facts, say so. If they asked for a yes/no, a price only, or no more suggestions, do exactly that. " +
   "When outcome.kind is \"conversation\", nothing was executed: answer from facts only. When it is \"withdrawn\", confirm you've stopped and nothing more will be sent (and that the request waiting on the owner was withdrawn when withdrawnRequests > 0). " +
@@ -375,6 +383,7 @@ export function sanitizeIR(graph: BusinessGraph, raw: LlmIR): BarryIR {
     readRequested: raw.readRequested ? true : undefined,
     checkoutConsent: raw.checkoutConsent ?? undefined,
     withdrawScope: raw.withdrawScope?.length ? raw.withdrawScope : undefined,
+    asks: raw.asks.length ? raw.asks.slice(0, 8).map((a) => ({ ask: a.ask.slice(0, 200), kind: a.kind, coveredByThisIR: a.coveredByThisIR })) : undefined,
   };
 }
 
@@ -590,6 +599,8 @@ export function buildComposeSummary(context: ComposeSummaryContext, input: Compo
     ledger: context.ledger ?? [],
     // The final-write gate stopped the payment/checkout: nothing was created; say why with these numbers.
     writeBlocked: sanitizedInput.writeBlocked ?? undefined,
+    // Things the customer asked for in this message that BARRY did NOT do (their words): say plainly they weren't done.
+    notDone: sanitizedInput.notDone?.length ? sanitizedInput.notDone : undefined,
     // The customer changed a pending request but no valid replacement exists: nothing is pending now.
     revisionWithoutReplacement: sanitizedInput.revisionWithoutReplacement || undefined,
     // THE amounts: the authoritative quantity-aware quote (never compute a total yourself).

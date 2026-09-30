@@ -125,6 +125,11 @@ export const LlmIRSchema = z.object({
   readRequested: z.boolean().nullable().default(null),
   checkoutConsent: z.boolean().nullable().default(null),
   withdrawScope: z.array(z.string()).nullable().default(null),
+  /**
+   * Every distinct thing the customer asked in THIS message, in order, in their own words — and whether
+   * the other fields of this IR describe it. Lets the runtime know what was asked but not done.
+   */
+  asks: z.array(z.object({ ask: z.string(), kind: z.enum(["change", "question", "status", "other"]), coveredByThisIR: z.boolean() })).default([]),
 });
 export type LlmIR = z.infer<typeof LlmIRSchema>;
 
@@ -267,6 +272,19 @@ export function irJsonSchema() {
         readRequested: { type: ["boolean", "null"] },
         checkoutConsent: { type: ["boolean", "null"] },
         withdrawScope: { type: ["array", "null"], items: { type: "string" } },
+        asks: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              ask: { type: "string" },
+              kind: { type: "string", enum: ["change", "question", "status", "other"] },
+              coveredByThisIR: { type: "boolean" },
+            },
+            required: ["ask", "kind", "coveredByThisIR"],
+          },
+        },
       },
       required: [
         "intent",
@@ -289,6 +307,7 @@ export function irJsonSchema() {
         "readRequested",
         "checkoutConsent",
         "withdrawScope",
+        "asks",
       ],
     },
   };

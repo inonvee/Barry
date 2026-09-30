@@ -7,7 +7,7 @@ import { getTool } from "@/lib/tools";
 import { INVOKE_CAPABILITY } from "@/lib/tools/capability-tool";
 import { money } from "@/lib/reasoner/deterministic-compose";
 import type { OwnerRequestView } from "@/lib/reasoner/types";
-import { appendLedger, readLedger, requestEntry, termsOf } from "./ledger";
+import { appendLedger, readLedger, requestEntry, termsOf, type LedgerEntry } from "./ledger";
 
 /**
  * The lifecycle of requests BARRY sends to the owner, per conversation.
@@ -112,7 +112,7 @@ export function customerIntentHold(state: ConversationState, a: ApprovalRecord):
   // Messages said after the anchor: by position when recorded (clock-free), else by time.
   const reaffirmedAt = Math.max(Date.parse(a.createdAt), anchor ? Date.parse(anchor.at) : 0);
   const saidAfter = (m: ConversationState["messages"][number], i: number) => (anchor?.messageIndex !== undefined ? i >= anchor.messageIndex : Date.parse(m.at) > reaffirmedAt);
-  const unverified = ledger.find((e) => (e.effect === "understanding.failed" || e.effect === "understanding.partial") && e.seq > anchorSeq);
+  const unverified = unresolvedUnderstanding(ledger).find((e) => e.seq > anchorSeq);
   if (unverified) return { reason: "understanding_unverified" };
   const own = [...new Set(Object.values(termsOf(a.requestedAction, a.requestedInput)).filter((v): v is string => typeof v === "string").flatMap(idTokens))];
   if (own.length === 0) return undefined;
@@ -123,6 +123,49 @@ export function customerIntentHold(state: ConversationState, a: ApprovalRecord):
     if (conflict) return { reason: "conflicting_reference", detail: conflict.toUpperCase() };
   }
   return undefined;
+}
+
+/**
+ * Customer messages BARRY could not (fully) understand and has not since re-interpreted. A successful
+ * revalidation resolves one either way: if the message (now understood) withdrew or changed requests,
+ * the runtime applied that through the normal lifecycle (the stale request is no longer pending).
+ */
+export function unresolvedUnderstanding(ledger: LedgerEntry[]): LedgerEntry[] {
+  const revalidated = new Set(ledger.filter((e) => e.effect === "understanding.revalidated" && e.revalidation).map((e) => e.revalidation!.of));
+  return ledger.filter((e) => (e.effect === "understanding.failed" || e.effect === "understanding.partial") && !revalidated.has(e.seq));
+}
+
+/**
+ * A revalidated message withdrew or changed requests: apply it to exactly the requests that were
+ * already pending when that message was sent (never to ones made later). Changed terms supersede
+ * (no replacement is guessed — the customer is asked); a withdrawal honours its scope.
+ */
+export async function applyRevalidatedIntent(
+  graph: BusinessGraph,
+  state: ConversationState,
+  failureSeq: number,
+  intent: { withdraws: boolean; changes: boolean; scope?: string[] }
+): Promise<number> {
+  const ledger = readLedger(state);
+  const askedBefore = (a: ApprovalRecord) => ledger.some((e) => e.requestId === a.id && e.effect === "request.awaiting_owner" && e.seq < failureSeq);
+  const inScope = (a: ApprovalRecord) => {
+    if (!intent.scope?.length) return true;
+    const terms = Object.values(termsOf(a.requestedAction, a.requestedInput)).map((v) => String(v).toLowerCase());
+    return intent.scope.some((id) => terms.some((t) => t.includes(id.toLowerCase().trim())));
+  };
+  const affected = (await conversationApprovals(graph.business.id, state.id)).filter((a) => a.status === "pending" && askedBefore(a) && (intent.changes || inScope(a)));
+  let n = 0;
+  for (const a of affected) {
+    const why = intent.withdraws ? "withdrawn" : "changed";
+    if (!(await resolveIfPending(a.id, WITHDRAWN_BY[why]))) continue;
+    appendLedger(state, requestEntry(a.requestedAction, a.requestedInput, a.id, why === "withdrawn" ? "withdrawn" : "superseded"));
+    if (state.pendingApprovalId === a.id) {
+      state.pendingApprovalId = null;
+      state.pendingAction = null;
+    }
+    n++;
+  }
+  return n;
 }
 
 /** A validly understood turn re-proposed exactly this pending request: the customer's intent is current again. */

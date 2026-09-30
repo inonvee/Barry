@@ -54,6 +54,9 @@ export type LedgerEntry = {
   outcome?: Record<string, string | number | boolean>;
   /** How many conversation messages existed when this was recorded (ordering against what was said, without clocks). */
   messageIndex?: number;
+  /** For an `understanding.revalidated` entry: which failed-understanding entry it re-interpreted, and whether
+   *  that message (now understood) withdrew or changed requests pending on the owner. */
+  revalidation?: { of: number; affectsRequests: boolean };
 };
 
 export const LEDGER_KEY = "__effectLedger";

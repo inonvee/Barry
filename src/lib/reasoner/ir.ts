@@ -203,6 +203,12 @@ export type BarryIR = {
    * selective "don't reopen A" never withdraws B. Empty/absent = everything still pending.
    */
   withdrawScope?: string[];
+  /**
+   * Every distinct thing the customer asked in this message (model-listed, in order). `change` asks
+   * the IR does not cover were NOT acted on by this understanding — the runtime continues with them
+   * (bounded) or tells the customer they weren't done.
+   */
+  asks?: { ask: string; kind: "change" | "question" | "status" | "other"; coveredByThisIR: boolean }[];
 };
 
 export type CapabilityRequest = { capability: string; input: Record<string, unknown>; purpose: string };

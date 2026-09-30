@@ -14,8 +14,8 @@ export type ApprovalView = ApprovalRecord & {
 
 function holdText(h: NonNullable<ApprovalView["hold"]>): string {
   return h.reason === "conflicting_reference"
-    ? `Held: the customer later wrote ${h.detail ?? "a different reference"}, which conflicts with this request. The customer must reconfirm before it can run.`
-    : "Held: a later customer message could not be understood, so the customer's current intent is unverified. The customer must reconfirm before it can run.";
+    ? `Held for conversation revalidation: the customer later wrote ${h.detail ?? "a different reference"}, which conflicts with this request. It can run only after the customer confirms it.`
+    : "Held for conversation revalidation: BARRY couldn't understand a message the customer sent after this request. It is re-checked automatically when understanding is available; until then it can't be approved.";
 }
 
 /** A generic capability call is titled by its capability, not by the generic action's name. */

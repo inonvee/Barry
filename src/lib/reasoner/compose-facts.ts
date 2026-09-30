@@ -35,6 +35,15 @@ function localMoment(iso: string | undefined, timeZone: string, twentyFour: bool
 export function businessFacts(ctx: ReasonerContext, lang = "en") {
   const { graph } = ctx;
   return {
+    // Where each group of facts comes from. Nothing else is a business fact: a detail that isn't here
+    // (hours, policies, dimensions, stock, prices, booking rules) is UNKNOWN for this business.
+    provenance: {
+      offers: "business_genome",
+      knowledge: "business_genome_knowledge",
+      openingHours: graph.business.operatingHours.length ? "business_genome" : "not_provided",
+      shownProducts: "provider_read_this_turn",
+      cart: "provider_read_this_turn",
+    },
     offers: graph.offers
       .filter((o) => o.active)
       .map((o) => ({

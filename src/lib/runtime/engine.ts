@@ -17,14 +17,14 @@ import type { TurnStep, TurnTrace } from "@/lib/state";
 import { CONSTITUTION_VERSION } from "@/lib/reasoner/constitution";
 import { resolveReplyLanguage, type ReplyLanguage } from "@/lib/reasoner/language";
 import { checkInfoRequest, infoRequestFields } from "@/lib/reasoner/reply-contract";
-import { composeDeterministic, understandingUnavailableText, intentHeldText } from "@/lib/reasoner/deterministic-compose";
+import { composeDeterministic, understandingUnavailableText, intentHeldText, revalidatedChangeText } from "@/lib/reasoner/deterministic-compose";
 import { findInternalLeak, internalVocabulary } from "@/lib/reasoner/reply-hygiene";
 import { claimEvidence, findMisattributedReferences, findUnsupportedClaims, languageMismatch, trimClosers } from "@/lib/reasoner/claim-grounding";
 import { renderStatus } from "@/lib/reasoner/status-render";
 import { appendLedger, classifyBlocked, classifyExecution, readLedger, requestEntry, type CartLineSnapshot, type LedgerEntry } from "./ledger";
 import { currentQuote } from "./pricing";
 import { finalWriteGate, type WriteBlock } from "./write-gate";
-import { conversationApprovals, customerIntentHold, describeRequest, findSameRequest, recordReconfirmed, settleChangedTerms, supersedeOlderRevisions, ownerRequestViews, recordOwnerRequestResult, withdrawPendingRequests, type ExistingRequest, type IntentHold } from "./owner-requests";
+import { applyRevalidatedIntent, conversationApprovals, customerIntentHold, unresolvedUnderstanding, describeRequest, findSameRequest, recordReconfirmed, settleChangedTerms, supersedeOlderRevisions, ownerRequestViews, recordOwnerRequestResult, withdrawPendingRequests, type ExistingRequest, type IntentHold } from "./owner-requests";
 import type { ComposeResponseInput } from "@/lib/reasoner/types";
 import { BARRY_RUNTIME_VERSION, runtimeCommit } from "./version";
 import { getCatalogSchema, getCommerceProduct, getOwnedCart } from "@/lib/commerce/capability";
@@ -341,6 +341,12 @@ export async function handleCustomerMessage(
 
   const reasoner = getReasoner();
   const ctx: ToolContext = { graph, conversationId, customerId };
+  // Earlier messages BARRY couldn't understand while requests were pending: re-interpret them first, so
+  // this turn starts from the customer's real intent (a stale request is withdrawn/superseded, or released).
+  const revalidation = await revalidateUnresolvedTurns(graph, state).catch((err) => {
+    console.error("[barry:engine] revalidation unavailable", err instanceof Error ? err.message : err);
+    return undefined;
+  });
 
   const profiles = await resolveCapabilityProfiles(graph).catch((err) => {
     console.error("[barry:engine] capability profiles unavailable", err instanceof Error ? err.message : err);
@@ -411,6 +417,11 @@ export async function handleCustomerMessage(
   // The cart as it stands before each step (re-read at turn start, then taken from each mutation's
   // returned cart) — every cart receipt freezes the exact line and its before/after quantity.
   let cartNow: CartLineSnapshot[] | undefined = grounded.cartLines;
+  // Changes the customer asked for in this message that this understanding did not describe: after the
+  // first one succeeds, the model is re-asked (bounded) for the next — the customer's own words, grounded,
+  // compiled and authorized exactly like the first. What is never reached is told as NOT done.
+  const remainingAsks = (ir.asks ?? []).filter((a) => a.kind === "change" && !a.coveredByThisIR).map((a) => a.ask);
+  let askContinuations = 0;
   if (outcome.kind === "action") {
     let current: Extract<CompileOutcome, { kind: "action" }> = outcome;
     let trigger: TurnStep["trigger"] = "customer";
@@ -452,6 +463,16 @@ export async function handleCustomerMessage(
         stop = { reason: "step_budget", outcome: current.action.name };
         break;
       }
+      if (remainingAsks.length > 0 && askContinuations < MAX_ASK_CONTINUATIONS) {
+        askContinuations++;
+        const next = await continueWithNextAsk(reasoner, graph, state, message, grounded, remainingAsks, cartNow, profiles);
+        if (next && !steps.some((s) => sameInput(s.outcome.action, next.action))) {
+          remainingAsks.shift();
+          current = next;
+          trigger = "customer";
+          continue;
+        }
+      }
       // After a generic capability call, the next step is the MODEL's to propose from the result
       // (when the result shows something another capability exists to handle) — grounded, compiled and
       // authorized exactly like the first. Otherwise the typed goal planner continues from state.
@@ -482,6 +503,8 @@ export async function handleCustomerMessage(
   // A salvaged understanding lost a field that could carry a decision: recorded (after any steps) so a
   // request pending on the owner is held until the customer's intent is re-established.
   if (understanding.failClosed) appendLedger(state, understandingEntry("partial"));
+
+  if (remainingAsks.length > 0) grounded.notDone = remainingAsks;
 
   if (pendingBeforeChange.length > 0) {
     const settled = await settleChangedTerms(graph, state, pendingBeforeChange);
@@ -547,6 +570,7 @@ export async function handleCustomerMessage(
     trace: {
       runtime: runtimeTrace(reasoner),
       understanding: understandingTrace(understanding),
+      ...(revalidation && (revalidation.revalidated > 0 || revalidation.stillUnresolved > 0) ? { revalidation } : {}),
       rejectedClaims: verification.rejected.map((r) => ({ claim: r.claim, reason: r.reason })),
       steps: steps.map((st) => st.trace),
       stop,
@@ -567,6 +591,52 @@ export async function handleCustomerMessage(
 
   await store.save(state);
   return { state, turn, response, rich };
+}
+
+/**
+ * REVALIDATION of customer messages BARRY could not understand while requests were pending on the
+ * owner. Each unresolved message is re-understood in its own context (the conversation as it was
+ * when it was sent, today's pending requests). If it is now understood:
+ *  - withdrawing or changing a request is APPLIED to the requests pending before that message (they are
+ *    withdrawn / superseded — never executed on stale terms);
+ *  - otherwise it provably left them untouched, and the hold it caused is released.
+ * If understanding is still unavailable, nothing changes: the requests stay held.
+ * Runs before the next customer turn, before an owner's approval executes, and on an owner's re-check.
+ */
+export async function revalidateUnresolvedTurns(graph: BusinessGraph, state: ConversationState): Promise<{ revalidated: number; stillUnresolved: number; changedRequests: number }> {
+  const pending = (await conversationApprovals(graph.business.id, state.id)).filter((a) => a.status === "pending");
+  const unresolved = unresolvedUnderstanding(readLedger(state)).slice(-3);
+  if (pending.length === 0 || unresolved.length === 0) return { revalidated: 0, stillUnresolved: unresolved.length, changedRequests: 0 };
+  const reasoner = getReasoner();
+  let revalidated = 0;
+  let changedRequests = 0;
+  for (const failure of unresolved) {
+    const at = (failure.messageIndex ?? 0) - 1;
+    const said = state.messages[at];
+    if (!said || said.role !== "customer") continue;
+    const then: ConversationState = { ...state, messages: state.messages.slice(0, at + 1) };
+    const grounded: GroundedContext = {
+      ownerRequests: ownerRequestViews(await conversationApprovals(graph.business.id, state.id), state),
+      capabilities: await buildCapabilitySurface(graph).catch(() => []),
+      capabilityResults: readCapabilityResults(state),
+    };
+    const u = await understandTurn(reasoner, { graph, state: then, customerMessage: said.content, grounded });
+    if (!u.valid) continue;
+    const withdraws = u.ir.withdrawsRequest === true;
+    const changes = u.ir.changesPendingRequest === true || Boolean(u.failClosed);
+    const applied = withdraws || changes ? await applyRevalidatedIntent(graph, state, failure.seq, { withdraws, changes, scope: u.ir.withdrawScope }) : 0;
+    changedRequests += applied;
+    appendLedger(state, {
+      operation: "understand",
+      effect: "understanding.revalidated",
+      status: "no_effect",
+      describes: applied > 0 ? "an earlier customer message, now understood, withdrew or changed a pending request" : "an earlier customer message, now understood, left the pending requests unchanged",
+      terms: {},
+      revalidation: { of: failure.seq, affectsRequests: withdraws || changes },
+    });
+    revalidated++;
+  }
+  return { revalidated, stillUnresolved: unresolved.length - revalidated, changedRequests };
 }
 
 /** Understanding with its outcome. A reasoner without detailed reporting is taken at its word. */
@@ -778,6 +848,49 @@ async function proposeReplacement(
   return planned?.kind === "action" ? planned : undefined;
 }
 
+/** Exactly the same operation with exactly the same input (key order and idempotency keys aside). */
+function sameInput(a: { name: string; input: Record<string, unknown> }, b: { name: string; input: Record<string, unknown> }): boolean {
+  if (a.name === INVOKE_CAPABILITY || b.name === INVOKE_CAPABILITY) return sameCall(a, b);
+  const canon = (v: unknown): string =>
+    Array.isArray(v) ? `[${v.map(canon).join(",")}]` : v && typeof v === "object" ? `{${Object.keys(v as object).filter((k) => k !== "idempotencyKey").sort().map((k) => `${k}:${canon((v as Record<string, unknown>)[k])}`).join(",")}}` : JSON.stringify(v);
+  return a.name === b.name && canon(a.input) === canon(b.input);
+}
+
+/** At most this many further customer asks are continued within one message. */
+const MAX_ASK_CONTINUATIONS = 2;
+
+/**
+ * Multi-ask continuation: the same customer message, re-understood with what was already done this turn
+ * and the asks still open. Only an action for the next open ask is taken from it; it is grounded against
+ * the cart as it now is, compiled, and later authorized/gated like any customer-triggered step.
+ */
+async function continueWithNextAsk(
+  reasoner: Reasoner,
+  graph: BusinessGraph,
+  state: ConversationState,
+  message: string,
+  grounded: GroundedContext,
+  remainingAsks: string[],
+  cartNow: CartLineSnapshot[] | undefined,
+  profiles: CapabilityProfiles | undefined
+): Promise<Extract<CompileOutcome, { kind: "action" }> | undefined> {
+  const done = readLedger(state)
+    .slice(grounded.turnStartSeq ?? 0)
+    .filter((e) => e.status === "effected" || e.status === "awaiting_owner")
+    .map((e) => `${e.describes}${Object.keys(e.terms).length ? ` (${Object.entries(e.terms).map(([k, v]) => `${k}: ${v}`).join(", ")})` : ""}`);
+  const cart = cartNow?.map(({ id: _id, ...line }) => {
+    void _id;
+    return line;
+  });
+  const context: GroundedContext = { ...grounded, cart: cart ?? grounded.cart, cartLines: cartNow ?? grounded.cartLines, capabilityResults: readCapabilityResults(state), doneThisTurn: done, remainingAsks };
+  const u = await understandTurn(reasoner, { graph, state, customerMessage: message, grounded: context });
+  if (!u.valid || u.failClosed) return undefined;
+  const { verified } = verifyIR(graph, message, u.ir, state, { catalog: context.catalog, capabilities: context.capabilities, capabilityResults: context.capabilityResults, cartLineCount: context.cartLines?.length });
+  // The continuation acts on the next ask only; it never withdraws or revises anything by itself.
+  const next = compile(graph, state, { ...verified, withdrawsRequest: undefined, changesPendingRequest: undefined }, { profiles, shownProducts: context.shownProducts, cartLines: context.cartLines });
+  return next.kind === "action" ? next : undefined;
+}
+
 /** Hard ceiling on actions per customer message — the loop is bounded no matter what state says. */
 export const MAX_STEPS_PER_TURN = 4;
 /** Actions that express a customer's choice: never taken on the customer's behalf. */
@@ -891,6 +1004,7 @@ async function composeTurn(
 ): Promise<{ text: string; fallback?: string }> {
   const graph = rctx.graph;
   const last = steps[steps.length - 1];
+  const notDone = rctx.grounded?.notDone?.length ? { notDone: rctx.grounded.notDone } : {};
   let input: ComposeResponseInput;
   // The composer and every check see the ledger as it stands after this turn's steps, the current
   // owner requests, and the one authoritative quote.
@@ -909,6 +1023,7 @@ async function composeTurn(
       writeBlocked: blockedStep.blocked,
       language,
       quote,
+      ...notDone,
       ...(before.length ? { steps: before.map((st) => ({ outcome: st.outcome, toolResult: st.toolResult, existingOwnerRequest: st.existing })) } : {}),
     };
     return { text: composeDeterministic(input), fallback: "write blocked -> deterministic" };
@@ -916,13 +1031,13 @@ async function composeTurn(
   if (steps.length <= 1 && !next) {
     if (last?.policyDecision.status === "denied") {
       // The rule's text stays in the trace; the customer hears what it means for them.
-      input = { outcome, toolResult: null, refused: true, language, quote };
+      input = { outcome, toolResult: null, refused: true, language, quote, ...notDone };
       return await guardReply(reasoner, rctx, input, await reasoner.composeResponse(rctx, input));
     }
     if (last?.policyDecision.status === "requires_approval") {
       input = last.existing
-        ? { outcome, toolResult: null, existingOwnerRequest: last.existing, language, quote }
-        : { outcome, toolResult: null, policyReason: last.policyDecision.reason, language, quote };
+        ? { outcome, toolResult: null, existingOwnerRequest: last.existing, language, quote, ...notDone }
+        : { outcome, toolResult: null, policyReason: last.policyDecision.reason, language, quote, ...notDone };
       return await guardReply(reasoner, rctx, input, await reasoner.composeResponse(rctx, input));
     }
     input = sanitizeComposeInput({ outcome, toolResult: last?.toolResult ?? null, scheduling: buildSchedulingDisplay(graph, outcome, last?.toolResult ?? null, message, language), language, quote });
@@ -948,6 +1063,7 @@ async function composeTurn(
   }
   if (outcome.kind === "conversation" && rctx.grounded?.ownerRequests?.length) input = { ...input, ownerRequests: rctx.grounded.ownerRequests };
   if (rctx.grounded?.revisionWithoutReplacement) input = { ...input, revisionWithoutReplacement: true };
+  input = { ...input, ...notDone };
   const guarded = await guardReply(reasoner, rctx, input, await reasoner.composeResponse(rctx, input));
   if (guarded.fallback) return guarded;
   const text = guarded.text;
@@ -1298,8 +1414,22 @@ export async function resumeAfterApproval(
   // request is held — not resolved, not executed — and the customer is asked to confirm.
   if (decision === "approved") {
     const convo = await getConversationStore().get(existing.conversationId);
-    const hold = convo ? customerIntentHold(convo, existing) : undefined;
-    if (convo && hold) return intentHeldTurn(convo, existing, hold);
+    if (convo && customerIntentHold(convo, existing)?.reason === "understanding_unverified") {
+      // Revalidate first: if the unresolved message can now be understood, apply what it said.
+      const r = await revalidateUnresolvedTurns(graph, convo);
+      if (r.revalidated > 0) {
+        if (r.changedRequests > 0) {
+          const note = revalidatedChangeText(convo.knownFields[SCRATCH_KEYS.conversationLanguage]);
+          convo.messages.push({ role: "barry", content: note, at: new Date().toISOString() });
+        }
+        await getConversationStore().save(convo);
+        const now = await backend.getApproval(approvalId);
+        if (now && now.status !== "pending") return alreadyResolved();
+      }
+    }
+    const fresh = convo ? ((await getConversationStore().get(existing.conversationId)) ?? convo) : undefined;
+    const hold = fresh ? customerIntentHold(fresh, existing) : undefined;
+    if (fresh && hold) return intentHeldTurn(fresh, existing, hold);
   }
 
   // Compare-and-set in the backend: a concurrent or stale resolution loses here and executes nothing.
