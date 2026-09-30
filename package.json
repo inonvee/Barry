@@ -10,7 +10,8 @@
     "test": "vitest run",
     "eval:models": "BARRY_LIVE_EVAL=1 vitest run __tests__/live-model-comparison.test.ts",
     "eval:capabilities": "BARRY_LIVE_EVAL=1 vitest run __tests__/capability-planner-live.test.ts",
-    "eval:conversation": "BARRY_LIVE_EVAL=1 vitest run __tests__/human-conversation-live.test.ts"
+    "eval:conversation": "BARRY_LIVE_EVAL=1 vitest run __tests__/human-conversation-live.test.ts",
+    "eval:pilot": "BARRY_LIVE_EVAL=1 vitest run __tests__/pilot-live.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.2",

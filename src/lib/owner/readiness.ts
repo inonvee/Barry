@@ -94,10 +94,24 @@ export async function assessPilotReadiness(graph: BusinessGraph, opts: { convers
 
   const workspace = await getLearningWorkspace(graph).catch(() => undefined);
   if (!workspace) add({ id: "systems.unavailable", area: "systems", gate: "READY_FOR_SUPERVISED_PILOT", label: "Connected systems", status: "fail", detail: "Connection status could not be read.", fix: "Check the database connection." });
-  for (const [i, b] of (workspace?.readiness.operational.blockers ?? []).filter((b) => b.capability !== "channel").entries()) {
-    add({ id: `systems.${b.capability}.${i}`, area: b.capability === "payments" ? "payments" : "systems", gate: "READY_FOR_SUPERVISED_PILOT", label: `${b.capability[0].toUpperCase()}${b.capability.slice(1)}`, status: "fail", detail: b.reason, fix: b.fix });
+  // Learn Business requirements, except what the Business Genome already states (a learned fact is one
+  // source of business knowledge; the Genome the runtime acts on is another). The handoff path is its own check.
+  const covered = (key: string) =>
+    (key === "business.name" && Boolean(graph.business.name.trim())) ||
+    (key === "hours.opening" && graph.business.operatingHours.length > 0) ||
+    (key === "authority.discounts" && graph.policies.some((p) => p.rule.type === "max_auto_discount_pct")) ||
+    (key === "policy.refunds" && graph.policies.some((p) => p.rule.type === "refund_requires_approval")) ||
+    (key === "policy.shipping" && graph.policies.some((p) => p.rule.type === "free_shipping_over" || p.rule.type === "flat_shipping_fee")) ||
+    key === "authority.escalation";
+  const AREA_LABEL: Record<string, string> = { core: "Business knowledge", commerce: "Store knowledge", scheduling: "Booking knowledge", payments: "Payments", leads: "Enquiries" };
+  const gaps = (workspace?.questions ?? []).filter((q) => !covered(q.key));
+  for (const q of gaps) add({ id: `knowledge.${q.key}`, area: "knowledge", gate: "READY_FOR_SUPERVISED_PILOT", label: AREA_LABEL[q.capability] ?? "Business knowledge", status: "fail", detail: q.question, fix: "Answer it with the BARRY team (or in Learn business)." });
+  for (const r of workspace?.needsReview ?? []) add({ id: `knowledge.review.${r.key}`, area: "knowledge", gate: "READY_FOR_SUPERVISED_PILOT", label: AREA_LABEL[r.capability] ?? "Business knowledge", status: "fail", detail: `A learned fact (${r.key}) hasn't been confirmed by you yet.`, fix: "Verify, correct or reject it in Learn business." });
+  const systemBlockers = (workspace?.readiness.operational.blockers ?? []).filter((b) => b.capability !== "channel" && !/^Owner answer needed|^Learned fact/.test(b.reason));
+  for (const [i, b] of systemBlockers.entries()) {
+    add({ id: `systems.${b.capability}.${i}`, area: b.capability === "payments" ? "payments" : "systems", gate: "READY_FOR_SUPERVISED_PILOT", label: `${b.capability[0].toUpperCase()}${b.capability.slice(1)} system`, status: "fail", detail: b.reason, fix: b.fix });
   }
-  if (workspace && !workspace.readiness.operational.blockers.some((b) => b.capability !== "channel")) {
+  if (workspace && systemBlockers.length === 0) {
     add({ id: "systems.connected", area: "systems", gate: "READY_FOR_SUPERVISED_PILOT", label: "Business systems", status: "pass", detail: "Every system BARRY works through is connected with a real provider." });
   }
 

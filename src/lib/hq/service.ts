@@ -10,6 +10,9 @@ import { buildOperatingStrategy } from "@/lib/learn-business/strategy";
 import { buildCapabilitySurface } from "@/lib/capabilities/surface";
 import type { CapabilitySurfaceEntry } from "@/lib/reasoner/types";
 import { buildDesignPartnerReadiness, type DesignPartnerSurface } from "./design-partner";
+import { assessPilotReadiness, type PilotLevel } from "@/lib/owner/readiness";
+import { getOwnerWorkspace } from "@/lib/owner/service";
+import type { Money } from "@/lib/owner/revenue";
 
 /**
  * BARRY HQ read model. Read-only: nothing here writes, and every query is
@@ -127,6 +130,10 @@ export type HqBusinessOverview = {
   health: Sourced<TurnHealth>;
   runtime: Sourced<RuntimeSummary | null>;
   counts: Awaited<ReturnType<typeof operations>>["counts"];
+  /** Paid-pilot readiness (the same assessment the owner's Train BARRY page shows). */
+  pilot: Sourced<{ level: PilotLevel; label: string; nextBlockers: string[] }>;
+  /** Last 7 days from the owner read model: verified revenue (per currency, simulated apart), AI health, who is waiting. */
+  week: Sourced<{ collected: Money; simulated: Money; ai: { status: string; summary: string; lastFailure?: string }; needAttention: number; handoffsOpen: number; approvalsWaiting: number; lostOpportunities: number }>;
 };
 
 async function overviewFor(graph: BusinessGraph): Promise<HqBusinessOverview & { _profiles: Sourced<CapabilityProfiles>; _ops: Awaited<ReturnType<typeof operations>>; _activity: Sourced<TurnActivity[]> }> {
@@ -140,6 +147,25 @@ async function overviewFor(graph: BusinessGraph): Promise<HqBusinessOverview & {
     operations(id),
   ]);
   const connections = await source("connections", () => describeBusinessConnections(id, profiles.ok ? profiles.value : undefined));
+  const [pilot, week] = await Promise.all([
+    source("pilot readiness", async () => {
+      const r = await assessPilotReadiness(graph);
+      return { level: r.level, label: r.label, nextBlockers: r.next?.blockers.map((b) => `${b.label}: ${b.detail}`) ?? [] };
+    }),
+    source("owner view", async () => {
+      const ws = await getOwnerWorkspace(graph, { since: new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString(), label: "last 7 days" });
+      const f = ws.health.ai.lastFailure;
+      return {
+        collected: ws.revenue.direct,
+        simulated: ws.revenue.simulatedPaid,
+        ai: { status: ws.health.ai.status, summary: ws.health.ai.summary, ...(f ? { lastFailure: `${f.kind}${f.status ? ` · HTTP ${f.status}` : ""}${f.code ? ` · ${f.code}` : ""}` } : {}) },
+        needAttention: ws.today.needYou,
+        handoffsOpen: ws.today.handoffsOpen,
+        approvalsWaiting: ws.today.approvalsWaiting,
+        lostOpportunities: ws.revenue.lostOpportunities,
+      };
+    }),
+  ]);
   const map = <T, U>(s: Sourced<T>, f: (v: T) => U): Sourced<U> => (s.ok ? { ok: true, value: f(s.value) } : s);
   return {
     id,
@@ -154,6 +180,8 @@ async function overviewFor(graph: BusinessGraph): Promise<HqBusinessOverview & {
     health: map(activity, turnHealth),
     runtime: map(activity, latestRuntime),
     counts: ops.counts,
+    pilot,
+    week,
     _profiles: profiles,
     _ops: ops,
     _activity: activity,

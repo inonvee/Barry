@@ -3,6 +3,8 @@ import { requireFounder } from "@/lib/hq/guard";
 import { getHqOverview } from "@/lib/hq/service";
 import { Badge, Card, HqHeader, Kv, WithSource, label, n, statusTone } from "@/components/hq/ui";
 
+const money = (m: Record<string, number>) => Object.entries(m).map(([c, v]) => `${v.toFixed(2)} ${c}`).join(" + ") || "none";
+
 export default async function HqOverviewPage() {
   await requireFounder();
   const { genomeSource, businesses } = await getHqOverview();
@@ -28,6 +30,19 @@ export default async function HqOverviewPage() {
                 {b.name}
               </Link>
               <div className="mt-2 space-y-0.5">
+                <Kv
+                  k="Pilot readiness"
+                  v={<WithSource value={b.pilot}>{(p) => <Badge tone={p.level === "READY_FOR_CUSTOMER_TRAFFIC" ? "good" : p.level === "NOT_READY" ? "bad" : "warn"}>{p.label}</Badge>}</WithSource>}
+                />
+                <Kv
+                  k="AI (7 days)"
+                  v={<WithSource value={b.week}>{(w) => <Badge tone={w.ai.status === "healthy" ? "good" : w.ai.status === "unavailable" ? "bad" : w.ai.status === "degraded" ? "warn" : "neutral"}>{`${w.ai.status.replace(/_/g, " ")}${w.ai.lastFailure ? ` · last: ${w.ai.lastFailure}` : ""}`}</Badge>}</WithSource>}
+                />
+                <Kv
+                  k="Verified revenue (7 days)"
+                  v={<WithSource value={b.week}>{(w) => `${money(w.collected)}${Object.keys(w.simulated).length ? ` · simulated ${money(w.simulated)} (not counted)` : ""}`}</WithSource>}
+                />
+                <Kv k="Needs intervention" v={<WithSource value={b.week}>{(w) => `${w.needAttention} conversations · ${w.approvalsWaiting} approvals · ${w.handoffsOpen} handoffs · ${w.lostOpportunities} lost opportunities`}</WithSource>} />
                 <Kv k="Providers" v={<WithSource value={b.mode}>{(m) => <Badge tone={statusTone(m)}>{m === "none" ? "none connected" : m}</Badge>}</WithSource>} />
                 <Kv
                   k="Capabilities"

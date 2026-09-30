@@ -195,3 +195,18 @@ Safety therefore no longer depends on `changesPendingRequest` alone.
 - a clock time needs a source: facts or hours, a lookup, the ledger or the customer.
 
 Deterministic coverage: `__tests__/pass4-understanding.test.ts`. Live verification: NOT run in this environment (no `OPENAI_API_KEY` / Vercel access).
+
+## Paid-pilot correctness additions
+
+- **Revalidation** (`revalidateUnresolvedTurns`, engine): a customer message BARRY couldn't understand while a request was pending is re-understood in its own context once understanding is available. This happens before the next customer turn, at the owner's Approve, or on an owner re-check.
+  - If the message withdrew or changed the request, that change is applied to exactly the requests pending before the message: they are withdrawn or superseded, never executed. The customer is told.
+  - If it provably left them untouched, an `understanding.revalidated` entry releases the hold.
+  - While understanding is unavailable, the request stays held.
+- **Multi-ask completeness:**
+  - The IR's `asks` lists every ask in the message, and which one the IR covers.
+  - After a customer-triggered change succeeds, the next uncovered change is continued: re-understood, grounded, compiled and authorized. At most two continuations run per message; exact repeats are refused, and a continuation never withdraws or revises anything.
+  - What is never reached goes to the reply as `notDone`.
+- **Handoff** (`handoff.created` / `handoff.resolved` ledger effects): a callback claim needs a handoff whose business declared its response path.
+- **Fact provenance:** composer facts carry `provenance`; hours a business never gave are `not_provided`.
+
+See `docs/PAID_PILOT.md` for the owner product, revenue attribution, channels and readiness.
