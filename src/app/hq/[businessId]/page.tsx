@@ -2,7 +2,11 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireFounder } from "@/lib/hq/guard";
 import { getHqBusiness } from "@/lib/hq/service";
+import { fleetTenant, getBusinessStatus } from "@/lib/hq/fleet";
+import { launchChecklist } from "@/lib/hq/launch";
+import { getConversationStore } from "@/lib/state";
 import { Badge, Card, HqHeader, Kv, WithSource, label, statusTone } from "@/components/hq/ui";
+import { AuditCard, ControlsCard, IncidentsCard, LaunchCard, ObligationsCard, OperationalStatus } from "@/components/hq/operate";
 
 const when = (iso: string | null) => (iso ? new Date(iso).toISOString().replace("T", " ").slice(0, 16) : "—");
 
@@ -11,6 +15,9 @@ export default async function HqBusinessPage({ params }: { params: Promise<{ bus
   const { businessId } = await params;
   const b = await getHqBusiness(businessId);
   if (!b) notFound();
+  const graph = fleetTenant(businessId)!;
+  const status = await getBusinessStatus(graph, { detail: true });
+  const gate = await launchChecklist(graph, { controls: status.controls, conversations: await getConversationStore().listByBusiness(businessId).catch(() => []) });
   const convoHref = (id: string) => `/hq/${encodeURIComponent(b.id)}/conversations/${encodeURIComponent(id)}`;
 
   return (
@@ -25,6 +32,15 @@ export default async function HqBusinessPage({ params }: { params: Promise<{ bus
           <WithSource value={b.readiness}>{(r) => <Badge tone={statusTone(r.operational.state)}>{label(r.operational.state)}</Badge>}</WithSource>
           <WithSource value={b.mode}>{(m) => <Badge tone={statusTone(m)}>providers: {m}</Badge>}</WithSource>
         </div>
+
+        <OperationalStatus b={status} />
+        <div className="grid gap-4 lg:grid-cols-2">
+          <IncidentsCard b={status} />
+          <ObligationsCard b={status} />
+        </div>
+        <ControlsCard b={status} />
+        <LaunchCard gate={gate} />
+        <AuditCard b={status} />
 
         <div className="grid gap-4 lg:grid-cols-2">
           <Card title="Readiness (same as Learn Business)">
@@ -394,19 +410,6 @@ export default async function HqBusinessPage({ params }: { params: Promise<{ bus
           </Card>
         </div>
 
-        <Card title="Controls">
-          <p className="text-sm text-neutral-500">
-            Pause BARRY, disable a capability and safe mode are not available yet. They will only ship as explicit, permission-checked, audited and reversible actions —
-            HQ is read-only until then.
-          </p>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {["Pause BARRY", "Disable capability", "Safe mode"].map((c) => (
-              <button key={c} disabled className="cursor-not-allowed rounded-lg border border-neutral-200 dark:border-neutral-800 px-3 py-1.5 text-sm text-neutral-400">
-                {c}
-              </button>
-            ))}
-          </div>
-        </Card>
 
         <p className="text-xs text-neutral-500">Not tracked yet: {b.notTracked.join(" · ")}.</p>
       </main>

@@ -19,6 +19,7 @@ import { resolveReplyLanguage, type ReplyLanguage } from "@/lib/reasoner/languag
 import { checkInfoRequest, infoRequestFields } from "@/lib/reasoner/reply-contract";
 import { composeDeterministic, handoffText, understandingUnavailableText, intentHeldText, revalidatedChangeText } from "@/lib/reasoner/deterministic-compose";
 import { createHandoff, handoffPath } from "./handoff";
+import { loadControls } from "@/lib/hq/controls";
 import { QA_FORCE_UNDERSTANDING_FAILURE, qaEnabled } from "@/lib/qa/mode";
 import { findInternalLeak, internalVocabulary } from "@/lib/reasoner/reply-hygiene";
 import { claimEvidence, findMisattributedReferences, findUnsupportedClaims, languageMismatch, trimClosers } from "@/lib/reasoner/claim-grounding";
@@ -366,6 +367,9 @@ export async function handleCustomerMessage(
     console.error("[barry:engine] capability profiles unavailable", err instanceof Error ? err.message : err);
     return undefined;
   });
+  // The founder's controls for this business (pause, supervision, paused capabilities) are read before
+  // any authority decision this turn.
+  await loadControls(graph.business.id);
   const grounded: GroundedContext = (await buildGroundedContext(graph, state, ctx, profiles)) ?? {};
   // The business's OWN capability surface (beyond the typed flows) and what earlier calls returned:
   // the model reasons over these; it never selects a system and never grants itself authority.
@@ -1585,6 +1589,7 @@ export async function resumeAfterApproval(
   // approval never reaches the tool call at all.
   const existing = await backend.getApproval(approvalId);
   if (!existing) throw new Error(`Approval ${approvalId} not found`);
+  await loadControls(graph.business.id);
   const alreadyResolved = async (): Promise<TurnOutcome> => {
     const current = (await backend.getApproval(approvalId)) ?? existing;
     const store = getConversationStore();

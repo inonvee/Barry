@@ -197,7 +197,42 @@ export type FollowUpRecord = {
   createdAt: string;
 };
 
+/**
+ * OPERATOR RECORD — one durable, tenant-scoped, keyed JSON record. The founder control plane, the
+ * proactive operator and the release lane keep their state here (business controls, founder audit,
+ * incident acknowledgements, operational obligations, release verdicts, QA scenario runs): each has a
+ * `kind`, a stable `key` per (business, kind) and a JSON `data` body. Never customer data.
+ */
+export type OperatorRecordKind = "controls" | "audit" | "incident" | "obligation" | "release" | "qa_scenario";
+
+export type OperatorRecord = {
+  id: string;
+  businessId: string;
+  kind: OperatorRecordKind;
+  key: string;
+  data: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** Records the QA reset removed, by table. */
+export type QaPurgeResult = Record<string, number>;
+
 export interface BarryBackend {
+  // Operator records (founder control plane, obligations, release lane)
+  listOperatorRecords(businessId: string, kind: OperatorRecordKind): Promise<OperatorRecord[]>;
+  /** One row per (businessId, kind, key): replaces `data`. */
+  upsertOperatorRecord(record: Omit<OperatorRecord, "id" | "createdAt" | "updatedAt">): Promise<OperatorRecord>;
+  deleteOperatorRecords(businessId: string, kind: OperatorRecordKind, keys?: string[]): Promise<number>;
+  /** FOUNDER ONLY (HQ): every business's records of one kind. Owner routes never call this. */
+  listOperatorRecordsAcrossBusinesses(kind: OperatorRecordKind): Promise<OperatorRecord[]>;
+  /**
+   * QA ONLY: delete this business's records whose conversation id starts with `conversationPrefix`
+   * (payments, approvals, bookings, carts, orders, follow-ups). Conversations themselves are the
+   * conversation store's to delete. Never touches records outside the prefix.
+   */
+  purgeQaRecords(businessId: string, conversationPrefix: string): Promise<QaPurgeResult>;
+
   // Availability / bookings
   listBookings(businessId: string): Promise<BookingRecord[]>;
   createBooking(record: Omit<BookingRecord, "id" | "createdAt" | "status">): Promise<BookingRecord>;

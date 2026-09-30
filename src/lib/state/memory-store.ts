@@ -53,6 +53,17 @@ export class MemoryConversationStore implements ConversationStore {
       .slice(0, limit);
   }
 
+  async deleteConversationsByPrefix(businessId: string, prefix: string): Promise<number> {
+    if (!prefix) throw new Error("A prefix is required");
+    let n = 0;
+    for (const [id, c] of this.conversations) {
+      if (c.businessId !== businessId || !id.startsWith(prefix)) continue;
+      this.conversations.delete(id);
+      n++;
+    }
+    return n;
+  }
+
   reset(id: string): void {
     this.conversations.delete(id);
   }

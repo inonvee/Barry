@@ -141,6 +141,11 @@ function numbersIn(text: string): string[] {
 
 /** Every figure in the answer must be one the briefing (or the question) contains; no action claims. */
 export function checkOwnerAnswer(answer: string, briefing: OwnerBriefing, question: string): string | undefined {
+  return checkAnswerAgainstBriefing(answer, briefing, question);
+}
+
+/** The same verification for any read-only briefing (owner or founder): figures must come from the briefing; no action claims. */
+export function checkAnswerAgainstBriefing(answer: string, briefing: unknown, question: string): string | undefined {
   const allowed = new Set([...numbersIn(JSON.stringify(briefing)), ...numbersIn(question)]);
   const stray = numbersIn(answer).filter((n) => !allowed.has(n) && !allowed.has(String(Number(n))));
   if (stray.length) return `figures not in the briefing: ${[...new Set(stray)].join(", ")}`;

@@ -1,3 +1,4 @@
+import { channelDisabled, loadControls } from "@/lib/hq/controls";
 import { resolveBusinessGraph } from "@/lib/business-graph-repository";
 import { handleCustomerMessage } from "@/lib/runtime";
 import { getConversationStore } from "@/lib/state";
@@ -71,6 +72,11 @@ export type InboundResult =
 /** Process one normalized inbound message end to end. */
 export async function processInbound(message: NormalizedInboundMessage & { inboundId: string; profileName?: string }, sender: OutboundSender): Promise<InboundResult> {
   const graph = resolveBusinessGraph(message.businessId);
+  // A channel the founder disabled is not answered on: nothing is processed, nothing is sent.
+  const controls = await loadControls(graph.business.id);
+  if (channelDisabled(controls, message.identity.channel)) {
+    return { status: "failed", conversationId: message.conversationId, error: `channel ${message.identity.channel} is disabled by the founder` };
+  }
   const store = getConversationStore();
   const customerId = message.customerId ?? `${message.identity.channel}:${message.identity.channelUserId}`;
   const conversationId = message.conversationId;

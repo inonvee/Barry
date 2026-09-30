@@ -14,6 +14,9 @@ import type {
   OperatingStrategyRecord,
   PaymentRequestRecord,
   PaymentWebhookEventRecord,
+  OperatorRecord,
+  OperatorRecordKind,
+  QaPurgeResult,
 } from "./types";
 
 function id(prefix: string): string {
@@ -779,4 +782,63 @@ export class SupabaseBackend implements BarryBackend {
     if (error) throw new Error(`Failed to list follow-ups: ${error.message}`);
     return (data ?? []).map(followUpFromRow);
   }
+
+  // ── Operator records (migration 0012) ──────────────────────────────────
+
+  async listOperatorRecords(businessId: string, kind: OperatorRecordKind): Promise<OperatorRecord[]> {
+    const client = getSupabaseClient();
+    const { data, error } = await client.from("operator_records").select("*").eq("business_id", businessId).eq("kind", kind);
+    if (error) throw new Error(`Failed to list operator records: ${error.message}`);
+    return (data ?? []).map(operatorRecordFromRow);
+  }
+
+  async upsertOperatorRecord(record: Omit<OperatorRecord, "id" | "createdAt" | "updatedAt">): Promise<OperatorRecord> {
+    const client = getSupabaseClient();
+    const row = { id: id("oprec"), business_id: record.businessId, kind: record.kind, key: record.key, data: record.data, updated_at: new Date().toISOString() };
+    const { data, error } = await client.from("operator_records").upsert(row, { onConflict: "business_id,kind,key" }).select("*").single();
+    if (error) throw new Error(`Failed to upsert operator record: ${error.message}`);
+    return operatorRecordFromRow(data);
+  }
+
+  async deleteOperatorRecords(businessId: string, kind: OperatorRecordKind, keys?: string[]): Promise<number> {
+    const client = getSupabaseClient();
+    let q = client.from("operator_records").delete({ count: "exact" }).eq("business_id", businessId).eq("kind", kind);
+    if (keys) q = q.in("key", keys);
+    const { count, error } = await q;
+    if (error) throw new Error(`Failed to delete operator records: ${error.message}`);
+    return count ?? 0;
+  }
+
+  async listOperatorRecordsAcrossBusinesses(kind: OperatorRecordKind): Promise<OperatorRecord[]> {
+    const client = getSupabaseClient();
+    const { data, error } = await client.from("operator_records").select("*").eq("kind", kind);
+    if (error) throw new Error(`Failed to list operator records across businesses: ${error.message}`);
+    return (data ?? []).map(operatorRecordFromRow);
+  }
+
+  async purgeQaRecords(businessId: string, conversationPrefix: string): Promise<QaPurgeResult> {
+    if (!conversationPrefix) throw new Error("A conversation prefix is required to purge QA records");
+    const client = getSupabaseClient();
+    const out: QaPurgeResult = {};
+    // A LIKE pattern on the prefix only: no wildcard characters from the caller ever reach the query.
+    const pattern = `${conversationPrefix.replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
+    for (const table of ["payment_requests", "approvals", "bookings", "commerce_carts", "commerce_orders", "follow_ups"]) {
+      const { count, error } = await client.from(table).delete({ count: "exact" }).eq("business_id", businessId).like("conversation_id", pattern);
+      if (error) throw new Error(`Failed to purge ${table}: ${error.message}`);
+      out[table] = count ?? 0;
+    }
+    return out;
+  }
+}
+
+function operatorRecordFromRow(row: Record<string, unknown>): OperatorRecord {
+  return {
+    id: row.id as string,
+    businessId: row.business_id as string,
+    kind: row.kind as OperatorRecordKind,
+    key: row.key as string,
+    data: (row.data as Record<string, unknown>) ?? {},
+    createdAt: row.created_at as string,
+    updatedAt: row.updated_at as string,
+  };
 }

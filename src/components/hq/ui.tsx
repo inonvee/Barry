@@ -28,8 +28,9 @@ export function HqHeader({ crumbs }: { crumbs: { href?: string; label: string }[
           <Link href="/owner" className="hover:underline">Owner</Link>
           <Link href="/owner/train" className="hover:underline">Train</Link>
           <Link href="/qa" className="hover:underline">QA</Link>
+          <Link href="/hq/ask" className="hover:underline">Ask HQ</Link>
         </nav>
-        <span className="hidden sm:inline text-xs rounded-full bg-neutral-100 dark:bg-neutral-800 px-2 py-0.5 text-neutral-600 dark:text-neutral-300">read-only</span>
+        <span className="hidden sm:inline text-xs rounded-full bg-neutral-100 dark:bg-neutral-800 px-2 py-0.5 text-neutral-600 dark:text-neutral-300">founder</span>
         <form action="/api/hq/logout" method="post">
           <button className="text-xs text-neutral-500 hover:underline">Sign out</button>
         </form>

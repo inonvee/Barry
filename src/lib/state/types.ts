@@ -242,6 +242,8 @@ export interface ConversationStore {
   listSummariesByBusiness(businessId: string, limit: number): Promise<{ total: number; conversations: ConversationSummary[] }>;
   /** The business's most recent turns across conversations: trace + intent only — never messages or customer details. */
   listRecentTurnActivity(businessId: string, limit: number): Promise<TurnActivity[]>;
+  /** QA ONLY: delete this business's conversations whose id starts with `prefix` (messages and turns with them). */
+  deleteConversationsByPrefix(businessId: string, prefix: string): Promise<number>;
 }
 
 export function createInitialConversationState(

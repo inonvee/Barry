@@ -247,6 +247,16 @@ export class SupabaseConversationStore implements ConversationStore {
       };
     });
   }
+
+  async deleteConversationsByPrefix(businessId: string, prefix: string): Promise<number> {
+    if (!prefix) throw new Error("A prefix is required");
+    const client = getSupabaseClient();
+    const pattern = `${prefix.replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
+    // messages and turn_logs cascade from conversations (0001).
+    const { count, error } = await client.from("conversations").delete({ count: "exact" }).eq("business_id", businessId).like("id", pattern);
+    if (error) throw new Error(`Failed to delete QA conversations for ${businessId}: ${error.message}`);
+    return count ?? 0;
+  }
 }
 
 /** PostgREST's "column not in schema cache" (the migration adding it isn't applied yet). */

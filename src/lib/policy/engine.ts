@@ -1,3 +1,4 @@
+import { applyFounderControls, currentControls } from "@/lib/hq/controls";
 import type { BusinessGraph } from "@/lib/business-graph";
 import { getPolicy, isActionAvailable } from "@/lib/business-graph";
 import { decideCapability } from "./authority";
@@ -41,6 +42,14 @@ export type ActionRequest =
  * availableActions, never by business type.
  */
 export function decide(graph: BusinessGraph, request: ActionRequest): PolicyDecision {
+  const base = decideByBusinessRules(graph, request);
+  // The founder's controls run AFTER the business's own rules and only ever tighten them.
+  const founder = applyFounderControls(currentControls(graph.business.id), request.action, request.params as Record<string, unknown>, base);
+  if (founder.status === "allowed") return base;
+  return { status: founder.status, reason: founder.reason, policyId: founder.policyId };
+}
+
+function decideByBusinessRules(graph: BusinessGraph, request: ActionRequest): PolicyDecision {
   // The generic capability action is governed per CAPABILITY by the
   // business's authority rules — never by the action name.
   if (request.action === "invokeCapability") {

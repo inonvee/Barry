@@ -11,8 +11,11 @@ import type {
   LearnedFactRecord,
   LearningRunRecord,
   OperatingStrategyRecord,
+  OperatorRecord,
+  OperatorRecordKind,
   PaymentWebhookEventRecord,
   PaymentRequestRecord,
+  QaPurgeResult,
 } from "./types";
 
 function id(prefix: string): string {
@@ -38,6 +41,50 @@ export class MemoryBackend implements BarryBackend {
   private learningRuns = new Map<string, LearningRunRecord>();
   private learnedFacts = new Map<string, LearnedFactRecord>(); // `${businessId}:${key}`
   private strategies: OperatingStrategyRecord[] = [];
+  private operatorRecords = new Map<string, OperatorRecord>(); // `${businessId}:${kind}:${key}`
+
+  async listOperatorRecords(businessId: string, kind: OperatorRecordKind): Promise<OperatorRecord[]> {
+    return [...this.operatorRecords.values()].filter((r) => r.businessId === businessId && r.kind === kind).map((r) => structuredClone(r));
+  }
+
+  async upsertOperatorRecord(record: Omit<OperatorRecord, "id" | "createdAt" | "updatedAt">): Promise<OperatorRecord> {
+    const k = `${record.businessId}:${record.kind}:${record.key}`;
+    const now = new Date().toISOString();
+    const existing = this.operatorRecords.get(k);
+    const row: OperatorRecord = existing ? { ...existing, data: structuredClone(record.data), updatedAt: now } : { ...record, data: structuredClone(record.data), id: id("oprec"), createdAt: now, updatedAt: now };
+    this.operatorRecords.set(k, row);
+    return structuredClone(row);
+  }
+
+  async deleteOperatorRecords(businessId: string, kind: OperatorRecordKind, keys?: string[]): Promise<number> {
+    let n = 0;
+    for (const [k, r] of this.operatorRecords) {
+      if (r.businessId !== businessId || r.kind !== kind || (keys && !keys.includes(r.key))) continue;
+      this.operatorRecords.delete(k);
+      n++;
+    }
+    return n;
+  }
+
+  async listOperatorRecordsAcrossBusinesses(kind: OperatorRecordKind): Promise<OperatorRecord[]> {
+    return [...this.operatorRecords.values()].filter((r) => r.kind === kind).map((r) => structuredClone(r));
+  }
+
+  async purgeQaRecords(businessId: string, conversationPrefix: string): Promise<QaPurgeResult> {
+    const mine = <T extends { businessId: string; conversationId: string }>(r: T) => r.businessId === businessId && r.conversationId.startsWith(conversationPrefix);
+    const out: QaPurgeResult = { payment_requests: 0, approvals: 0, bookings: 0, commerce_carts: 0, commerce_orders: 0, follow_ups: 0 };
+    for (const [k, r] of this.paymentRequests) if (mine(r)) (this.paymentRequests.delete(k), out.payment_requests++);
+    for (const [k, r] of this.approvals) if (mine(r)) (this.approvals.delete(k), out.approvals++);
+    for (const [k, r] of this.commerceCarts) if (mine(r)) (this.commerceCarts.delete(k), out.commerce_carts++);
+    for (const [k, r] of this.commerceOrders) if (mine(r)) (this.commerceOrders.delete(k), out.commerce_orders++);
+    const bookingsBefore = this.bookings.length;
+    this.bookings = this.bookings.filter((b) => !mine(b));
+    out.bookings = bookingsBefore - this.bookings.length;
+    const followBefore = this.followUps.length;
+    this.followUps = this.followUps.filter((f) => !mine(f));
+    out.follow_ups = followBefore - this.followUps.length;
+    return out;
+  }
 
   async listBookings(businessId: string) {
     return this.bookings.filter((b) => b.businessId === businessId && b.status === "confirmed");
