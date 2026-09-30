@@ -6,6 +6,7 @@ import { money } from "@/lib/reasoner/deterministic-compose";
 import { handoffPath } from "@/lib/runtime/handoff";
 import { whatsappConfig, whatsappNumbersFor } from "@/lib/channels/whatsapp";
 import { assessPilotReadiness, type PilotReadiness } from "./readiness";
+import { assessCapabilities, type CapabilityAssessment } from "./capabilities";
 
 /**
  * "TRAIN BARRY" — the assisted onboarding view for the first design partners.
@@ -56,6 +57,8 @@ export async function getTrainingProfile(graph: BusinessGraph) {
   const profiles = await resolveCapabilityProfiles(graph).catch(() => undefined);
   const connections = await describeBusinessConnections(b.id, profiles).catch(() => []);
   const readiness: PilotReadiness = await assessPilotReadiness(graph);
+  // What BARRY can do for this business right now, what only works on a simulator, and what each setup step unlocks.
+  const assessment: CapabilityAssessment = await assessCapabilities(graph, { profiles, connections });
   const wa = whatsappConfig();
   const activeOffers = graph.offers.filter((o) => o.active);
 
@@ -123,5 +126,5 @@ export async function getTrainingProfile(graph: BusinessGraph) {
     },
     missing: [!graph.playbook.salesStyle && "How you want BARRY to sell (your own words)", !handoffPath(graph) && "How your team takes over when a customer needs a person"].filter(Boolean) as string[],
   };
-  return { business: { id: b.id, name: b.name }, sections: { identity, goals, offers, stack, capabilities, authority, personality }, readiness };
+  return { business: { id: b.id, name: b.name }, sections: { identity, goals, offers, stack, capabilities, authority, personality }, readiness, assessment };
 }

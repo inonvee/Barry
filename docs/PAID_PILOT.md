@@ -22,13 +22,27 @@ call, and built from authoritative records only:
 
 A source that fails to load is listed as unavailable, never zeroed.
 
+**The intervention queue** (`src/lib/owner/interventions.ts`) is the owner's operating model: one list of
+everything that needs them, whatever record it comes from — a request waiting for approval, a request
+held until the customer confirms, a customer handed to the team, an operation that failed, a checkout the
+customer's own limits stopped, a message BARRY couldn't understand, a reply the channel couldn't deliver.
+Each item says, from records only: *why* BARRY escalated (the owner's own rule, in their words), *what
+BARRY already did* (the conversation story), *exactly what decision is needed*, *what each option causes*,
+*what BARRY resumes afterwards*, and *whether it is still current*. Priority 1 = a decision a customer or
+a sale is waiting on; 2 = something broke; 3 = worth knowing. Actions go through the existing owner
+endpoints, which re-check customer intent and the final-write gate before any effect.
+
+**The conversation story** (`src/lib/owner/story.ts`) is the evidence chain behind it: per turn, what the
+customer asked, what BARRY did (one line per recorded effect, owner words), the outcome and why it
+stopped. The inbox detail, the queue and Owner Barry all read it.
+
 | Tab | What it shows |
 |---|---|
-| **Today** | The rest of the dashboard follows a time window, set in the business's own timezone. Today shows: conversations, how many BARRY handled without the owner, what needs the owner now, completed outcomes, blocked/failed, money (§2), conversion, and the owner-intervention rate. |
+| **Today** | The intervention queue first, with inline actions. Then the window (business timezone): conversations, how many BARRY handled without the owner, what needs the owner now, completed outcomes, blocked/failed, money (§2), **money in motion** (§2), conversion, and the owner-intervention rate. |
 | **Inbox** | Every conversation with its customer, channel, status (needs you / in progress / waiting on customer / completed / lost), the reason it needs the owner, and outcomes. The detail view shows messages, where the transaction stands, requests and handoffs, plus optional technical detail. |
-| **Approvals** | Each request shows what the customer wants, the exact action, money and terms, why approval is required, its lifecycle and revision, and whether newer customer context changed anything. **A held request is never actionable**: Approve is not offered, Decline and "Re-check conversation" are. Approve goes through the full resume path (§6). |
+| **Approvals** | The queue's approval items (same cards as Today): exact terms, the owner's rule behind the request, what BARRY does once approved, both options with their consequences, revision and currency. **A held request is never actionable**: Approve is not offered, Decline and "Re-check conversation" are. Approve goes through the full resume path (§6). History keeps every decided request with its result reference. |
 | **Outcomes** | Paid, booked, order created, case created, checkout not completed, blocked, failed, handoff, declined by the owner. Each outcome shows the record that proves it. |
-| **Health** | AI health is taken from recorded traces. It covers working, degraded, unavailable (e.g. *"the AI provider account is out of credit"*), simulator, or no traffic, with the last failure's classification (kind, HTTP status, provider code). It also shows connected systems (healthy / simulated / degraded / disconnected / not set up, last verified, missing settings by name) and handoffs, which can be resolved. |
+| **Health** | What BARRY can do for the business (§5's capability model, compact). AI health is taken from recorded traces. It covers working, degraded, unavailable (e.g. *"the AI provider account is out of credit"*), simulator, or no traffic, with the last failure's classification (kind, HTTP status, provider code). It also shows connected systems (healthy / simulated / degraded / disconnected / not set up, last verified, missing settings by name) and handoffs, which can be resolved. |
 | **Ask BARRY** | Owner Barry (§7). |
 
 **Access:**
@@ -54,6 +68,23 @@ Also tracked:
 - lost opportunities (withdrawn, declined, payment failed or cancelled, link unpaid after 24h);
 - discounts granted and refused;
 - owner interventions.
+
+**Money in motion** (`src/lib/owner/opportunities.ts`) — where money is stuck, at risk or waiting, and
+whose move it is. Each item stands on a record and says the next move (the owner's, the customer's, or
+BARRY's), linked to the queue item when it is the owner's decision:
+
+| Kind | Record | Next move |
+|---|---|---|
+| Unpaid link | pending payment request | ≤ 24h: the customer's; older: the owner's follow-up (at risk) |
+| Sale waiting on you / held | active or held request with an amount | decide / re-check (queue item) |
+| Purchase went quiet | cart total or chosen priced offer, no link, no request, quiet > 24h | the owner's nudge (at risk) |
+| Payment failed | failed/cancelled payment, none paid since | the owner's follow-up (at risk) |
+| Deposit unpaid | confirmed booking for an offer with a deposit, no verified payment | the owner's |
+| Enquiry open | `enquiry.created` with nothing booked/paid since | the owner's |
+| Stopped by a limit | `write.blocked` still the state of play | shipping unknown: the owner's (shipping rule); else the customer's |
+
+Totals per currency: waits on you / waits on customers / at risk. Simulated providers are listed as test
+items and never counted.
 
 **Not tracked (no evidence source yet):**
 - upsell/cross-sell attribution;
@@ -108,15 +139,25 @@ Also tracked:
 
 ## 5. Train BARRY + pilot readiness (`src/lib/owner/training.ts`, `readiness.ts`) — built
 
-The assisted onboarding view has eight sections, all derived from what the runtime uses:
+**One capability-readiness model** (`src/lib/owner/capabilities.ts`): from what the business wants BARRY to
+do (Genome goals, enabled actions, offers, knowledge, playbook) → the capabilities that needs → the system
+that provides them (fabric: connected / simulated / missing operations) → the owner's authority over them
+(policies + authority rules) → platform (live AI, durable storage, owner access) and channel. Every need is
+READY, READY ON A SIMULATOR or NEEDS SETUP, with the owner's authority in their words ("up to ₪2000 on its
+own; above that you approve"). Every gap becomes a **setup step** with why, how, who (owner / BARRY team),
+the pilot gate it matters for, and exactly which needs it unlocks; steps are ordered by what they unlock.
+Train BARRY, the owner's Health tab, Owner Barry and HQ read this one model; readiness's platform, channel
+and handoff checks agree with it by construction (tested).
+
+Train BARRY shows, in order: pilot readiness; **what BARRY can do for you right now** (needs by area);
+the **setup plan**; then the sections derived from the Genome:
 1. identity;
 2. goals;
 3. offers, knowledge and policies;
 4. systems;
-5. what BARRY can do (read / on its own / within limits / with approval / never);
-6. owner authority;
-7. personality and playbook;
-8. the readiness test.
+5. owner authority;
+6. personality and playbook;
+7. the readiness test.
 
 Each section lists what is missing. Editing is done in the Genome with the founder (assisted); self-serve editing is **not built**.
 
@@ -147,7 +188,7 @@ Every failing check says what is missing and how to fix it. The founder view (HQ
 
 ## 7. Owner Barry (`src/lib/owner/ask.ts`) — built (read-only MVP)
 
-Owner Barry answers the owner's questions ("What happened today?", "Who needs me?", "How much did you collect this week?", "Which opportunities did we lose?") from one briefing. The briefing comes from the same read model as the dashboard: today, 7-day revenue by category, what waits for the owner, conversations needing attention, recent outcomes, AI and system health, and readiness.
+Owner Barry answers the owner's questions ("What happened today?", "Who needs me?", "How much did you collect this week?", "Why did that fail?", "Where is money stuck?", "What can you do for me?") from one briefing. The briefing comes from the same read models as the dashboard: today, 7-day revenue by category, **the intervention queue** (why / what to decide / what follows), **money in motion** (whose move it is), **what happened** (the conversation stories of the conversations needing the owner and the latest ones — asked → BARRY did → outcome → stopped because), recent outcomes, AI and system health, readiness, and **capabilities** (can do now / simulator only / after setup).
 
 - **No write path:** it has no tools. A request to act gets an explanation of where the owner does it.
 - **Every answer is checked:**
@@ -163,8 +204,10 @@ Each business card in `/hq` now also shows, from the same read models:
 - pilot readiness;
 - AI health over 7 days (with the last failure's classification);
 - verified revenue over 7 days (simulated money shown apart, not counted);
-- conversations, approvals and handoffs needing intervention;
+- the intervention queue count, approvals and handoffs, money waiting on the owner;
 - lost opportunities.
+
+The business page also shows the owner's capability model (needs, status, authority, provider, setup plan).
 
 Founder Barry (conversational HQ) is **not built**.
 

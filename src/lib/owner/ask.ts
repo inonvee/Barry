@@ -7,6 +7,8 @@ import { money } from "@/lib/reasoner/deterministic-compose";
 import type { ModelCallFailure } from "@/lib/reasoner/types";
 import { getOwnerWorkspace, type OwnerWorkspace } from "./service";
 import { revenueSummary, type Money } from "./revenue";
+import { interventionBriefing } from "./interventions";
+import { conversationStory } from "./story";
 import { getConversationStore } from "@/lib/state";
 import { getBackend } from "@/lib/store";
 import { assessPilotReadiness, type PilotReadiness } from "./readiness";
@@ -29,7 +31,7 @@ export type OwnerBriefing = ReturnType<typeof buildBriefing>;
 
 const fmt = (m: Money) => Object.entries(m).map(([c, v]) => money(v, c)).join(" + ") || "none";
 
-export function buildBriefing(ws: OwnerWorkspace, week: ReturnType<typeof revenueSummary>, readiness: PilotReadiness) {
+export function buildBriefing(ws: OwnerWorkspace, week: ReturnType<typeof revenueSummary>, readiness: PilotReadiness, stories: { customer: string; story: ReturnType<typeof conversationStory> }[] = []) {
   return {
     business: ws.business.name,
     today: {
@@ -43,15 +45,28 @@ export function buildBriefing(ws: OwnerWorkspace, week: ReturnType<typeof revenu
     },
     revenueToday: revenueWords(ws.revenue),
     revenueLast7Days: revenueWords(week),
-    waitingForYou: [
-      ...ws.approvals.filter((a) => a.actionable || a.lifecycle === "held").map((a) => ({ type: "approval", customer: a.customer, what: a.what, ...(a.amount ? { amount: a.amount } : {}), ...(a.newerContext ? { note: a.newerContext } : {}) })),
-      ...ws.handoffs.filter((h) => h.status !== "resolved").map((h) => ({ type: "handoff", customer: h.customer, what: h.reason, urgency: h.urgency })),
-    ].slice(0, 15),
+    // THE intervention queue — the same items, in the same order, as the dashboard.
+    waitingForYou: interventionBriefing(ws.interventions),
+    // Where money is stuck, at risk or waiting, and whose move it is (simulated items marked, never counted).
+    moneyInMotion: {
+      stuckWithYou: fmt(ws.opportunities.summary.stuckWithYou),
+      waitingOnCustomer: fmt(ws.opportunities.summary.waitingOnCustomer),
+      atRisk: fmt(ws.opportunities.summary.atRisk),
+      items: ws.opportunities.items.slice(0, 12).map((o) => ({ kind: o.kind.replace(/_/g, " "), customer: o.customer, ...(o.amount !== undefined && o.currency ? { amount: money(o.amount, o.currency) } : {}), why: o.reasoning, nextMove: `${o.next.who === "you" ? "you" : o.next.who === "customer" ? "the customer" : "BARRY"}: ${o.next.action}`, ...(o.simulated ? { simulated: true } : {}) })),
+    },
     conversationsNeedingAttention: ws.conversations.filter((c) => c.status === "needs_you").slice(0, 10).map((c) => ({ customer: c.customer, why: c.attention, lastMessage: c.lastMessage?.text })),
     recentOutcomes: ws.outcomes.slice(0, 20).map((o) => ({ what: o.label, customer: ws.conversations.find((c) => c.id === o.conversationId)?.customer ?? "a customer", ...(o.amount !== undefined && o.currency ? { amount: money(o.amount, o.currency) } : {}), ...(o.reference ? { reference: o.reference } : {}), when: o.at, ...(o.simulated ? { simulated: true } : {}) })),
+    // What happened in the conversations that need the owner (and the latest ones): asked → BARRY did → outcome, from records.
+    whatHappened: stories.slice(0, 8).map((s) => ({
+      customer: s.customer,
+      steps: s.story.steps.slice(-6).map((st) => ({ customerAsked: st.customer, barryDid: st.barry, outcome: st.outcome.replace(/_/g, " "), ...(st.stopped ? { stoppedBecause: st.stopped } : {}) })),
+      whereThingsStand: s.story.standing,
+    })),
     aiHealth: ws.health.ai.summary,
     systems: ws.health.systems.map((s) => `${s.domain}: ${s.state}${s.blockers.length ? ` (${s.blockers.join("; ")})` : ""}`),
     readiness: { level: readiness.label, blockers: readiness.next?.blockers.map((b) => `${b.label}: ${b.detail}`) ?? [] },
+    // What BARRY can do for this business right now, what only works on a simulator, and what each setup step would unlock.
+    capabilities: { canDoNow: ws.capabilities.now, onSimulatorOnly: ws.capabilities.nowSimulated, afterSetup: ws.capabilities.steps.map((s) => ({ step: s.title, who: s.who === "you" ? "you" : "the BARRY team", unlocks: s.unlocks })) },
   };
 }
 
@@ -81,9 +96,12 @@ export function briefingText(b: OwnerBriefing): string {
     `Collected by BARRY today: ${b.revenueToday.collectedByBarry} (${b.revenueToday.paymentsCollected} payment${b.revenueToday.paymentsCollected === 1 ? "" : "s"}). Last 7 days: ${b.revenueLast7Days.collectedByBarry}.`,
     b.revenueToday.bookedValueNotYetCollected !== "none" ? `Booked but not yet collected: ${b.revenueToday.bookedValueNotYetCollected}.` : "",
     b.revenueToday.openOpportunities !== "none" ? `Open opportunities (not revenue yet): ${b.revenueToday.openOpportunities}.` : "",
-    b.waitingForYou.length ? `Waiting for you: ${b.waitingForYou.map((w) => `${w.customer} — ${w.what}${"amount" in w && w.amount ? ` (${w.amount})` : ""}`).join("; ")}.` : "Nothing is waiting for you.",
+    b.waitingForYou.length ? `Waiting for you: ${b.waitingForYou.map((w) => `${w.customer} — ${w.what}${w.amount ? ` (${w.amount})` : ""} → ${w.youDecide}`).join("; ")}.` : "Nothing is waiting for you.",
+    b.moneyInMotion.items.length ? `Money in motion: ${b.moneyInMotion.stuckWithYou} waits on you, ${b.moneyInMotion.waitingOnCustomer} on customers, ${b.moneyInMotion.atRisk} at risk. ${b.moneyInMotion.items.slice(0, 4).map((o) => `${o.customer}: ${o.kind}${o.amount ? ` ${o.amount}` : ""} — ${o.nextMove}`).join("; ")}.` : "",
     `AI: ${b.aiHealth}`,
     `Readiness: ${b.readiness.level}.`,
+    b.capabilities.canDoNow.length ? `BARRY can do now: ${b.capabilities.canDoNow.slice(0, 8).join("; ")}.` : "",
+    b.capabilities.afterSetup.length ? `After setup: ${b.capabilities.afterSetup.slice(0, 4).map((s) => `${s.step} → ${s.unlocks.join(", ")}`).join("; ")}.` : "",
   ];
   return lines.filter(Boolean).join("\n");
 }
@@ -92,6 +110,9 @@ const OWNER_PROMPT = `You are BARRY's owner assistant: you help the owner of ONE
 Answer the owner's question using ONLY the JSON briefing. Rules:
 - Every number, amount, name and status you state must appear in the briefing. If the briefing doesn't contain it, say you don't have that information.
 - Keep money categories apart: "collectedByBarry" is money actually collected and verified; "bookedValueNotYetCollected" is value secured but not collected; "openOpportunities" is NOT revenue; "simulatedTestMoney" is test money, never revenue. Never add them together.
+- "waitingForYou" is the owner's queue: for each item say what it is, why BARRY escalated (its "why"), what the owner decides ("youDecide") and what follows ("ifApproved"). "moneyInMotion" says where money is stuck and whose move it is — recommend that move, never invent another.
+- To explain WHY something happened or failed, use "whatHappened": the customer's asks, what BARRY did ("barryDid"), the outcome and "stoppedBecause" — quote those, never guess a cause.
+- "What can you do for me?" is answered from "capabilities": canDoNow (real), onSimulatorOnly (nothing real happens yet), and afterSetup (each step and what it unlocks). Never promise a capability that isn't listed.
 - You cannot do anything: you never approve, decline, change rules, send messages, give discounts or run actions. If asked to, say you can't do that from here and where the owner does it (Approvals, the inbox, or with the BARRY team for rule changes).
 - Never say you did, changed, sent or approved something.
 - Be brief and concrete: lead with the answer, then at most a few supporting lines. Plain text, no JSON, no headers. Reply in the owner's language.`;
@@ -130,7 +151,11 @@ export async function askOwnerBarry(graph: BusinessGraph, question: string, opts
   ]);
   const week = revenueSummary({ graph, conversations, payments, bookings, orders, approvals, since: weekSince, now });
   const readiness = await assessPilotReadiness(graph, { conversations });
-  const briefing = buildBriefing(ws, week, readiness);
+  // Stories for the conversations that need the owner first, then the most recent ones — so "why?" is answerable.
+  const byId = new Map(conversations.map((c) => [c.id, c]));
+  const storyIds = [...new Set([...ws.interventions.map((i) => i.conversationId), ...ws.conversations.map((c) => c.id)])].slice(0, 8);
+  const stories = storyIds.flatMap((id) => (byId.get(id) ? [{ customer: ws.conversations.find((c) => c.id === id)?.customer ?? "Customer", story: conversationStory(byId.get(id)!) }] : []));
+  const briefing = buildBriefing(ws, week, readiness, stories);
   const client = opts.client ?? (process.env.BARRY_REASONER === "openai" && process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY, maxRetries: 2 }) : undefined);
   if (!client) return { answer: briefingText(briefing), source: "briefing", reason: "no AI model configured — showing the factual summary", briefing };
   const model = modelFor("composer");

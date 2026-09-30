@@ -12,6 +12,7 @@ import type { CapabilitySurfaceEntry } from "@/lib/reasoner/types";
 import { buildDesignPartnerReadiness, type DesignPartnerSurface } from "./design-partner";
 import { assessPilotReadiness, type PilotLevel } from "@/lib/owner/readiness";
 import { getOwnerWorkspace } from "@/lib/owner/service";
+import { assessCapabilities, type CapabilityAssessment } from "@/lib/owner/capabilities";
 import type { Money } from "@/lib/owner/revenue";
 
 /**
@@ -133,7 +134,7 @@ export type HqBusinessOverview = {
   /** Paid-pilot readiness (the same assessment the owner's Train BARRY page shows). */
   pilot: Sourced<{ level: PilotLevel; label: string; nextBlockers: string[] }>;
   /** Last 7 days from the owner read model: verified revenue (per currency, simulated apart), AI health, who is waiting. */
-  week: Sourced<{ collected: Money; simulated: Money; ai: { status: string; summary: string; lastFailure?: string }; needAttention: number; handoffsOpen: number; approvalsWaiting: number; lostOpportunities: number }>;
+  week: Sourced<{ collected: Money; simulated: Money; ai: { status: string; summary: string; lastFailure?: string }; needAttention: number; handoffsOpen: number; approvalsWaiting: number; lostOpportunities: number; interventions: number; moneyStuckWithOwner: Money }>;
 };
 
 async function overviewFor(graph: BusinessGraph): Promise<HqBusinessOverview & { _profiles: Sourced<CapabilityProfiles>; _ops: Awaited<ReturnType<typeof operations>>; _activity: Sourced<TurnActivity[]> }> {
@@ -163,6 +164,9 @@ async function overviewFor(graph: BusinessGraph): Promise<HqBusinessOverview & {
         handoffsOpen: ws.today.handoffsOpen,
         approvalsWaiting: ws.today.approvalsWaiting,
         lostOpportunities: ws.revenue.lostOpportunities,
+        // The owner's intervention queue and money waiting on the owner — the same models the owner sees.
+        interventions: ws.interventions.length,
+        moneyStuckWithOwner: ws.opportunities.summary.stuckWithYou,
       };
     }),
   ]);
@@ -232,6 +236,8 @@ export type HqBusinessDetail = HqBusinessOverview & {
   payments: Sourced<{ id: string; conversationId: string; amount: string; status: string; provider: string | null; createdAt: string; verifiedAt: string | null }[]>;
   bookings: Sourced<{ id: string; conversationId: string; start: string; status: string; provider: string | null }[]>;
   designPartner: Sourced<DesignPartnerSurface[]>;
+  /** What BARRY can do for this business now / on a simulator / after setup — the owner's Train BARRY model. */
+  assessment: Sourced<CapabilityAssessment>;
   notTracked: string[];
 };
 
@@ -320,6 +326,7 @@ export async function getHqBusiness(businessId: string): Promise<HqBusinessDetai
       ? { ok: true, value: buildDesignPartnerReadiness({ profiles: o._profiles.value, payments: raw.payments.ok ? raw.payments.value : null }) }
       : { ok: false, unavailable: "design-partner readiness unavailable" },
     capabilitySurface: await source("capability surface", () => buildCapabilitySurface(graph)),
+    assessment: await source("capability assessment", () => assessCapabilities(graph, { profiles: o._profiles.ok ? o._profiles.value : undefined, connections: o.connections.ok ? o.connections.value : undefined })),
     authorityRules: graph.authority,
     notTracked: ["revenue / GMV over time", "customer satisfaction", "response latency per turn", "messaging channel delivery"],
   };

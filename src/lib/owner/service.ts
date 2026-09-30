@@ -8,6 +8,9 @@ import { withLifecycle, type ApprovalWithLifecycle } from "@/lib/runtime/owner-r
 import { readLedger, termsAmount, termsOf } from "@/lib/runtime/ledger";
 import { readHandoffs, type HandoffRecord } from "@/lib/runtime/handoff";
 import { outcomeEvents, revenueEvidence, revenueSummary, type OutcomeEvent, type RevenueEvidence, type RevenueSummary } from "./revenue";
+import { buildInterventions, type Intervention } from "./interventions";
+import { revenueOpportunities, type Opportunity, type OpportunitySummary } from "./opportunities";
+import { assessCapabilities, capabilitySummary } from "./capabilities";
 
 /**
  * THE OWNER'S VIEW OF THEIR BUSINESS — read model for the owner dashboard (and for Owner Barry).
@@ -86,6 +89,8 @@ export type OwnerWorkspace = {
     conversations: number;
     handledAutonomously: number;
     needYou: number;
+    /** Items in the intervention queue right now (not limited to the window). */
+    interventions: number;
     approvalsWaiting: number;
     handoffsOpen: number;
     completedOutcomes: number;
@@ -94,11 +99,17 @@ export type OwnerWorkspace = {
   revenue: RevenueSummary;
   /** Every amount behind the money figures, with the record that proves it. */
   revenueEvidence: RevenueEvidence[];
+  /** THE queue: everything that needs the owner, with why / what BARRY did / the decision / what follows. */
+  interventions: Intervention[];
+  /** Where money is stuck, at risk or waiting — and whose move it is. Current state, not window-bound. */
+  opportunities: { items: Opportunity[]; summary: OpportunitySummary };
   conversations: OwnerConversationRow[];
   approvals: OwnerApproval[];
   outcomes: OutcomeEvent[];
   handoffs: (HandoffRecord & { customer: string })[];
   health: { ai: AiHealth; systems: SystemHealth[] };
+  /** What BARRY can do for this business right now, what works only on a simulator, and the setup steps with what they unlock. */
+  capabilities: ReturnType<typeof capabilitySummary>;
   /** Sources that could not be read (shown, never zeroed). */
   unavailable: string[];
 };
@@ -264,8 +275,11 @@ export async function getOwnerWorkspace(graph: BusinessGraph, opts: { since?: st
 
   const inWindow = rows.filter((r) => byId.get(r.id)!.messages.some((m) => m.role === "customer" && m.at >= since));
   const handoffs = conversations.flatMap((c) => readHandoffs(c).map((h) => ({ ...h, customer: customerLabel(c) }))).sort((a, b) => Number(b.status !== "resolved") - Number(a.status !== "resolved") || b.createdAt.localeCompare(a.createdAt));
+  const interventions = buildInterventions({ graph, conversations, approvals, payments, customerLabel, now });
+  const opportunities = revenueOpportunities({ graph, conversations, approvals, payments, bookings, orders, customerLabel, now });
   const profiles = await safe("capability profiles", () => resolveCapabilityProfiles(graph), undefined);
   const connections = await safe("connections", () => describeBusinessConnections(businessId, profiles), [] as ConnectionView[]);
+  const capabilities = capabilitySummary(await safe("capabilities", () => assessCapabilities(graph, { profiles, connections }), { needs: [], steps: [], now: [], nowSimulated: [], afterSetup: [] }));
 
   return {
     business: { id: businessId, name: graph.business.name, timezone: graph.business.timezone, locale: graph.business.locale },
@@ -274,6 +288,7 @@ export async function getOwnerWorkspace(graph: BusinessGraph, opts: { since?: st
       conversations: inWindow.length,
       handledAutonomously: inWindow.filter((r) => r.handledAutonomously).length,
       needYou: rows.filter((r) => r.status === "needs_you").length,
+      interventions: interventions.length,
       approvalsWaiting: approvals.filter((a) => a.lifecycle === "active" || a.lifecycle === "held").length,
       handoffsOpen: handoffs.filter((h) => h.status !== "resolved").length,
       completedOutcomes: outcomes.filter((o) => (o.kind === "paid" || o.kind === "booked" || o.kind === "order_created" || o.kind === "case_created") && !o.simulated).length,
@@ -281,6 +296,8 @@ export async function getOwnerWorkspace(graph: BusinessGraph, opts: { since?: st
     },
     revenue,
     revenueEvidence: evidence,
+    interventions,
+    opportunities,
     conversations: rows,
     approvals: approvals
       .map((a) => approvalView(a, byId.get(a.conversationId) ? customerLabel(byId.get(a.conversationId)!) : "Customer"))
@@ -288,6 +305,7 @@ export async function getOwnerWorkspace(graph: BusinessGraph, opts: { since?: st
     outcomes,
     handoffs,
     health: { ai: aiHealth(conversations, now), systems: connections.map(systemHealth) },
+    capabilities,
     unavailable,
   };
 }

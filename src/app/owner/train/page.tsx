@@ -6,6 +6,7 @@ import { TestShell } from "@/components/shell/TestShell";
 import { Empty, Pill, Section, card, type Tone } from "@/components/owner/ui";
 import type { getTrainingProfile } from "@/lib/owner/training";
 import type { PilotLevel, ReadinessCheck } from "@/lib/owner/readiness";
+import type { BusinessNeed, NeedArea, SetupStep } from "@/lib/owner/capabilities";
 
 type Profile = Awaited<ReturnType<typeof getTrainingProfile>>;
 
@@ -26,6 +27,73 @@ function MissingList({ items }: { items: string[] }) {
       ))}
     </ul>
   ) : null;
+}
+
+const AREA: Record<NeedArea, string> = { sell: "Selling", money: "Money", book: "Booking", support: "Support & your systems", knowledge: "Knowledge", channel: "Channels", platform: "Platform" };
+const AREA_ORDER: NeedArea[] = ["sell", "money", "book", "support", "knowledge", "channel", "platform"];
+const NEED_STATUS: Record<BusinessNeed["status"], { tone: Tone; label: string }> = {
+  ready: { tone: "good", label: "Ready" },
+  ready_simulated: { tone: "warn", label: "Simulator only" },
+  needs_setup: { tone: "bad", label: "Needs setup" },
+};
+const GATE_WORDS: Record<SetupStep["gate"], string> = { testing: "to test BARRY", supervised_pilot: "for the supervised pilot", customer_traffic: "for customer traffic" };
+
+/** What BARRY can do for this business — every need, its status and the owner's authority over it. */
+function NeedsView({ needs }: { needs: BusinessNeed[] }) {
+  return (
+    <div className="grid gap-3 md:grid-cols-2">
+      {AREA_ORDER.filter((area) => needs.some((n) => n.area === area)).map((area) => (
+        <div key={area} className="rounded-lg border border-[#eaecf0] p-3">
+          <p className="text-xs font-semibold uppercase tracking-wide text-[#667085]">{AREA[area]}</p>
+          <ul className="mt-2 divide-y divide-[#f2f4f7]">
+            {needs
+              .filter((n) => n.area === area)
+              .map((n) => (
+                <li key={n.id} className="py-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-sm font-medium text-[#101828]">{n.title}</span>
+                    <Pill tone={NEED_STATUS[n.status].tone}>{NEED_STATUS[n.status].label}</Pill>
+                  </div>
+                  <p className="mt-0.5 text-xs text-[#475467]">{n.detail}</p>
+                  <p className="text-xs text-[#667085]">
+                    {n.authority === "never" ? "Authority: never" : n.authority === "owner_approval" ? "Authority: only with your approval" : n.authority === "within_limits" ? `Authority: ${n.authorityWords}` : `Does it ${n.authorityWords}`}
+                  </p>
+                </li>
+              ))}
+          </ul>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** The setup plan: each step, why, how, who — and exactly what BARRY becomes able to do once it's done. */
+function SetupPlan({ steps }: { steps: SetupStep[] }) {
+  if (steps.length === 0) return <Empty>Nothing left to set up — BARRY can do everything your business asks of it, for real.</Empty>;
+  return (
+    <ol className="flex flex-col gap-2">
+      {steps.map((s, i) => (
+        <li key={s.id} className="rounded-lg border border-[#e4e7ec] bg-white px-3 py-2.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-semibold text-[#667085]">{i + 1}.</span>
+            <p className="text-sm font-semibold text-[#101828]">{s.title}</p>
+            <Pill tone={s.who === "you" ? "info" : "neutral"} icon={false}>
+              {s.who === "you" ? "You" : "BARRY team"}
+            </Pill>
+            <span className="text-xs text-[#98a2b3]">{GATE_WORDS[s.gate]}</span>
+          </div>
+          <dl className="mt-1 grid grid-cols-1 gap-x-3 gap-y-0.5 text-sm sm:grid-cols-[8rem_minmax(0,1fr)]">
+            <dt className="text-[#667085]">Why it matters</dt>
+            <dd className="text-[#344054]">{s.why}</dd>
+            <dt className="text-[#667085]">How</dt>
+            <dd className="text-[#344054]">{s.how}</dd>
+            <dt className="text-[#667085]">Then BARRY can</dt>
+            <dd className="font-medium text-[#067647]">{s.unlocks.join(" · ")}</dd>
+          </dl>
+        </li>
+      ))}
+    </ol>
+  );
 }
 
 function Rows({ rows }: { rows: [string, string][] }) {
@@ -68,6 +136,7 @@ export default function TrainBarryPage() {
 
   const r = profile?.readiness;
   const s = profile?.sections;
+  const a = profile?.assessment;
   return (
     <main className="min-h-screen bg-[#f9fafb] text-[#101828]">
       <TestShell active="train" />
@@ -125,6 +194,17 @@ export default function TrainBarryPage() {
               </div>
             )}
           </section>
+        )}
+
+        {a && (
+          <>
+            <Section title="What BARRY can do for you right now" subtitle={`${a.now.length} ready for real${a.nowSimulated.length ? ` · ${a.nowSimulated.length} on a simulator only` : ""}${a.afterSetup.length ? ` · ${a.afterSetup.length} after setup` : ""}. Derived from your goals, your connected systems and your rules — the same facts BARRY runs on.`}>
+              <NeedsView needs={a.needs} />
+            </Section>
+            <Section title="Setup plan" subtitle="In the order that unlocks the most. Each step says who does it, why it matters and what BARRY can do once it's done.">
+              <SetupPlan steps={a.steps} />
+            </Section>
+          </>
         )}
 
         {s && (
@@ -185,33 +265,7 @@ export default function TrainBarryPage() {
               </ul>
               <MissingList items={s.stack.missing} />
             </Section>
-            <Section title={`5. ${s.capabilities.title}`}>
-              <div className="grid gap-3 sm:grid-cols-2">
-                {(
-                  [
-                    ["Looks up (read only)", s.capabilities.data.read, "neutral"],
-                    ["Does on its own", s.capabilities.data.automatic, "info"],
-                    ["Does within your limits", s.capabilities.data.conditional, "info"],
-                    ["Only with your approval", s.capabilities.data.approval, "warn"],
-                    ["Never", s.capabilities.data.never, "bad"],
-                  ] as [string, string[], Tone][]
-                ).map(([title, items, tone]) => (
-                  <div key={title} className="rounded-lg border border-[#eaecf0] p-3">
-                    <Pill tone={tone}>{title}</Pill>
-                    {items.length ? (
-                      <ul className="mt-2 space-y-1 text-sm text-[#344054]">
-                        {items.map((i) => (
-                          <li key={i}>{i}</li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="mt-2 text-sm text-[#98a2b3]">Nothing</p>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </Section>
-            <Section title={`6. ${s.authority.title}`} right={<Missing items={s.authority.missing} />}>
+            <Section title={`5. ${s.authority.title}`} right={<Missing items={s.authority.missing} />}>
               {s.authority.data.policies.length > 0 ? (
                 <ul className="list-disc pl-5 text-sm text-[#344054]">
                   {s.authority.data.policies.map((p) => (
@@ -235,12 +289,12 @@ export default function TrainBarryPage() {
               )}
               <MissingList items={s.authority.missing} />
             </Section>
-            <Section title={`7. ${s.personality.title}`} right={<Missing items={s.personality.missing} />}>
+            <Section title={`6. ${s.personality.title}`} right={<Missing items={s.personality.missing} />}>
               <Rows rows={[["Tone", s.personality.data.tone], ["Sales style", s.personality.data.salesStyle], ["Suggestions", s.personality.data.suggestions], ["Checkout", s.personality.data.checkout], ["Checkout needs", s.personality.data.checkoutDetails], ["Handoff to a person", s.personality.data.handoff]]} />
               <MissingList items={s.personality.missing} />
             </Section>
             {r && (
-              <Section title="8. Readiness test" subtitle="Every requirement, checked against the running system.">
+              <Section title="7. Readiness test" subtitle="Every requirement, checked against the running system.">
                 <ul className="divide-y divide-[#eaecf0]">
                   {r.checks.map((c) => (
                     <li key={c.id} className="flex flex-col gap-1 py-2.5 sm:flex-row sm:items-start sm:justify-between">

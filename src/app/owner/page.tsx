@@ -1,11 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { OwnerBar, useOwnerApi } from "@/components/owner/useOwnerApi";
 import { TestShell } from "@/components/shell/TestShell";
-import { Empty, Pill, Section, Stat, btn, card, danger, formatMoney, primary, timeAgo, type Tone } from "@/components/owner/ui";
+import { Empty, Pill, Section, Stat, btn, card, formatMoney, primary, timeAgo, type Tone } from "@/components/owner/ui";
 import type { OwnerWorkspace, OwnerConversationRow, OwnerApproval, AttentionReason } from "@/lib/owner/service";
 import type { OutcomeEvent } from "@/lib/owner/revenue";
+import type { Intervention, InterventionAction } from "@/lib/owner/interventions";
+import type { ConversationStory } from "@/lib/owner/story";
+import { InterventionQueue, MoneyInMotion, StoryView, type Act } from "@/components/owner/operating";
 
 type Tab = "today" | "inbox" | "approvals" | "outcomes" | "health" | "ask";
 const TABS: { id: Tab; label: string }[] = [
@@ -97,6 +101,9 @@ export default function OwnerDashboard() {
   const [loaded, setWs] = useState<OwnerWorkspace | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [openConversation, setOpenConversation] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [notice, setNotice] = useState("");
 
   const { businessId, call, authorized } = api;
   // Nothing of a business is shown without that business's owner session.
@@ -138,6 +145,41 @@ export default function OwnerDashboard() {
 
   const needs = ws?.conversations.filter((c) => c.status === "needs_you") ?? [];
   const pendingApprovals = ws?.approvals.filter((a) => a.actionable || a.lifecycle === "held") ?? [];
+  const queue = ws?.interventions ?? [];
+
+  const goToConversation = (conversationId: string) => {
+    setOpenConversation(conversationId);
+    setTab("inbox");
+  };
+  const goToIntervention = (id: string) => {
+    setTab("today");
+    if (typeof document !== "undefined") setTimeout(() => document.querySelector(`[data-intervention="${CSS.escape(id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
+  };
+
+  // One action handler for every queue item: the existing owner endpoints re-check everything before an effect.
+  const act: Act = async (item: Intervention, action: InterventionAction) => {
+    if (action === "open_conversation") return goToConversation(item.conversationId);
+    setBusyId(item.id);
+    setNotice("");
+    try {
+      if (action === "approve" || action === "decline" || action === "recheck") {
+        const res = await call<{ message?: string; held?: { reason: string } | null; recheck?: { revalidated: number; stillUnresolved: number; changedRequests: number; recovered?: { outcome: string }[] } }>("/api/owner/approvals", { body: { businessId, approvalId: item.refs.approvalId, action } });
+        if (res.recheck) {
+          const recovered = res.recheck.recovered?.find((r) => r.outcome !== "unrelated");
+          setNotice(res.recheck.revalidated === 0 ? "BARRY still can't read the customer's later message — the request stays held." : recovered?.outcome === "proposed" || recovered?.outcome === "reused" ? "The customer's later message changed this request: the old one was replaced and the corrected request is waiting for you." : res.recheck.changedRequests > 0 ? "The customer's later message changed this request — it was cancelled and won't run." : "Re-checked: the customer's later message didn't change this request. You can decide it now.");
+        } else if (res.held) setNotice(`Not carried out: ${res.held.reason}. The customer was asked to confirm.`);
+        else setNotice(action === "approve" ? `Approved — ${res.message ? `BARRY told the customer: “${res.message.slice(0, 160)}”` : "BARRY carried it out and told the customer."}` : "Declined — BARRY told the customer; nothing was sent or changed.");
+      } else {
+        await call("/api/owner/handoffs", { body: { businessId, conversationId: item.conversationId, handoffId: item.refs.handoffId, action } });
+        setNotice(action === "acknowledge" ? "Acknowledged — your team has seen it. The customer was not messaged." : "Resolved — closed in your inbox. BARRY continues the conversation as usual.");
+      }
+      await load();
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : "Something went wrong");
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   return (
     <main className="min-h-screen bg-[#f9fafb] text-[#101828]">
@@ -159,6 +201,7 @@ export default function OwnerDashboard() {
             {TABS.map((t) => (
               <button key={t.id} role="tab" aria-selected={tab === t.id} onClick={() => setTab(t.id)} className={`whitespace-nowrap rounded-lg px-3 py-1.5 text-sm font-medium ${tab === t.id ? "bg-white text-[#101828] shadow-sm ring-1 ring-[#e4e7ec]" : "text-[#475467] hover:text-[#101828]"}`}>
                 {t.label}
+                {t.id === "today" && queue.length > 0 && <span className="ml-1.5 rounded-full bg-[#b42318] px-1.5 text-xs text-white">{queue.length}</span>}
                 {t.id === "approvals" && pendingApprovals.length > 0 && <span className="ml-1.5 rounded-full bg-[#b42318] px-1.5 text-xs text-white">{pendingApprovals.length}</span>}
                 {t.id === "inbox" && needs.length > 0 && <span className="ml-1.5 rounded-full bg-[#1d2939] px-1.5 text-xs text-white">{needs.length}</span>}
               </button>
@@ -178,9 +221,14 @@ export default function OwnerDashboard() {
 
         {!authorized && api.session && <p className="rounded-xl border border-dashed border-[#d0d5dd] bg-white px-4 py-6 text-center text-sm text-[#475467]">Sign in as this business&apos;s owner (above) to see its conversations, approvals, outcomes and money.</p>}
         {authorized && !ws && !error && <p className="text-sm text-[#667085]">{loading ? "Loading your business…" : "Loading…"}</p>}
-        {ws && tab === "today" && <TodayView ws={ws} onOpen={() => setTab("inbox")} onApprovals={() => setTab("approvals")} />}
-        {ws && tab === "inbox" && <InboxView ws={ws} api={api} />}
-        {ws && tab === "approvals" && <ApprovalsView ws={ws} api={api} reload={load} />}
+        {ws && notice && (
+          <p className="rounded-lg border border-[#e4e7ec] bg-white px-4 py-3 text-sm" role="status">
+            {notice}
+          </p>
+        )}
+        {ws && tab === "today" && <TodayView ws={ws} act={act} busyId={busyId} onOpen={goToConversation} onIntervention={goToIntervention} onQueue={() => setTab("approvals")} />}
+        {ws && tab === "inbox" && <InboxView ws={ws} api={api} open={openConversation} setOpen={setOpenConversation} />}
+        {ws && tab === "approvals" && <ApprovalsView ws={ws} act={act} busyId={busyId} />}
         {ws && tab === "outcomes" && <OutcomesView ws={ws} />}
         {ws && tab === "health" && <HealthView ws={ws} api={api} reload={load} />}
         {ws && tab === "ask" && <AskView api={api} />}
@@ -240,12 +288,21 @@ function RevenueReconciliation({ ws }: { ws: OwnerWorkspace }) {
   );
 }
 
-function TodayView({ ws, onOpen, onApprovals }: { ws: OwnerWorkspace; onOpen: () => void; onApprovals: () => void }) {
+function TodayView({ ws, act, busyId, onOpen, onIntervention, onQueue }: { ws: OwnerWorkspace; act: Act; busyId: string | null; onOpen: (conversationId: string) => void; onIntervention: (id: string) => void; onQueue: () => void }) {
   const r = ws.revenue;
   const t = ws.today;
   const interventionRate = r.activeConversations ? Math.round((r.ownerInterventions / r.activeConversations) * 100) : null;
+  const queue = ws.interventions;
   return (
     <div className="flex flex-col gap-5">
+      <Section
+        title={queue.length ? `Needs you — ${queue.length} item${queue.length === 1 ? "" : "s"}` : "Needs you"}
+        subtitle="Everything waiting on a decision or a person, in priority order. Each item says why BARRY escalated, what it already did, what you decide and what follows."
+        right={queue.length > 6 ? <button className={btn} onClick={onQueue}>See all requests</button> : undefined}
+      >
+        <InterventionQueue items={queue} busyId={busyId} onAct={act} limit={6} />
+      </Section>
+
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <Stat label="Conversations" value={t.conversations} hint={ws.window.label} />
         <Stat label="Handled without you" value={t.handledAutonomously} hint={t.conversations ? `${Math.round((t.handledAutonomously / t.conversations) * 100)}% of conversations` : undefined} />
@@ -273,32 +330,9 @@ function TodayView({ ws, onOpen, onApprovals }: { ws: OwnerWorkspace; onOpen: ()
         </div>
       </Section>
 
-      <RevenueReconciliation ws={ws} />
+      <MoneyInMotion items={ws.opportunities.items} summary={ws.opportunities.summary} onOpen={onOpen} onIntervention={onIntervention} />
 
-      <Section title="Needs you" right={<button className={btn} onClick={onOpen}>Open inbox</button>}>
-        {ws.conversations.filter((c) => c.status === "needs_you").length === 0 ? (
-          <Empty>Nothing needs you right now.</Empty>
-        ) : (
-          <ul className="divide-y divide-[#eaecf0]">
-            {ws.conversations
-              .filter((c) => c.status === "needs_you")
-              .slice(0, 6)
-              .map((c) => (
-                <li key={c.id} className="flex flex-col gap-1 py-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="min-w-0">
-                    <p className="font-medium">{c.customer}</p>
-                    <p className="text-sm text-[#475467]">{c.attention.map((a) => ATTENTION[a]).join(" · ")}</p>
-                  </div>
-                  {c.attention.some((a) => a === "approval_waiting" || a === "approval_held") && (
-                    <button className={btn} onClick={onApprovals}>
-                      Review request
-                    </button>
-                  )}
-                </li>
-              ))}
-          </ul>
-        )}
-      </Section>
+      <RevenueReconciliation ws={ws} />
 
       <Section title="Recent outcomes">
         <OutcomeList events={ws.outcomes.slice(0, 6)} ws={ws} />
@@ -346,12 +380,12 @@ type ConversationDetail = {
   requests: { id: string; what: string; lifecycle: string; createdAt: string }[];
   handoffs: { id: string; reason: string; status: string; urgency: string; summary: string; unresolved: string[]; responseCommitted: boolean }[];
   deliveries: { at: string; status: string; error?: string }[];
+  story?: ConversationStory;
   turns?: { at: string; customerMessage: string; understood: string; actions: string[]; stoppedBecause: string | null; replyFallback: string | null }[];
 };
 
-function InboxView({ ws, api }: { ws: OwnerWorkspace; api: Api }) {
+function InboxView({ ws, api, open, setOpen }: { ws: OwnerWorkspace; api: Api; open: string | null; setOpen: (id: string | null) => void }) {
   const [filter, setFilter] = useState<"all" | "needs_you">("all");
-  const [open, setOpen] = useState<string | null>(null);
   const rows = ws.conversations.filter((c) => filter === "all" || c.status === "needs_you");
   return (
     <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
@@ -429,7 +463,9 @@ function ConversationPanel({ id, api }: { id: string; api: Api }) {
           {!h.responseCommitted && <p className="mt-1 text-xs">BARRY told the customer the team can see this but didn&apos;t promise a reply time.</p>}
         </div>
       ))}
-      {data.transaction.length > 0 && (
+      {data.story ? (
+        <StoryView story={data.story} />
+      ) : data.transaction.length > 0 && (
         <div className="mb-3 rounded-lg bg-[#f9fafb] p-3 text-sm">
           <p className="text-xs font-medium uppercase tracking-wide text-[#667085]">Where things stand</p>
           <ul className="mt-1 list-disc pl-5 text-[#344054]">
@@ -480,68 +516,13 @@ function ConversationPanel({ id, api }: { id: string; api: Api }) {
   );
 }
 
-function ApprovalsView({ ws, api, reload }: { ws: OwnerWorkspace; api: Api; reload: () => Promise<void> }) {
-  const [busy, setBusy] = useState<string | null>(null);
-  const [notice, setNotice] = useState("");
-  const act = async (a: OwnerApproval, action: "approve" | "decline" | "recheck") => {
-    setBusy(a.id);
-    setNotice("");
-    try {
-      const res = await api.call<{ message?: string; held?: { reason: string } | null; recheck?: { revalidated: number; stillUnresolved: number; changedRequests: number } }>("/api/owner/approvals", { body: { businessId: api.businessId, approvalId: a.id, action } });
-      if (res.recheck) setNotice(res.recheck.revalidated === 0 ? "BARRY still can't read the customer's later message — the request stays held." : res.recheck.changedRequests > 0 ? "The customer's later message changed this request — it was cancelled and won't run." : "Re-checked: the customer's later message didn't change this request. You can decide it now.");
-      else if (res.held) setNotice(`Not carried out: ${res.held.reason}. The customer was asked to confirm.`);
-      else setNotice(action === "approve" ? "Approved — BARRY carried it out and told the customer." : "Declined — BARRY told the customer.");
-      await reload();
-    } catch (e) {
-      setNotice(e instanceof Error ? e.message : "Something went wrong");
-    } finally {
-      setBusy(null);
-    }
-  };
-  const pending = ws.approvals.filter((a) => a.actionable || a.lifecycle === "held");
+function ApprovalsView({ ws, act, busyId }: { ws: OwnerWorkspace; act: Act; busyId: string | null }) {
+  const pending = ws.interventions.filter((i) => i.kind === "approval" || i.kind === "held_approval");
   const history = ws.approvals.filter((a) => !(a.actionable || a.lifecycle === "held"));
   return (
     <div className="flex flex-col gap-4">
-      {notice && <p className="rounded-lg border border-[#e4e7ec] bg-white px-4 py-3 text-sm" role="status">{notice}</p>}
-      <Section title="Waiting for you" subtitle="BARRY re-checks everything the customer said since the request before anything runs.">
-        {pending.length === 0 ? (
-          <Empty>No requests are waiting for you.</Empty>
-        ) : (
-          <ul className="flex flex-col gap-3">
-            {pending.map((a) => (
-              <li key={a.id} className={`rounded-xl border p-4 ${a.lifecycle === "held" ? "border-[#fecdca] bg-[#fffbfa]" : "border-[#fedf89] bg-[#fffcf5]"}`}>
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Pill tone={LIFECYCLE[a.lifecycle].tone}>{LIFECYCLE[a.lifecycle].label}</Pill>
-                    <span className="font-medium">{a.customer}</span>
-                    {a.revision > 1 && <span className="text-xs text-[#667085]">revision {a.revision}</span>}
-                  </div>
-                  <span className="text-xs text-[#667085]">{timeAgo(a.createdAt)}</span>
-                </div>
-                <p className="mt-2 text-[15px] text-[#101828]">{a.what}</p>
-                <p className="mt-0.5 text-xs text-[#667085]">{LIFECYCLE[a.lifecycle].explain}</p>
-                <Terms a={a} />
-                <p className="mt-2 text-sm text-[#475467]">Why you&apos;re asked: {a.whyApproval}</p>
-                {a.newerContext && <p className="mt-2 rounded-lg bg-[#fef3f2] px-3 py-2 text-sm text-[#b42318]">{a.newerContext}</p>}
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {a.actionable && (
-                    <button className={primary} disabled={busy === a.id} onClick={() => void act(a, "approve")}>
-                      Approve
-                    </button>
-                  )}
-                  {a.lifecycle === "held" && (
-                    <button className={btn} disabled={busy === a.id} onClick={() => void act(a, "recheck")}>
-                      Re-check conversation
-                    </button>
-                  )}
-                  <button className={danger} disabled={busy === a.id} onClick={() => void act(a, "decline")}>
-                    Decline
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
+      <Section title="Waiting for you" subtitle="Exact terms, your rule behind each request, and what BARRY does once you decide. Everything the customer said since is re-checked before anything runs.">
+        <InterventionQueue items={pending} busyId={busyId} onAct={act} />
       </Section>
       <Section title="History">
         {history.length === 0 ? (
@@ -646,6 +627,33 @@ function HealthView({ ws, api, reload }: { ws: OwnerWorkspace; api: Api; reload:
             {ai.lastFailure.status ? ` · HTTP ${ai.lastFailure.status}` : ""}
             {ai.lastFailure.code ? ` · ${ai.lastFailure.code}` : ""}
           </p>
+        )}
+      </Section>
+      <Section title="What BARRY can do for you" subtitle="Derived from your goals, connected systems and rules — the full view is in Train BARRY." right={<Link href="/owner/train" className={btn}>Train BARRY</Link>}>
+        {ws.capabilities.now.length + ws.capabilities.nowSimulated.length + ws.capabilities.afterSetup.length === 0 ? (
+          <Empty>Couldn&apos;t assess capabilities.</Empty>
+        ) : (
+          <div className="flex flex-col gap-2 text-sm">
+            {ws.capabilities.now.length > 0 && (
+              <p>
+                <Pill tone="good">Ready</Pill> <span className="text-[#344054]">{ws.capabilities.now.join(" · ")}</span>
+              </p>
+            )}
+            {ws.capabilities.nowSimulated.length > 0 && (
+              <p>
+                <Pill tone="warn">Simulator only</Pill> <span className="text-[#344054]">{ws.capabilities.nowSimulated.join(" · ")}</span>
+              </p>
+            )}
+            {ws.capabilities.steps.length > 0 && (
+              <ul className="mt-1 space-y-1">
+                {ws.capabilities.steps.map((s) => (
+                  <li key={s.id} className="text-[#475467]">
+                    <span className="font-medium text-[#101828]">{s.title}</span> ({s.who === "you" ? "you" : "BARRY team"}) → {s.unlocks.join(", ")}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         )}
       </Section>
       <Section title="Connected systems">

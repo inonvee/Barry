@@ -69,6 +69,36 @@ export default async function HqBusinessPage({ params }: { params: Promise<{ bus
           </Card>
         </div>
 
+        <Card title="What BARRY can do for this business (owner's Train BARRY view)">
+          <WithSource value={b.assessment}>
+            {(a) => (
+              <>
+                <ul className="space-y-1 text-sm">
+                  {a.needs.map((n) => (
+                    <li key={n.id} className="flex flex-wrap items-center gap-1.5">
+                      <Badge tone={n.status === "ready" ? "good" : n.status === "ready_simulated" ? "warn" : "bad"}>{label(n.status)}</Badge>
+                      <span className="font-medium">{n.title}</span>
+                      <span className="text-xs text-neutral-500">{n.authority === "read" ? "read" : label(n.authority)}{n.provider ? ` · ${n.provider}` : ""}</span>
+                    </li>
+                  ))}
+                </ul>
+                {a.steps.length > 0 && (
+                  <div className="mt-3">
+                    <p className="text-xs font-medium text-neutral-500">Setup plan (most unlocked first)</p>
+                    <ol className="mt-1 list-decimal space-y-0.5 pl-5 text-xs">
+                      {a.steps.map((s) => (
+                        <li key={s.id}>
+                          <span className="font-medium">{s.title}</span> <span className="text-neutral-500">({s.who === "you" ? "owner" : "BARRY team"}, {label(s.gate)})</span> → {s.unlocks.join(", ")}
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                )}
+              </>
+            )}
+          </WithSource>
+        </Card>
+
         <Card title="Design-partner readiness">
           <p className="mb-2 text-xs text-neutral-500">
             live proven = a real provider completed it in a persisted, provider-verified transaction · ready = real provider connected, not yet proven · simulated = BARRY&apos;s

@@ -6,6 +6,7 @@ import { readHandoffs, transactionSnapshot } from "@/lib/runtime/handoff";
 import { readDeliveries } from "@/lib/channels/gateway";
 import { outcomeEvents } from "./revenue";
 import { channelOf, customerLabel } from "./service";
+import { conversationStory } from "./story";
 
 /**
  * One conversation for the owner: the messages, what BARRY did for this customer (outcomes from
@@ -30,6 +31,8 @@ export async function getOwnerConversation(graph: BusinessGraph, conversationId:
     messages: state.messages.map((m) => ({ from: m.role, text: m.content, at: m.at })),
     outcomes: outcomeEvents({ graph, conversations: [state], payments, bookings, orders, approvals }),
     transaction: transactionSnapshot(state),
+    /** What the customer asked, what BARRY did, and what became of it — turn by turn, from records. */
+    story: conversationStory(state),
     requests: withLifecycle(approvals, new Map([[state.id, state]])).map((a) => ({ id: a.id, what: a.summary, lifecycle: a.lifecycle, createdAt: a.createdAt, ...(a.hold ? { hold: a.hold } : {}) })),
     handoffs: readHandoffs(state),
     deliveries: readDeliveries(state.knownFields),

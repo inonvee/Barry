@@ -10,6 +10,7 @@ import { readDeliveries } from "@/lib/channels/gateway";
 import { handoffPath } from "@/lib/runtime/handoff";
 import { aiHealth } from "./service";
 import { isSimulatedPayment, isVerifiedPaid } from "./revenue";
+import { ownerAccessFor } from "./capabilities";
 
 /**
  * PAID-PILOT READINESS — one honest assessment per business, derived from real requirements.
@@ -79,10 +80,6 @@ function safe<T>(f: () => T): T | undefined {
   }
 }
 
-function ownerAccess(businessId: string): { scoped: boolean; global: boolean } {
-  const scoped = (process.env.BARRY_OWNER_TOKENS ?? "").split(",").some((p) => p.split(":")[0]?.trim() === businessId && (p.split(":")[1]?.trim().length ?? 0) >= 16);
-  return { scoped, global: Boolean(process.env.BARRY_OWNER_TOKEN) };
-}
 
 export async function assessPilotReadiness(graph: BusinessGraph, opts: { conversations?: ConversationState[] } = {}): Promise<PilotReadiness> {
   const businessId = graph.business.id;
@@ -106,7 +103,7 @@ export async function assessPilotReadiness(graph: BusinessGraph, opts: { convers
   const ai = aiHealth(conversations);
   if (live) add({ id: "ai.health", area: "ai", gate: "READY_FOR_SUPERVISED_PILOT", label: "AI availability", status: ai.status === "unavailable" ? "fail" : ai.status === "degraded" ? "warn" : "pass", detail: ai.summary, fix: ai.lastFailure?.kind === "provider_quota_exhausted" ? "Add credit to the AI provider account." : "Check the AI provider status and account." });
   add({ id: "platform.persistence", area: "platform", gate: "READY_FOR_SUPERVISED_PILOT", label: "Durable storage", status: isSupabaseConfigured() ? "pass" : "fail", detail: isSupabaseConfigured() ? "Conversations, approvals and payments are stored durably." : "Conversations and approvals live in process memory and are lost on restart.", fix: "Configure the database (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)." });
-  const access = ownerAccess(businessId);
+  const access = ownerAccessFor(businessId);
   add({ id: "platform.owner_access", area: "platform", gate: "READY_FOR_SUPERVISED_PILOT", label: "Owner access to approvals", status: access.scoped ? "pass" : access.global ? "warn" : "fail", detail: access.scoped ? "The owner has their own access, limited to this business." : access.global ? "Owner access uses the shared operator token (it opens every business)." : "No owner access is configured: nobody can approve requests.", fix: "Give this owner their own token (BARRY_OWNER_TOKENS=businessId:token)." });
 
   const workspace = await getLearningWorkspace(graph).catch(() => undefined);

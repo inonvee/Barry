@@ -42,7 +42,7 @@ export default async function HqOverviewPage() {
                   k="Verified revenue (7 days)"
                   v={<WithSource value={b.week}>{(w) => `${money(w.collected)}${Object.keys(w.simulated).length ? ` · simulated ${money(w.simulated)} (not counted)` : ""}`}</WithSource>}
                 />
-                <Kv k="Needs intervention" v={<WithSource value={b.week}>{(w) => `${w.needAttention} conversations · ${w.approvalsWaiting} approvals · ${w.handoffsOpen} handoffs · ${w.lostOpportunities} lost opportunities`}</WithSource>} />
+                <Kv k="Needs intervention" v={<WithSource value={b.week}>{(w) => `${w.interventions} queue item${w.interventions === 1 ? "" : "s"} · ${w.approvalsWaiting} approvals · ${w.handoffsOpen} handoffs · ${w.lostOpportunities} lost opportunities · ${money(w.moneyStuckWithOwner)} waiting on the owner`}</WithSource>} />
                 <Kv k="Providers" v={<WithSource value={b.mode}>{(m) => <Badge tone={statusTone(m)}>{m === "none" ? "none connected" : m}</Badge>}</WithSource>} />
                 <Kv
                   k="Capabilities"
