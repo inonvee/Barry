@@ -32,13 +32,14 @@ const bubbleStyle = (who: Who, side: 'start' | 'end', size: number, tail: boolea
 export const Bubble: React.FC<{who: Who; side: 'start' | 'end'; text?: string; children?: React.ReactNode; time?: string; ticks?: boolean; size?: number; maxWidth?: number; tail?: boolean}> = ({
   who, side, text, children, time, ticks, size = 34, maxWidth = 720, tail = true,
 }) => {
+  const {fmt} = useLang();
   const metaColor = who === 'barry' ? 'rgba(11,11,12,0.45)' : C.faint;
   return (
     <div style={{...bubbleStyle(who, side, size, tail), maxWidth}}>
       {text !== undefined ? <Mixed text={text} /> : children}
       {(time || ticks) && (
         <span style={{display: 'inline-flex', alignItems: 'center', gap: 6, marginInlineStart: size * 0.5, float: 'inline-end' as never, marginTop: size * 0.42, marginBottom: -size * 0.12, verticalAlign: 'bottom'}}>
-          {time && <Mono size={size * 0.4} color={metaColor} track={0.02}>{time}</Mono>}
+          {time && <Mono size={size * 0.4} color={metaColor} track={0.02}>{fmt(time)}</Mono>}
           {ticks && <Ticks color={who === 'barry' ? '#3f8f69' : C.verify} />}
         </span>
       )}
@@ -168,7 +169,10 @@ export const ChatHeader: React.FC<{at: number; name: string; sub: string; live?:
 /** A phone-style notification banner (no device, no hands — just the message arriving). */
 export const Notification: React.FC<{at: number; name: string; text: string; time: string; barry?: boolean; out?: number; width?: number; dim?: number; children?: React.ReactNode}> = ({
   at, name, text, time, barry, out, width = 900, dim = 0, children,
-}) => (
+}) => {
+  const {fmt} = useLang();
+  return (
+
   <Enter at={at} out={out} y={-40} blur={10} dur={30} scale={0.97}>
     <div
       style={{
@@ -190,14 +194,15 @@ export const Notification: React.FC<{at: number; name: string; text: string; tim
       <div style={{display: 'flex', flexDirection: 'column', gap: 8, flex: 1, minWidth: 0}}>
         <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'baseline'}}>
           <span style={{fontSize: 30, fontWeight: 600}}>{name}</span>
-          <Mono size={15} color={C.faint} track={0.04}>{time}</Mono>
+          <Mono size={15} color={C.faint} track={0.04}>{fmt(time)}</Mono>
         </div>
         <span style={{fontSize: 36, lineHeight: 1.3, color: 'rgba(243,238,230,0.92)'}}><Mixed text={text} /></span>
         {children}
       </div>
     </div>
   </Enter>
-);
+  );
+};
 
 /** Device silhouette for the owner's phone. Thin bezel, no branding, no hands. */
 export const PhoneFrame: React.FC<{children: React.ReactNode; width?: number; height?: number; rotateY?: number; rotateX?: number}> = ({
@@ -247,14 +252,16 @@ const RollDigit: React.FC<{from: string; to: string; p: number; size: number}> =
 
 export const DayClock: React.FC<{clock?: {from?: string; time: string; roll?: {at: number; time: string}}; hideAt?: number}> = ({clock, hideAt}) => {
   const frame = useCurrentFrame();
-  const {sx} = useLang();
+  const {sx, lang, fmt} = useLang();
   if (!clock) return null;
   const segs = [{at: 0, from: clock.from ?? clock.time, to: clock.time}];
   if (clock.roll) segs.push({at: clock.roll.at, from: clock.time, to: clock.roll.time});
   const seg = [...segs].reverse().find((s) => frame >= s.at) ?? segs[0];
   const size = 26;
-  const chars = seg.to.split('');
-  const fromChars = seg.from.split('');
+  // 12h strings differ in length ("7:03 AM" vs "10:26 AM"); pad so digits roll in place.
+  const show = (x: string) => (lang === 'en' ? fmt(x).padStart(8, ' ') : x);
+  const chars = show(seg.to).split('');
+  const fromChars = show(seg.from).split('');
   const fade = prog(frame, 0, 10) * (hideAt === undefined ? 1 : 1 - prog(frame, hideAt, 6));
   const rollP = (i: number) => prog(frame, seg.at + 2 + (chars.length - 1 - i) * 2, 12, EASE.inOut);
   const fracFrom = dayFrac(seg.from), fracTo = dayFrac(seg.to, seg.from === seg.to ? undefined : seg.from);

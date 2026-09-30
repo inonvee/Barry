@@ -361,6 +361,7 @@ export const RouteTrack: React.FC<{at: number; checkedAt: number; courierAt: num
 /* ---------- ActivityLog: the business moving while nobody is watching ---------- */
 export const ActivityLog: React.FC<{at: number; rows: {t: string; text: string}[]; speed?: number; opacity?: number; rowH?: number; size?: number}> = ({at, rows, speed = 0.55, opacity = 1, rowH = 64, size = 24}) => {
   const frame = useCurrentFrame();
+  const {fmt} = useLang();
   const local = Math.max(0, frame - at);
   const shift = local * speed;
   return (
@@ -371,7 +372,7 @@ export const ActivityLog: React.FC<{at: number; rows: {t: string; text: string}[
           const lit = interpolate(y, [180, 420, 620], [0.25, 1, 0.35], clamp);
           return (
             <div key={i} style={{height: rowH, display: 'flex', alignItems: 'center', gap: 26, opacity: lit, borderBottom: `1px solid ${C.line}`}}>
-              <Mono size={size * 0.72} color={C.faint} track={0.04}>{r.t}</Mono>
+              <Mono size={size * 0.72} color={C.faint} track={0.04}>{fmt(r.t)}</Mono>
               <span style={{width: 7, height: 7, borderRadius: '50%', background: i % 3 === 1 ? C.verify : C.warm, opacity: 0.8}} />
               <span style={{fontSize: size, color: C.dim}}><Mixed text={r.text} /></span>
             </div>

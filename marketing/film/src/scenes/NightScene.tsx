@@ -11,7 +11,7 @@ import {Glyph} from '../ui/system';
 /** 00:37 — Nobody is watching. The customer from 18:42 comes back and pays. */
 export const NightScene: React.FC = () => {
   const frame = useCurrentFrame();
-  const {t, lang} = useLang();
+  const {t, lang, fmt} = useLang();
   const q = Q.night;
   const n = t.night;
   const times = ['00:37:02', '00:37:41', '00:37:42'];
@@ -33,7 +33,7 @@ export const NightScene: React.FC = () => {
                   <Label size={13} color={C.faint}>{e.label}</Label>
                   <span style={{fontSize: i === 2 ? 44 : 38, fontWeight: i === 2 ? 500 : 400, color: i === 2 ? C.text : C.dim}}><Mixed text={e.value} /></span>
                 </div>
-                <Mono size={14} color={C.ghost}>{times[i]}</Mono>
+                <Mono size={14} color={C.ghost}>{fmt(times[i])}</Mono>
               </div>
             </Enter>
           );
