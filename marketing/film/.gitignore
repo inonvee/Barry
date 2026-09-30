@@ -1,0 +1,6 @@
+node_modules
+out/
+.agents/
+.claude/
+skills-lock.json
+public/audio/*.wav

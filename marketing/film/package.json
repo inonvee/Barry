@@ -1,0 +1,34 @@
+{
+  "name": "barry-film",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "audio": "node scripts/generate-audio.mjs",
+    "still": "remotion still src/index.ts",
+    "render:he": "remotion render src/index.ts BarryComingSoon-HE out/BarryComingSoon_HE.mp4",
+    "render:en": "remotion render src/index.ts BarryComingSoon-EN out/BarryComingSoon_EN.mp4",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@remotion/bundler": "^4.0.530",
+    "@remotion/renderer": "^4.0.530",
+    "@types/node": "^26.6.3",
+    "@types/react": "^19.3.0",
+    "typescript": "^7.0.2"
+  },
+  "overrides": {
+    "electron-to-chromium": "1.5.400"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.530",
+    "@remotion/fonts": "^4.0.530",
+    "@remotion/google-fonts": "^4.0.530",
+    "@remotion/media": "^4.0.530",
+    "@remotion/transitions": "^4.0.530",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "remotion": "^4.0.530"
+  }
+}
