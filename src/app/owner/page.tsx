@@ -6,7 +6,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useOwnerApi } from "@/components/owner/useOwnerApi";
 import { OwnerShell, type OwnerSection } from "@/components/owner/OwnerShell";
 import { Empty, Pill, Section, Skeleton, Stat, StateNotice, btn, formatMoney, primary, quiet, timeAgo, type Tone } from "@/components/owner/ui";
-import { InterventionCard, InterventionQueue, MoneyInMotion, OpportunityRow, StoryView, type Act } from "@/components/owner/operating";
+import { InterventionCard, InterventionQueue, MoneyInMotion, OpportunityRow, StoryView, type Act, NextExpectedAction, WatchingList } from "@/components/owner/operating";
+import { isOpen } from "@/lib/operator/obligations";
 import type { OwnerWorkspace, OwnerConversationRow, OwnerApproval } from "@/lib/owner/service";
 import type { OutcomeEvent } from "@/lib/owner/revenue";
 import type { Intervention, InterventionAction } from "@/lib/owner/interventions";
@@ -230,6 +231,9 @@ function TodayView({ ws, act, busyId, loading, onOpen, onIntervention, onTab }: 
   const ai = ws.health.ai;
   const handled = ws.outcomes.filter((o) => o.kind === "paid" || o.kind === "booked" || o.kind === "order_created" || o.kind === "case_created");
   const setupSteps = ws.capabilities.steps.filter((s) => s.gate !== "customer_traffic").slice(0, 2);
+  // Approvals, held requests and handoffs already have their cards above: here BARRY shows the rest it is watching.
+  const watching = ws.obligations.filter((o) => isOpen(o) && !["approval_blocking_transaction", "held_request_recheck", "unresolved_handoff"].includes(o.kind));
+  const due = watching.filter((o) => o.dueAt && Date.parse(o.dueAt) <= Date.now());
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
   return (
@@ -258,6 +262,11 @@ function TodayView({ ws, act, busyId, loading, onOpen, onIntervention, onTab }: 
             Show all {queue.length}
           </button>
         )}
+      </Section>
+
+      <Section title="BARRY is watching" subtitle={watching.length ? `${watching.length} thing${watching.length === 1 ? "" : "s"} BARRY keeps track of until the records show it's done${due.length ? ` · ${due.length} due now` : ""}.` : undefined}>
+        <WatchingList items={watching} onOpen={onOpen} limit={4} />
+        {watching.length > 4 && <p className="mt-2 text-[12px] text-[#667085]">+{watching.length - 4} more — each conversation shows its next expected action.</p>}
       </Section>
 
       <Section title="Money in motion" subtitle="Where money is stuck, at risk or waiting — never counted as revenue." right={<button className={quiet} onClick={() => onTab("money")}>All money ›</button>}>
@@ -441,6 +450,7 @@ function ConversationPanel({ id, api, ws, act, busyId, onBack, onIntervention }:
   const row = ws.conversations.find((c) => c.id === id);
   const items = ws.interventions.filter((i) => i.conversationId === id);
   const money = ws.opportunities.items.filter((o) => o.conversationId === id);
+  const nextAction = <NextExpectedAction items={ws.obligations} conversationId={id} />;
   const back = (
     <button className={`${quiet} -ml-2 lg:hidden`} onClick={onBack}>
       ‹ Inbox
@@ -501,6 +511,8 @@ function ConversationPanel({ id, api, ws, act, busyId, onBack, onIntervention }:
           </div>
         </dl>
       </section>
+
+      {nextAction}
 
       {items.length > 0 && (
         <Section title="Needs you here" plain>
@@ -623,6 +635,9 @@ function MoneyView({ ws, range, setRange, onOpen, onIntervention }: { ws: OwnerW
       )}
       <Section title="Money in motion" subtitle="What can you do about it? Each line says whose move it is.">
         <MoneyInMotion items={ws.opportunities.items} summary={ws.opportunities.summary} onOpen={onOpen} onIntervention={onIntervention} />
+      </Section>
+      <Section title="Unpaid follow-ups" subtitle="Every unpaid link BARRY is watching, with whose move it is now; closed ones show the record that closed them.">
+        <WatchingList items={ws.obligations.filter((o) => o.kind === "unpaid_payment_followup" || o.kind === "booking_deposit_missing")} onOpen={onOpen} empty="No unpaid link or missing deposit is being watched." />
       </Section>
       <Section title="Every amount, explained" subtitle="The category each amount is in, and the record that puts it there.">
         {items.length === 0 ? (

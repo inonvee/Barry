@@ -10,6 +10,7 @@ import { readHandoffs, type HandoffRecord } from "@/lib/runtime/handoff";
 import { outcomeEvents, revenueEvidence, revenueSummary, type OutcomeEvent, type RevenueEvidence, type RevenueSummary } from "./revenue";
 import { buildInterventions, type Intervention } from "./interventions";
 import { revenueOpportunities, type Opportunity, type OpportunitySummary } from "./opportunities";
+import { reconcileObligations, type Obligation } from "@/lib/operator/obligations";
 import { assessCapabilities, capabilitySummary } from "./capabilities";
 
 /**
@@ -106,6 +107,8 @@ export type OwnerWorkspace = {
   interventions: Intervention[];
   /** Where money is stuck, at risk or waiting — and whose move it is. Current state, not window-bound. */
   opportunities: { items: Opportunity[]; summary: OpportunitySummary };
+  /** What BARRY is watching: the durable obligations (open first, then recently closed with evidence). */
+  obligations: Obligation[];
   conversations: OwnerConversationRow[];
   approvals: OwnerApproval[];
   outcomes: OutcomeEvent[];
@@ -280,6 +283,7 @@ export async function getOwnerWorkspace(graph: BusinessGraph, opts: { since?: st
   const handoffs = conversations.flatMap((c) => readHandoffs(c).map((h) => ({ ...h, customer: customerLabel(c) }))).sort((a, b) => Number(b.status !== "resolved") - Number(a.status !== "resolved") || b.createdAt.localeCompare(a.createdAt));
   const interventions = buildInterventions({ graph, conversations, approvals, payments, customerLabel, now });
   const opportunities = revenueOpportunities({ graph, conversations, approvals, payments, bookings, orders, customerLabel, now });
+  const obligations = await safe("obligations", () => reconcileObligations({ graph, conversations, approvals, payments, bookings, now, customerLabel }), [] as Obligation[]);
   const profiles = await safe("capability profiles", () => resolveCapabilityProfiles(graph), undefined);
   const connections = await safe("connections", () => describeBusinessConnections(businessId, profiles), [] as ConnectionView[]);
   const capabilities = capabilitySummary(await safe("capabilities", () => assessCapabilities(graph, { profiles, connections }), { needs: [], steps: [], now: [], nowSimulated: [], afterSetup: [] }));
@@ -301,6 +305,7 @@ export async function getOwnerWorkspace(graph: BusinessGraph, opts: { since?: st
     revenueEvidence: evidence,
     interventions,
     opportunities,
+    obligations,
     conversations: rows,
     approvals: approvals
       .map((a) => approvalView(a, byId.get(a.conversationId) ? customerLabel(byId.get(a.conversationId)!) : "Customer"))

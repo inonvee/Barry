@@ -4,6 +4,7 @@ import { useState } from "react";
 import type { Intervention, InterventionAction, InterventionKind } from "@/lib/owner/interventions";
 import type { Opportunity, OpportunitySummary } from "@/lib/owner/opportunities";
 import type { ConversationStory } from "@/lib/owner/story";
+import { NEXT_MOVE_WORDS, isOpen, type Obligation } from "@/lib/operator/obligations";
 import { Empty, Pill, btn, danger, formatMoney, primary, quiet, timeAgo, type Tone } from "./ui";
 
 /**
@@ -271,5 +272,63 @@ export function StoryView({ story, compact }: { story: ConversationStory; compac
         </li>
       ))}
     </ol>
+  );
+}
+
+
+// ── What BARRY is watching (obligations) ──────────────────────────────────
+
+/** "in 3h" / "2 days ago" / "now" — relative to the viewer's clock. */
+function dueWords(iso: string): string {
+  const diff = Date.parse(iso) - Date.now();
+  const abs = Math.abs(diff);
+  const unit = abs < 3600_000 ? `${Math.max(1, Math.round(abs / 60_000))}m` : abs < 48 * 3600_000 ? `${Math.round(abs / 3600_000)}h` : `${Math.round(abs / (24 * 3600_000))} days`;
+  if (abs < 60_000) return "now";
+  return diff > 0 ? `in ${unit}` : `${unit} ago`;
+}
+
+const MOVE_TONE: Record<Obligation["nextMove"], Tone> = { needs_owner: "warn", barry_can_act: "good", waiting_on_customer: "neutral", blocked_by_capability: "bad", scheduled_for_later: "neutral" };
+
+/** One line per obligation: whose move, what, why, when. Owner words only; the record behind it on demand. */
+export function WatchingList({ items, onOpen, limit, empty }: { items: Obligation[]; onOpen?: (conversationId: string) => void; limit?: number; empty?: string }) {
+  const open = items.filter(isOpen);
+  const shown = limit ? open.slice(0, limit) : open;
+  if (shown.length === 0) return <Empty title="Nothing to watch">{empty ?? "When a payment link goes unpaid, a reply fails to arrive, a deposit is missing or an action needs a retry, BARRY keeps it here until the records show it's done."}</Empty>;
+  return (
+    <ul className="divide-y divide-[#f2f4f7]">
+      {shown.map((o) => (
+        <li key={o.key} className="flex flex-col gap-0.5 py-2.5 text-sm">
+          <div className="flex flex-wrap items-center gap-2">
+            <Pill tone={MOVE_TONE[o.nextMove]}>{NEXT_MOVE_WORDS[o.nextMove]}</Pill>
+            {onOpen ? (
+              <button className="text-left font-medium text-[#101828] hover:underline" onClick={() => onOpen(o.conversationId)}>
+                {`${o.customer}: ${o.subject}`}
+              </button>
+            ) : (
+              <span className="font-medium text-[#101828]">{`${o.customer}: ${o.subject}`}</span>
+            )}
+            {o.simulated && <Pill tone="neutral" icon={false}>test</Pill>}
+            {o.dueAt && <span className="text-[12px] text-[#98a2b3]">{`due ${dueWords(o.dueAt)}`}</span>}
+          </div>
+          <p className="text-[13px] text-[#475467]">{`${o.reason} `}<span className="text-[#101828]">{`Next: ${o.nextAction}`}</span></p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** The next expected action in ONE conversation, from its first open obligation. */
+export function NextExpectedAction({ items, conversationId }: { items: Obligation[]; conversationId: string }) {
+  const mine = items.filter((o) => o.conversationId === conversationId && isOpen(o));
+  if (mine.length === 0) return null;
+  const o = mine[0];
+  return (
+    <div className="rounded-xl bg-[#f9fafb] px-3 py-2.5 text-sm">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#667085]">Next expected action</p>
+      <p className="mt-0.5">
+        <Pill tone={MOVE_TONE[o.nextMove]}>{NEXT_MOVE_WORDS[o.nextMove]}</Pill> <span className="font-medium">{o.nextAction}</span>
+      </p>
+      <p className="text-[12px] text-[#667085]">{`${o.subject} · ${o.reason}${o.dueAt ? ` · due ${dueWords(o.dueAt)}` : ""}${mine.length > 1 ? ` · +${mine.length - 1} more` : ""}`}</p>
+    </div>
   );
 }
