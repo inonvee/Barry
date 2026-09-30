@@ -78,6 +78,27 @@ function CommerceSummary({ commerce }: { commerce: unknown }) {
   );
 }
 
+type UnderstandingTrace = NonNullable<NonNullable<TurnLog["trace"]>["understanding"]>;
+
+function failureLabel(f: NonNullable<UnderstandingTrace["failure"]>): string {
+  return [f.kind.replace(/_/g, " "), f.status !== undefined ? `HTTP ${f.status}` : "", f.code ?? "", f.message ?? ""].filter(Boolean).join(" · ");
+}
+
+/** Whether the model's understanding was usable — and exactly why not, when it wasn't. */
+function UnderstandingStatus({ u }: { u: UnderstandingTrace }) {
+  return (
+    <div className="mb-2">
+      <div className="flex flex-wrap gap-1.5 mb-1">
+        <Chip tone={!u.valid ? "bad" : u.salvagedFields?.length ? "warn" : "good"}>{!u.valid ? "understanding failed" : u.salvagedFields?.length ? "understood (salvaged)" : "understood"}</Chip>
+        {u.failClosed && <Chip tone="warn">fail-closed: no write this turn</Chip>}
+        <Chip tone="neutral">{`${u.attempts} attempt${u.attempts === 1 ? "" : "s"} · ${u.latencyMs} ms`}</Chip>
+      </div>
+      {u.failure && <p className={`text-xs ${u.valid ? "text-amber-700 dark:text-amber-400" : "text-red-600 dark:text-red-400"}`}>{u.valid ? "Recovered from: " : "Reason: "}{failureLabel(u.failure)}</p>}
+      {u.salvagedFields?.length ? <Kv k="Dropped malformed fields" v={u.salvagedFields.join(", ")} /> : null}
+    </div>
+  );
+}
+
 export function TurnView({ state, turn, isLatest }: { state: ConversationState; turn: TurnLog; isLatest: boolean }) {
   const trace = turn.trace;
   const rt = trace?.runtime;
@@ -103,6 +124,7 @@ export function TurnView({ state, turn, isLatest }: { state: ConversationState; 
       </Section>
 
       <Section title="Understanding">
+        {trace?.understanding && <UnderstandingStatus u={trace.understanding} />}
         <Kv k="Raw intent" v={turn.understood.intent} />
         <Kv k="Purchase decision" v={turn.understood.purchaseDecision === undefined ? "—" : String(turn.understood.purchaseDecision)} />
         {turn.understood.signals && (
@@ -238,6 +260,10 @@ export function TurnView({ state, turn, isLatest }: { state: ConversationState; 
         <Kv k="Missing fields" v={missing === undefined ? "not recorded" : missing.length ? missing.join(", ") : "none"} />
         {trace?.reply && <Kv k="Reply language" v={`${trace.reply.language} (${trace.reply.basis.replace(/_/g, " ")})`} />}
         {trace?.reply?.fallback && <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">Deterministic reply used — {trace.reply.fallback}</p>}
+        {trace?.reply?.composerFailures?.map((f, i) => (
+          <p key={i} className="text-xs text-red-600 dark:text-red-400 mt-1">Composer call failed — {failureLabel(f)}; the deterministic reply was used.</p>
+        ))}
+        {trace?.hold && <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">Owner approval held, not executed — {trace.hold.reason}</p>}
       </Section>
 
       {isLatest && (

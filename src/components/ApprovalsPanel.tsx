@@ -4,11 +4,19 @@ import type { ApprovalRecord } from "@/lib/store/types";
 
 /** An approval as the API returns it: the stored record plus its authoritative lifecycle. */
 export type ApprovalView = ApprovalRecord & {
-  lifecycle?: "active" | "superseded" | "withdrawn" | "declined" | "executed" | "executed_unconfirmed" | "failed" | "approved";
+  lifecycle?: "active" | "held" | "superseded" | "withdrawn" | "declined" | "executed" | "executed_unconfirmed" | "failed" | "approved";
   revision?: number;
   summary?: string;
   result?: { result: string; reference?: string };
+  /** Pending, but held: the customer's intent after the request is unverified (a later message wasn't understood, or conflicts). */
+  hold?: { reason: string; detail?: string };
 };
+
+function holdText(h: NonNullable<ApprovalView["hold"]>): string {
+  return h.reason === "conflicting_reference"
+    ? `Held: the customer later wrote ${h.detail ?? "a different reference"}, which conflicts with this request. The customer must reconfirm before it can run.`
+    : "Held: a later customer message could not be understood, so the customer's current intent is unverified. The customer must reconfirm before it can run.";
+}
 
 /** A generic capability call is titled by its capability, not by the generic action's name. */
 function actionTitle(a: { requestedAction: string; requestedInput: unknown }): string {
@@ -18,6 +26,7 @@ function actionTitle(a: { requestedAction: string; requestedInput: unknown }): s
 
 const LIFECYCLE_STYLE: Record<string, string> = {
   active: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
+  held: "bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300",
   executed: "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300",
   executed_unconfirmed: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300",
   failed: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300",
@@ -54,9 +63,11 @@ export function ApprovalsPanel({
   busyId: string | null;
   currentConversationId?: string | null;
 }) {
-  // Only an ACTIVE request can be decided. Superseded / withdrawn / resolved ones are history — no stale buttons.
-  const active = approvals.filter((a) => lifecycleOf(a) === "active");
-  const history = approvals.filter((a) => lifecycleOf(a) !== "active");
+  // Only a PENDING request can be decided. Superseded / withdrawn / resolved ones are history — no stale buttons.
+  // A held one can be declined, not approved: the server would hold it again until the customer reconfirms.
+  const isPending = (a: ApprovalView) => lifecycleOf(a) === "active" || lifecycleOf(a) === "held";
+  const active = approvals.filter(isPending);
+  const history = approvals.filter((a) => !isPending(a));
 
   return (
     <div className="p-3 space-y-3 overflow-y-auto h-full">
@@ -69,10 +80,11 @@ export function ApprovalsPanel({
           <Meta a={a} currentConversationId={currentConversationId} />
           {a.summary && <p className="text-sm mt-1">{a.summary}</p>}
           <p className="text-xs text-neutral-600 dark:text-neutral-400 mt-1">{a.reason}</p>
+          {a.hold && <p className="text-xs text-orange-700 dark:text-orange-400 mt-1">{holdText(a.hold)}</p>}
           <pre className="mt-2 text-xs bg-white/60 dark:bg-black/20 rounded-lg p-2 overflow-x-auto">{JSON.stringify(a.requestedInput, null, 2)}</pre>
           <div className="mt-3 flex gap-2">
             <button
-              disabled={busyId === a.id}
+              disabled={busyId === a.id || Boolean(a.hold)}
               onClick={() => onDecide(a.id, "approved")}
               className="flex-1 rounded-lg bg-green-600 text-white text-xs font-medium py-2 disabled:opacity-50"
             >

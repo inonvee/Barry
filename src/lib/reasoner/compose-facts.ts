@@ -46,6 +46,8 @@ export function businessFacts(ctx: ReasonerContext, lang = "en") {
         bookable: o.requiresScheduling,
       })),
     knowledge: graph.knowledge.slice(0, MAX_KNOWLEDGE).map((k) => ({ topic: k.topic, content: clip(k.content) })),
+    // The business's own opening hours — empty means NOT KNOWN (never filled in from general knowledge).
+    openingHours: graph.business.operatingHours.map((h) => ({ day: h.day, open: h.open, close: h.close })),
     // What BARRY showed the customer and what is in their cart, re-read from the provider this turn.
     shownProducts: ctx.grounded?.shownResults ?? [],
     cart: ctx.grounded?.cart ?? [],

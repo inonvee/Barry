@@ -38,12 +38,41 @@ export type ClaimEvidence = {
   customerText: string;
   /** Lower-cased text of what the business's systems reported (statuses etc.). */
   reportedText: string;
+  /** Items (product titles) BARRY knows of: shown, in the cart, or in a cart receipt. */
+  knownItems: string[];
+  /** Item labels a cart ADD or REPLACE effect recorded THIS turn (only these may be narrated as being added now). */
+  addedThisTurn: string[];
+  /** Times of day (minutes after midnight) BARRY's records, facts, scheduling or the customer state. */
+  times: number[];
 };
 
 const NEGATED = /\b(not|n't|never|no|can't|cannot|unable|won't|haven't|hasn't|wasn't|isn't|didn't)\b|לא |אין |אי אפשר|אינו|אינה|טרם/i;
 const MODAL = /\b(will|'ll|can|could|would|may|might|if|once|after|when|before|want|like to|shall|should|able to|going to)\b|\?$|^(אם|האם) /i;
 /** The customer did it ("once you've sent…"), not BARRY. */
 const CUSTOMER_SUBJECT = /\byou(?:'ve| have)?\s+(?:\w+\s+)?(?:sent|updated|changed|cancell?ed|paid)\b/i;
+
+/** A future owner action ("I'll ask the owner", "I'll update you once I hear back") — only true when a request is really waiting. */
+const OWNER_PROMISE_EN = /\b(?:i'll|i will|let me|i'm going to|i am going to)\s+(?:ask|check (?:it |this |that )?with|run (?:it|this|that) by|get (?:approval|sign-?off|an ok) from|confirm (?:it |this )?with)\b[^.!?]*\b(?:owner|manager|boss)\b|\b(?:once|when|as soon as) i hear back\b/i;
+const OWNER_PROMISE_HE = /(אשאל את|אבדוק (?:את זה )?(?:מול|עם)|אעביר (?:את זה )?ל)(?:\s*)(בעל העסק|בעלת העסק|הבעלים|המנהל)|(?:ברגע|כש)(?:ש)?(?:תהיה|אקבל) (?:לי )?תשובה/;
+
+/** Adding to the cart, done or in progress or promised (the item must be one a cart effect THIS turn added). */
+const CART_ADD_EN = /\b(?:add(?:ed|ing|s)?|put(?:ting)?)\b/i;
+const CART_ADD_HE = /(הוספתי|הוספנו|מוסיף|מוסיפה|מוסיפים|אוסיף|נוסיף|הכנסתי|מכניס|מכניסה|אכניס|נוסף|נוספה|נוספו)/;
+/** An offer or question to the customer, not a claim ("want me to add it?"). */
+const OFFER = /\?\s*$|\b(?:would you|do you want|want me to|shall i|should i|like me to|if you'd like|if you want)\b|(?:רוצה ש|תרצה ש|תרצי ש|האם )/i;
+
+const TIME_RE = /\b([01]?\d|2[0-3])[:.]([0-5]\d)\b|\b(1[0-2]|0?[1-9])\s?(am|pm|a\.m\.|p\.m\.)/gi;
+function timesIn(text: string): number[] {
+  const out: number[] = [];
+  for (const m of text.matchAll(TIME_RE)) {
+    if (m[1] !== undefined) out.push(Number(m[1]) * 60 + Number(m[2]));
+    else {
+      const h = Number(m[3]) % 12;
+      out.push((/^p/i.test(m[4]) ? h + 12 : h) * 60);
+    }
+  }
+  return out;
+}
 
 /** `promiseToo`: a future promise ("we'll call you", "I'll email it") needs the same evidence as a completed claim. */
 type ClaimRule = { kind: ClaimKind | "owner" | "owner_waiting"; en: RegExp; he: RegExp; needsCompletion?: boolean; promiseToo?: boolean };
@@ -202,7 +231,34 @@ export function claimEvidence(ctx: ReasonerContext, input: ComposeResponseInput,
   ].join("\n");
 
   const reportedText = JSON.stringify([input.toolResult?.output ?? null, ...(input.steps ?? []).map((st) => st.toolResult?.output ?? null), ctx.grounded?.capabilityResults ?? []]).toLowerCase();
-  return { kinds, ownerRequestExists, ownerRequestWaiting, amounts: [...new Set(base.filter((n) => Number.isFinite(n) && n > 0))], mentioned, percentages: [...percentages], factText, customerText, reportedText };
+
+  const title = (label: string) => label.replace(/\s*\(.*\)\s*$/, "").replace(/^\d+\s*×\s*/, "").trim();
+  const knownItems = [
+    ...new Set(
+      [
+        ...(ctx.grounded?.shownResults ?? []).map((r) => r.title),
+        ...(ctx.grounded?.cart ?? []).map((l) => l.title),
+        ...ledger.flatMap((e) => [e.terms.item, e.terms.itemAfter].filter((v): v is string => typeof v === "string").map(title)),
+      ].filter(Boolean)
+    ),
+  ];
+  const addedThisTurn = ledger
+    .filter((e) => e.seq > turnStartSeq && e.status === "effected" && (e.effect === "cart.line_added" || e.effect === "cart.line_replaced" || e.effect === "cart.line_updated"))
+    .flatMap((e) => [e.terms.item, e.terms.itemAfter].filter((v): v is string => typeof v === "string").map(title));
+
+  // Times of day a reply may state: the business's own hours and facts, scheduling results shown this
+  // turn, what the systems reported, and the customer's own words.
+  const timeSources = [
+    factText,
+    JSON.stringify(g.business.operatingHours ?? []),
+    customerText,
+    reportedText,
+    JSON.stringify(input.scheduling ?? null),
+    JSON.stringify(ledger.map((e) => e.outcome ?? {})),
+  ].join("\n");
+  const times = [...new Set(timesIn(timeSources))];
+
+  return { kinds, ownerRequestExists, ownerRequestWaiting, amounts: [...new Set(base.filter((n) => Number.isFinite(n) && n > 0))], mentioned, percentages: [...percentages], factText, customerText, reportedText, knownItems, addedThisTurn, times };
 }
 
 function derivable(x: number, ev: ClaimEvidence): boolean {
@@ -239,6 +295,21 @@ export function findUnsupportedClaims(text: string, ev: ClaimEvidence): ClaimVio
       }
     }
     for (const clause of clausesOf(sentence)) checkClause(clause, sentence, ownerHits.size > 0, ev, out);
+    // A promise to take something to the owner is only true when a request is really waiting (else nothing will come back).
+    if (!NEGATED.test(sentence) && !ev.ownerRequestWaiting && (OWNER_PROMISE_EN.test(sentence) || OWNER_PROMISE_HE.test(sentence))) {
+      out.push({ sentence, why: "promises an owner follow-up, but no request is waiting on the owner" });
+    }
+    // An item narrated as added to the cart (done, now, or next) must be one a cart effect added THIS turn.
+    for (const clause of clausesOf(sentence)) {
+      if (NEGATED.test(clause) || OFFER.test(clause) || OFFER.test(sentence) || !(CART_ADD_EN.test(clause) || CART_ADD_HE.test(clause))) continue;
+      for (const item of itemsNamed(clause, ev.knownItems)) {
+        if (!ev.addedThisTurn.some((a) => a === item)) out.push({ sentence, why: `narrates adding ${item} to the cart, but no cart effect this turn added it` });
+      }
+    }
+    // A time of day must come from the business's facts/hours, a lookup, BARRY's records or the customer.
+    for (const t of timesIn(sentence)) {
+      if (!ev.times.includes(t)) out.push({ sentence, why: `states a time (${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}) that no business fact, lookup or record supports` });
+    }
     for (const m of sentence.matchAll(MONEY)) {
       const value = num(m[2] ?? m[3]);
       if (value > 0 && !derivable(value, ev)) out.push({ sentence, why: `states an amount (${m[0].trim()}) not in the business's facts or results` });
@@ -254,6 +325,20 @@ export function findUnsupportedClaims(text: string, ev: ClaimEvidence): ClaimVio
     }
   }
   return out;
+}
+
+/**
+ * Known items a clause names: by full title, or by the title's first word when that word identifies
+ * exactly one known item (customers and replies say "the Onyx").
+ */
+function itemsNamed(clause: string, items: string[]): string[] {
+  const lower = clause.toLowerCase();
+  const first = (t: string) => t.split(/\s+/)[0]?.toLowerCase() ?? "";
+  return items.filter((t) => {
+    if (lower.includes(t.toLowerCase())) return true;
+    const f = first(t);
+    return f.length >= 3 && items.filter((o) => first(o) === f).length === 1 && new RegExp(`(^|[^\\p{L}])${f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[^\\p{L}])`, "iu").test(clause);
+  });
 }
 
 function clausesOf(sentence: string): string[] {

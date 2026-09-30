@@ -44,6 +44,8 @@ export type GroundedContext = {
   capabilityResults?: CapabilityResultSummary[];
   /** Every request BARRY sent to the owner in this conversation, with its real status and outcome (customer-safe). */
   ownerRequests?: OwnerRequestView[];
+  /** The requests the customer's changed terms are replacing (revision continuation): propose the replacement. */
+  replacingRequests?: OwnerRequestView[];
   /** This turn changed a pending request's terms and no valid replacement was created. */
   revisionWithoutReplacement?: boolean;
   /** The conversation's effect ledger (immutable domain effects) and where this turn's entries start. */
@@ -85,6 +87,55 @@ export type ReasonerContext = {
   state: ConversationState;
   customerMessage: string;
   grounded?: GroundedContext;
+  /** Where a Reasoner records model-call failures it recovered from (e.g. a composer call that fell back), for the turn trace. */
+  diagnostics?: { composerFailures: ModelCallFailure[] };
+};
+
+/**
+ * Why a model call did not produce usable output — classified, and sanitized (no keys, no raw
+ * payloads). This is what the Inspector shows instead of a silent generic reply.
+ */
+export type ModelCallFailureKind =
+  | "provider_rate_limited"
+  | "provider_quota_exhausted"
+  | "provider_unavailable"
+  | "provider_timeout"
+  | "provider_connection"
+  | "provider_auth"
+  | "provider_rejected_request"
+  | "provider_error"
+  | "empty_completion"
+  | "json_parse_error"
+  | "schema_validation_error"
+  | "invalid_model_config";
+
+export type ModelCallFailure = {
+  kind: ModelCallFailureKind;
+  /** HTTP status the provider returned, when there was one. */
+  status?: number;
+  /** The provider's own error code / type (e.g. rate_limit_exceeded, insufficient_quota). */
+  code?: string;
+  /** Sanitized, truncated provider message or validation issue list. */
+  message?: string;
+  /** Whether a retry could plausibly succeed (rate limit, 5xx, timeout, malformed output). */
+  transient: boolean;
+};
+
+/** Understanding plus what it took: whether it is usable, how it failed, what was salvaged. */
+export type UnderstandingResult = {
+  ir: BarryIR;
+  /** The model produced a usable understanding (possibly after salvage/retry). */
+  valid: boolean;
+  attempts: number;
+  /** The last failure (on a valid result: the failure a retry recovered from). */
+  failure?: ModelCallFailure;
+  /** Fields that were malformed and dropped instead of discarding the whole understanding. */
+  salvagedFields?: string[];
+  /** A dropped field could have carried a transaction decision: this turn may not advance or write. */
+  failClosed?: boolean;
+  latencyMs: number;
+  usage: { promptTokens: number; completionTokens: number; reasoningTokens: number };
+  model: string;
 };
 
 /**
@@ -175,6 +226,8 @@ export interface Reasoner {
   /** Surfaced in the simulator Inspector and persisted on every TurnLog. */
   readonly name: "mock" | "llm";
   understand(ctx: ReasonerContext): Promise<BarryIR>;
+  /** understand() with its outcome: validity, classified failure, salvage. The runtime prefers this. */
+  understandDetailed?(ctx: ReasonerContext): Promise<UnderstandingResult>;
   composeResponse(ctx: ReasonerContext, input: ComposeResponseInput): Promise<string>;
   /** The underlying understanding model id, when there is one (recorded in turn traces). */
   readonly model?: string;

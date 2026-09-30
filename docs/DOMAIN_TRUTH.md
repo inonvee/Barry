@@ -136,3 +136,62 @@ The simulator refreshes the list after **every** turn. Only *active* requests ha
 
    Withdrawal is scoped by `withdrawScope`. Approval resolution is compare-and-set on `pending` in both backends, so concurrent or stale approvals execute nothing twice.
 5. **Temporal constraints.** A scheduling constraint carries `end` and `startExclusive`. Both survive to UTC, and the availability tool holds every provider's answer to them. Changing service clears a stale party size.
+
+## Pass #4 — understanding failure is a first-class outcome (commit `6afff0b` attack)
+
+**Root cause of F32 (and the enabler of F31).** On a failure, `OpenAIReasoner.understandDetailed()` returned `emptyIR("understanding_failed")` with a failure string. The engine then called `understand()`, which returns only `.ir`, so that string was discarded.
+
+The empty IR was compiled as a normal turn: no signals, which becomes `ask_general`, which becomes "What can I help you with? We offer …". The provider's error went only to `console.error`.
+
+In the live logs, the composer (a different model with no schema) was *also* falling back to its deterministic text on the same turns: T8+ replied exactly "What can I help you with?" with no guard fallback recorded. That points to provider-level call failures (rate limit, quota or outage) rather than schema drift. It stays UNVERIFIED until a live trace shows the classified status.
+
+1. **Observable** (`trace.understanding`, `trace.reply.composerFailures`, Inspector "Understanding" chip). Each turn records:
+   - valid or failed;
+   - attempts and latency;
+   - the classified failure: `provider_rate_limited | provider_quota_exhausted | provider_unavailable | provider_timeout | provider_connection | provider_auth | provider_rejected_request | empty_completion | json_parse_error | schema_validation_error | invalid_model_config`;
+   - HTTP status, provider code and a sanitized message;
+   - salvaged fields.
+
+   A composer call that fell back is recorded too.
+2. **Retry policy.**
+   - Transient provider errors (429 honouring retry-after, 5xx, timeouts, connection) are retried with backoff by the provider client (`maxRetries: 2`).
+   - Permanent errors (quota, auth, 400) are not retried.
+   - Only malformed *output* gets one corrective re-ask, which carries the validation issue.
+3. **Salvage, not all-or-nothing.**
+   - A schema-invalid field becomes "not stated" (null, `[]`, or the invalid list item is removed) and is recorded. The rest of the understanding survives.
+   - If a dropped field could carry a decision (signals, quantity, cap, commerce, capability request, …), the turn **fails closed**: no advance, no consent.
+   - The Zod contract no longer rejects lengths the wire schema allows (`capabilityRequest.purpose` / `inputJson`).
+4. **Explicit degraded turn.** Failed understanding is never compiled:
+   - no withdrawal, no step, no write;
+   - an `understanding.failed` ledger entry;
+   - a deterministic reply saying the message wasn't processed and nothing was changed or sent, plus where things stand when anything is pending or done, plus that a pending owner request is on hold.
+
+## F31 — customer-intent revalidation of approvals
+
+An owner's approval is not the customer's consent. Before `resumeAfterApproval` resolves or executes anything, `customerIntentHold()` checks the conversation after the request's latest "asked" or "reconfirmed" ledger entry. It holds the request when either of these is true:
+
+- a later customer turn's understanding **failed** (or failed closed);
+- a later customer message names an identifier that is a **near-miss** of one of the request's own identifiers (same shape, ≤⅓ characters differ; e.g. C302 vs Q4-C301).
+
+This uses ledger order and message position, never meaning. A held request:
+- stays pending, with lifecycle `held` and the reason in Approvals (Approve disabled, Decline allowed);
+- produces a question to the customer;
+- is released only when a validly understood turn re-proposes exactly the same terms (`request.reconfirmed`).
+
+Safety therefore no longer depends on `changesPendingRequest` alone.
+
+## Other findings
+
+- **F24:** a variant change can replace the provider's cart line. The ledger now verifies the provider's *returned* line (`out.lineId`): options and quantity. It records `item` → `itemAfter`, quantity before and after.
+- **F23/F25:** these are handled by reply-grounding checks — see the list below.
+- **F28:** changed terms with no replacement in the first understanding trigger one continuation understanding. It is given `replacingRequests` and is compiled and authorized as usual.
+- **F29:** a status answer lists each owner request with its own terms, lifecycle and reference (not only the latest).
+- **F26/F27:** opening hours are a composer fact (empty = unknown). The prompt now says the business name is never the customer's name (prompt only).
+
+**New reply-grounding checks:**
+- an item narrated as being added to the cart (done, now or next) needs a cart effect *this turn* for that item;
+- a blocked write always gets the deterministic reply, including any real earlier steps;
+- a future owner promise needs a request that is actually waiting;
+- a clock time needs a source: facts or hours, a lookup, the ledger or the customer.
+
+Deterministic coverage: `__tests__/pass4-understanding.test.ts`. Live verification: NOT run in this environment (no `OPENAI_API_KEY` / Vercel access).

@@ -103,22 +103,33 @@ describe("LLM IR contract: parseIRResponse", () => {
     if (!result.ok) expect(result.kind).toBe("schema_validation_error");
   });
 
-  it("rejects a response where entities/customerFacts are omitted entirely, not just empty", () => {
+  it("an omitted list (customerFacts) is salvaged as 'nothing stated' — recorded, never silent, never invented", () => {
     const graph = buildSpaGraph();
-    const raw = validRawIR();
+    const raw = validRawIR({ intent: "price_question" });
     delete (raw as Record<string, unknown>).customerFacts;
     const result = parseIRResponse(graph, JSON.stringify(raw));
-    expect(result.ok).toBe(false);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.ir.intent).toBe("price_question");
+      expect(result.ir.customerInfo).toEqual({});
+      expect(result.salvagedFields).toEqual(["customerFacts"]);
+    }
   });
 
-  it("rejects a wrong constraint type (partySize as a string instead of a number)", () => {
+  it("a wrong constraint type (partySize as a string) drops THAT field only — the rest of the understanding survives", () => {
     const graph = buildSpaGraph();
     const raw = validRawIR({
-      constraints: { schedulingWindow: NULL_SCHEDULING_WINDOW, partySize: "two", discountPct: null, slotAccepted: null },
+      selectedOfferId: "offer-couples-massage",
+      constraints: { schedulingWindow: NULL_SCHEDULING_WINDOW, partySize: "two", discountPct: null, slotAccepted: null, slotDeclined: null },
     });
     const result = parseIRResponse(graph, JSON.stringify(raw));
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.kind).toBe("schema_validation_error");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.ir.selectedOfferId).toBe("offer-couples-massage");
+      expect(result.ir.constraints.partySize).toBeUndefined();
+      expect(result.salvagedFields).toEqual(["constraints.partySize"]);
+      expect(result.failClosed).toBeUndefined();
+    }
   });
 
   it("drops an invalid/unknown offer id instead of trusting it", () => {

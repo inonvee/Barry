@@ -170,7 +170,7 @@ export default function SimulatorPage() {
   }
   const paymentPrompt = computePaymentPrompt();
 
-  const pendingApprovalCount = approvals.filter((a) => (a.lifecycle ?? (a.status === "pending" ? "active" : a.status)) === "active").length;
+  const pendingApprovalCount = approvals.filter((a) => ["active", "held"].includes(a.lifecycle ?? (a.status === "pending" ? "active" : a.status))).length;
 
   return (
     <div className="flex h-dvh flex-col bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100">

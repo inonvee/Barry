@@ -60,6 +60,9 @@ export type TurnStep = {
  * rejected, each step with its capability, provider, policy decision and
  * result, and why the turn stopped.
  */
+/** A classified, sanitized model-call failure (kind, provider status/code, message). */
+export type ModelCallFailureTrace = { kind: string; status?: number; code?: string; message?: string; transient: boolean };
+
 export type TurnTrace = {
   runtime: {
     barryVersion: string;
@@ -76,8 +79,23 @@ export type TurnTrace = {
   rejectedClaims: { claim: string; reason: string }[];
   steps: TurnStep[];
   stop: { reason: string; outcome: string };
+  /**
+   * How understanding went this turn: whether the model's understanding was usable, the classified
+   * reason when it wasn't (provider status/code, sanitized message), what was salvaged, attempts.
+   * A failed understanding is never presented as an ordinary turn.
+   */
+  understanding?: {
+    valid: boolean;
+    attempts: number;
+    latencyMs: number;
+    failure?: ModelCallFailureTrace;
+    salvagedFields?: string[];
+    failClosed?: boolean;
+  };
   /** Reply language and why; `fallback` when the model's reply broke a contract and the deterministic reply was used. */
-  reply?: { language: string; basis: string; fallback?: string };
+  reply?: { language: string; basis: string; fallback?: string; composerFailures?: ModelCallFailureTrace[] };
+  /** An owner approval that was NOT executed because the customer's intent after it is unverified. */
+  hold?: { requestId: string; reason: string };
   /** Domain effects recorded THIS turn in the conversation's immutable ledger (effect type, status, frozen terms, reference). */
   effects?: { seq: number; operation: string; effect: string; status: string; terms: Record<string, string | number>; reference?: string; requestId?: string }[];
   /** The customer fields still missing after this turn (the compiler's truth). */

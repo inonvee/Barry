@@ -9,7 +9,8 @@ import { BARRY_CONSTITUTION } from "./constitution";
 import type { CommerceSemantics } from "./ir";
 import { composeDeterministic } from "./deterministic-compose";
 import { logReasonerFailure } from "./diagnostics";
-import type { BarryIR, ComposeResponseInput, Reasoner, ReasonerContext } from "./types";
+import type { BarryIR, ComposeResponseInput, ModelCallFailure, Reasoner, ReasonerContext, UnderstandingResult } from "./types";
+export type { UnderstandingResult } from "./types";
 import { sanitizeComposeInput } from "./compose-sanitization";
 import { businessFacts, customerFacts, transactionFacts } from "./compose-facts";
 import { customerReceipts } from "./receipts";
@@ -158,6 +159,8 @@ export function buildUnderstandingContext(ctx: ReasonerContext) {
     // questions, withdrawals and changed terms (see withdrawsRequest / changesPendingRequest).
     pendingOwnerRequests: (ctx.grounded?.ownerRequests ?? []).filter((r) => r.status === "waiting_on_owner"),
     ownerRequests: ctx.grounded?.ownerRequests ?? [],
+    // Set when the customer just changed a pending request's terms: these requests are being replaced.
+    replacingRequests: ctx.grounded?.replacingRequests ?? [],
     // What this business's catalog can be searched by — map the customer's words onto these values.
     catalog: ctx.grounded?.catalog ? catalogForModel(ctx.grounded.catalog) : null,
     shownResults: ctx.grounded?.shownResults ?? [],
@@ -209,6 +212,7 @@ YOUR TASK NOW: understand the customer's latest message in context and describe 
 - advancesTransaction: does THIS message move the purchase/booking forward? true when they choose, decide, give the details it needs, accept a time or ask to book/pay; false when they only ask a question (price, policy, product facts, "what can you do"), check status, ask for a recap, browse, chat, or refuse to give details yet ("no phone until I decide" is false). The customer's latest message decides, not the conversation's earlier momentum. null if unclear.
 - withdrawsRequest: true when they withdraw, cancel or decline what they asked for ("forget it", "then I'm not buying", "don't send a link", "לא קונה", "תבטל") — including a request BARRY sent to the owner (see pendingOwnerRequests).
 - changesPendingRequest: true when a request in pendingOwnerRequests is still waiting and they changed its details (a different reference/number, amount, option). A plain status question ("any news?") is false — it never creates or changes anything.
+- replacingRequests (when non-empty): the customer just changed the details of these requests, and they are being replaced. If the customer asked for the corrected request, propose it now as capabilityRequest with the corrected values (same capability, the new reference/reason/amount exactly as they gave it); otherwise null.
 - readRequested: true when they ask BARRY to actually check something now — open times, stock ("check the real calendar", "do a real inventory lookup") — whether or not they intend to buy. A read never implies a purchase; set advancesTransaction false if they aren't committing.
 - checkoutConsent: true only when they ask to pay / check out now; false when they say not to ("just change the size, don't check out", "no payment yet"); null otherwise. Choosing or changing an item is never checkout consent by itself — purchaseDecision is separate.
 - constraints.budgetMax: a hard maximum the customer set for what they'll pay (a number); budgetIncludesShipping true when they said it includes everything / shipping. null if none.
@@ -245,6 +249,9 @@ export const COMPOSE_SYSTEM_PROMPT =
   "Only BARRY's runtime can send something to the owner. Mention the owner only when ownerApproval, receipts or ownerRequests show a request; otherwise never say you passed, will pass, or are waiting on anything with the owner. For status questions answer from ownerRequests (approved and done — with its reference; declined; withdrawn; still waiting). " +
   "Prices, deposits, durations, policies, product details and availability come ONLY from `facts`, receipts/toolOutput and scheduling. Quote prices exactly as written in facts. Never say something is available/in stock unless a receipt that looked up times or stock shows it now (or facts.shownProducts says so). Never state a measurement, colour, fit or specification that isn't in facts — say you don't have that detail. Never recommend something above a budget the customer stated; say nothing fits it instead. A total is computed only from those prices, the quantity and the business's own stated discount/shipping rules, and answering it never requires contact details. " +
   "Recaps and status questions (\"what did we agree\", \"is it booked\", \"did you send a link\") are answered from `transaction` and `ownerRequests` — the latest correction wins; answer yes/no first when asked. " +
+  "`business.name` is the BUSINESS, never the customer: address the customer only by `customer.name` (or not by name at all). " +
+  "Opening hours, days, dates, deadlines and policy details (e.g. when a returns period starts) come ONLY from `facts`: if facts don't state it, say you don't have that detail — never fill it in from general knowledge. " +
+  "Never narrate an action that no receipt shows happening THIS turn — not as done, not as \"now doing\", not as \"next I'll\". If the customer asked for several things and only some were done, say which were done and which were not (and offer to do the rest). " +
   "Use `customer` (their name, how to address them): never ask for something already there, and never ask for contact details unless outcome/next asks for them. Answer every question in lastCustomerMessage; if one can't be answered from facts, say so. If they asked for a yes/no, a price only, or no more suggestions, do exactly that. " +
   "When outcome.kind is \"conversation\", nothing was executed: answer from facts only. When it is \"withdrawn\", confirm you've stopped and nothing more will be sent (and that the request waiting on the owner was withdrawn when withdrawnRequests > 0). " +
   // ── Language
@@ -373,7 +380,7 @@ export function sanitizeIR(graph: BusinessGraph, raw: LlmIR): BarryIR {
 
 /** The model's capability proposal, parsed as untrusted data: a JSON OBJECT of inputs, bounded, or nothing. */
 function parseCapabilityRequest(raw: LlmIR["capabilityRequest"]): BarryIR["capabilityRequest"] {
-  if (!raw || !raw.capability) return undefined;
+  if (!raw || !raw.capability || raw.inputJson.length > 4000) return undefined;
   let input: unknown;
   try {
     input = raw.inputJson.trim() ? JSON.parse(raw.inputJson) : {};
@@ -381,7 +388,7 @@ function parseCapabilityRequest(raw: LlmIR["capabilityRequest"]): BarryIR["capab
     return undefined;
   }
   if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
-  return { capability: raw.capability, input: input as Record<string, unknown>, purpose: raw.purpose };
+  return { capability: raw.capability, input: input as Record<string, unknown>, purpose: raw.purpose.slice(0, 300) };
 }
 
 function nonEmptyRecord(pairs: KeyValuePair[]): Record<string, string> | undefined {
@@ -430,7 +437,9 @@ export function toPlainText(text: string): string {
     .trim();
 }
 
-export type ParseIRResult = { ok: true; ir: BarryIR } | { ok: false; kind: "json_parse_error" | "schema_validation_error"; detail: string };
+export type ParseIRResult =
+  | { ok: true; ir: BarryIR; salvagedFields?: string[]; failClosed?: boolean }
+  | { ok: false; kind: "json_parse_error" | "schema_validation_error"; detail: string };
 
 export type ComposeSummaryContext = {
   businessTone: unknown;
@@ -670,27 +679,117 @@ export function parseIRResponse(graph: BusinessGraph, raw: string): ParseIRResul
   }
 
   const parsed = LlmIRSchema.safeParse(json);
-  if (!parsed.success) {
-    return {
-      ok: false,
-      kind: "schema_validation_error",
-      detail: parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.code}`).join("; "),
-    };
-  }
+  if (parsed.success) return { ok: true, ir: sanitizeIR(graph, parsed.data) };
 
-  return { ok: true, ir: sanitizeIR(graph, parsed.data) };
+  const detail = parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.code}`).join("; ");
+  // One malformed field must not throw away everything else the model understood: drop exactly the
+  // malformed fields ("not stated") and keep the rest — recorded, never silent. What can't be dropped
+  // (the intent, the object itself) still fails.
+  const salvaged = salvageIR(json);
+  if (!salvaged) return { ok: false, kind: "schema_validation_error", detail };
+  const ir = sanitizeIR(graph, salvaged.data);
+  // A dropped field that could carry a transaction decision is not guessed: this turn may inform and
+  // read, but it neither advances a transaction nor consents to a write.
+  const failClosed = salvaged.dropped.some((path) => DECISION_FIELDS.some((f) => path === f || path.startsWith(`${f}.`)));
+  return {
+    ok: true,
+    ir: failClosed ? { ...ir, advancesTransaction: false, checkoutConsent: false, purchaseDecision: false, capabilityRequest: undefined } : ir,
+    salvagedFields: salvaged.dropped,
+    ...(failClosed ? { failClosed: true } : {}),
+  };
 }
 
-export type UnderstandingResult = {
-  ir: BarryIR;
-  /** Whether the model produced schema-valid structured output (after at most one retry). */
-  valid: boolean;
-  attempts: number;
-  failure?: string;
-  latencyMs: number;
-  usage: { promptTokens: number; completionTokens: number; reasoningTokens: number };
-  model: string;
-};
+/** IR fields whose value can decide a write, a withdrawal or a revision. */
+const DECISION_FIELDS = [
+  "advancesTransaction",
+  "withdrawsRequest",
+  "withdrawScope",
+  "changesPendingRequest",
+  "checkoutConsent",
+  "purchaseDecision",
+  "customerClaimsPaymentCompleted",
+  "capabilityRequest",
+  "commerce",
+  "selectedOfferId",
+  "offerChangeRequested",
+  "constraints.quantity",
+  "constraints.budgetMax",
+  "constraints.budgetIncludesShipping",
+  "constraints.discountPct",
+  "constraints.slotAccepted",
+  "constraints.slotDeclined",
+];
+
+/**
+ * Structural salvage of a schema-invalid understanding: each invalid value is replaced by the
+ * schema's own "not stated" (null, or an empty list; an invalid list item is removed). If that value
+ * can't be "not stated" either, its enclosing object is. The root and `intent` are never dropped.
+ * Purely shape-driven — no field is ever given a meaning the model didn't produce.
+ */
+export function salvageIR(json: unknown): { data: LlmIR; dropped: string[] } | null {
+  if (!json || typeof json !== "object" || Array.isArray(json)) return null;
+  const current = JSON.parse(JSON.stringify(json)) as Record<string, unknown>;
+  const dropped: string[] = [];
+  const reset = new Map<string, number>();
+  for (let round = 0; round < 32; round++) {
+    const result = LlmIRSchema.safeParse(current);
+    if (result.success) return { data: result.data, dropped: [...new Set(dropped)] };
+    const issue = result.error.issues[0];
+    let path = issue.path.map((p) => (typeof p === "number" ? p : String(p)));
+    // A value already reset both ways is still invalid: reset what encloses it instead.
+    while (path.length > 0 && (reset.get(path.join(".")) ?? 0) >= 2) path = path.slice(0, -1);
+    if (path.length === 0 || (path.length === 1 && path[0] === "intent")) return null;
+    const key = path.join(".");
+    const tries = reset.get(key) ?? 0;
+    reset.set(key, tries + 1);
+    const parent = path.slice(0, -1).reduce<unknown>((o, k) => (o && typeof o === "object" ? (o as Record<string | number, unknown>)[k] : undefined), current);
+    const leaf = path[path.length - 1];
+    if (!parent || typeof parent !== "object") return null;
+    const label = path.filter((p) => typeof p !== "number").join(".");
+    dropped.push(label);
+    if (Array.isArray(parent) && typeof leaf === "number") {
+      parent.splice(leaf, 1);
+      reset.delete(key);
+      continue;
+    }
+    // "Not stated" is null for a nullable field, an empty list for a list field.
+    (parent as Record<string, unknown>)[String(leaf)] = tries === 0 ? null : [];
+  }
+  return null;
+}
+
+/** Secrets and account identifiers never leave the provider error. */
+export function sanitizeProviderMessage(message: string): string {
+  return message
+    .replace(/sk-[A-Za-z0-9_-]{4,}/g, "sk-…")
+    .replace(/(Bearer\s+)\S+/gi, "$1…")
+    .replace(/\b(org|proj|user)-[A-Za-z0-9]{6,}/g, "$1-…")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 240);
+}
+
+const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+
+/** A provider call failure, classified: what went wrong and whether retrying could help. */
+export function classifyProviderError(err: unknown): ModelCallFailure {
+  const e = (err ?? {}) as { status?: unknown; code?: unknown; type?: unknown; name?: unknown; error?: { code?: unknown; type?: unknown } };
+  const status = typeof e.status === "number" ? e.status : undefined;
+  const code = str(e.code) ?? str(e.error?.code) ?? str(e.type) ?? str(e.error?.type);
+  const name = `${str(e.name) ?? ""} ${err instanceof Error ? err.constructor.name : ""}`;
+  const message = sanitizeProviderMessage(err instanceof Error ? err.message : String(err));
+  const base = { ...(status !== undefined ? { status } : {}), ...(code ? { code } : {}), message };
+  if (/timeout/i.test(name) || status === 408) return { kind: "provider_timeout", transient: true, ...base };
+  if (status === 429)
+    return code === "insufficient_quota" || /quota|billing/i.test(message)
+      ? { kind: "provider_quota_exhausted", transient: false, ...base }
+      : { kind: "provider_rate_limited", transient: true, ...base };
+  if (status === 401 || status === 403) return { kind: "provider_auth", transient: false, ...base };
+  if (status !== undefined && status >= 500) return { kind: "provider_unavailable", transient: true, ...base };
+  if (status !== undefined && status >= 400) return { kind: "provider_rejected_request", transient: false, ...base };
+  if (/connection/i.test(name)) return { kind: "provider_connection", transient: true, ...base };
+  return { kind: "provider_error", transient: false, ...base };
+}
 
 function emptyIR(intent: string): BarryIR {
   return { intent, entities: {}, constraints: {}, customerInfo: {} };
@@ -715,7 +814,8 @@ export class OpenAIReasoner implements Reasoner {
   constructor(options: { model?: string; composerModel?: string; reasoningEffort?: string } = {}) {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) throw new Error("OPENAI_API_KEY is not set — cannot construct OpenAIReasoner.");
-    this.client = new OpenAI({ apiKey });
+    // Provider-level retries with backoff (429 honouring retry-after, 5xx, timeouts, connection errors).
+    this.client = new OpenAI({ apiKey, maxRetries: 2 });
     this.model = options.model ?? modelFor("reasoner");
     this.composerModel = options.composerModel ?? options.model ?? modelFor("composer");
     try {
@@ -744,13 +844,16 @@ export class OpenAIReasoner implements Reasoner {
     const context = buildUnderstandingContext(ctx);
     const started = Date.now();
     const usage = { promptTokens: 0, completionTokens: 0, reasoningTokens: 0 };
-    let lastFailure: string | undefined;
+    let lastFailure: ModelCallFailure | undefined;
+    let attempts = 0;
 
     if (this.configError) {
-      return { ir: emptyIR("understanding_failed"), valid: false, attempts: 0, failure: "invalid_model_config", latencyMs: 0, usage, model: this.model };
+      return { ir: emptyIR("understanding_failed"), valid: false, attempts: 0, failure: { kind: "invalid_model_config", message: sanitizeProviderMessage(this.configError), transient: false }, latencyMs: 0, usage, model: this.model };
     }
 
-    const attempt = async (correction?: string): Promise<BarryIR | null> => {
+    type Parsed = { ir: BarryIR; salvagedFields?: string[]; failClosed?: boolean };
+    const attempt = async (correction?: string): Promise<Parsed | null> => {
+      attempts++;
       let raw: string | null | undefined;
       try {
         const completion = await createCompletion(this.client, {
@@ -768,38 +871,51 @@ export class OpenAIReasoner implements Reasoner {
         usage.reasoningTokens += completion.usage?.completion_tokens_details?.reasoning_tokens ?? 0;
         raw = completion.choices[0]?.message?.content;
       } catch (err) {
-        lastFailure = "openai_api_error";
-        logReasonerFailure("openai_api_error", { message: err instanceof Error ? err.message : String(err) });
+        lastFailure = classifyProviderError(err);
+        logReasonerFailure("openai_api_error", { kind: lastFailure.kind, status: lastFailure.status, code: lastFailure.code, message: lastFailure.message });
         return null;
       }
 
       if (!raw) {
-        lastFailure = "empty_completion";
+        lastFailure = { kind: "empty_completion", message: "the model returned no content", transient: true };
         logReasonerFailure("openai_api_error", { message: "empty completion content" });
         return null;
       }
 
       const result = parseIRResponse(ctx.graph, raw);
       if (!result.ok) {
-        lastFailure = result.kind;
+        lastFailure = { kind: result.kind, message: result.detail.slice(0, 240), transient: true };
         logReasonerFailure(result.kind, { detail: result.detail });
         return null;
       }
-      return result.ir;
+      if (result.salvagedFields?.length) logReasonerFailure("schema_validation_error", { salvaged: result.salvagedFields, failClosed: Boolean(result.failClosed) });
+      return result;
     };
 
-    const first = await attempt();
-    if (first) return { ir: first, valid: true, attempts: 1, latencyMs: Date.now() - started, usage, model: this.model };
-
-    const retried = await attempt(
-      "Your previous response was invalid. Respond again with ONLY strict JSON matching the schema."
-    );
-    if (retried) return { ir: retried, valid: true, attempts: 2, latencyMs: Date.now() - started, usage, model: this.model };
-
-    logReasonerFailure("semantic_validation_error", {
-      message: "both understanding attempts failed; falling back to empty IR",
+    const done = (r: Parsed): UnderstandingResult => ({
+      ir: r.ir,
+      valid: true,
+      attempts,
+      ...(lastFailure ? { failure: lastFailure } : {}),
+      ...(r.salvagedFields?.length ? { salvagedFields: r.salvagedFields } : {}),
+      ...(r.failClosed ? { failClosed: true } : {}),
+      latencyMs: Date.now() - started,
+      usage,
+      model: this.model,
     });
-    return { ir: emptyIR("understanding_failed"), valid: false, attempts: 2, failure: lastFailure, latencyMs: Date.now() - started, usage, model: this.model };
+
+    const first = await attempt();
+    if (first) return done(first);
+    // Provider failures are already retried with backoff by the provider client (429 honouring
+    // retry-after, 5xx, timeouts, connection errors). Re-asking at once on top of that only repeats
+    // the failure — so only malformed OUTPUT gets one corrective re-ask here.
+    if (lastFailure && (lastFailure.kind === "json_parse_error" || lastFailure.kind === "schema_validation_error" || lastFailure.kind === "empty_completion")) {
+      const retried = await attempt(`Your previous response was invalid (${lastFailure.message ?? lastFailure.kind}). Respond again with ONLY strict JSON matching the schema.`);
+      if (retried) return done(retried);
+    }
+
+    logReasonerFailure("semantic_validation_error", { message: "understanding unavailable this turn", kind: lastFailure?.kind });
+    return { ir: emptyIR("understanding_failed"), valid: false, attempts, ...(lastFailure ? { failure: lastFailure } : {}), latencyMs: Date.now() - started, usage, model: this.model };
   }
 
   async composeResponse(ctx: ReasonerContext, input: ComposeResponseInput): Promise<string> {
@@ -818,11 +934,12 @@ export class OpenAIReasoner implements Reasoner {
       const text = completion.choices[0]?.message?.content?.trim();
       if (text) return enforceComposeGrounding(toPlainText(text), ctx, input);
       logReasonerFailure("openai_api_error", { message: "empty completion content during composeResponse" });
+      ctx.diagnostics?.composerFailures.push({ kind: "empty_completion", message: "the composer returned no content", transient: true });
     } catch (err) {
-      logReasonerFailure("openai_api_error", {
-        message: err instanceof Error ? err.message : String(err),
-        during: "composeResponse",
-      });
+      const failure = classifyProviderError(err);
+      logReasonerFailure("openai_api_error", { kind: failure.kind, status: failure.status, code: failure.code, message: failure.message, during: "composeResponse" });
+      // The reply falls back to the deterministic composer — recorded for the turn trace, never silent.
+      ctx.diagnostics?.composerFailures.push(failure);
     }
 
     return composeDeterministic(input);

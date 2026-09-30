@@ -52,6 +52,8 @@ export type LedgerEntry = {
   reference?: string;
   /** Domain outcome details (e.g. slots found, payment status, stock). */
   outcome?: Record<string, string | number | boolean>;
+  /** How many conversation messages existed when this was recorded (ordering against what was said, without clocks). */
+  messageIndex?: number;
 };
 
 export const LEDGER_KEY = "__effectLedger";
@@ -90,7 +92,7 @@ export function readLedger(state: ConversationState): LedgerEntry[] {
 /** Append (never edit) one entry. Entries are frozen copies. */
 export function appendLedger(state: ConversationState, entry: Omit<LedgerEntry, "seq" | "at">): LedgerEntry {
   const ledger = readLedger(state);
-  const full: LedgerEntry = JSON.parse(JSON.stringify({ ...entry, seq: ledger.length + 1, at: new Date().toISOString() }));
+  const full: LedgerEntry = JSON.parse(JSON.stringify({ ...entry, seq: ledger.length + 1, at: new Date().toISOString(), messageIndex: state.messages.length }));
   ledger.push(full);
   state.knownFields[LEDGER_KEY] = JSON.stringify(ledger);
   return full;
@@ -188,21 +190,29 @@ export function classifyExecution(action: string, input: unknown, result: ToolCa
       const after = ((out.cart as { lines?: CartLineSnapshot[] } | undefined)?.lines ?? []) as CartLineSnapshot[];
       const targetId = action === "updateCartLine" ? String((input as { lineId?: unknown })?.lineId ?? "") : String(out.lineId ?? "");
       const before = cartBefore?.find((l) => l.id === targetId);
-      const afterLine = after.find((l) => l.id === targetId);
+      // The line the change produced, as the PROVIDER returned it. A variant change can replace the line
+      // (new line id): the provider's returned line id is authoritative, never the request's old id.
+      const resultId = action === "updateCartLine" && typeof out.lineId === "string" && out.lineId ? out.lineId : targetId;
+      const afterLine = after.find((l) => l.id === resultId);
       const subject = before ?? afterLine;
+      const qty = (input as { quantity?: unknown })?.quantity;
+      const wantedOptions = (input as { options?: Record<string, string> })?.options ?? {};
+      const removing = action === "updateCartLine" && qty === 0;
       const terms = {
         ...base.terms,
         ...(subject ? { item: lineLabel(subject) } : {}),
+        ...(!removing && before && afterLine && lineLabel(afterLine) !== lineLabel(before) ? { itemAfter: lineLabel(afterLine) } : {}),
         quantityBefore: before?.quantity ?? 0,
-        quantityAfter: afterLine?.quantity ?? 0,
+        quantityAfter: removing ? (after.find((l) => l.id === targetId)?.quantity ?? 0) : (afterLine?.quantity ?? 0),
       };
       const outcome = { cartAfter: cartLabel(after) };
       if (out.added === false) return { ...base, terms, effect: "cart.not_changed", status: "no_effect", outcome };
-      const qty = (input as { quantity?: unknown })?.quantity;
       if (action === "updateCartLine") {
-        // The requested change must be visible on THAT line in the returned cart.
+        // The requested change must be visible on the resulting line in the returned cart: its quantity,
+        // and every option asked for.
         const wanted = typeof qty === "number" ? qty : undefined;
-        const applied = wanted === 0 ? !afterLine : wanted === undefined ? Boolean(afterLine) : afterLine?.quantity === wanted;
+        const optionsApplied = Boolean(afterLine) && Object.entries(wantedOptions).every(([k, v]) => afterLine!.options[k]?.toLowerCase() === String(v).toLowerCase());
+        const applied = removing ? !after.some((l) => l.id === targetId) : optionsApplied && (wanted === undefined || afterLine?.quantity === wanted);
         if (!applied || (cartBefore && !before)) return { ...base, terms, effect: "cart.change_not_verified", status: "failed", outcome };
       }
       const effect = action === "addToCart" ? (out.replacedLineId ? "cart.line_replaced" : "cart.line_added") : qty === 0 ? "cart.line_removed" : "cart.line_updated";

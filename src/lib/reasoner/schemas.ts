@@ -115,7 +115,9 @@ export const LlmIRSchema = z.object({
   purchaseDecision: z.boolean().nullable(),
   knowledgeTopic: z.string().nullable(),
   capabilityRequest: z
-    .object({ capability: z.string(), inputJson: z.string().max(4000), purpose: z.string().max(300) })
+    // No length limits here: the wire schema (irJsonSchema) has none, and a length the model may
+    // legally produce must never invalidate the whole understanding. Bounds are applied in sanitizeIR.
+    .object({ capability: z.string(), inputJson: z.string(), purpose: z.string() })
     .nullable(),
   advancesTransaction: z.boolean().nullable().default(null),
   withdrawsRequest: z.boolean().nullable().default(null),

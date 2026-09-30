@@ -1,3 +1,4 @@
+import { requestsText } from "./status-render";
 import type { ComposeResponseInput, OwnerRequestView } from "./types";
 import { fieldLabel } from "./reply-contract";
 
@@ -50,7 +51,11 @@ export function composeDeterministic(input: ComposeResponseInput): string {
     return `${lead} ${rest}`;
   }
   // A blocked write is the whole story of the turn's outcome: nothing was created — say why.
-  if (input.writeBlocked) return writeBlockedText(input.writeBlocked, input.language?.code);
+  if (input.writeBlocked) {
+    // What really happened before the blocked write this turn (each from its own receipt), then why it wasn't created.
+    const before = (input.steps ?? []).map((st) => composeLocalized({ outcome: st.outcome, toolResult: st.toolResult, existingOwnerRequest: st.existingOwnerRequest, language: input.language }));
+    return [...before, writeBlockedText(input.writeBlocked, input.language?.code)].join(" ");
+  }
   const language = input.language;
   const one = (part: ComposeResponseInput) => composeLocalized({ ...part, language });
   if (input.steps && input.steps.length > 0) {
@@ -63,6 +68,37 @@ export function composeDeterministic(input: ComposeResponseInput): string {
   }
   if (input.next) return `${one(input)} ${one({ outcome: input.next })}`;
   return one(input);
+}
+
+/**
+ * The customer's message could not be understood this turn. Truthful and complete: it wasn't
+ * processed, nothing changed or was sent, where things stand (when anything is pending or done), and
+ * that a request waiting on the owner is held until the customer confirms it. Never a generic greeting.
+ */
+export function understandingUnavailableText(lang: string | undefined, opts: { status?: string; held?: boolean } = {}): string {
+  const he = lang === "he";
+  const lead = he
+    ? "סליחה, לא הצלחתי לעבד את ההודעה האחרונה שלך, ולכן לא שיניתי ולא שלחתי שום דבר."
+    : "Sorry, I couldn't process your last message, so I haven't changed or sent anything.";
+  const held = opts.held
+    ? he
+      ? "הבקשה שממתינה לבעל העסק מוקפאת עד שתאשר/י לי שהיא עדיין מה שרצית."
+      : "The request waiting on the owner is on hold until you confirm it's still what you want."
+    : "";
+  const ask = he ? "אפשר לשלוח את זה שוב?" : "Could you send that again?";
+  return [lead, opts.status ?? "", held, ask].filter(Boolean).join(he ? "\n" : "\n");
+}
+
+/** The owner approved, but the customer's intent after the request is unverified: ask before doing it. */
+export function intentHeldText(lang: string | undefined, about: string, conflicting?: string): string {
+  if (lang === "he") {
+    return conflicting
+      ? `לפני שאני ממשיך עם ${about}: בהודעה מאוחרת יותר כתבת ${conflicting}. זה עדיין נכון, או שצריך לעדכן? עד שתאשר/י, שום דבר לא בוצע.`
+      : `לפני שאני ממשיך עם ${about}: לא הצלחתי לעבד הודעה ששלחת אחרי הבקשה. זה עדיין מה שרצית? עד שתאשר/י, שום דבר לא בוצע.`;
+  }
+  return conflicting
+    ? `Before I go ahead with ${about}: a later message of yours mentioned ${conflicting}. Is the request still right as it is, or should it change? Nothing has been done yet.`
+    : `Before I go ahead with ${about}: I couldn't process a message you sent after that request. Is it still what you want? Nothing has been done yet.`;
 }
 
 /**
@@ -157,6 +193,8 @@ function composeLocalized(input: ComposeResponseInput): string {
   }
   if (input.outcome.kind === "conversation") {
     if (input.statusText) return input.statusText;
+    // Several requests: each answered from its own record (terms, lifecycle, reference) — never just the latest.
+    if ((input.ownerRequests?.length ?? 0) > 1) return requestsText(input.ownerRequests!, lang);
     const latest = input.ownerRequests?.at(-1);
     if (latest) return ownerRequestStatusText(latest, lang);
     return lang === "he" ? "סליחה, לא הצלחתי לנסח תשובה כרגע — אפשר לשאול שוב?" : "Sorry — I couldn't put that answer together just now. Could you ask me again?";

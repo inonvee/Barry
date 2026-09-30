@@ -10,21 +10,21 @@ import type { ConversationState, TurnLog } from "@/lib/state";
 import { getBackend } from "@/lib/store";
 import { ApprovalAlreadyResolvedError, type ApprovalRecord } from "@/lib/store/types";
 import { formatLocalDateTime } from "@/lib/scheduling/resolver";
-import type { CustomerFacingLocalDisplay, GroundedContext, ReasonerContext, SchedulingDisplayFacts } from "@/lib/reasoner/types";
+import type { CustomerFacingLocalDisplay, GroundedContext, ModelCallFailure, Reasoner, ReasonerContext, SchedulingDisplayFacts, UnderstandingResult } from "@/lib/reasoner/types";
 import { resolveCapabilityProfiles, actionSupported, ACTION_REQUIREMENTS, type CapabilityProfiles } from "@/lib/capabilities";
 import { capabilityDomain } from "@/lib/fabric/capability";
 import type { TurnStep, TurnTrace } from "@/lib/state";
 import { CONSTITUTION_VERSION } from "@/lib/reasoner/constitution";
 import { resolveReplyLanguage, type ReplyLanguage } from "@/lib/reasoner/language";
 import { checkInfoRequest, infoRequestFields } from "@/lib/reasoner/reply-contract";
-import { composeDeterministic } from "@/lib/reasoner/deterministic-compose";
+import { composeDeterministic, understandingUnavailableText, intentHeldText } from "@/lib/reasoner/deterministic-compose";
 import { findInternalLeak, internalVocabulary } from "@/lib/reasoner/reply-hygiene";
 import { claimEvidence, findMisattributedReferences, findUnsupportedClaims, languageMismatch, trimClosers } from "@/lib/reasoner/claim-grounding";
 import { renderStatus } from "@/lib/reasoner/status-render";
 import { appendLedger, classifyBlocked, classifyExecution, readLedger, requestEntry, type CartLineSnapshot, type LedgerEntry } from "./ledger";
 import { currentQuote } from "./pricing";
 import { finalWriteGate, type WriteBlock } from "./write-gate";
-import { conversationApprovals, findSameRequest, settleChangedTerms, supersedeOlderRevisions, ownerRequestViews, recordOwnerRequestResult, withdrawPendingRequests, type ExistingRequest } from "./owner-requests";
+import { conversationApprovals, customerIntentHold, describeRequest, findSameRequest, recordReconfirmed, settleChangedTerms, supersedeOlderRevisions, ownerRequestViews, recordOwnerRequestResult, withdrawPendingRequests, type ExistingRequest, type IntentHold } from "./owner-requests";
 import type { ComposeResponseInput } from "@/lib/reasoner/types";
 import { BARRY_RUNTIME_VERSION, runtimeCommit } from "./version";
 import { getCatalogSchema, getCommerceProduct, getOwnedCart } from "@/lib/commerce/capability";
@@ -357,7 +357,14 @@ export async function handleCustomerMessage(
   grounded.ownerRequests = ownerRequestViews(await conversationApprovals(graph.business.id, conversationId), state);
   // Effects recorded after this point happened in THIS turn (e.g. a lookup that can back an availability claim).
   grounded.turnStartSeq = readLedger(state).length;
-  const rawIr = await reasoner.understand({ graph, state, customerMessage: message, grounded });
+  // Model-call failures the reasoner recovers from (e.g. a composer call that fell back) land here for the trace.
+  const diagnostics = { composerFailures: [] as ModelCallFailure[] };
+  const understanding = await understandTurn(reasoner, { graph, state, customerMessage: message, grounded, diagnostics });
+  // An understanding that failed is NOT a turn to compile: an empty IR would read as "the customer
+  // said nothing" and become a generic greeting. Nothing is done, the reply says so truthfully, and
+  // the reason is in the trace.
+  if (!understanding.valid) return understandingUnavailableTurn({ graph, state, message, language, reasoner, grounded, understanding, diagnostics });
+  const rawIr = understanding.ir;
   // The model owns understanding; verifyIR() only GROUNDS it — evidence
   // for persisted facts, consistency with current state, structural
   // ranges. It never adds a semantic value of its own.
@@ -374,6 +381,14 @@ export async function handleCustomerMessage(
   if (withdrawnRequests > 0) grounded.ownerRequests = ownerRequestViews(await conversationApprovals(graph.business.id, conversationId), state);
   state.knownFields.__focusOfferId = ir.selectedOfferId ?? "";
   let outcome = compile(graph, state, ir, { profiles, shownProducts: grounded?.shownProducts, cartLines: grounded.cartLines });
+  // The customer changed a pending request's terms but this understanding proposed no replacement:
+  // ask the model ONCE more, now told exactly which request is being replaced, for the replacement
+  // (if the customer asked for one). It is grounded, compiled and authorized like any proposal; when
+  // none comes back, atomic revision below says truthfully that nothing is waiting on the owner.
+  if (pendingBeforeChange.length > 0 && ir.advancesTransaction !== false && outcome.kind !== "action") {
+    const replacement = await proposeReplacement(reasoner, graph, state, message, grounded, pendingBeforeChange);
+    if (replacement) outcome = replacement;
+  }
   if (outcome.kind === "withdrawn") outcome = { ...outcome, withdrawnRequests };
 
   state.detectedIntent = ir.intent;
@@ -464,6 +479,10 @@ export async function handleCustomerMessage(
     if (steps.length > 0) outcome = steps[steps.length - 1].outcome;
   }
 
+  // A salvaged understanding lost a field that could carry a decision: recorded (after any steps) so a
+  // request pending on the owner is held until the customer's intent is re-established.
+  if (understanding.failClosed) appendLedger(state, understandingEntry("partial"));
+
   if (pendingBeforeChange.length > 0) {
     const settled = await settleChangedTerms(graph, state, pendingBeforeChange);
     if (!settled.replacement) grounded.revisionWithoutReplacement = true;
@@ -477,7 +496,7 @@ export async function handleCustomerMessage(
   const last = steps[steps.length - 1];
   const policyDecision: PolicyDecision | undefined = last?.policyDecision;
   const toolResult: ToolCallResult | null = last?.toolResult ?? null;
-  const composed = await composeTurn(reasoner, { graph, state, customerMessage: message, grounded }, outcome, steps, next, message, language);
+  const composed = await composeTurn(reasoner, { graph, state, customerMessage: message, grounded, diagnostics }, outcome, steps, next, message, language);
   const response = composed.text;
   const rich = mergeRich(steps.map((st) => buildRichPayload(st.outcome, st.toolResult)));
   state.messages.push({ role: "barry", content: response, at: new Date().toISOString(), ...(rich ? { rich } : {}) });
@@ -526,21 +545,12 @@ export async function handleCustomerMessage(
     stateAfter: { stage: state.stage, selectedOfferId: state.selectedOfferId, outcome: state.outcome },
     reasoner: reasoner.name,
     trace: {
-      runtime: {
-        barryVersion: BARRY_RUNTIME_VERSION,
-        commit: runtimeCommit(),
-        constitutionVersion: CONSTITUTION_VERSION,
-        reasoner: reasoner.name,
-        model: reasoner.model ?? null,
-        composerModel: reasoner.composerModel ?? null,
-        reasoningEffort: reasoner.reasoningEffort ?? null,
-        composerReasoningEffort: reasoner.composerReasoningEffort ?? null,
-        ...(reasoner.configError ? { configError: reasoner.configError } : {}),
-      },
+      runtime: runtimeTrace(reasoner),
+      understanding: understandingTrace(understanding),
       rejectedClaims: verification.rejected.map((r) => ({ claim: r.claim, reason: r.reason })),
       steps: steps.map((st) => st.trace),
       stop,
-      reply: { language: language.code, basis: language.basis, ...(composed.fallback ? { fallback: composed.fallback } : {}) },
+      reply: { language: language.code, basis: language.basis, ...(composed.fallback ? { fallback: composed.fallback } : {}), ...(diagnostics.composerFailures.length ? { composerFailures: diagnostics.composerFailures } : {}) },
       effects: ledgerForTrace(readLedger(state).slice(grounded.turnStartSeq ?? 0)),
       missingFields: state.missingFields,
       ...(grounded?.shownResults?.length || grounded?.cart
@@ -557,6 +567,107 @@ export async function handleCustomerMessage(
 
   await store.save(state);
   return { state, turn, response, rich };
+}
+
+/** Understanding with its outcome. A reasoner without detailed reporting is taken at its word. */
+async function understandTurn(reasoner: Reasoner, ctx: ReasonerContext): Promise<UnderstandingResult> {
+  if (reasoner.understandDetailed) return reasoner.understandDetailed(ctx);
+  const started = Date.now();
+  const ir = await reasoner.understand(ctx);
+  return { ir, valid: true, attempts: 1, latencyMs: Date.now() - started, usage: { promptTokens: 0, completionTokens: 0, reasoningTokens: 0 }, model: reasoner.model ?? reasoner.name };
+}
+
+function understandingTrace(u: UnderstandingResult): NonNullable<TurnTrace["understanding"]> {
+  return {
+    valid: u.valid,
+    attempts: u.attempts,
+    latencyMs: u.latencyMs,
+    ...(u.failure ? { failure: u.failure } : {}),
+    ...(u.salvagedFields?.length ? { salvagedFields: u.salvagedFields } : {}),
+    ...(u.failClosed ? { failClosed: true } : {}),
+  };
+}
+
+/** A customer message BARRY could not (fully) understand — a ledger fact: nothing was done for it. */
+function understandingEntry(kind: "failed" | "partial"): Omit<LedgerEntry, "seq" | "at"> {
+  return {
+    operation: "understand",
+    effect: `understanding.${kind}`,
+    status: "no_effect",
+    describes: kind === "failed" ? "the customer's message could not be understood" : "the customer's message was only partly understood",
+    terms: {},
+  };
+}
+
+function runtimeTrace(reasoner: Reasoner): TurnTrace["runtime"] {
+  return {
+    barryVersion: BARRY_RUNTIME_VERSION,
+    commit: runtimeCommit(),
+    constitutionVersion: CONSTITUTION_VERSION,
+    reasoner: reasoner.name,
+    model: reasoner.model ?? null,
+    composerModel: reasoner.composerModel ?? null,
+    reasoningEffort: reasoner.reasoningEffort ?? null,
+    composerReasoningEffort: reasoner.composerReasoningEffort ?? null,
+    ...(reasoner.configError ? { configError: reasoner.configError } : {}),
+  };
+}
+
+/**
+ * The turn when understanding failed: no withdrawal, no compile, no step, no write. The reply is
+ * deterministic and truthful — the message wasn't processed, nothing changed — plus where things
+ * really stand when anything is pending or done, and that a request waiting on the owner is now held
+ * until the customer confirms it. The classified reason is in the trace (and the Inspector).
+ */
+async function understandingUnavailableTurn(args: {
+  graph: BusinessGraph;
+  state: ConversationState;
+  message: string;
+  language: ReplyLanguage;
+  reasoner: Reasoner;
+  grounded: GroundedContext;
+  understanding: UnderstandingResult;
+  diagnostics: { composerFailures: ModelCallFailure[] };
+}): Promise<TurnOutcome> {
+  const { graph, state, message, language, reasoner, grounded, understanding } = args;
+  const store = getConversationStore();
+  const startSeq = readLedger(state).length;
+  appendLedger(state, understandingEntry("failed"));
+  const requests = ownerRequestViews(await conversationApprovals(graph.business.id, state.id), state);
+  const ledger = readLedger(state);
+  const consequential = ledger.some((e) => e.status === "effected" && !/\.(read|searched)$|^(availability|stock|catalog)\./.test(e.effect));
+  const status = requests.length > 0 || consequential ? renderStatus({ requests, ledger, lang: language.code }) : undefined;
+  const response = understandingUnavailableText(language.code, { status, held: requests.some((r) => r.lifecycle === "held") });
+  state.messages.push({ role: "barry", content: response, at: new Date().toISOString() });
+  const turn: TurnLog = {
+    id: turnId(),
+    at: new Date().toISOString(),
+    customerMessage: message,
+    understood: {
+      intent: understanding.ir.intent,
+      entities: {},
+      signals: { advancesTransaction: null, withdrawsRequest: null, changesPendingRequest: null, readRequested: null, checkoutConsent: null, quantity: null },
+    },
+    retrieved: { offerIds: [], knowledgeIds: [] },
+    selectedAction: null,
+    response,
+    stateAfter: { stage: state.stage, selectedOfferId: state.selectedOfferId, outcome: state.outcome },
+    reasoner: reasoner.name,
+    trace: {
+      runtime: runtimeTrace(reasoner),
+      understanding: understandingTrace(understanding),
+      rejectedClaims: [],
+      steps: [],
+      stop: { reason: "understanding_unavailable", outcome: understanding.failure?.kind ?? "unknown" },
+      reply: { language: language.code, basis: language.basis, fallback: "understanding unavailable -> deterministic" },
+      effects: ledgerForTrace(readLedger(state).slice(startSeq)),
+      missingFields: state.missingFields,
+      ...(grounded.cart ? { context: { shown: (grounded.shownResults ?? []).map((p) => ({ position: p.position, title: p.title })), cart: { lines: grounded.cart, total: grounded.cartTotal ?? null } } } : {}),
+    },
+  };
+  state.turns.push(turn);
+  await store.save(state);
+  return { state, turn, response };
 }
 
 /**
@@ -643,6 +754,28 @@ async function continueFromCapabilityResult(
   const { verified } = verifyIR(graph, message, { ...raw, customerInfo: {}, evidence: {} }, state, { capabilities: context.capabilities, capabilityResults: context.capabilityResults });
   if (!verified.capabilityRequest) return { kind: "generic_confirm", stage: state.stage };
   return planCapabilityCall(verified.capabilityRequest, state.stage) ?? { kind: "generic_confirm", stage: state.stage };
+}
+
+/**
+ * Revision continuation: the same customer message, re-understood with the request being replaced made
+ * explicit. Only a capability proposal is taken from it (the replacement request); everything else in
+ * the first understanding stands.
+ */
+async function proposeReplacement(
+  reasoner: Reasoner,
+  graph: BusinessGraph,
+  state: ConversationState,
+  message: string,
+  grounded: GroundedContext,
+  replacing: ApprovalRecord[]
+): Promise<CompileOutcome | undefined> {
+  const context: GroundedContext = { ...grounded, replacingRequests: ownerRequestViews(replacing, state) };
+  const u = await understandTurn(reasoner, { graph, state, customerMessage: message, grounded: context });
+  if (!u.valid || u.failClosed) return undefined;
+  const { verified } = verifyIR(graph, message, { ...u.ir, customerInfo: {}, evidence: {} }, state, { capabilities: context.capabilities, capabilityResults: context.capabilityResults });
+  if (!verified.capabilityRequest) return undefined;
+  const planned = planCapabilityCall(verified.capabilityRequest, state.stage);
+  return planned?.kind === "action" ? planned : undefined;
 }
 
 /** Hard ceiling on actions per customer message — the loop is bounded no matter what state says. */
@@ -764,11 +897,23 @@ async function composeTurn(
   rctx.grounded = { ...(rctx.grounded ?? {}), ledger: readLedger(rctx.state), ownerRequests: ownerRequestViews(await conversationApprovals(graph.business.id, rctx.state.id), rctx.state) };
   // The quote follows the offer the customer is asking about NOW (not a stale earlier one).
   const quote = currentQuote(graph, { ...rctx.state, selectedOfferId: rctx.state.knownFields.__focusOfferId || rctx.state.selectedOfferId });
+  // A write the final-write gate stopped is told exactly, from records: what really happened before it
+  // this turn, and why this one was not created. A model is never asked to narrate around a blocked
+  // write (live, it narrated an unexecuted add as done).
+  const blockedStep = steps.find((st) => st.blocked);
+  if (blockedStep) {
+    const before = steps.slice(0, steps.indexOf(blockedStep));
+    input = {
+      outcome,
+      toolResult: null,
+      writeBlocked: blockedStep.blocked,
+      language,
+      quote,
+      ...(before.length ? { steps: before.map((st) => ({ outcome: st.outcome, toolResult: st.toolResult, existingOwnerRequest: st.existing })) } : {}),
+    };
+    return { text: composeDeterministic(input), fallback: "write blocked -> deterministic" };
+  }
   if (steps.length <= 1 && !next) {
-    if (last?.blocked) {
-      input = { outcome, toolResult: null, writeBlocked: last.blocked, language, quote };
-      return await guardReply(reasoner, rctx, input, await reasoner.composeResponse(rctx, input));
-    }
     if (last?.policyDecision.status === "denied") {
       // The rule's text stays in the trace; the customer hears what it means for them.
       input = { outcome, toolResult: null, refused: true, language, quote };
@@ -915,6 +1060,8 @@ async function authorizeAndExecute(
     const same = findSameRequest(await conversationApprovals(graph.business.id, ctx.conversationId), outcome.action.name, outcome.action.input);
     if (same) {
       if (same.state === "still_pending") {
+        // A validly understood turn re-proposed exactly these terms: the customer's intent is current again.
+        recordReconfirmed(state, same.approval);
         state.knownFields.__reusedApprovalThisTurn = same.approval.id;
         state.pendingApprovalId = same.approval.id;
         state.pendingAction = outcome.action;
@@ -1063,6 +1210,46 @@ export async function handlePaymentWebhook(
   }
 }
 
+/**
+ * An approved request that is held because the customer's intent after it is unverified: nothing is
+ * resolved or executed; the customer is asked (once) to confirm; the owner sees why.
+ */
+async function intentHeldTurn(state: ConversationState, approval: ApprovalRecord, hold: IntentHold): Promise<TurnOutcome> {
+  const store = getConversationStore();
+  const reasoner = getReasoner();
+  const language = resolveReplyLanguage({
+    customerMessages: state.messages.filter((m) => m.role === "customer").map((m) => m.content),
+    stored: state.knownFields[SCRATCH_KEYS.conversationLanguage],
+    businessLocale: undefined,
+  });
+  const response = intentHeldText(language.code, describeRequest(approval.requestedAction, approval.requestedInput), hold.detail);
+  if (state.messages.at(-1)?.content !== response) state.messages.push({ role: "barry", content: response, at: new Date().toISOString() });
+  const reason = hold.reason === "conflicting_reference" ? `the customer later wrote ${hold.detail}, which conflicts with this request's own reference` : "a later customer message could not be understood, so the customer's current intent is unverified";
+  const turn: TurnLog = {
+    id: turnId(),
+    at: new Date().toISOString(),
+    customerMessage: "(owner approval held)",
+    understood: { intent: "approval_held", entities: { reason: hold.reason } },
+    retrieved: { offerIds: [], knowledgeIds: [] },
+    selectedAction: { name: approval.requestedAction, input: approval.requestedInput as Record<string, unknown> },
+    response,
+    stateAfter: { stage: state.stage, outcome: state.outcome },
+    reasoner: reasoner.name,
+    trace: {
+      runtime: runtimeTrace(reasoner),
+      rejectedClaims: [],
+      steps: [],
+      stop: { reason: "approval_held_customer_intent_unverified", outcome: approval.requestedAction },
+      reply: { language: language.code, basis: language.basis },
+      hold: { requestId: approval.id, reason },
+      effects: [],
+    },
+  };
+  state.turns.push(turn);
+  await store.save(state);
+  return { state, turn, response };
+}
+
 /** Owner resolves a pending approval; BARRY resumes the conversation with the decision. */
 export async function resumeAfterApproval(
   graph: BusinessGraph,
@@ -1105,6 +1292,15 @@ export async function resumeAfterApproval(
     };
   };
   if (existing.status !== "pending") return alreadyResolved();
+
+  // The owner's approval is not the customer's consent: before anything executes, the request is
+  // revalidated against what the customer said AFTER it was made. If that intent is unverified, the
+  // request is held — not resolved, not executed — and the customer is asked to confirm.
+  if (decision === "approved") {
+    const convo = await getConversationStore().get(existing.conversationId);
+    const hold = convo ? customerIntentHold(convo, existing) : undefined;
+    if (convo && hold) return intentHeldTurn(convo, existing, hold);
+  }
 
   // Compare-and-set in the backend: a concurrent or stale resolution loses here and executes nothing.
   let approval: ApprovalRecord;

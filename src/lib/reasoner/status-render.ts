@@ -23,6 +23,7 @@ function requestLine(r: OwnerRequestView, lang: Lang): string {
   const ref = r.reference ? (lang === "he" ? `, אסמכתא ${r.reference}` : `, reference ${r.reference}`) : "";
   const he: Record<string, string> = {
     active: "ממתין לאישור בעל העסק",
+    held: "מוקפא עד שתאשר/י שזה עדיין מה שרצית, לא בוצע",
     superseded: "הוחלף בבקשה מעודכנת, לא בוצע",
     withdrawn: "בוטל לבקשתך, לא בוצע",
     declined: "בעל העסק לא אישר, לא בוצע",
@@ -33,6 +34,7 @@ function requestLine(r: OwnerRequestView, lang: Lang): string {
   };
   const en: Record<string, string> = {
     active: "waiting for the owner's approval",
+    held: "on hold until you confirm it's still what you want, not carried out",
     superseded: "replaced by an updated request, not carried out",
     withdrawn: "withdrawn at your request, not carried out",
     declined: "not approved by the owner, not carried out",
@@ -42,6 +44,11 @@ function requestLine(r: OwnerRequestView, lang: Lang): string {
     approved: "approved",
   };
   return `${what}: ${(lang === "he" ? he : en)[r.lifecycle] ?? r.lifecycle}`;
+}
+
+/** Each owner request with its own frozen terms, lifecycle and reference — one line each. */
+export function requestsText(requests: OwnerRequestView[], lang: string | undefined): string {
+  return requests.map((r) => requestLine(r, lang === "he" ? "he" : "en")).join("\n");
 }
 
 export function quoteText(q: Quote, lang: Lang): string {
@@ -75,14 +82,14 @@ export function renderStatus(input: { requests: OwnerRequestView[]; ledger: Ledg
     if (order) lines.push(`ההזמנה נוצרה${order.reference ? ` (${order.reference})` : ""}.`);
     if (enquiry) lines.push("הפנייה שלך רשומה אצל הצוות (אי אפשר לערוך אותה מכאן).");
     if (blocked) lines.push("קישור התשלום האחרון לא נוצר, כי הוא לא עמד בתנאים שלך.");
-    if (!input.requests.some((r) => r.lifecycle === "active")) lines.push("אין בקשה שממתינה לבעל העסק.");
+    if (!input.requests.some((r) => r.lifecycle === "active" || r.lifecycle === "held")) lines.push("אין בקשה שממתינה לבעל העסק.");
   } else {
     lines.push(booked ? `You have a confirmed appointment${booked.reference ? ` (${booked.reference})` : ""}.` : "Nothing is booked.");
     lines.push(paid ? "Your payment is verified." : linkSent ? "A payment link was sent; no payment has been verified." : "No payment has been taken.");
     if (order) lines.push(`Your order was placed${order.reference ? ` (${order.reference})` : ""}.`);
     if (enquiry) lines.push("Your enquiry is recorded for the team (it can't be edited from here).");
     if (blocked) lines.push("The last payment link was not created, because it didn't meet your conditions.");
-    if (!input.requests.some((r) => r.lifecycle === "active")) lines.push("Nothing is waiting on the owner.");
+    if (!input.requests.some((r) => r.lifecycle === "active" || r.lifecycle === "held")) lines.push("Nothing is waiting on the owner.");
   }
   if (input.quote) lines.push(quoteText(input.quote, lang));
   return lines.join(lang === "he" ? "\n" : "\n");

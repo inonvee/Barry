@@ -99,7 +99,7 @@ describe("the configured models are what runs, and a bad configuration fails clo
     const graph = buildSpaGraph();
     const ctx = { graph, state: createInitialConversationState("c", graph.business.id, "cust"), customerMessage: "hello" };
     const result = await r.understandDetailed(ctx);
-    expect(result).toMatchObject({ valid: false, attempts: 0, failure: "invalid_model_config" });
+    expect(result).toMatchObject({ valid: false, attempts: 0, failure: { kind: "invalid_model_config", transient: false } });
     expect(result.ir.intent).toBe("understanding_failed");
     const text = await r.composeResponse(ctx, { outcome: { kind: "ask_general", stage: "discovery", offerNames: [] } });
     expect(typeof text).toBe("string");
