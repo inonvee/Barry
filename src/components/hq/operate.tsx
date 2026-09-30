@@ -4,6 +4,7 @@ import type { LaunchGate } from "@/lib/hq/launch";
 import type { Incident } from "@/lib/hq/incidents";
 import { NEXT_MOVE_WORDS, isOpen } from "@/lib/operator/obligations";
 import { describeChange } from "@/lib/hq/fleet";
+import type { FinancialImpact, ProfitOpportunity } from "@/lib/finance/impact";
 import { Badge, Card, Kv, type Tone } from "./ui";
 
 /**
@@ -208,6 +209,32 @@ export function AuditCard({ b }: { b: BusinessStatusDetail }) {
           {b.audit.slice(0, 20).map((a) => (
             <li key={a.id}>
               <span className="text-neutral-500">{when(a.at)} · {a.by}</span> — {describeChange(a)}
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
+export function ProfitCard({ impact, opportunities }: { impact: FinancialImpact; opportunities: ProfitOpportunity[] }) {
+  return (
+    <Card title="Profit / margin (foundation)" right={<Badge>{opportunities.length} evidence-backed</Badge>}>
+      <div className="grid gap-x-6 sm:grid-cols-2">
+        <Kv k="GENERATED (verified revenue)" v={money(impact.generated)} />
+        <Kv k="RECOVERED (inside generated)" v={money(impact.recovered)} />
+        <Kv k="SAVED · realized" v={money(impact.saved.realized)} />
+        <Kv k="Savings · potential / proposed / negotiated" v={`${money(impact.saved.potential)} / ${money(impact.saved.proposed)} / ${money(impact.saved.negotiated)}`} />
+        <Kv k="Test money (apart)" v={money(impact.simulated)} />
+        <Kv k="Cost evidence records" v={String(impact.evidenceCount)} />
+      </div>
+      {opportunities.length === 0 ? (
+        <p className="mt-2 text-xs text-neutral-500">No cost evidence is connected yet, so there are zero real profit opportunities. Estimated savings are never shown as realised.</p>
+      ) : (
+        <ul className="mt-2 space-y-1 text-sm">
+          {opportunities.map((o) => (
+            <li key={o.id}>
+              <Badge tone={o.state === "REALIZED" ? "good" : "info"}>{o.state}</Badge> {o.problem} <span className="text-xs text-neutral-500">→ {o.recommendedAction} · {o.confidence} confidence · {o.assumptions.join("; ")}</span>
             </li>
           ))}
         </ul>

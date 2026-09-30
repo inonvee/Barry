@@ -6,7 +6,9 @@ import { fleetTenant, getBusinessStatus } from "@/lib/hq/fleet";
 import { launchChecklist } from "@/lib/hq/launch";
 import { getConversationStore } from "@/lib/state";
 import { Badge, Card, HqHeader, Kv, WithSource, label, statusTone } from "@/components/hq/ui";
-import { AuditCard, ControlsCard, IncidentsCard, LaunchCard, ObligationsCard, OperationalStatus } from "@/components/hq/operate";
+import { AuditCard, ControlsCard, IncidentsCard, LaunchCard, ObligationsCard, OperationalStatus, ProfitCard } from "@/components/hq/operate";
+import { financialImpact, profitOpportunities } from "@/lib/finance/impact";
+import { getOwnerWorkspace } from "@/lib/owner/service";
 
 const when = (iso: string | null) => (iso ? new Date(iso).toISOString().replace("T", " ").slice(0, 16) : "—");
 
@@ -18,6 +20,9 @@ export default async function HqBusinessPage({ params }: { params: Promise<{ bus
   const graph = fleetTenant(businessId)!;
   const status = await getBusinessStatus(graph, { detail: true });
   const gate = await launchChecklist(graph, { controls: status.controls, conversations: await getConversationStore().listByBusiness(businessId).catch(() => []) });
+  // Profit foundation: no cost evidence is connected yet — zero opportunities, verified revenue only.
+  const opportunities = profitOpportunities(businessId, []);
+  const impact = financialImpact((await getOwnerWorkspace(graph, { since: new Date(Date.now() - 30 * 24 * 3600_000).toISOString(), label: "last 30 days" })).revenue, opportunities);
   const convoHref = (id: string) => `/hq/${encodeURIComponent(b.id)}/conversations/${encodeURIComponent(id)}`;
 
   return (
@@ -40,6 +45,7 @@ export default async function HqBusinessPage({ params }: { params: Promise<{ bus
         </div>
         <ControlsCard b={status} />
         <LaunchCard gate={gate} />
+        <ProfitCard impact={impact} opportunities={opportunities} />
         <AuditCard b={status} />
 
         <div className="grid gap-4 lg:grid-cols-2">

@@ -171,15 +171,29 @@ export async function getBusinessStatus(graph: BusinessGraph, opts: { now?: Date
 }
 
 const hasMoney = (m: Money) => Object.values(m).some((v) => v > 0);
+const supervised = (b: BusinessStatus) => b.controls.mode === "supervised" || b.controls.mode === "live";
 
 export function summarizeFleet(businesses: BusinessStatus[]): FleetSummary {
   return {
     businesses: businesses.length,
     healthy: businesses.filter((b) => b.health === "healthy").length,
+    // SUPERVISED / LIVE businesses surface incidents aggressively: any open incident needs the founder and
+    // every severity is listed under "what broke"; simulator-only businesses only escalate high ones.
     needFounder: businesses
-      .filter((b) => b.incidents.high > 0 || b.approvalsHeld > 0 || b.model.status === "unavailable")
-      .map((b) => ({ id: b.id, name: b.name, why: [b.incidents.high ? `${b.incidents.high} high incident${b.incidents.high === 1 ? "" : "s"}` : "", b.approvalsHeld ? `${b.approvalsHeld} held request${b.approvalsHeld === 1 ? "" : "s"}` : "", b.model.status === "unavailable" ? "AI unavailable" : ""].filter(Boolean).join(" · ") })),
-    broke: businesses.flatMap((b) => b.incidents.open.filter((i) => i.severity !== "low").map((incident) => ({ id: b.id, name: b.name, incident }))),
+      .filter((b) => b.incidents.high > 0 || b.approvalsHeld > 0 || b.model.status === "unavailable" || (supervised(b) && b.incidents.open.length > 0))
+      .map((b) => ({
+        id: b.id,
+        name: b.name,
+        why: [
+          b.incidents.high ? `${b.incidents.high} high incident${b.incidents.high === 1 ? "" : "s"}` : "",
+          supervised(b) && !b.incidents.high && b.incidents.open.length ? `${b.incidents.open.length} open incident${b.incidents.open.length === 1 ? "" : "s"} (${b.controls.mode})` : "",
+          b.approvalsHeld ? `${b.approvalsHeld} held request${b.approvalsHeld === 1 ? "" : "s"}` : "",
+          b.model.status === "unavailable" ? "AI unavailable" : "",
+        ]
+          .filter(Boolean)
+          .join(" · "),
+      })),
+    broke: businesses.flatMap((b) => b.incidents.open.filter((i) => i.severity !== "low" || supervised(b)).map((incident) => ({ id: b.id, name: b.name, incident }))),
     changed: businesses.flatMap((b) => [
       ...b.recentChanges.map((a) => ({ id: b.id, name: b.name, what: `founder: ${describeChange(a)}`, at: a.at })),
       ...(b.conversations.last24h ? [{ id: b.id, name: b.name, what: `${b.conversations.last24h} conversation${b.conversations.last24h === 1 ? "" : "s"} active`, at: b.conversations.latestActivityAt ?? "" }] : []),
