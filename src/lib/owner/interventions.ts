@@ -125,6 +125,28 @@ export function afterApproval(graph: BusinessGraph, a: ApprovalWithLifecycle): s
   }
 }
 
+/** The action in a few owner words, from the real proposal — for button labels ("Approve ₪2480 payment link"). */
+export function actionWords(graph: BusinessGraph, a: ApprovalWithLifecycle): string {
+  const terms = termsOf(a.requestedAction, a.requestedInput);
+  const amount = termsAmount(terms);
+  switch (a.requestedAction) {
+    case "createCommerceCheckout":
+    case "createPaymentRequest":
+      return `${amount ? `${amount} ` : ""}payment link${typeof terms.discountPct === "number" && terms.discountPct > 0 ? ` with ${terms.discountPct}% off` : ""}`;
+    case "createBooking":
+      return "booking";
+    case "refund":
+      return `${amount ? `${amount} ` : ""}refund`;
+    case INVOKE_CAPABILITY: {
+      const purpose = systemWords(graph, a).replace(/\.$/, "");
+      const ref = Object.values(terms).find((v) => typeof v === "string" && /\d/.test(v));
+      return `${purpose}${ref ? ` (${ref})` : ""}`;
+    }
+    default:
+      return a.summary.length > 40 ? `${a.summary.slice(0, 39)}…` : a.summary;
+  }
+}
+
 function holdWords(a: ApprovalWithLifecycle): string {
   if (a.hold?.reason === "conflicting_reference") return `After this request the customer wrote ${a.hold.detail ?? "a different reference"}, which conflicts with it — BARRY won't run the old terms.`;
   return "After this request the customer sent a message BARRY couldn't understand — it may have changed or withdrawn the request, so BARRY won't run it yet.";
@@ -150,7 +172,7 @@ function approvalItem(graph: BusinessGraph, a: ApprovalWithLifecycle, convo: Con
       tried: story?.tried ?? [],
       decision: "Re-check the conversation before deciding. Approve isn't offered while the request may be stale.",
       options: [
-        { action: "recheck", label: "Re-check conversation", primary: true, consequence: "BARRY re-reads the customer's later message. If it changed the request, this one is replaced and the corrected request comes back to you; if it withdrew it, it's cancelled; if unrelated, this request becomes approvable." },
+        { action: "recheck", label: "Re-check customer correction", primary: true, consequence: "BARRY re-reads the customer's later message. If it changed the request, this one is replaced and the corrected request comes back to you; if it withdrew it, it's cancelled; if unrelated, this request becomes approvable." },
         { action: "decline", label: "Decline", destructive: true, consequence: "BARRY tells the customer this can't be done; nothing is sent or changed." },
       ],
       then: "After a successful re-check BARRY tells the customer what happened to the earlier request and, if there is a corrected one, that it's waiting for you.",
@@ -173,7 +195,7 @@ function approvalItem(graph: BusinessGraph, a: ApprovalWithLifecycle, convo: Con
     tried: story?.tried ?? [],
     decision: `Approve or decline exactly these terms${amount ? ` (${amount})` : ""}. BARRY can't change them for you; a different ask needs a new request from the customer.`,
     options: [
-      { action: "approve", label: "Approve", primary: true, consequence: `${afterApproval(graph, a)} ${RECHECK_NOTE}` },
+      { action: "approve", label: `Approve ${actionWords(graph, a)}`, primary: true, consequence: `${afterApproval(graph, a)} ${RECHECK_NOTE}` },
       { action: "decline", label: "Decline", destructive: true, consequence: "BARRY tells the customer this can't be done; nothing is sent or changed. The same terms won't be sent to you again." },
     ],
     then: afterApproval(graph, a),
@@ -206,7 +228,7 @@ function handoffItem(graph: BusinessGraph, h: HandoffRecord, convo: Conversation
     tried: story.tried,
     decision: h.unresolved.length ? `Reply to the customer in your own channel about: ${h.unresolved.join("; ")}. Then mark it resolved.` : "Reply to the customer in your own channel, then mark it resolved.",
     options: [
-      ...(h.status === "open" ? [{ action: "acknowledge" as const, label: "Acknowledge", consequence: "Marks it as seen by your team. The customer is not messaged." }] : []),
+      ...(h.status === "open" ? [{ action: "acknowledge" as const, label: "Acknowledge handoff", consequence: "Marks it as seen by your team. The customer is not messaged." }] : []),
       { action: "resolve", label: "Mark resolved", primary: true, consequence: "Closes it in your inbox. BARRY keeps handling the conversation as usual; it won't claim you replied." },
     ],
     then: h.responseCommitted && path ? `The customer was told your team follows up as your playbook says: “${path}”. BARRY can't send your reply for you yet.` : "The customer was told your team can see this, with no promised reply time. BARRY can't send your reply for you yet.",

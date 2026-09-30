@@ -12,8 +12,8 @@ export async function POST(req: NextRequest) {
   if ("error" in g) return g.error;
   if (!parsed.success) return Response.json({ error: "Ask a question (up to 1000 characters)" }, { status: 400 });
   try {
-    const { answer, source, reason } = await askOwnerBarry(g.graph, parsed.data.question);
-    return Response.json({ answer, source, ...(reason ? { note: reason } : {}) });
+    const { answer, source, reason, links } = await askOwnerBarry(g.graph, parsed.data.question);
+    return Response.json({ answer, source, links, ...(reason ? { note: reason } : {}) });
   } catch (err) {
     return ownerFailure("ask", err);
   }

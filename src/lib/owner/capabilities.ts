@@ -129,7 +129,7 @@ export function deriveCapabilities(input: CapabilityInput): CapabilityAssessment
       provider = null;
       simulated = false;
       const missing = missingSettings(n.domain);
-      detail = missing.length ? `Your ${words} connection is missing settings: ${missing.join(", ")}.` : `No ${words} is connected.`;
+      detail = missing.length ? `Your ${words} connection isn't complete yet (${missing.length} setting${missing.length === 1 ? "" : "s"} for the BARRY team to add).` : `No ${words} is connected.`;
       blockedBy.push(
         step(
           {
@@ -284,7 +284,7 @@ export function deriveCapabilities(input: CapabilityInput): CapabilityAssessment
     id: "channel.whatsapp",
     area: "channel",
     title: "Talk to customers on WhatsApp",
-    detail: channelReady ? (wa.sendMode === "live" ? "Your number is routed to BARRY and replies are sent live." : "Your number is routed to BARRY; replies are recorded but not sent (dry run).") : wa.missing.length ? `Missing WhatsApp settings: ${wa.missing.join(", ")}.` : "No WhatsApp number is routed to this business.",
+    detail: channelReady ? (wa.sendMode === "live" ? "Your number is routed to BARRY and replies are sent live." : "Your number is routed to BARRY; replies are recorded but not sent (dry run).") : wa.missing.length ? `WhatsApp isn't connected yet (${wa.missing.length} setting${wa.missing.length === 1 ? "" : "s"} for the BARRY team to add).` : "No WhatsApp number is routed to this business.",
     status: channelReady ? "ready" : "needs_setup",
     authority: "automatic",
     authorityWords: "on its own",

@@ -118,6 +118,15 @@ Answer the owner's question using ONLY the JSON briefing. Rules:
 - Be brief and concrete: lead with the answer, then at most a few supporting lines. Plain text, no JSON, no headers. Reply in the owner's language.`;
 
 export type OwnerAnswer = { answer: string; source: "model" | "briefing"; reason?: string; failure?: ModelCallFailure };
+/** Where the answer's subjects live in the product, so the owner can jump there. */
+export type OwnerAnswerLinks = { interventions: { id: string; title: string; customer: string }[]; opportunities: { id: string; conversationId: string; customer: string; kind: string }[]; steps: { id: string; title: string }[] };
+function linksOf(ws: OwnerWorkspace): OwnerAnswerLinks {
+  return {
+    interventions: ws.interventions.slice(0, 5).map((i) => ({ id: i.id, title: i.title, customer: i.customer })),
+    opportunities: ws.opportunities.items.slice(0, 5).map((o) => ({ id: o.id, conversationId: o.conversationId, customer: o.customer, kind: o.kind.replace(/_/g, " ") })),
+    steps: ws.capabilities.steps.slice(0, 3).map((s) => ({ id: s.id, title: s.title })),
+  };
+}
 
 const FIRST_PERSON_ACTION = /\bI(?:'ve| have|'ll| will)?\s+(?:just\s+|now\s+|already\s+)?(?:applied|changed|updated|set|approved|declined|sent|given|gave|created|cancell?ed|raised|lowered|refunded|booked|made|turned on|enabled|disabled|added|removed)\b|(?:^|\s)(?:החלתי|עדכנתי|שיניתי|אישרתי|דחיתי|שלחתי|נתתי|יצרתי|ביטלתי|הפעלתי|הוספתי|הסרתי)(?:\s|$|[.,!])/i;
 
@@ -138,7 +147,7 @@ export function checkOwnerAnswer(answer: string, briefing: OwnerBriefing, questi
   return undefined;
 }
 
-export async function askOwnerBarry(graph: BusinessGraph, question: string, opts: { client?: Pick<OpenAI, "chat">; now?: Date } = {}): Promise<OwnerAnswer & { briefing: OwnerBriefing }> {
+export async function askOwnerBarry(graph: BusinessGraph, question: string, opts: { client?: Pick<OpenAI, "chat">; now?: Date } = {}): Promise<OwnerAnswer & { briefing: OwnerBriefing; links: OwnerAnswerLinks }> {
   const now = opts.now ?? new Date();
   const ws = await getOwnerWorkspace(graph, { now });
   const weekSince = new Date(now.getTime() - 7 * 24 * 3600 * 1000).toISOString();
@@ -157,7 +166,8 @@ export async function askOwnerBarry(graph: BusinessGraph, question: string, opts
   const stories = storyIds.flatMap((id) => (byId.get(id) ? [{ customer: ws.conversations.find((c) => c.id === id)?.customer ?? "Customer", story: conversationStory(byId.get(id)!) }] : []));
   const briefing = buildBriefing(ws, week, readiness, stories);
   const client = opts.client ?? (process.env.BARRY_REASONER === "openai" && process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY, maxRetries: 2 }) : undefined);
-  if (!client) return { answer: briefingText(briefing), source: "briefing", reason: "no AI model configured — showing the factual summary", briefing };
+  const links = linksOf(ws);
+  if (!client) return { answer: briefingText(briefing), source: "briefing", reason: "no AI model configured — showing the factual summary", briefing, links };
   const model = modelFor("composer");
   try {
     const completion = await createCompletion(client as OpenAI, {
@@ -169,12 +179,12 @@ export async function askOwnerBarry(graph: BusinessGraph, question: string, opts
       ...samplingParams(model, "composer", 0.2),
     });
     const text = completion.choices[0]?.message?.content?.trim();
-    if (!text) return { answer: briefingText(briefing), source: "briefing", reason: "the AI returned nothing — showing the factual summary", briefing };
+    if (!text) return { answer: briefingText(briefing), source: "briefing", reason: "the AI returned nothing — showing the factual summary", briefing, links };
     const problem = checkOwnerAnswer(text, briefing, question);
-    if (problem) return { answer: briefingText(briefing), source: "briefing", reason: `the AI's answer couldn't be verified (${problem}) — showing the factual summary`, briefing };
-    return { answer: text, source: "model", briefing };
+    if (problem) return { answer: briefingText(briefing), source: "briefing", reason: `the AI's answer couldn't be verified (${problem}) — showing the factual summary`, briefing, links };
+    return { answer: text, source: "model", briefing, links };
   } catch (err) {
     const failure = classifyProviderError(err);
-    return { answer: briefingText(briefing), source: "briefing", reason: "AI unavailable — showing the factual summary", failure, briefing };
+    return { answer: briefingText(briefing), source: "briefing", reason: "AI unavailable — showing the factual summary", failure, briefing, links };
   }
 }

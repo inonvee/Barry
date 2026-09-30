@@ -14,8 +14,6 @@ export type ShellSection = "simulator" | "owner" | "train" | "connections" | "le
 
 const NAV: { id: ShellSection; href: string; label: string }[] = [
   { id: "simulator", href: "/simulator", label: "Customer simulator" },
-  { id: "owner", href: "/owner", label: "Owner" },
-  { id: "train", href: "/owner/train", label: "Train BARRY" },
   { id: "connections", href: "/connections", label: "Connections" },
   { id: "learn", href: "/learnbusiness", label: "Learn business" },
   { id: "qa", href: "/qa", label: "QA tools" },
@@ -77,6 +75,10 @@ export function TestShell({ active, children, right }: { active: ShellSection; c
     <div className="border-b border-[#e4e7ec] bg-white">
       <div className="mx-auto flex max-w-6xl flex-col gap-2 px-3 py-2 md:px-4">
         <div className="flex min-w-0 items-center gap-2">
+          <span className="shrink-0 rounded bg-[#fffaeb] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#b54708]">Internal tools</span>
+          <Link href="/owner" className="shrink-0 whitespace-nowrap rounded-md border border-[#d0d5dd] bg-white px-2 py-0.5 text-[12px] font-medium text-[#344054]">
+            Owner product ›
+          </Link>
           <Link href="/simulator" className="shrink-0 text-sm font-bold tracking-tight text-[#101828]">
             BARRY
           </Link>
