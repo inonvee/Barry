@@ -16,7 +16,8 @@ import { outcomeEvents, revenueEvidence, revenueSummary, type OutcomeEvent, type
 import { buildInterventions, type Intervention } from "./interventions";
 import { revenueOpportunities, type Opportunity, type OpportunitySummary } from "./opportunities";
 import { reconcileObligations, type Obligation } from "@/lib/operator/obligations";
-import { followUpPolicyFor } from "@/lib/operator/policy";
+import { followUpPolicyFor, OBLIGATION_FOLLOW_UP } from "@/lib/operator/policy";
+import type { ObligationKind } from "@/lib/operator/obligation-model";
 import { attemptCounts, listAttempts } from "@/lib/operator/attempts";
 import { assessCapabilities, capabilitySummary } from "./capabilities";
 
@@ -112,6 +113,42 @@ export function ownerChannels(businessId: string): OwnerChannels {
   };
 }
 
+export type OwnerOperator = {
+  included: boolean;
+  rules: { kind: ObligationKind; enabled: boolean; afterHours: number; maxAttempts: number }[];
+};
+
+export type OwnerTrend = {
+  /** Local dates (YYYY-MM-DD), oldest first. */
+  days: string[];
+  /** The currency the series are in (the business's most-used verified currency); null with no verified money. */
+  currency: string | null;
+  /** Provider-verified collected per day (the only revenue). */
+  made: number[];
+  /** The part of it paid after an earlier failed / cancelled / blocked attempt (a subset of made). */
+  recovered: number[];
+};
+
+/** Verified money per local day for the last `days` days — real provider only. */
+export function revenueTrend(evidence: Pick<RevenueEvidence, "category" | "amount" | "currency" | "at" | "simulated">[], timeZone: string, now = new Date(), days = 7): OwnerTrend {
+  const fmt = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" });
+  const keys = Array.from({ length: days }, (_, i) => fmt.format(new Date(now.getTime() - (days - 1 - i) * 24 * 3600 * 1000)));
+  const real = evidence.filter((e) => !e.simulated && (e.category === "collected" || e.category === "recovered"));
+  const totals = new Map<string, number>();
+  for (const e of real) if (e.category === "collected") totals.set(e.currency, (totals.get(e.currency) ?? 0) + e.amount);
+  const currency = [...totals.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  const made = keys.map(() => 0);
+  const recovered = keys.map(() => 0);
+  for (const e of real) {
+    if (e.currency !== currency) continue;
+    const i = keys.indexOf(fmt.format(new Date(e.at)));
+    if (i < 0) continue;
+    if (e.category === "collected") made[i] = Math.round((made[i] + e.amount) * 100) / 100;
+    else recovered[i] = Math.round((recovered[i] + e.amount) * 100) / 100;
+  }
+  return { days: keys, currency, made, recovered };
+}
+
 export type OwnerWorkspace = {
   business: { id: string; name: string; timezone: string; locale: string };
   window: { since: string; label: string };
@@ -145,6 +182,14 @@ export type OwnerWorkspace = {
   /** The plan (owner-safe): its name and whether BARRY Margins is included. Never economics. */
   plan: { name: string | null; marginsIncluded: boolean };
   channels: OwnerChannels;
+  /**
+   * The proactive operator as the owner's rules and plan define it: whether follow-ups run at all for
+   * this plan, and each follow-up rule (on/off, when, how many attempts). Read-only — the executor
+   * enforces the same policy and plan.
+   */
+  operator: OwnerOperator;
+  /** Verified money per local day, last 7 days (real provider only; test money never included). */
+  trend: OwnerTrend;
   /** Sources that could not be read (shown, never zeroed). */
   unavailable: string[];
 };
@@ -316,7 +361,10 @@ export async function getOwnerWorkspace(staticGraph: BusinessGraph, opts: { sinc
   const handoffs = conversations.flatMap((c) => readHandoffs(c).map((h) => ({ ...h, customer: customerLabel(c) }))).sort((a, b) => Number(b.status !== "resolved") - Number(a.status !== "resolved") || b.createdAt.localeCompare(a.createdAt));
   const interventions = buildInterventions({ graph, conversations, approvals, payments, customerLabel, now });
   const opportunities = revenueOpportunities({ graph, conversations, approvals, payments, bookings, orders, customerLabel, now });
-  const obligations = await safe("obligations", () => reconcileObligations({ graph, conversations, approvals, payments, bookings, carts, policy: followUpPolicyFor(graph), attempts: attemptCounts(attempts), now, customerLabel }), [] as Obligation[]);
+  const policy = followUpPolicyFor(graph);
+  const entitlement = await safe("plan", () => loadEntitlement(businessId), undefined);
+  const weekEvidence = revenueEvidence({ ...attribution, since: new Date(Date.parse(startOfLocalDay(graph.business.timezone, now)) - 6 * 24 * 3600 * 1000).toISOString() });
+  const obligations = await safe("obligations", () => reconcileObligations({ graph, conversations, approvals, payments, bookings, carts, policy, attempts: attemptCounts(attempts), now, customerLabel }), [] as Obligation[]);
   const profiles = await safe("capability profiles", () => resolveCapabilityProfiles(graph), undefined);
   const connections = await safe("connections", () => describeBusinessConnections(businessId, profiles), [] as ConnectionView[]);
   const capabilities = capabilitySummary(await safe("capabilities", () => assessCapabilities(graph, { profiles, connections }), { needs: [], steps: [], now: [], nowSimulated: [], afterSetup: [] }));
@@ -347,11 +395,14 @@ export async function getOwnerWorkspace(staticGraph: BusinessGraph, opts: { sinc
     handoffs,
     health: { ai: aiHealth(conversations, now), systems: connections.map(systemHealth) },
     capabilities,
-    plan: await safe("plan", async () => {
-      const e = await loadEntitlement(businessId);
-      return { name: e.plan ? PLAN_CATALOG[e.plan].name : null, marginsIncluded: hasFeature(e, "margins") };
-    }, { name: null, marginsIncluded: false }),
+    plan: { name: entitlement?.plan ? PLAN_CATALOG[entitlement.plan].name : null, marginsIncluded: entitlement ? hasFeature(entitlement, "margins") : false },
     channels: ownerChannels(businessId),
+    operator: {
+      // Unreadable plan → shown as not included (the executor fails closed the same way).
+      included: entitlement ? hasFeature(entitlement, "proactive_followups") : false,
+      rules: (Object.entries(OBLIGATION_FOLLOW_UP) as [ObligationKind, keyof typeof policy][]).map(([kind, k]) => ({ kind, enabled: policy[k].enabled, afterHours: policy[k].afterHours, maxAttempts: policy[k].maxAttempts })),
+    },
+    trend: revenueTrend(weekEvidence, graph.business.timezone, now),
     unavailable,
   };
 }

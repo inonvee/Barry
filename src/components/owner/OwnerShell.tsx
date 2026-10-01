@@ -3,10 +3,10 @@
 import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 import type { useOwnerApi } from "./useOwnerApi";
-import type { Presence } from "@/components/ds/shell";
+import { PRESENCE_WORD, type OwnerPresence, type PresenceState } from "@/lib/owner/presence-model";
 import { useQaStatus } from "@/components/shell/TestShell";
 import { StateNotice, btn, input, primary } from "./ui";
-import { Icon, LiveDot, Orb, type IconName, type LiveState } from "./kit";
+import { BarryOrb, Icon, LiveDot, type IconName, type LiveState } from "./kit";
 import type { OwnerChannels } from "@/lib/owner/service";
 
 /**
@@ -38,15 +38,9 @@ export const OWNER_MORE: NavItem[] = [
 
 type Api = ReturnType<typeof useOwnerApi>;
 
-const PRESENCE: Record<Presence["state"], { live: LiveState; word: string }> = {
-  working: { live: "live", word: "Working" },
-  waiting: { live: "waiting", word: "Waiting" },
-  needs_you: { live: "attention", word: "Needs you" },
-  degraded: { live: "attention", word: "Degraded" },
-  paused: { live: "off", word: "Paused" },
-};
+const PRESENCE_LIVE: Record<PresenceState, LiveState> = { working: "live", completed: "live", waiting: "waiting", idle: "waiting", needs_you: "attention", degraded: "attention", unavailable: "attention", paused: "off" };
 
-export function OwnerShell({ api, active, badge, onNavigate, presence, channels, children }: { api: Api; active: OwnerSection; badge?: Partial<Record<OwnerSection, number>>; onNavigate?: (section: OwnerSection) => boolean | void; presence?: Presence; channels?: OwnerChannels; commands?: unknown; children: ReactNode }) {
+export function OwnerShell({ api, active, badge, onNavigate, presence, channels, children }: { api: Api; active: OwnerSection; badge?: Partial<Record<OwnerSection, number>>; onNavigate?: (section: OwnerSection) => boolean | void; presence?: OwnerPresence; channels?: OwnerChannels; commands?: unknown; children: ReactNode }) {
   const status = useQaStatus(api.businessId);
   const [more, setMore] = useState(false);
   const s = api.session;
@@ -56,7 +50,7 @@ export function OwnerShell({ api, active, badge, onNavigate, presence, channels,
     if (onNavigate?.(id)) e.preventDefault();
   };
   const moreActive = OWNER_MORE.some((n) => n.id === active);
-  const p = presence ? PRESENCE[presence.state] : undefined;
+  const p = presence ? { live: PRESENCE_LIVE[presence.state], word: PRESENCE_WORD[presence.state] } : undefined;
   useEffect(() => {
     if (!more) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && setMore(false);
@@ -83,7 +77,7 @@ export function OwnerShell({ api, active, badge, onNavigate, presence, channels,
       {/* Desktop sidebar */}
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r border-o-line bg-o-canvas/70 px-3 py-5 backdrop-blur-xl lg:flex">
         <Link href="/owner" className="flex items-center gap-2.5 px-2">
-          <Orb size={30} alive={presence?.state === "working" || presence?.state === "needs_you"} />
+          <BarryOrb size={34} state={presence?.state ?? "idle"} label={presence ? `BARRY · ${PRESENCE_WORD[presence.state]}` : undefined} />
           <span className="text-[17px] font-bold tracking-[0.18em] text-o-ink">BARRY</span>
         </Link>
         <nav className="mt-7 flex flex-col gap-1" aria-label="Primary">
@@ -107,7 +101,7 @@ export function OwnerShell({ api, active, badge, onNavigate, presence, channels,
         <header className="sticky top-0 z-20 border-b border-o-line/70 bg-o-canvas/75 backdrop-blur-xl">
           <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-2.5 md:px-6">
             <Link href="/owner" className="flex items-center gap-2 lg:hidden" aria-label="BARRY home">
-              <Orb size={26} alive={presence?.state === "working" || presence?.state === "needs_you"} />
+              <BarryOrb size={28} state={presence?.state ?? "idle"} />
             </Link>
             <BusinessPicker api={api} />
             <div className="ml-auto flex min-w-0 items-center gap-2">
@@ -123,7 +117,7 @@ export function OwnerShell({ api, active, badge, onNavigate, presence, channels,
           </div>
         </header>
 
-        <main className="mx-auto w-full max-w-6xl px-4 pb-28 pt-5 md:px-6 md:pt-7 lg:pb-12">
+        <main className="mx-auto w-full max-w-6xl 2xl:max-w-7xl px-4 pb-28 pt-5 md:px-6 md:pt-7 lg:pb-12 overflow-x-clip">
           <SessionState api={api} />
           {children}
         </main>

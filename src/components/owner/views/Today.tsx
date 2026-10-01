@@ -4,45 +4,109 @@ import Link from "next/link";
 import { useState } from "react";
 import type { OwnerWorkspace } from "@/lib/owner/service";
 import { activityByHour, activityFeed, nowWorking, workflows } from "@/lib/owner/control-room";
+import { ownerPresence, PRESENCE_WORD } from "@/lib/owner/presence-model";
+import { commandSuggestions, interpretCommand, type OwnerCommand } from "@/lib/owner/command";
 import { hasMoney } from "@/lib/format/money";
-import { formatMoney, StateNotice, timeAgo, btn } from "../ui";
-import { InterventionQueue, MoneyInMotion, type Act } from "../operating";
-import { ActivityRow, BigMetric, Bars, Flow, HeaderLink, Hero, Icon, IconTile, LiveDot, Panel, PanelHeader, ShareBar } from "../kit";
+import { formatMoney, StateNotice } from "../ui";
+import type { Act } from "../operating";
+import { BarryOrb, Bars, CommandBar, HeaderLink, Icon, LiveDot, StageTitle, type IconName } from "../kit";
 import { WhatsAppCard } from "../OwnerShell";
+import { ActivityStream, CommandReply, MotionStrip, NeedsYouFloat, WorkflowFlow } from "./live";
 import { greeting, plural, type Tab } from "./shared";
 
 /**
- * TODAY — the hero surface. Four questions, in this order: what needs me, what is BARRY doing now,
- * what did BARRY do, where is money moving. Every figure comes from the workspace read model.
+ * TODAY — a story, not a grid. What BARRY did ("BARRY made ₪X today"), what he is doing ("He's
+ * working on 3 things"), what needs the owner ("One needs you"), and the business in motion. The
+ * owner directs BARRY from the command bar. Every figure comes from the workspace read model.
  */
-export function TodayView({ ws, act, busyId, loading, onOpen, onIntervention, onTab }: { ws: OwnerWorkspace; act: Act; busyId: string | null; loading: boolean; onOpen: (id: string) => void; onIntervention: (id: string) => void; onTab: (t: Tab) => void }) {
-  const [showAll, setShowAll] = useState(false);
-  const queue = ws.interventions;
-  const t = ws.today;
-  const ai = ws.health.ai;
-  const working = nowWorking(ws);
-  const feed = activityFeed(ws, 8);
-  const flows = workflows(ws);
-  const hours = activityByHour(ws);
-  const needed = Math.max(0, t.conversations - t.handledAutonomously);
-  const made = ws.revenue.direct;
-  const atRisk = ws.opportunities.summary.atRisk;
-  const setupSteps = ws.capabilities.steps.filter((s) => s.gate !== "customer_traffic").slice(0, 2);
 
-  const title = queue.length === 0 ? (
-    <>BARRY has it <span className="o-hero-type">handled.</span></>
-  ) : (
-    <>
-      <span className="o-hero-type">{plural(queue.length, "thing")}</span> need{queue.length === 1 ? "s" : ""} you.
-    </>
-  );
-  const lead = t.conversations
-    ? `BARRY handled ${plural(t.handledAutonomously, "conversation")} on its own ${ws.window.label}${t.completedOutcomes ? ` and completed ${plural(t.completedOutcomes, "verified outcome")}` : ""}.${loading ? " Refreshing…" : ""}`
-    : `No customer conversations ${ws.window.label} yet — BARRY is ready and watching.${loading ? " Refreshing…" : ""}`;
+const WORDS = ["Nothing", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"];
+const count = (n: number) => WORDS[n] ?? String(n);
+
+const SUGGESTION_ICON: Record<string, IconName> = { "Who needs me?": "shield", "Recover abandoned checkouts": "cart", "Follow up unpaid payment links": "money", "Where is money stuck?": "receipt", "What happened today?": "pulse" };
+
+/** The three story lines, from the records. */
+export function todayStory(ws: OwnerWorkspace) {
+  const t = ws.today;
+  const made = ws.revenue.direct;
+  const did = hasMoney(made)
+    ? { lead: "BARRY made ", figure: formatMoney(made), tail: ` ${ws.window.label}.` }
+    : t.handledAutonomously
+      ? { lead: "BARRY handled ", figure: plural(t.handledAutonomously, "conversation"), tail: ` ${ws.window.label}.` }
+      : t.conversations
+        ? { lead: "BARRY talked with ", figure: plural(t.conversations, "customer"), tail: ` ${ws.window.label}.` }
+        : { lead: "BARRY is ready ", figure: "", tail: "and watching." };
+  const lines = nowWorking(ws);
+  const live = ws.conversations.filter((c) => c.status === "in_progress").length;
+  const things = lines.filter((l) => l.state === "working" || l.state === "waiting").reduce((s, l) => s + l.count, 0) + live;
+  const needs = ws.interventions.length;
+  const working = things ? `He's working on ${plural(things, "thing")}.` : "Nothing open right now.";
+  const needLine = needs ? `${count(needs)} need${needs === 1 ? "s" : ""} you.` : things ? "Nothing needs you." : "He's watching for the next customer.";
+  return { did, working: `${working} ${needLine}`, things, needs };
+}
+
+export function TodayView({ ws, act, busyId, loading, onOpen, onIntervention, onTab, onAsk }: { ws: OwnerWorkspace; act: Act; busyId: string | null; loading: boolean; onOpen: (id: string) => void; onIntervention: (id?: string) => void; onTab: (t: Tab) => void; onAsk?: (q: string) => void }) {
+  const [text, setText] = useState("");
+  const [cmd, setCmd] = useState<OwnerCommand | null>(null);
+  const ai = ws.health.ai;
+  const presence = ownerPresence(ws);
+  const story = todayStory(ws);
+  const lines = nowWorking(ws).filter((l) => l.id !== "needs_you");
+  const feed = activityFeed(ws, 7);
+  const flows = workflows(ws).sort((a, b) => Number(b.state === "running") - Number(a.state === "running") || b.open - a.open);
+  const hours = activityByHour(ws);
+  const setupSteps = ws.capabilities.steps.filter((s) => s.gate !== "customer_traffic").slice(0, 2);
+  const liveState = lines.some((l) => l.state === "working") ? "live" : lines.length ? "waiting" : "off";
+
+  const submit = (value: string) => {
+    const c = interpretCommand(value, ws, "web");
+    if (c.intent.kind === "ask") {
+      if (onAsk) onAsk(c.text);
+      setCmd(null);
+    } else setCmd(c);
+    setText("");
+  };
 
   return (
-    <div className="flex flex-col gap-6">
-      <Hero eyebrow={`${greeting()} · ${ws.business.name}`} title={title} lead={lead} />
+    <div className="flex flex-col gap-8 md:gap-10">
+      {/* The story */}
+      <section className="o-rise relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 pt-1 lg:gap-10">
+        <div className="min-w-0">
+          <p className="text-[12px] font-semibold uppercase tracking-[0.2em] text-o-muted">{ws.business.name}</p>
+          <h1 className="mt-2 text-[34px] font-semibold leading-[1.02] tracking-[-0.03em] text-o-ink md:text-[52px] xl:text-[58px]">
+            {greeting()}, <span className="o-hero-type">{ws.business.name}.</span>
+          </h1>
+          <p className="mt-3 text-[21px] font-semibold leading-tight tracking-tight text-o-ink md:mt-4 md:text-[30px]">
+            {story.did.lead}
+            {story.did.figure && <span className="o-hero-type">{story.did.figure}</span>}
+            {story.did.tail}
+          </p>
+          <p className="mt-2 text-[16px] leading-snug text-o-ink-2 md:text-[20px]">
+            {story.working}
+            {loading && <span className="ml-2 text-[13px] text-o-faint">Refreshing…</span>}
+          </p>
+        </div>
+        <div className="flex flex-col items-center gap-3 self-start pt-2 md:self-center md:pt-0">
+          <span className="md:hidden"><BarryOrb size={76} state={presence.state} label={`BARRY · ${PRESENCE_WORD[presence.state]}`} /></span>
+          <span className="hidden md:inline-flex"><BarryOrb size={150} state={presence.state} label={`BARRY · ${PRESENCE_WORD[presence.state]}`} /></span>
+          <p className="hidden max-w-[14rem] text-center text-[12.5px] leading-5 text-o-muted md:block">
+            <span className="font-semibold text-o-ink-2">{PRESENCE_WORD[presence.state]}</span> · {presence.text}
+          </p>
+        </div>
+      </section>
+
+      {/* Direct BARRY */}
+      <section aria-label="Tell BARRY what to do" className="-mt-2">
+        <CommandBar
+          value={text}
+          onChange={setText}
+          onSubmit={submit}
+          state={presence.state}
+          suggestions={commandSuggestions(ws).map((s) => ({ text: s, icon: SUGGESTION_ICON[s] ?? "spark" }))}
+          onSuggestion={submit}
+        />
+        {cmd && <CommandReply cmd={cmd} ws={ws} onIntervention={(id) => onIntervention(id)} onClose={() => setCmd(null)} />}
+      </section>
 
       {(ai.status === "unavailable" || ai.status === "degraded") && (
         <StateNotice tone={ai.status === "unavailable" ? "bad" : "warn"} title={ai.status === "unavailable" ? "BARRY can't understand customers right now" : "BARRY had trouble understanding some messages"}>
@@ -50,135 +114,88 @@ export function TodayView({ ws, act, busyId, loading, onOpen, onIntervention, on
         </StateNotice>
       )}
 
-      {/* The four numbers that matter today */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <BigMetric label="Needs you" icon="shield" iconTone={queue.length ? "warn" : "neutral"} value={queue.length} tone={queue.length ? "warn" : "ink"} sub={queue.length ? "Decisions waiting" : "Nothing waiting"} onClick={() => onTab("actions")} />
-        <BigMetric label="Handled by BARRY" icon="barry" iconTone="accent" value={`${t.handledAutonomously}/${t.conversations}`} sub={t.conversations ? `${Math.round((t.handledAutonomously / t.conversations) * 100)}% without you` : "No conversations yet"} onClick={() => onTab("inbox")} />
-        <BigMetric label="Made (verified)" icon="money" iconTone="ok" value={hasMoney(made) ? formatMoney(made) : "—"} tone={hasMoney(made) ? "ok" : "ink"} sub={`${plural(ws.revenue.directPayments, "verified payment")}${hasMoney(ws.revenue.recovered) ? ` · ${formatMoney(ws.revenue.recovered)} recovered` : ""}`} onClick={() => onTab("money")} />
-        <BigMetric label="At risk" icon="alert" iconTone={hasMoney(atRisk) ? "bad" : "neutral"} value={hasMoney(atRisk) ? formatMoney(atRisk) : "—"} tone={hasMoney(atRisk) ? "bad" : "ink"} sub={hasMoney(atRisk) ? "Likely lost unless someone acts" : "Nothing at risk"} onClick={() => onTab("money")} />
-      </div>
+      {/* Live work, with the interruption floating beside it */}
+      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1.7fr)_minmax(18rem,1fr)]">
+        <section className="o-stage order-2 p-5 md:p-7 lg:order-1" aria-labelledby="working">
+          <StageTitle live={liveState} liveLabel={liveState === "live" ? "Live now" : liveState === "waiting" ? "Waiting on customers" : "Quiet"} right={<HeaderLink onClick={() => onTab("inbox")}>Inbox</HeaderLink>}>
+            <span id="working">BARRY is working</span>
+          </StageTitle>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
-        {/* What needs me */}
-        <section className="flex flex-col gap-3" aria-labelledby="needs-you">
-          <div className="flex items-center justify-between">
-            <h2 id="needs-you" className="flex items-center gap-2 text-[15px] font-semibold text-o-ink">
-              <IconTile name="shield" tone={queue.length ? "warn" : "neutral"} size={28} /> Needs you
-            </h2>
-            {queue.length > 0 && <HeaderLink onClick={() => onTab("actions")}>All actions</HeaderLink>}
-          </div>
-          <InterventionQueue items={queue} busyId={busyId} onAct={act} limit={showAll ? undefined : 3} compact />
-          {queue.length > 3 && !showAll && (
-            <button className={`${btn} w-full sm:w-auto`} onClick={() => setShowAll(true)}>
-              Show all {queue.length}
-            </button>
-          )}
-        </section>
-
-        {/* What BARRY is doing now */}
-        <Panel className="p-4 md:p-5">
-          <PanelHeader icon="pulse" title="BARRY is working" live={working.some((w) => w.state === "working") ? "live" : "waiting"} sub={working.length ? "Right now, from BARRY's open work." : "Nothing open — BARRY picks up the next message."} />
-          {working.length > 0 && (
-            <ul className="mt-3 space-y-1.5">
-              {working.map((w) => (
-                <li key={w.id} className="flex items-center gap-3 rounded-xl bg-o-sunken/60 px-3 py-2.5 ring-1 ring-inset ring-o-line">
-                  <LiveDot state={w.state === "working" ? "working" : w.state === "attention" ? "attention" : w.state === "blocked" ? "attention" : "waiting"} />
-                  <span className="flex-1 text-[13.5px] text-o-ink">{w.text}</span>
+          {lines.length > 0 && (
+            <ul className="mt-4 flex flex-wrap gap-x-5 gap-y-2">
+              {lines.map((l) => (
+                <li key={l.id} className="flex items-center gap-2 text-[14px] text-o-ink-2">
+                  <LiveDot state={l.state === "working" ? "working" : l.state === "blocked" ? "attention" : "waiting"} />
+                  {l.text}
                 </li>
               ))}
             </ul>
           )}
-          <div className="mt-4 flex items-center justify-between">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-o-faint">Live activity</p>
-            <HeaderLink onClick={() => onTab("inbox")}>Inbox</HeaderLink>
+
+          <div className="mt-6 flex flex-col gap-8">
+            {flows.length > 0 ? (
+              flows.slice(0, 2).map((f, i) => (
+                <div key={f.kind}>
+                  {i > 0 && <div className="o-hairline mb-8" />}
+                  <WorkflowFlow w={f} />
+                </div>
+              ))
+            ) : (
+              <div className="grid grid-cols-1 gap-5 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                <div>
+                  <p className="text-[15px] font-medium text-o-ink">No follow-ups running yet.</p>
+                  <p className="mt-1.5 text-[13.5px] leading-6 text-o-muted">When a payment link goes unpaid, a checkout is left behind or a deposit is missing, BARRY follows up under your rules — and you&apos;ll watch it here: who BARRY reached, who paid, who is still talking.</p>
+                </div>
+                <WhatsAppCard channels={ws.channels} wide />
+              </div>
+            )}
+            {flows.length > 2 && <p className="text-[12.5px] text-o-faint">+ {plural(flows.length - 2, "more workflow")} on Money.</p>}
           </div>
-          {feed.length === 0 ? (
-            <p className="mt-2 text-[13px] text-o-muted">Payments, follow-ups, approvals and handoffs appear here the moment BARRY records them.</p>
-          ) : (
-            <ul className="mt-1 -mx-1.5">
-              {feed.map((f) => (
-                <ActivityRow key={f.id} icon={f.icon} tone={f.tone} text={f.text} sub={f.sub} when={timeAgo(f.at)} onClick={f.conversationId ? () => onOpen(f.conversationId!) : undefined} />
-              ))}
-            </ul>
+
+          {hours.values.some((v) => v > 0) && (
+            <div className="mt-8">
+              <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-o-faint">Conversations today, by hour</p>
+              <Bars values={hours.values} labels={hours.labels} ariaLabel="Conversation activity by hour today" height={40} />
+            </div>
           )}
-        </Panel>
+        </section>
+
+        <aside className="order-1 flex flex-col gap-6 lg:sticky lg:top-20 lg:order-2">
+          <NeedsYouFloat ws={ws} act={act} busyId={busyId} onReview={(id) => onIntervention(id)} />
+          <section aria-labelledby="happened" className="px-1">
+            <StageTitle>
+              <span id="happened">Just happened</span>
+            </StageTitle>
+            <div className="mt-3">
+              <ActivityStream items={feed} onOpen={onOpen} empty="Payments, follow-ups, approvals and handoffs appear here the moment BARRY records them." />
+            </div>
+          </section>
+        </aside>
       </div>
 
-      {/* What BARRY did today */}
-      <Panel className="p-4 md:p-5">
-        <PanelHeader icon="barry" title="What BARRY did" sub={`${plural(t.conversations, "conversation")} ${ws.window.label} · ${t.completedOutcomes} verified outcomes${t.blockedOrFailed ? ` · ${t.blockedOrFailed} stopped or failed` : ""}`} right={<HeaderLink onClick={() => onTab("inbox")}>Conversations</HeaderLink>} />
-        <div className="mt-4 grid grid-cols-1 gap-5 md:grid-cols-2">
-          <ShareBar ariaLabel="Conversations handled by BARRY versus needing you" parts={[{ label: "Handled by BARRY", value: t.handledAutonomously, tone: "accent" }, { label: "Needed you", value: needed, tone: "warn" }]} />
-          {hours.values.some((v) => v > 0) ? (
-            <div>
-              <Bars values={hours.values} labels={hours.labels} ariaLabel="Conversation activity by hour today" height={52} />
-              <p className="mt-1.5 flex justify-between text-[11px] text-o-faint"><span>00:00</span><span>12:00</span><span>23:00</span></p>
-            </div>
-          ) : (
-            <p className="text-[13px] text-o-muted">The activity curve fills in as conversations happen today.</p>
-          )}
+      {/* Money in motion */}
+      <section aria-labelledby="motion">
+        <StageTitle right={<HeaderLink onClick={() => onTab("money")}>Money</HeaderLink>}>
+          <span id="motion" className="normal-case tracking-normal text-[17px] text-o-ink">Your business, in motion</span>
+        </StageTitle>
+        <div className="o-stage mt-3 px-4 py-1 md:px-6">
+          <MotionStrip ws={ws} onTab={onTab} />
         </div>
-      </Panel>
-
-      {/* From rule to result */}
-      <Panel className="p-4 md:p-5">
-        <PanelHeader icon="bolt" tone="violet" title="From your rules to real results" sub="What started the work, what BARRY did, and what the records verify." />
-        <div className="mt-4 flex flex-col gap-4">
-          {flows.length === 0 ? (
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-              <p className="text-[13px] leading-6 text-o-muted">When a payment link goes unpaid, a checkout is abandoned or a deposit is missing, BARRY follows up under your rules — and each run shows here as command → work → verified result.</p>
-              <WhatsAppCard channels={ws.channels} wide />
-            </div>
-          ) : (
-            flows.map((f) => (
-              <Flow
-                key={f.kind}
-                command={f.command}
-                commandBy={f.commandBy}
-                work={[
-                  { label: "Eligible", value: f.eligible },
-                  { label: "Contacted", value: f.contacted },
-                  { label: "Still open", value: f.open, tone: f.open ? "warn" : "muted" },
-                  ...(f.excluded ? [{ label: "Excluded / cancelled", value: f.excluded, tone: "muted" as const }] : []),
-                ]}
-                outcome={[
-                  { label: f.closedLabel, value: f.closed, tone: f.closed ? "ok" : "muted" },
-                  ...(hasMoney(f.recovered) ? [{ label: "Recovered after follow-up", value: formatMoney(f.recovered), tone: "ok" as const }] : []),
-                  ...(hasMoney(f.atStake) ? [{ label: "Still at stake", value: formatMoney(f.atStake), tone: "warn" as const }] : []),
-                ]}
-                note={f.testItems ? `${plural(f.testItems, "item")} on a simulated provider — counted above, never as money.` : undefined}
-              />
-            ))
-          )}
-        </div>
-      </Panel>
-
-      {/* Where money is moving */}
-      <Panel className="p-4 md:p-5">
-        <PanelHeader icon="money" tone="ok" title="Money in motion" sub="Where money is stuck, at risk or waiting — never counted as revenue." right={<HeaderLink onClick={() => onTab("money")}>All money</HeaderLink>} />
-        <div className="mt-4">
-          <MoneyInMotion items={ws.opportunities.items} summary={ws.opportunities.summary} onOpen={onOpen} onIntervention={onIntervention} limit={3} />
-        </div>
-      </Panel>
+      </section>
 
       {setupSteps.length > 0 && (
-        <Panel className="p-4 md:p-5">
-          <PanelHeader icon="spark" tone="violet" title="Unlock next" sub="What BARRY could do for you once it's set up." right={<HeaderLink href="/owner/train">Train BARRY</HeaderLink>} />
-          <ul className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
-            {setupSteps.map((s) => (
-              <li key={s.id} className="rounded-xl bg-o-sunken/60 px-3.5 py-3 ring-1 ring-inset ring-o-line">
-                <p className="flex items-center gap-2 text-[14px] font-medium text-o-ink">
-                  <Icon name="lock" size={15} className="text-o-violet" /> {s.title} <span className="text-[12px] font-normal text-o-faint">· {s.who === "you" ? "you" : "BARRY team"}</span>
-                </p>
-                <p className="mt-1 text-[13px] text-o-muted">Then BARRY can: {s.unlocks.join(", ")}</p>
-              </li>
-            ))}
-          </ul>
-        </Panel>
+        <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-o-muted">
+          <Icon name="lock" size={14} className="text-o-violet" />
+          <span className="text-o-ink-2">Unlock next:</span>
+          {setupSteps.map((s, i) => (
+            <span key={s.id}>
+              {s.title} → {s.unlocks.slice(0, 2).join(", ")}
+              {i < setupSteps.length - 1 ? " ·" : ""}
+            </span>
+          ))}
+          <Link href="/owner/train" className="font-medium text-o-accent hover:underline">Train BARRY</Link>
+        </p>
       )}
-      <p className="text-center text-[12px] text-o-faint">
-        <Link href="/owner/train" className="hover:text-o-ink-2">Train BARRY</Link> · <Link href="/owner/settings#plan" className="hover:text-o-ink-2">Your plan</Link>
-      </p>
     </div>
   );
 }

@@ -8,8 +8,9 @@ import { formatLocal } from "@/lib/format/time";
 import { hasMoney } from "@/lib/format/money";
 import { Empty, MoneyFigures, Pill, formatMoney, timeAgo, type Tone } from "../ui";
 import { MoneyInMotion, WatchingList } from "../operating";
-import { BigMetric, Flow, HeaderLink, Hero, Icon, Panel, PanelHeader, Segmented } from "../kit";
-import { LIFECYCLE, plural } from "./shared";
+import { HeaderLink, Hero, Icon, MotionStat, Panel, PanelHeader, Segmented, StageTitle } from "../kit";
+import { MotionStrip, WorkflowFlow } from "./live";
+import { LIFECYCLE } from "./shared";
 
 type Range = "today" | "7d" | "30d";
 
@@ -31,7 +32,6 @@ export function MoneyView({ ws, range, setRange, onOpen, onIntervention, loadedA
   const r = ws.revenue;
   const items = ws.revenueEvidence;
   const impact = financialImpact(r, []);
-  const s = ws.opportunities.summary;
   const flows = workflows(ws).filter((f) => f.kind === "unpaid_payment_followup" || f.kind === "abandoned_checkout_recovery" || f.kind === "booking_deposit_missing");
   const margins = !ws.plan?.name || ws.plan.marginsIncluded;
   const title = hasMoney(r.direct) ? (
@@ -41,8 +41,19 @@ export function MoneyView({ ws, range, setRange, onOpen, onIntervention, loadedA
   ) : (
     <>Nothing collected {ws.window.label} yet.</>
   );
+  const saved = margins ? (
+    <MotionStat icon="spark" tone="violet" label="Saved (realised)" value={hasMoney(impact.saved.realized) ? formatMoney(impact.saved.realized) : "—"} sub={impact.evidenceCount === 0 ? "Needs connected cost evidence" : "Only evidence-backed savings"} />
+  ) : (
+    <Link href="/owner/settings#plan" className="flex items-center gap-3 rounded-2xl px-1 py-3 transition hover:bg-o-sunken/40">
+      <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-o-violet/10 text-o-violet ring-1 ring-inset ring-o-violet/30"><Icon name="lock" size={18} /></span>
+      <span className="min-w-0">
+        <span className="block text-[13px] text-o-muted">Saved</span>
+        <span className="block text-[12.5px] leading-5 text-o-ink-2">BARRY Margins is part of BARRY Intelligence — not in your {ws.plan.name} plan. <span className="text-o-violet">See plan ›</span></span>
+      </span>
+    </Link>
+  );
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-8 md:gap-10">
       <Hero
         eyebrow={`Money · ${ws.business.name}${loadedAt ? ` · ${formatLocal(loadedAt.toISOString(), ws.business.timezone, loadedAt)}` : ""}`}
         title={title}
@@ -50,73 +61,73 @@ export function MoneyView({ ws, range, setRange, onOpen, onIntervention, loadedA
         right={<Segmented<Range> ariaLabel="Time range" value={range} onChange={setRange} options={[{ id: "today", label: "Today" }, { id: "7d", label: "7 days" }, { id: "30d", label: "30 days" }]} />}
       />
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-        <BigMetric label="Made" icon="money" iconTone="ok" tone={hasMoney(r.direct) ? "ok" : "ink"} value={hasMoney(r.direct) ? formatMoney(r.direct) : "—"} sub={`${plural(r.directPayments, "verified payment")}`} />
-        <BigMetric label="Recovered" icon="check" iconTone="ok" tone={hasMoney(r.recovered) ? "ok" : "ink"} value={hasMoney(r.recovered) ? formatMoney(r.recovered) : "—"} sub="Verified, after a failed or missed payment" />
-        <BigMetric label="Pending" icon="clock" iconTone="warn" value={hasMoney(r.potential) ? formatMoney(r.potential) : "—"} sub={`${plural(r.potentialItems, "open link or request", "open links or requests")} — not revenue`} />
-        <BigMetric label="At risk" icon="alert" iconTone={hasMoney(s.atRisk) ? "bad" : "neutral"} tone={hasMoney(s.atRisk) ? "bad" : "ink"} value={hasMoney(s.atRisk) ? formatMoney(s.atRisk) : "—"} sub={hasMoney(s.stuckWithYou) ? `${formatMoney(s.stuckWithYou)} waits on you` : "Nothing waits on you"} />
-        <div className="col-span-2 lg:col-span-1">
-          {margins ? (
-            <BigMetric label="Saved (realised)" icon="spark" iconTone="violet" value={hasMoney(impact.saved.realized) ? formatMoney(impact.saved.realized) : "—"} sub={impact.evidenceCount === 0 ? "Needs connected cost evidence" : "Only evidence-backed savings"} />
-          ) : (
-            <Link href="/owner/settings#plan" className="o-panel flex h-full flex-col justify-between rounded-2xl p-4 transition hover:shadow-o-glow md:p-5">
-              <span className="flex items-center gap-2 text-[13px] font-medium text-o-ink-2"><Icon name="lock" size={16} className="text-o-violet" /> Saved</span>
-              <span className="mt-3 text-[13px] leading-5 text-o-muted">BARRY Margins (cost intelligence and savings) is part of BARRY Intelligence — not in your {ws.plan.name} plan.</span>
-              <span className="mt-2 text-[12.5px] font-medium text-o-violet">See your plan ›</span>
-            </Link>
-          )}
+      <section aria-labelledby="in-motion">
+        <StageTitle>
+          <span id="in-motion" className="text-[17px] normal-case tracking-normal text-o-ink">Your business, in motion</span>
+        </StageTitle>
+        <div className="o-stage mt-3 px-4 py-1 md:px-6">
+          <MotionStrip ws={ws} extra={saved} />
         </div>
-      </div>
+        {ws.trend.currency && ws.trend.made.some((v) => v > 0) && <p className="mt-2 text-[12px] text-o-faint">Trend lines: verified {ws.trend.currency} per day, last 7 days. Test money never appears in them.</p>}
+      </section>
+
+      {flows.length > 0 && (
+        <section className="o-stage p-5 md:p-7" aria-labelledby="work-to-money">
+          <StageTitle live={flows.some((f) => f.open && f.state === "running") ? "live" : "off"} liveLabel={flows.some((f) => f.open && f.state === "running") ? "Live now" : undefined}>
+            <span id="work-to-money">From BARRY&apos;s work to money</span>
+          </StageTitle>
+          <p className="mt-1.5 text-[13px] text-o-muted">Your follow-up rules, who BARRY reached, and what the payment provider verified. Money appears only once it is verified.</p>
+          <div className="mt-6 flex flex-col gap-8">
+            {flows.map((f, i) => (
+              <div key={f.kind}>
+                {i > 0 && <div className="o-hairline mb-8" />}
+                <WorkflowFlow w={f} />
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {margins && (
-        <Panel className="p-4 md:p-5">
-          <PanelHeader icon="spark" tone="violet" title="BARRY Margins" sub="Savings move through four states; only REALISED counts as saved." />
-          <ol className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-4">
+        <section aria-labelledby="margins">
+          <StageTitle>
+            <span id="margins">BARRY Margins</span>
+          </StageTitle>
+          <p className="mt-1.5 text-[13px] text-o-muted">Savings move through four states; only REALISED counts as saved.</p>
+          <ol className="relative mt-5 grid grid-cols-2 gap-x-3 gap-y-5 md:grid-cols-4">
+            <span aria-hidden className="o-hairline absolute left-[6%] right-[6%] top-[7px] hidden md:block" />
             {([["Potential", impact.saved.potential, "Spotted in your cost evidence"], ["Proposed", impact.saved.proposed, "A concrete change is suggested"], ["Negotiated", impact.saved.negotiated, "Agreed, not yet in your books"], ["Realised", impact.saved.realized, "Proven by a later cost record"]] as const).map(([label, m, hint], i) => (
-              <li key={label} className={`rounded-xl px-3.5 py-3 ring-1 ring-inset ${i === 3 ? "bg-o-ok-bg/70 ring-o-ok-line" : "bg-o-sunken/60 ring-o-line"}`}>
-                <p className={`text-[11px] font-semibold uppercase tracking-[0.14em] ${i === 3 ? "text-o-ok" : "text-o-faint"}`}>{label}</p>
-                <p className={`mt-1 text-lg font-semibold tabular-nums ${i === 3 ? "text-o-ok" : "text-o-ink"}`}>{hasMoney(m) ? formatMoney(m) : "—"}</p>
+              <li key={label} className="relative">
+                <span aria-hidden className={`relative z-10 block h-[15px] w-[15px] rounded-full ring-[3px] ring-o-canvas ${i === 3 ? "bg-o-ok shadow-[0_0_12px_rgba(61,220,151,0.7)]" : "bg-o-line-strong"}`} />
+                <p className={`mt-3 text-[11px] font-semibold uppercase tracking-[0.14em] ${i === 3 ? "text-o-ok" : "text-o-faint"}`}>{label}</p>
+                <p className={`mt-1 text-[20px] font-semibold tabular-nums ${i === 3 ? "text-o-ok" : "text-o-ink"}`}>{hasMoney(m) ? formatMoney(m) : "—"}</p>
                 <p className="text-[12px] text-o-muted">{hint}</p>
               </li>
             ))}
           </ol>
-          {impact.evidenceCount === 0 && <p className="mt-3 text-[12.5px] text-o-muted">BARRY Margins needs connected cost evidence — nothing is connected yet, so there is nothing to save from. BARRY will not invent a saving.</p>}
-        </Panel>
+          {impact.evidenceCount === 0 && <p className="mt-4 text-[12.5px] text-o-muted">BARRY Margins needs connected cost evidence — nothing is connected yet, so there is nothing to save from. BARRY will not invent a saving.</p>}
+        </section>
       )}
 
-      {flows.length > 0 && (
-        <Panel className="p-4 md:p-5">
-          <PanelHeader icon="bolt" tone="violet" title="Recovery at work" sub="Your follow-up rules, what BARRY did, and what the payment provider verified." />
-          <div className="mt-4 flex flex-col gap-4">
-            {flows.map((f) => (
-              <Flow
-                key={f.kind}
-                command={f.command}
-                commandBy={f.commandBy}
-                work={[{ label: "Eligible", value: f.eligible }, { label: "Contacted", value: f.contacted }, { label: "Still open", value: f.open, tone: f.open ? "warn" : "muted" }]}
-                outcome={[{ label: f.closedLabel, value: f.closed, tone: f.closed ? "ok" : "muted" }, ...(hasMoney(f.recovered) ? [{ label: "Recovered after follow-up", value: formatMoney(f.recovered), tone: "ok" as const }] : []), ...(hasMoney(f.atStake) ? [{ label: "Still at stake", value: formatMoney(f.atStake), tone: "warn" as const }] : [])]}
-                note={f.testItems ? `${plural(f.testItems, "item")} on a simulated provider — never counted as money.` : undefined}
-              />
-            ))}
-          </div>
-        </Panel>
-      )}
-
-      <Panel className="p-4 md:p-5">
+      <section>
         <PanelHeader icon="money" tone="ok" title="Money in motion" sub="What can be done about it — each line says whose move it is." />
         <div className="mt-4">
           <MoneyInMotion items={ws.opportunities.items} summary={ws.opportunities.summary} onOpen={onOpen} onIntervention={onIntervention} />
         </div>
-      </Panel>
+      </section>
 
-      <Panel className="p-4 md:p-5">
+      <div className="o-hairline" />
+
+      <section>
         <PanelHeader icon="clock" title="Unpaid follow-ups" sub="Every unpaid link BARRY is watching, with whose move it is now." />
         <div className="mt-3">
           <WatchingList items={ws.obligations.filter((o) => o.kind === "unpaid_payment_followup" || o.kind === "booking_deposit_missing")} onOpen={onOpen} empty="No unpaid link or missing deposit is being watched." />
         </div>
-      </Panel>
+      </section>
 
-      <Panel className="p-4 md:p-5">
+      <div className="o-hairline" />
+
+      <section>
         <PanelHeader icon="receipt" title="Every amount, explained" sub="The state each amount is in, and the record that puts it there." />
         <div className="mt-3">
           {items.length === 0 ? (
@@ -168,7 +179,7 @@ export function MoneyView({ ws, range, setRange, onOpen, onIntervention, loadedA
           </p>
         )}
         <p className="mt-1 text-[12px] text-o-faint">Converted: {r.purchaseIntentConversations ? `${r.convertedConversations} of ${r.purchaseIntentConversations}` : "—"} conversations with buying intent · {r.lostOpportunities} lost</p>
-      </Panel>
+      </section>
 
       {ws.approvals.some((a) => !(a.actionable || a.lifecycle === "held")) && (
         <Panel className="p-4 md:p-5">

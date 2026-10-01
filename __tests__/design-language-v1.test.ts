@@ -221,7 +221,7 @@ describe("live activity read model", () => {
     const conversations = await getConversationStore().listByBusiness(g.business.id);
     const approvals = withLifecycle(await getBackend().listApprovals(g.business.id), new Map(conversations.map((c) => [c.id, c])));
     const payments = await getBackend().listPaymentRequests(g.business.id);
-    const events = businessActivity({ graph: g, conversations, approvals, payments, audit: [{ id: "ctl_1", at: NOW.toISOString(), by: "founder", reason: "why", change: { pauseConsequentialWrites: true }, before: { ...DEFAULT_CONTROLS }, after: { ...DEFAULT_CONTROLS, pauseConsequentialWrites: true } }] });
+    const events = businessActivity({ graph: g, conversations, approvals, payments, audit: [{ id: "ctl_1", at: new Date().toISOString(), by: "founder", reason: "why", change: { pauseConsequentialWrites: true }, before: { ...DEFAULT_CONTROLS }, after: { ...DEFAULT_CONTROLS, pauseConsequentialWrites: true } }] });
     expect(events.length).toBeGreaterThanOrEqual(3);
     for (let i = 1; i < events.length; i++) expect(events[i - 1].at >= events[i].at).toBe(true);
     const effect = events.find((e) => e.kind === "effect");
@@ -269,7 +269,7 @@ describe("focus, presence and the fleet row", () => {
     expect(businessPresence(status({ approvalsActive: 2 })).state).toBe("needs_you");
     expect(businessPresence(status()).state).toBe("working");
     expect(fleetPresence(fleetOf([status({ approvalsHeld: 1 })])).state).toBe("needs_you");
-    expect(ownerPresence({ interventions: [], health: { ai: { status: "unavailable" } as never, systems: [] }, today: { conversations: 0 } as never, obligations: [], capabilities: {} as never }).state).toBe("degraded");
+    expect(ownerPresence({ interventions: [], health: { ai: { status: "unavailable" } as never, systems: [] }, today: { conversations: 0 } as never, obligations: [], capabilities: {} as never, outcomes: [], approvals: [], conversations: [] }).state).toBe("unavailable");
   });
   it("the fleet row renders without a table, with a status word and the business-timezone time", () => {
     const html = renderToString(createElement(BusinessRow, { b: status({ name: "Rina Studio", conversations: { total: 3, last24h: 1, latestActivityAt: "2026-09-30T11:05:00.000Z" } }), now: NOW }));

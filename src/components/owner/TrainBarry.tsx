@@ -23,9 +23,9 @@ const FIELD: Record<string, { tone: Tone; meaning: string }> = {
 };
 const AVAIL: Record<string, { tone: Tone; word: string }> = { can_do_now: { tone: "good", word: "Can do now" }, after_setup: { tone: "warn", word: "After setup" }, simulator_only: { tone: "info", word: "Simulator only" }, not_supported: { tone: "neutral", word: "Not supported" } };
 
-function Fold({ summary, children }: { summary: string; children: React.ReactNode }) {
+function Fold({ summary, children, open, id }: { summary: string; children: React.ReactNode; open?: boolean; id?: string }) {
   return (
-    <details className="group rounded-xl bg-o-sunken/60 px-3.5 py-3 ring-1 ring-inset ring-o-line">
+    <details id={id} open={open} className="group rounded-xl bg-o-sunken/60 px-3.5 py-3 ring-1 ring-inset ring-o-line">
       <summary className="flex cursor-pointer list-none items-center justify-between gap-2 text-[13.5px] font-medium text-o-ink-2">
         {summary}
         <Icon name="chevron" size={14} className="text-o-faint transition group-open:rotate-90" />
@@ -43,6 +43,20 @@ export function TrainBarry({ api }: { api: Api }) {
   const [busy, setBusy] = useState(false);
   const [factsText, setFactsText] = useState("");
   const [doc, setDoc] = useState({ name: "", text: "" });
+  // A rule typed into the command bar ("Don't offer more than 5% today") arrives as ?rule=… and goes
+  // through the same reviewed path as any document: BARRY reads it, the owner sees how it will be
+  // applied, and only then does the runtime enforce it.
+  const [fromCommand, setFromCommand] = useState(false);
+  useEffect(() => {
+    const rule = new URLSearchParams(window.location.search).get("rule")?.trim();
+    if (!rule) return;
+    const t = setTimeout(() => {
+      setDoc({ name: "Rule from the command bar", text: rule.slice(0, 1000) });
+      setFromCommand(true);
+      document.getElementById("teach-rule")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 0);
+    return () => clearTimeout(t);
+  }, []);
   const load = useCallback(() => {
     if (!businessId || !authorized) return;
     call<TrainBarryView>(`/api/learnbusiness/train?businessId=${encodeURIComponent(businessId)}`)
@@ -182,7 +196,7 @@ export function TrainBarry({ api }: { api: Api }) {
             <textarea value={factsText} onChange={(e) => setFactsText(e.target.value)} rows={3} placeholder={"hours.opening = Sun–Thu 10:00–19:00\npolicy.returns = 14 days with a receipt"} className={`${input} min-h-0 py-2 text-sm`} />
             <button className={`${btn} mt-2`} disabled={busy || !factsText.trim()} onClick={() => { const facts = factsText.split("\n").map((l) => l.split("=")).filter((p) => p.length >= 2).map(([k, ...v]) => ({ key: k.trim(), value: v.join("=").trim() })); void act("/api/learnbusiness/sources", { type: "owner_facts", facts, approved: true }).then(() => setFactsText("")); }}>Teach these facts</button>
           </Fold>
-          <Fold summary="Give BARRY a document (paste its text)">
+          <Fold id="teach-rule" open={fromCommand || undefined} summary={fromCommand ? "Your rule from the command bar — let BARRY read it" : "Give BARRY a document (paste its text)"}>
             <input value={doc.name} onChange={(e) => setDoc({ ...doc, name: e.target.value })} placeholder="Document name (e.g. Store policy)" className={`${input} mb-2 text-sm`} />
             <textarea value={doc.text} onChange={(e) => setDoc({ ...doc, text: e.target.value })} rows={4} placeholder="Paste the document text" className={`${input} min-h-0 py-2 text-sm`} />
             <button className={`${btn} mt-2`} disabled={busy || !doc.name.trim() || !doc.text.trim()} onClick={() => void act("/api/learnbusiness/sources", { type: "document", name: doc.name, text: doc.text, approved: true }).then(() => setDoc({ name: "", text: "" }))}>Let BARRY read it</button>

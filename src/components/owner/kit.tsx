@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
+import type { PresenceState } from "@/lib/owner/presence-model";
 
 /**
  * THE OWNER CONTROL-ROOM KIT — reusable visual primitives built on the `o-*` tokens: icons, BARRY's
@@ -66,17 +67,56 @@ export function IconTile({ name, tone = "accent", size = 36 }: { name: IconName;
 
 // ── BARRY's presence ─────────────────────────────────────────────────────────────────────────────
 
-/** BARRY's orb. `alive` only when BARRY is actually running (real state), never as decoration. */
-export function Orb({ size = 36, alive = true }: { size?: number; alive?: boolean }) {
+const ORB: Record<PresenceState, { c1: string; c2: string; eye: string; spin: boolean; halo: "fast" | "slow" | "none" }> = {
+  working: { c1: "#5b8cff", c2: "#9b7bff", eye: "#cfe4ff", spin: true, halo: "fast" },
+  needs_you: { c1: "#f6b54a", c2: "#5b8cff", eye: "#ffe9c4", spin: true, halo: "fast" },
+  completed: { c1: "#3ddc97", c2: "#5b8cff", eye: "#d4fff0", spin: false, halo: "fast" },
+  waiting: { c1: "#4a6bd1", c2: "#6d5bd0", eye: "#b7c9f5", spin: false, halo: "slow" },
+  idle: { c1: "#4a6bd1", c2: "#6d5bd0", eye: "#b7c9f5", spin: false, halo: "slow" },
+  degraded: { c1: "#f6b54a", c2: "#ff7a7a", eye: "#ffd9b0", spin: false, halo: "slow" },
+  unavailable: { c1: "#ff7a7a", c2: "#5f6884", eye: "#5f6884", spin: false, halo: "none" },
+  paused: { c1: "#5f6884", c2: "#3a4361", eye: "#5f6884", spin: false, halo: "none" },
+};
+
+/**
+ * BARRY'S PRESENCE — the visual representation of the intelligence running the business. Its state
+ * comes from ownerPresence() (real records): the ring turns only while BARRY has open work or a
+ * decision waits, the halo breathes slowly while waiting, and it dims when BARRY is unavailable.
+ */
+export function BarryOrb({ size = 36, state = "idle", label }: { size?: number; state?: PresenceState; label?: string }) {
+  const o = ORB[state];
+  const ring = Math.max(1.5, size * 0.03);
   return (
-    <span className={`relative inline-flex shrink-0 items-center justify-center rounded-full ${alive ? "o-orb" : ""}`} style={{ width: size, height: size, background: "radial-gradient(circle at 35% 30%, #c9d6ff 0%, #6d8dff 32%, #3a2fb8 70%, #120d3d 100%)" }} aria-hidden>
-      <span className="absolute rounded-full bg-[#0b1030]" style={{ width: size * 0.58, height: size * 0.42, top: size * 0.3 }} />
-      <span className="absolute flex gap-[18%]" style={{ top: size * 0.42, width: size * 0.34 }}>
-        <span className="rounded-full bg-[#c9d6ff]" style={{ width: size * 0.09, height: size * 0.09 }} />
-        <span className="ml-auto rounded-full bg-[#c9d6ff]" style={{ width: size * 0.09, height: size * 0.09 }} />
+    <span role={label ? "img" : undefined} aria-label={label} aria-hidden={label ? undefined : true} className="relative inline-flex shrink-0 items-center justify-center" style={{ width: size, height: size }}>
+      {o.halo !== "none" && <span className={`absolute rounded-full ${o.halo === "fast" ? "o-orb-halo" : "o-orb-halo-slow"}`} style={{ inset: -size * 0.28, background: `radial-gradient(circle, ${o.c1}88 0%, ${o.c2}33 38%, transparent 68%)` }} />}
+      <span
+        className={`absolute inset-0 rounded-full ${o.spin ? "o-orb-spin" : ""}`}
+        style={{
+          background: `conic-gradient(from 200deg, transparent 0deg, ${o.c1} 70deg, ${o.c2} 150deg, transparent 230deg, ${o.c1}66 300deg, transparent 360deg)`,
+          WebkitMask: `radial-gradient(farthest-side, transparent calc(100% - ${ring + 1}px), #000 calc(100% - ${ring}px))`,
+          mask: `radial-gradient(farthest-side, transparent calc(100% - ${ring + 1}px), #000 calc(100% - ${ring}px))`,
+        }}
+      />
+      <span
+        className="absolute rounded-full"
+        style={{
+          inset: size * 0.07,
+          background: "radial-gradient(circle at 36% 26%, #2b3672 0%, #0e1436 52%, #05071a 100%)",
+          boxShadow: `inset 0 0 0 ${Math.max(1, size * 0.012)}px ${o.c1}99, inset 0 ${-size * 0.08}px ${size * 0.2}px ${o.c1}55, 0 0 ${size * 0.35}px ${o.c1}55`,
+        }}
+      />
+      <span className="absolute flex items-center" style={{ gap: size * 0.13, top: size * 0.4 }}>
+        {[0, 1].map((i) => (
+          <span key={i} className={state === "unavailable" || state === "paused" ? "" : "o-orb-eye"} style={{ width: size * 0.105, height: size * 0.16, borderRadius: size, background: o.eye, boxShadow: `0 0 ${size * 0.09}px ${o.eye}, 0 0 ${size * 0.2}px ${o.c1}` }} />
+        ))}
       </span>
     </span>
   );
+}
+
+/** Small orb (brand, avatars). `alive` = BARRY is actually working (real state), never decoration. */
+export function Orb({ size = 36, alive = true }: { size?: number; alive?: boolean }) {
+  return <BarryOrb size={size} state={alive ? "working" : "idle"} />;
 }
 
 export type LiveState = "live" | "working" | "waiting" | "attention" | "off";
@@ -299,5 +339,210 @@ export function Hero({ eyebrow, title, lead, right }: { eyebrow?: ReactNode; tit
       </div>
       {right}
     </header>
+  );
+}
+
+// ── Living interface ─────────────────────────────────────────────────────────────────────────────
+
+/** A section label in the living interface ("BARRY IS WORKING · Live now"). */
+export function StageTitle({ children, live, liveLabel, right }: { children: ReactNode; live?: LiveState; liveLabel?: ReactNode; right?: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <h2 className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[12px] font-semibold uppercase tracking-[0.22em] text-o-ink-2">
+        {live && <LiveDot state={live} />}
+        {children}
+        {liveLabel && <span className={`text-[11.5px] font-medium normal-case tracking-normal ${live === "live" || live === "working" ? "text-o-ok" : live === "attention" ? "text-o-warn" : "text-o-muted"}`}>{liveLabel}</span>}
+      </h2>
+      {right}
+    </div>
+  );
+}
+
+export type FlowBranch = { label: ReactNode; value: number | string; sub?: ReactNode; tone: "ok" | "accent" | "warn" | "muted"; live?: boolean };
+
+const BRANCH_TONE = {
+  ok: { stroke: "#3ddc97", text: "text-o-ok", ring: "ring-o-ok-line", bg: "bg-o-ok-bg/70", glow: "shadow-[0_0_28px_-8px_rgba(61,220,151,0.55)]" },
+  accent: { stroke: "#7c9bff", text: "text-o-ink", ring: "ring-o-accent/35", bg: "bg-o-accent/10", glow: "shadow-[0_0_28px_-10px_rgba(91,140,255,0.6)]" },
+  warn: { stroke: "#f6b54a", text: "text-o-warn", ring: "ring-o-warn-line", bg: "bg-o-warn-bg/70", glow: "" },
+  muted: { stroke: "#3a4565", text: "text-o-muted", ring: "ring-o-line", bg: "bg-o-sunken/60", glow: "" },
+} as const;
+
+/**
+ * THE LIVE OPERATION — input → BARRY activity → branches → outcomes. The source is the real cohort
+ * (e.g. 3 unpaid payment links); each branch is a real count from the records (paid and verified,
+ * followed up and waiting, queued, stopped). Paths stream only for branches that are still live.
+ */
+export function LiveFlow({ icon, title, sub, source, sourceLabel, branches, state, note }: { icon: IconName; title: ReactNode; sub?: ReactNode; source: number; sourceLabel: ReactNode; branches: FlowBranch[]; state?: ReactNode; note?: ReactNode }) {
+  const id = useId().replace(/:/g, "");
+  const n = Math.max(branches.length, 1);
+  return (
+    <div className="o-rise">
+      <div className="flex items-start gap-3">
+        <span className="relative inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-o-accent/15 text-o-accent ring-1 ring-inset ring-o-accent/40 shadow-[0_0_30px_-6px_rgba(91,140,255,0.7)]">
+          <Icon name={icon} size={20} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h3 className="flex flex-wrap items-center gap-x-2 text-[16px] font-semibold tracking-tight text-o-ink">
+            {title}
+            {state}
+          </h3>
+          {sub && <p className="mt-0.5 text-[13px] text-o-muted">{sub}</p>}
+        </div>
+      </div>
+
+      {/* Desktop / tablet: source → luminous paths → branches */}
+      <div className="mt-4 hidden items-stretch sm:grid sm:grid-cols-[7.5rem_minmax(3rem,1fr)_minmax(0,15rem)]">
+        <div className="flex flex-col justify-center">
+          <p className="text-[44px] font-semibold leading-none tracking-tight tabular-nums text-o-ink">{source}</p>
+          <p className="mt-1.5 text-[12.5px] leading-4 text-o-muted">{sourceLabel}</p>
+        </div>
+        <div className="relative">
+        <svg aria-hidden viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 h-full w-full overflow-visible">
+          <defs>
+            {branches.map((b, i) => (
+              <linearGradient key={i} id={`${id}g${i}`} x1="0" x2="1" y1="0" y2="0">
+                <stop offset="0" stopColor="#5b8cff" stopOpacity="0.9" />
+                <stop offset="0.55" stopColor="#9b7bff" stopOpacity="0.9" />
+                <stop offset="1" stopColor={BRANCH_TONE[b.tone].stroke} stopOpacity={b.tone === "muted" ? 0.5 : 1} />
+              </linearGradient>
+            ))}
+          </defs>
+          {branches.map((b, i) => {
+            const y = ((i + 0.5) / n) * 100;
+            const d = `M0,50 C45,50 50,${y} 100,${y}`;
+            const dim = b.tone === "muted" || b.value === 0;
+            return (
+              <g key={i} opacity={dim ? 0.35 : 1}>
+                <path d={d} fill="none" stroke={`url(#${id}g${i})`} strokeWidth={7} strokeOpacity={0.12} vectorEffect="non-scaling-stroke" />
+                <path d={d} fill="none" stroke={`url(#${id}g${i})`} strokeWidth={1.6} vectorEffect="non-scaling-stroke" />
+                {b.live && !dim && <path d={d} fill="none" stroke="#e3ebff" strokeWidth={1.6} strokeLinecap="round" vectorEffect="non-scaling-stroke" className="o-flow-live" />}
+              </g>
+            );
+          })}
+        </svg>
+        </div>
+        <ul className="flex flex-col justify-between gap-2">
+          {branches.map((b, i) => (
+            <BranchNode key={i} b={b} />
+          ))}
+        </ul>
+      </div>
+
+      {/* Phones: the same flow, vertical */}
+      <div className="mt-3 sm:hidden">
+        <p className="flex items-baseline gap-2">
+          <span className="text-[36px] font-semibold leading-none tracking-tight tabular-nums text-o-ink">{source}</span>
+          <span className="text-[13px] text-o-muted">{sourceLabel}</span>
+        </p>
+        <ul className="relative mt-3 flex flex-col gap-2 pl-5">
+          <span aria-hidden className="o-vline absolute bottom-3 left-[7px] top-0" />
+          {branches.map((b, i) => (
+            <li key={i} className="relative">
+              <span aria-hidden className="absolute -left-[13px] top-1/2 h-px w-3" style={{ background: BRANCH_TONE[b.tone].stroke, opacity: b.tone === "muted" ? 0.4 : 0.9 }} />
+              <BranchNode b={b} as="div" />
+            </li>
+          ))}
+        </ul>
+      </div>
+      {note && <p className="mt-3 text-[12px] text-o-faint">{note}</p>}
+    </div>
+  );
+}
+
+function BranchNode({ b, as: As = "li" }: { b: FlowBranch; as?: "li" | "div" }) {
+  const t = BRANCH_TONE[b.tone];
+  return (
+    <As className={`flex items-center gap-3 rounded-2xl px-3.5 py-2.5 ring-1 ring-inset ${t.ring} ${t.bg} ${b.value !== 0 ? t.glow : ""}`}>
+      <span className={`text-[18px] font-semibold leading-none tabular-nums ${b.value === 0 ? "text-o-faint" : t.text}`}>{b.value}</span>
+      <span className="min-w-0">
+        <span className={`block text-[13px] leading-4 ${b.value === 0 ? "text-o-faint" : "text-o-ink-2"}`}>{b.label}</span>
+        {b.sub && <span className={`mt-0.5 block text-[12.5px] font-semibold leading-4 ${t.text}`}>{b.sub}</span>}
+      </span>
+      {b.live && b.value !== 0 && <span className="ml-auto"><LiveDot state="working" /></span>}
+    </As>
+  );
+}
+
+/** A real-data trend line. Nothing to draw (all zero / under two points) → renders nothing, never a decorative squiggle. */
+export function Sparkline({ values, tone = "ok", width = 96, height = 30, ariaLabel }: { values: number[]; tone?: "ok" | "accent" | "bad" | "violet"; width?: number; height?: number; ariaLabel: string }) {
+  const id = useId().replace(/:/g, "");
+  if (values.length < 2 || values.every((v) => v === 0)) return null;
+  const max = Math.max(...values);
+  const pts = values.map((v, i) => [(i / (values.length - 1)) * width, height - 3 - (v / max) * (height - 6)] as const);
+  const line = pts.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const color = { ok: "#3ddc97", accent: "#5b8cff", bad: "#ff7a7a", violet: "#9b7bff" }[tone];
+  return (
+    <svg role="img" aria-label={ariaLabel} width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="shrink-0 overflow-visible">
+      <defs>
+        <linearGradient id={`${id}a`} x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0" stopColor={color} stopOpacity="0.35" />
+          <stop offset="1" stopColor={color} stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <path d={`${line} L${width},${height} L0,${height} Z`} fill={`url(#${id}a)`} />
+      <path d={line} fill="none" stroke={color} strokeWidth={1.6} strokeLinejoin="round" strokeLinecap="round" style={{ filter: `drop-shadow(0 0 4px ${color})` }} />
+      <circle cx={pts[pts.length - 1][0]} cy={pts[pts.length - 1][1]} r={2.4} fill={color} />
+    </svg>
+  );
+}
+
+/** One figure in a motion strip: icon disc, label, big value, real sparkline. No box — the strip draws the dividers. */
+export function MotionStat({ icon, tone, label, value, sub, spark, onClick }: { icon: IconName; tone: "ok" | "accent" | "warn" | "bad" | "violet" | "neutral"; label: string; value: ReactNode; sub?: ReactNode; spark?: ReactNode; onClick?: () => void }) {
+  const disc = { ok: "bg-o-ok/12 text-o-ok ring-o-ok/30 shadow-[0_0_24px_-6px_rgba(61,220,151,0.6)]", accent: "bg-o-accent/12 text-o-accent ring-o-accent/30 shadow-[0_0_24px_-6px_rgba(91,140,255,0.6)]", violet: "bg-o-violet/12 text-o-violet ring-o-violet/30 shadow-[0_0_24px_-6px_rgba(155,123,255,0.6)]", warn: "bg-o-warn/12 text-o-warn ring-o-warn/30", bad: "bg-o-bad/12 text-o-bad ring-o-bad/30 shadow-[0_0_24px_-8px_rgba(255,122,122,0.6)]", neutral: "bg-o-neutral-bg text-o-muted ring-o-line" }[tone];
+  const inner = (
+    <>
+      <span className={`inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full ring-1 ring-inset ${disc}`}>
+        <Icon name={icon} size={20} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[13px] text-o-muted">{label}</span>
+        <span className="mt-0.5 block truncate text-[24px] font-semibold leading-tight tracking-tight tabular-nums text-o-ink">{value}</span>
+        {sub && <span className="block truncate text-[12px] text-o-faint">{sub}</span>}
+      </span>
+      {spark}
+    </>
+  );
+  const cls = "flex w-full min-w-0 items-center gap-3 px-1 py-3 text-left";
+  return onClick ? (
+    <button type="button" onClick={onClick} className={`${cls} rounded-2xl transition hover:bg-o-sunken/40`}>
+      {inner}
+    </button>
+  ) : (
+    <div className={cls}>{inner}</div>
+  );
+}
+
+/**
+ * "Tell BARRY what to do…" — the primary input. The same command model serves the web today and the
+ * Owner WhatsApp channel / voice later; the bar itself never executes anything — the caller interprets
+ * the command against BARRY's real capabilities (see lib/owner/command).
+ */
+export function CommandBar({ value, onChange, onSubmit, busy, state = "idle", placeholder = "Tell BARRY what to do…", suggestions, onSuggestion, autoFocus }: { value: string; onChange: (v: string) => void; onSubmit: (v: string) => void; busy?: boolean; state?: PresenceState; placeholder?: string; suggestions?: { text: string; icon: IconName }[]; onSuggestion?: (text: string) => void; autoFocus?: boolean }) {
+  return (
+    <div>
+      <form
+        className="o-command flex items-center gap-2 p-1.5 pl-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (value.trim()) onSubmit(value);
+        }}
+      >
+        <BarryOrb size={40} state={busy ? "working" : state} />
+        <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} aria-label="Tell BARRY what to do" maxLength={1000} autoFocus={autoFocus} className="min-w-0 flex-1 bg-transparent px-2 py-2.5 text-[16px] text-o-ink placeholder:text-o-muted focus:outline-none md:text-[17px]" />
+        <button className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-o-accent text-white shadow-[0_0_24px_-4px_rgba(91,140,255,0.8)] transition hover:brightness-110 disabled:opacity-40 disabled:shadow-none" disabled={busy || !value.trim()} aria-label="Send to BARRY">
+          {busy ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" /> : <Icon name="arrow" size={19} />}
+        </button>
+      </form>
+      {suggestions && suggestions.length > 0 && (
+        <div className="-mx-1 mt-3 flex gap-2 overflow-x-auto px-1 pb-1">
+          {suggestions.map((s) => (
+            <button key={s.text} type="button" disabled={busy} onClick={() => onSuggestion?.(s.text)} className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-2xl bg-o-surface/70 px-3.5 py-2 text-[13px] text-o-ink-2 ring-1 ring-inset ring-o-line transition hover:text-o-ink hover:ring-o-accent/40 disabled:opacity-50">
+              <Icon name={s.icon} size={15} className="text-o-accent" />
+              {s.text}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

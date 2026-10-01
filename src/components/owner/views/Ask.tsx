@@ -5,8 +5,11 @@ import { useEffect, useRef, useState } from "react";
 import type { OwnerWorkspace } from "@/lib/owner/service";
 import type { OwnerAnswerLinks } from "@/lib/owner/ask";
 import type { useOwnerApi } from "../useOwnerApi";
-import { Empty, input } from "../ui";
-import { Hero, Icon, IconTile, Orb, Panel, PanelHeader, type IconName } from "../kit";
+import { Empty } from "../ui";
+import { interpretCommand, type OwnerCommand } from "@/lib/owner/command";
+import { ownerPresence } from "@/lib/owner/presence-model";
+import { CommandReply } from "./live";
+import { BarryOrb, CommandBar, Hero, Icon, IconTile, Panel, PanelHeader, type IconName } from "../kit";
 import { WhatsAppCard } from "../OwnerShell";
 
 type Api = ReturnType<typeof useOwnerApi>;
@@ -31,11 +34,16 @@ export function AskView({ api, ws, onIntervention, onOpen, initialQuestion }: { 
   const [q, setQ] = useState(initialQuestion ?? "");
   const [busy, setBusy] = useState(false);
   const [history, setHistory] = useState<Answer[]>([]);
+  const [cmd, setCmd] = useState<OwnerCommand | null>(null);
+  const presence = ownerPresence(ws);
   const asked = useRef(false);
   useEffect(() => {
     if (!initialQuestion?.trim() || asked.current) return;
-    asked.current = true;
-    const t = setTimeout(() => void ask(initialQuestion), 0);
+    // The guard is set when the question actually fires, so a cancelled timer (StrictMode re-run) still asks once.
+    const t = setTimeout(() => {
+      asked.current = true;
+      void ask(initialQuestion);
+    }, 0);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialQuestion]);
@@ -55,23 +63,28 @@ export function AskView({ api, ws, onIntervention, onOpen, initialQuestion }: { 
   const canNow = ws.capabilities.now.slice(0, 6);
   return (
     <div className="flex flex-col gap-6">
-      <Hero eyebrow={`BARRY · ${ws.business.name}`} title={<>Ask BARRY about <span className="o-hero-type">your business.</span></>} lead="Answers come only from your records, and link to the exact thing to decide, open or unlock." />
+      <Hero eyebrow={`BARRY · ${ws.business.name}`} title={<>Ask BARRY about <span className="o-hero-type">your business.</span></>} lead="Answers come only from your records, and link to the exact thing to decide, open or unlock. Tell him what to do and he'll show you how it really runs." />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
         <div className="flex flex-col gap-4">
-          <form
-            className="o-panel flex items-center gap-2 rounded-2xl p-2 pl-3 shadow-o-glow"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void ask(q);
+          <CommandBar
+            value={q}
+            onChange={setQ}
+            busy={busy}
+            state={presence.state}
+            placeholder="Ask BARRY, or tell him what to do…"
+            onSubmit={(v) => {
+              const c = interpretCommand(v, ws, "web");
+              if (c.intent.kind === "ask") {
+                setCmd(null);
+                void ask(c.text);
+              } else {
+                setCmd(c);
+                setQ("");
+              }
             }}
-          >
-            <Orb size={28} alive={busy} />
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="BARRY, what should I focus on today?" aria-label="Ask BARRY" className={`${input} min-w-0 flex-1 bg-transparent ring-0 focus:ring-0`} maxLength={1000} />
-            <button className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-o-accent text-white transition hover:brightness-110 disabled:opacity-40" disabled={busy || !q.trim()} aria-label="Ask">
-              {busy ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" /> : <Icon name="send" size={18} />}
-            </button>
-          </form>
+          />
+          {cmd && <CommandReply cmd={cmd} ws={ws} onIntervention={onIntervention} onClose={() => setCmd(null)} />}
 
           {history.length === 0 ? (
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -98,7 +111,7 @@ export function AskView({ api, ws, onIntervention, onOpen, initialQuestion }: { 
           {busy && (
             <Panel className="p-4">
               <p className="flex items-center gap-2 text-[13px] text-o-muted">
-                <Orb size={18} /> BARRY is reading your records…
+                <BarryOrb size={18} state="working" /> BARRY is reading your records…
               </p>
             </Panel>
           )}

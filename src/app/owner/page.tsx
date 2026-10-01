@@ -95,19 +95,20 @@ function OwnerDashboard() {
     }
   }, [wantBusiness, businessId, api, router]);
 
-  const setTab = (t: Tab, conversation?: string | null) => {
+  const setTab = (t: Tab, conversation?: string | null, question?: string) => {
     const q = new URLSearchParams();
     q.set("tab", t);
     if (conversation) q.set("conversation", conversation);
+    if (question) q.set("q", question);
     router.replace(`/owner?${q.toString()}`, { scroll: false });
   };
   const goToConversation = (conversationId: string) => {
     setOpenConversation(conversationId);
     setTab("inbox", conversationId);
   };
-  const goToIntervention = (id: string) => {
+  const goToIntervention = (id?: string) => {
     setTab("actions");
-    if (typeof document !== "undefined") setTimeout(() => document.querySelector(`[data-intervention="${CSS.escape(id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 80);
+    if (id && typeof document !== "undefined") setTimeout(() => document.querySelector(`[data-intervention="${CSS.escape(id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 80);
   };
   const onNavigate = (section: OwnerSection) => {
     if ((TABS as string[]).includes(section)) {
@@ -194,10 +195,10 @@ function OwnerDashboard() {
         </div>
       )}
       {!authorized && api.session && <p className="mt-2 text-sm text-o-muted">Once you&apos;re signed in, this is where you see what BARRY is doing, what needs you and where money moves.</p>}
-      {ws && tab === "today" && <TodayView ws={ws} act={act} busyId={busyId} loading={loading} onOpen={goToConversation} onIntervention={goToIntervention} onTab={setTab} />}
+      {ws && tab === "today" && <TodayView ws={ws} act={act} busyId={busyId} loading={loading} onOpen={goToConversation} onIntervention={goToIntervention} onTab={setTab} onAsk={(q) => setTab("ask", null, q)} />}
       {ws && tab === "inbox" && <InboxView ws={ws} api={api} act={act} busyId={busyId} open={openConversation} setOpen={goToConversation} onIntervention={goToIntervention} loadedAt={loadedAt} />}
       {ws && tab === "money" && <MoneyView ws={ws} range={range} setRange={setRange} onOpen={goToConversation} onIntervention={goToIntervention} loadedAt={loadedAt} />}
-      {ws && tab === "ask" && <AskView api={api} ws={ws} onIntervention={goToIntervention} onOpen={goToConversation} initialQuestion={params.get("q") ?? ""} />}
+      {ws && tab === "ask" && <AskView key={params.get("q") ?? ""} api={api} ws={ws} onIntervention={goToIntervention} onOpen={goToConversation} initialQuestion={params.get("q") ?? ""} />}
       {ws && tab === "actions" && <ActionsView ws={ws} act={act} busyId={busyId} onOpen={goToConversation} />}
     </OwnerShell>
   );

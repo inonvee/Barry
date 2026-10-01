@@ -14,6 +14,10 @@ import { ActionsView } from "@/components/owner/views/Actions";
 import { WhatsAppCard } from "@/components/owner/OwnerShell";
 import { Flow } from "@/components/owner/kit";
 import { conversationState } from "@/components/owner/views/shared";
+import { todayStory } from "@/components/owner/views/Today";
+import { interpretCommand, commandSuggestions } from "@/lib/owner/command";
+import { ownerPresence } from "@/lib/owner/presence-model";
+import { revenueTrend } from "@/lib/owner/service";
 import type { Obligation } from "@/lib/operator/obligation-model";
 import { ScriptedModel, conv, isolatedRetailer } from "./support/scripted-model";
 
@@ -94,8 +98,11 @@ describe("the control room renders from a real workspace", () => {
     const today = renderToString(createElement(TodayView, { ws, act: noop, busyId: null, loading: false, onOpen: noop, onIntervention: noop, onTab: noop }));
     expect(today).toMatch(/BARRY is working/);
     expect(today).toMatch(/Waiting on 1 customer/);
-    expect(today).toMatch(/From your rules to real results/);
-    expect(today).toMatch(/Follow up unpaid payment links/);
+    expect(today).toMatch(/Following up unpaid payment links/); // the live operation, as a flow
+    expect(today).toMatch(/Your business, in motion/);
+    expect(today).toMatch(/Tell BARRY what to do/);
+    expect(today).toMatch(/Nothing needs you/);
+    expect(today).not.toMatch(/BARRY made/); // nothing verified yet → no money headline
     await getBackend().simulatePaymentOutcome(paymentRequestId, "paid");
     await handlePaymentOutcome(g, id, paymentRequestId, "paid");
     ws = await getOwnerWorkspace(g);
@@ -129,5 +136,69 @@ describe("the control room renders from a real workspace", () => {
     expect(html).toMatch(/BARRY works/);
     expect(html).toMatch(/Verified result/);
     expect(html).toMatch(/Paid \(verified\)/);
+  });
+});
+
+describe("the living interface: commands, presence and story come from records", () => {
+  const operator = (included = true, enabled = true) => ({ included, rules: [{ kind: "abandoned_checkout_recovery" as const, enabled, afterHours: 4, maxAttempts: 1 }, { kind: "unpaid_payment_followup" as const, enabled: true, afterHours: 24, maxAttempts: 2 }] });
+  const base = { obligations: [ob({ kind: "abandoned_checkout_recovery", attempts: 1, status: "waiting_on_customer" })], interventions: [] as OwnerWorkspace["interventions"] };
+
+  it("an operation command maps to the live workflow and whether it runs — it never starts anything", () => {
+    const c = interpretCommand("Recover today's abandoned carts", { ...base, operator: operator() });
+    expect(c.intent).toMatchObject({ kind: "operation", workflow: "abandoned_checkout_recovery", state: "running", rule: { afterHours: 4, maxAttempts: 1 } });
+    expect(c.intent.kind === "operation" && c.intent.live?.waiting).toBe(1);
+    expect(interpretCommand("Recover abandoned carts", { ...base, operator: operator(false) }).intent).toMatchObject({ kind: "operation", state: "not_in_plan" });
+    expect(interpretCommand("Recover abandoned carts", { ...base, operator: operator(true, false) }).intent).toMatchObject({ kind: "operation", state: "off" });
+    expect(interpretCommand("Follow up with unpaid orders", { ...base, operator: operator() }).intent).toMatchObject({ kind: "operation", workflow: "unpaid_payment_followup" });
+  });
+
+  it("questions go to Ask, rules to Train BARRY, decisions to the card, campaigns are refused; the same object for WhatsApp", () => {
+    const ws = { ...base, operator: operator() };
+    expect(interpretCommand("Tell me who needs me", ws).intent.kind).toBe("ask");
+    expect(interpretCommand("Check customers waiting more than 2 hours", ws).intent.kind).toBe("ask");
+    expect(interpretCommand("How many abandoned carts today?", ws).intent.kind).toBe("ask");
+    expect(interpretCommand("Don't offer more than 5% today", ws).intent).toEqual({ kind: "teach", text: "Don't offer more than 5% today" });
+    expect(interpretCommand("Approve it", ws).intent).toEqual({ kind: "decide" });
+    expect(interpretCommand("Run a campaign to all customers", ws).intent.kind).toBe("unsupported");
+    const web = interpretCommand("Recover abandoned carts", ws, "web");
+    const wa = interpretCommand("Recover abandoned carts", ws, "whatsapp");
+    expect(wa.intent).toEqual(web.intent);
+    expect(wa.source).toBe("whatsapp");
+    expect(commandSuggestions({ ...ws, operator: operator(false) })).not.toContain("Recover abandoned checkouts");
+  });
+
+  it("presence is derived: needs you > just finished > working > waiting > ready", () => {
+    const empty = { interventions: [], health: { ai: { status: "healthy" } as never, systems: [] }, today: { conversations: 0, handledAutonomously: 0 } as never, obligations: [], capabilities: {} as never, outcomes: [], approvals: [], conversations: [] } as Parameters<typeof ownerPresence>[0];
+    const now = new Date("2026-10-01T12:00:00.000Z");
+    expect(ownerPresence(empty, now).state).toBe("idle");
+    expect(ownerPresence({ ...empty, obligations: [ob({ conversationId: "c9" })] }, now)).toMatchObject({ state: "waiting", text: "Waiting on 1 customer" });
+    expect(ownerPresence({ ...empty, obligations: [ob({ nextMove: "barry_can_act", status: "actionable" })] }, now).state).toBe("working");
+    const paid = { kind: "paid", at: "2026-10-01T11:55:00.000Z", conversationId: "c1", label: "Paid", evidence: "verified", amount: 420, currency: "ILS" } as OwnerWorkspace["outcomes"][number];
+    expect(ownerPresence({ ...empty, outcomes: [paid] }, now).state).toBe("completed");
+    expect(ownerPresence({ ...empty, outcomes: [{ ...paid, at: "2026-10-01T09:00:00.000Z" }] }, now).state).toBe("idle");
+  });
+
+  it("the 7-day trend holds only verified real money, in one currency, per local day", () => {
+    const now = new Date("2026-10-01T12:00:00.000Z");
+    const t = revenueTrend([
+      { category: "collected", amount: 420, currency: "ILS", at: "2026-10-01T08:00:00.000Z", simulated: false },
+      { category: "recovered", amount: 420, currency: "ILS", at: "2026-10-01T08:00:00.000Z", simulated: false },
+      { category: "collected", amount: 100, currency: "ILS", at: "2026-09-29T08:00:00.000Z", simulated: false },
+      { category: "collected", amount: 999, currency: "ILS", at: "2026-10-01T08:00:00.000Z", simulated: true },
+      { category: "open_opportunity", amount: 50, currency: "ILS", at: "2026-10-01T08:00:00.000Z", simulated: false },
+    ], "Asia/Jerusalem", now);
+    expect(t.currency).toBe("ILS");
+    expect(t.days).toHaveLength(7);
+    expect(t.made).toEqual([0, 0, 0, 0, 100, 0, 420]);
+    expect(t.recovered).toEqual([0, 0, 0, 0, 0, 0, 420]);
+    expect(revenueTrend([], "UTC", now)).toMatchObject({ currency: null, made: [0, 0, 0, 0, 0, 0, 0] });
+  });
+
+  it("the Today story never claims money that isn't verified", async () => {
+    const { g } = await pendingPayment();
+    const ws = await getOwnerWorkspace(g);
+    const story = todayStory(ws);
+    expect(story.did.figure).not.toMatch(/₪/);
+    expect(story.working).toMatch(/^He's working on 1 thing\. Nothing needs you\.$/);
   });
 });

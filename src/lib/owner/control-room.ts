@@ -89,10 +89,20 @@ export function activityFeed(ws: Pick<OwnerWorkspace, "outcomes" | "approvals" |
 export type Workflow = {
   kind: ObligationKind;
   command: string;
+  /** The same work as it is happening ("Recovering abandoned checkouts"). */
+  title: string;
+  /** What the cohort is ("abandoned checkouts"). */
+  noun: string;
   commandBy: string;
+  /** running = the rule is on and the plan includes follow-ups; off = the owner's rule turns it off; not_in_plan = the plan has no proactive follow-ups. */
+  state: "running" | "off" | "not_in_plan";
   eligible: number;
   contacted: number;
   open: number;
+  /** Open, already followed up — waiting for the customer. */
+  waiting: number;
+  /** Open, not contacted yet (not due, or scheduled). */
+  queued: number;
   excluded: number;
   closed: number;
   closedLabel: string;
@@ -103,13 +113,20 @@ export type Workflow = {
   testItems: number;
 };
 
-const PROACTIVE: { kind: ObligationKind; command: string; closedLabel: string; paidClosure: boolean }[] = [
-  { kind: "unpaid_payment_followup", command: "Follow up unpaid payment links", closedLabel: "Paid (verified)", paidClosure: true },
-  { kind: "abandoned_checkout_recovery", command: "Recover abandoned checkouts", closedLabel: "Came back to checkout", paidClosure: false },
-  { kind: "booking_deposit_missing", command: "Collect missing deposits", closedLabel: "Deposit paid (verified)", paidClosure: true },
-  { kind: "appointment_reminder", command: "Remind customers before appointments", closedLabel: "Appointment reached", paidClosure: false },
-  { kind: "failed_action_recovery", command: "Retry what didn't go through", closedLabel: "Done on retry", paidClosure: false },
+export const PROACTIVE: { kind: ObligationKind; command: string; title: string; closedLabel: string; paidClosure: boolean }[] = [
+  { kind: "unpaid_payment_followup", command: "Follow up unpaid payment links", title: "Following up unpaid payment links", closedLabel: "Paid (verified)", paidClosure: true },
+  { kind: "abandoned_checkout_recovery", command: "Recover abandoned checkouts", title: "Recovering abandoned checkouts", closedLabel: "Came back to checkout", paidClosure: false },
+  { kind: "booking_deposit_missing", command: "Collect missing deposits", title: "Collecting missing deposits", closedLabel: "Deposit paid (verified)", paidClosure: true },
+  { kind: "appointment_reminder", command: "Remind customers before appointments", title: "Reminding customers before appointments", closedLabel: "Appointment reached", paidClosure: false },
+  { kind: "failed_action_recovery", command: "Retry what didn't go through", title: "Retrying what didn't go through", closedLabel: "Done on retry", paidClosure: false },
 ];
+
+/** Whether the proactive operator runs this kind of work for this business (rule + plan). Unknown operator → running. */
+export function workflowState(kind: ObligationKind, operator?: OwnerWorkspace["operator"]): Workflow["state"] {
+  if (!operator) return "running";
+  if (!operator.included) return "not_in_plan";
+  return operator.rules.find((r) => r.kind === kind)?.enabled === false ? "off" : "running";
+}
 
 const add = (m: Money, c: string | undefined, v: number | undefined) => {
   if (!c || v === undefined) return;
@@ -117,7 +134,7 @@ const add = (m: Money, c: string | undefined, v: number | undefined) => {
 };
 
 /** COMMAND → BARRY → OUTCOME for each proactive rule that has recorded work. */
-export function workflows(ws: Pick<OwnerWorkspace, "obligations">): Workflow[] {
+export function workflows(ws: Pick<OwnerWorkspace, "obligations"> & Partial<Pick<OwnerWorkspace, "operator">>): Workflow[] {
   const out: Workflow[] = [];
   for (const w of PROACTIVE) {
     const items = ws.obligations.filter((o) => o.kind === w.kind && o.status !== "superseded");
@@ -132,10 +149,15 @@ export function workflows(ws: Pick<OwnerWorkspace, "obligations">): Workflow[] {
     out.push({
       kind: w.kind,
       command: w.command,
+      title: w.title,
+      noun: word(w.kind, 2),
       commandBy: "Your follow-up rule",
+      state: workflowState(w.kind, ws.operator),
       eligible: items.length,
       contacted: items.filter((o) => (o.attempts ?? 0) > 0).length,
       open: items.filter(isOpen).length,
+      waiting: items.filter((o) => isOpen(o) && (o.attempts ?? 0) > 0).length,
+      queued: items.filter((o) => isOpen(o) && !(o.attempts ?? 0)).length,
       excluded: items.filter((o) => o.status === "cancelled").length,
       closed: items.filter((o) => o.status === "completed").length,
       closedLabel: w.closedLabel,

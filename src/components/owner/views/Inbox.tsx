@@ -9,7 +9,7 @@ import { formatLocal } from "@/lib/format/time";
 import type { useOwnerApi } from "../useOwnerApi";
 import { Empty, Pill, Skeleton, StateNotice, quiet, timeAgo } from "../ui";
 import { InterventionCard, NextExpectedAction, OpportunityRow, StoryView, type Act } from "../operating";
-import { Hero, Icon, LiveDot, Panel, PanelHeader, Segmented } from "../kit";
+import { BarryOrb, Hero, Icon, LiveDot, Panel, PanelHeader, Segmented } from "../kit";
 import { CHANNEL, CONVERSATION_STATE, LIFECYCLE, OUTCOME, conversationState, plural, type ConversationState } from "./shared";
 
 type Api = ReturnType<typeof useOwnerApi>;
@@ -66,35 +66,38 @@ export function InboxView({ ws, api, act, busyId, open, setOpen, onIntervention,
             {rows.length === 0 ? (
               <Empty title={ws.conversations.length === 0 ? "No conversations yet" : "Nothing here"}>{ws.conversations.length === 0 ? "Once customers write to BARRY, every conversation appears here with its state and what BARRY did." : "No conversation is in this state."}</Empty>
             ) : (
-              <ul className="flex flex-col gap-2">
+              <ul className="o-stage divide-y divide-o-line/70 overflow-hidden">
                 {rows.map(({ c, state }) => {
                   const st = CONVERSATION_STATE[state];
+                  const ring = { good: "ring-o-ok/50", warn: "ring-o-warn/60", bad: "ring-o-bad/60", info: "ring-o-accent/50", neutral: "ring-o-line-strong" }[st.tone];
+                  const word = { good: "text-o-ok", warn: "text-o-warn", bad: "text-o-bad", info: "text-o-accent", neutral: "text-o-muted" }[st.tone];
                   return (
                     <li key={c.id}>
-                      <button onClick={() => setOpen(c.id)} className={`o-panel w-full rounded-2xl px-4 py-3.5 text-left transition hover:shadow-o-glow ${open === c.id ? "shadow-o-glow" : ""}`}>
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="flex min-w-0 items-center gap-2">
-                            <LiveDot state={st.live} />
+                      <button onClick={() => setOpen(c.id)} aria-current={open === c.id ? "true" : undefined} className={`flex w-full items-start gap-3 px-4 py-3.5 text-left transition hover:bg-o-sunken/50 ${open === c.id ? "bg-o-accent/10" : ""}`}>
+                        <span className={`relative mt-0.5 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-o-raised to-o-sunken text-[14px] font-semibold text-o-ink-2 ring-2 ${ring}`}>
+                          {c.customer.replace(/[^\p{L}]/gu, "").slice(0, 1).toUpperCase() || "?"}
+                          <span className="absolute -bottom-0.5 -right-0.5 rounded-full bg-o-canvas p-[3px]"><LiveDot state={st.live} /></span>
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="flex items-center justify-between gap-2">
                             <span className="truncate text-[14.5px] font-semibold text-o-ink">{c.customer}</span>
+                            <span className="shrink-0 text-[12px] text-o-faint">{timeAgo(c.lastActivityAt)}</span>
                           </span>
-                          <span className="shrink-0 text-[12px] text-o-faint">{timeAgo(c.lastActivityAt)}</span>
-                        </div>
-                        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                          <Pill tone={st.tone}>{st.label}</Pill>
-                          <span className="text-[12px] text-o-faint">{CHANNEL[c.channel]}</span>
-                          {c.barryActions > 0 && <span className="text-[12px] text-o-muted">· BARRY did {plural(c.barryActions, "thing")}</span>}
-                          {c.outcomes.slice(0, 2).map((o) => (
-                            <Pill key={o} tone={OUTCOME[o].tone} icon={false}>
-                              {OUTCOME[o].label}
-                            </Pill>
-                          ))}
-                        </div>
-                        {c.lastMessage && (
-                          <p className="mt-1.5 truncate text-[13px] text-o-muted">
-                            {c.lastMessage.from === "barry" ? <span className="text-o-accent">BARRY · </span> : ""}
-                            {c.lastMessage.text}
-                          </p>
-                        )}
+                          <span className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[12.5px]">
+                            <span className={`font-medium ${word}`}>{st.label}</span>
+                            <span className="text-o-faint">· {CHANNEL[c.channel]}</span>
+                            {c.barryActions > 0 && <span className="text-o-faint">· BARRY did {plural(c.barryActions, "thing")}</span>}
+                            {c.outcomes.slice(0, 2).map((o) => (
+                              <span key={o} className={OUTCOME[o].tone === "good" ? "text-o-ok" : "text-o-muted"}>· {OUTCOME[o].label}</span>
+                            ))}
+                          </span>
+                          {c.lastMessage && (
+                            <span className="mt-1 block truncate text-[13px] text-o-muted">
+                              {c.lastMessage.from === "barry" ? <span className="text-o-accent">BARRY · </span> : ""}
+                              {c.lastMessage.text}
+                            </span>
+                          )}
+                        </span>
                       </button>
                     </li>
                   );
@@ -107,9 +110,11 @@ export function InboxView({ ws, api, act, busyId, open, setOpen, onIntervention,
           {open ? (
             <ConversationPanel key={open} id={open} api={api} ws={ws} act={act} busyId={busyId} onBack={() => setOpen("")} onIntervention={onIntervention} loadedAt={loadedAt} />
           ) : (
-            <Panel className="hidden p-6 lg:block">
-              <Empty title="Pick a conversation">You&apos;ll see what the customer wanted, what BARRY did, where it stands and what happens next — before the messages.</Empty>
-            </Panel>
+            <div className="o-stage hidden flex-col items-center px-8 py-12 text-center lg:flex">
+              <BarryOrb size={56} state="idle" />
+              <p className="mt-4 text-[15px] font-semibold text-o-ink">Pick a conversation</p>
+              <p className="mt-1.5 max-w-sm text-[13.5px] leading-6 text-o-muted">You&apos;ll see what the customer wanted, what BARRY did, where it stands and what happens next — before the messages.</p>
+            </div>
           )}
         </div>
       </div>
