@@ -181,7 +181,7 @@ describe("CHECKPOINTS 4–7 — cost to serve and unit economics", () => {
     expect(recs[0].estimatedCostUsd).toBeCloseTo((1000 * 0.15 + 1000 * 0.075 + 300 * 0.6) / 1e6, 8);
     expect(recs[1].estimatedCostUsd).toBeNull();
     const cost = costToServe({ period: monthPeriod(new Date()), records: [], usage: await listModelUsage(id), support: [] });
-    expect(cost.model).toMatchObject({ calls: 2, unpricedCalls: 1, inputTokens: 2500, rateCardVersion: "rates-2026-10-v1" });
+    expect(cost.model).toMatchObject({ calls: 2, unpricedCalls: 1, inputTokens: 2500, rateCardVersion: "rates-2026-10-v2" });
     expect(cost.lines.find((l) => l.category === "ai_model")).toMatchObject({ basis: "estimated" });
     // Calls outside a metered turn are not counted (never attributed to a business by guess).
     meterModelCall({ model: "gpt-4o-mini", role: "composer", inputTokens: 1, outputTokens: 1, cachedTokens: 0, reasoningTokens: 0, providerReported: true });
