@@ -10,6 +10,7 @@ import { detectStack, stackFactKey } from "./stack";
 import { resolveCapabilityProfiles } from "@/lib/capabilities";
 import { approveSource, recordSourceRead } from "./sources";
 import { classifyChange, recordLearningChanges, type LearningChange } from "./relearn";
+import { compileDiscountAuthority, DISCOUNT_AUTHORITY_KEYS, HARD_MAX_AUTO_DISCOUNT_PCT } from "@/lib/policy/effective-rules";
 
 /**
  * Learn Business: owner-approved URL -> bounded safe fetch -> parse ->
@@ -144,6 +145,21 @@ export async function runLearning(input: {
   return { run, workspace: await getLearningWorkspace(input.graph) };
 }
 
+/**
+ * An owner's rule that BARRY ENFORCES must stay enforceable: replacing an operational discount rule with
+ * words that don't compile into one limit would silently drop the owner's rule. Nothing is stored; the
+ * owner gets the one clarifying question, and the runtime keeps the current rule.
+ */
+function guardOperationalRule(prior: LearnedFactRecord | undefined, key: string, value: string): void {
+  if (!(DISCOUNT_AUTHORITY_KEYS as readonly string[]).includes(key)) return;
+  const next = compileDiscountAuthority(value);
+  if (next.ok) return;
+  const priorOperational = prior && prior.ownerVerified && (prior.status === "verified" || prior.status === "corrected") && compileDiscountAuthority(prior.value);
+  if (!priorOperational || !priorOperational.ok) return;
+  const ask = next.reason === "above_hard_limit" ? `What is the most BARRY may give without asking you (up to ${HARD_MAX_AUTO_DISCOUNT_PCT}%)?` : "What is the ONE most BARRY may give without asking you (for example 5%)?";
+  throw new LearnBusinessInputError(`BARRY keeps your current rule (${priorOperational.pct}%): ${next.detail} ${ask}`);
+}
+
 export async function reviewLearnedFact(input: {
   businessId: string;
   factId: string;
@@ -163,6 +179,7 @@ export async function reviewLearnedFact(input: {
     case "correct": {
       const value = input.value?.trim();
       if (!value || value.length > 500) throw new LearnBusinessInputError("A corrected value is required");
+      guardOperationalRule(fact, fact.key, value);
       return backend.upsertLearnedFact({
         ...base,
         value,
@@ -190,6 +207,7 @@ export async function answerOwnerQuestion(input: { businessId: string; key: stri
   if (!value || value.length > 1000) throw new LearnBusinessInputError("An answer is required");
   const backend = getBackend();
   const prior = (await backend.listLearnedFacts(input.businessId)).find((f) => f.key === key);
+  guardOperationalRule(prior, key, value);
   const now = new Date().toISOString();
   return backend.upsertLearnedFact({
     businessId: input.businessId,

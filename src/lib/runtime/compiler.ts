@@ -301,22 +301,31 @@ function planCommerceGoal(graph: BusinessGraph, known: Record<string, string>, o
   // Only a discount the RUNTIME granted (policy-allowed or owner-approved, on this cart) ever prices a
   // checkout — never the customer's ask or the model's belief.
   const granted = readGrantedDiscount(known);
+  // A PRODUCT-scoped grant (asked before the cart existed) applies only to that product's lines, at the
+  // price it was granted for — the checkout tool re-reads the cart and fails closed if the price changed.
+  const discount =
+    granted && granted.cartId === cartId
+      ? { discountPct: granted.pct, discountItem: granted.item }
+      : granted?.productId
+        ? { discountPct: granted.pct, discountItem: granted.item, discountProductId: granted.productId, ...(typeof granted.unitAmount === "number" ? { discountUnitAmount: granted.unitAmount } : {}), ...(granted.variant ? { discountVariant: granted.variant } : {}) }
+        : {};
   return finalizeAction(
     "createCommerceCheckout",
     // expectedTotal lets policy judge the real amount; the tool refuses if the provider's total differs.
-    { cartId, ...(total ? { expectedTotal: total, amount: total.amount } : {}), ...(granted && granted.cartId === cartId ? { discountPct: granted.pct, discountItem: granted.item } : {}) },
+    { cartId, ...(total ? { expectedTotal: total, amount: total.amount } : {}), ...discount },
     "payment",
     "completePurchase"
   );
 }
 
-export type GrantedDiscount = { pct: number; item: string; cartId: string };
+/** A runtime-granted discount: on a cart, or (asked before any cart) on one product at one unit price. */
+export type GrantedDiscount = { pct: number; item: string; cartId?: string; productId?: string; unitAmount?: number; currency?: string; variant?: Record<string, string> };
 
 export function readGrantedDiscount(known: Record<string, string>): GrantedDiscount | undefined {
   try {
     const raw = known[SCRATCH_KEYS.discountGranted];
     const g = raw ? (JSON.parse(raw) as GrantedDiscount) : undefined;
-    return g && typeof g.pct === "number" && g.pct > 0 && typeof g.item === "string" && typeof g.cartId === "string" ? g : undefined;
+    return g && typeof g.pct === "number" && g.pct > 0 && typeof g.item === "string" && (typeof g.cartId === "string" || typeof g.productId === "string") ? g : undefined;
   } catch {
     return undefined;
   }
@@ -331,18 +340,23 @@ export function readGrantedDiscount(known: Record<string, string>): GrantedDisco
 function planDiscountGrant(ir: BarryIR, known: Record<string, string>, options: CompileOptions): CompileOutcome | undefined {
   const pct = ir.constraints.discountPct;
   const cartId = known[SCRATCH_KEYS.commerceCartId];
-  if (!pct || pct <= 0 || pct >= 100 || !cartId || ir.withdrawsRequest) return undefined;
+  if (!pct || pct <= 0 || pct >= 100 || ir.withdrawsRequest) return undefined;
   if (known[SCRATCH_KEYS.paid] || known[SCRATCH_KEYS.commerceOrderId]) return undefined;
   const mutating = ir.commerce && ["select", "replace", "change_variant", "change_quantity", "remove"].includes(ir.commerce.intent);
   if (mutating) return undefined;
+  const lines = options.cartLines ?? [];
+  // No cart (or nothing in it): the discount is asked on a PRODUCT — grounded in the real catalog first.
+  // (Only for a commerce request about an item — a search or an offer/booking is never re-read as one.)
+  if (!cartId || (options.cartLines && lines.length === 0)) return ir.commerce && !["search", "checkout"].includes(ir.commerce.intent) ? planProductDiscount(ir, pct, known, options) : undefined;
   const already = readGrantedDiscount(known);
   if (already && already.cartId === cartId && already.pct === pct) return undefined;
-  const lines = options.cartLines ?? [];
   // The item it applies to: the line the customer named (grounded exactly), else the only line, else the whole cart.
   let item = "the whole cart";
   if (ir.commerce?.subject?.trim()) {
     const g = groundCartSubject({ ...ir.commerce, intent: "change_quantity" }, known, options);
     if (options.debug) options.debug.cartSubject = g;
+    // Named, not in the cart, but a real catalog product: the discount is asked on that product.
+    if (!g.line && g.basis === "not_in_cart" && groundNamedProduct(ir.commerce, known, options).product) return planProductDiscount(ir, pct, known, options);
     if (!g.line) return { kind: "cart_subject_unresolved", subject: ir.commerce.subject, reason: g.basis === "ambiguous" ? "ambiguous" : "not_in_cart", inCart: lines.map((l) => l.title), stage: "offer_selection" };
     item = g.line.title;
   } else if (lines.length === 1) {
@@ -354,6 +368,54 @@ function planDiscountGrant(ir: BarryIR, known: Record<string, string>, options: 
     { cartId, discountPct: pct, item, ...(total ? { currency: total.currency, listAmount: total.amount } : {}) },
     "offer_selection",
     "completePurchase"
+  );
+}
+
+const parsePrice = (p: string): { amount: number; currency: string } | undefined => {
+  const m = /^\s*(\d+(?:\.\d+)?)\s+([A-Za-z]{3})\s*$/.exec(p);
+  return m ? { amount: Number(m[1]), currency: m[2].toUpperCase() } : undefined;
+};
+const optionsCarry = (options: Record<string, string>, wanted: Record<string, string> | undefined) => {
+  if (!wanted) return true;
+  const have = Object.fromEntries(Object.entries(options).map(([k, v]) => [k.toLowerCase(), v.toLowerCase()]));
+  return Object.entries(wanted).every(([k, v]) => have[k.toLowerCase()] === String(v).toLowerCase());
+};
+
+/**
+ * A discount asked on a PRODUCT before any cart exists ("10% off <a named item>?"): the name
+ * is grounded to exactly one real catalog product (never invented); the price the terms are made on is
+ * the one price the matching variants share — when variants differ in price and none was named, the
+ * customer is asked only for that option. The result is a grantDiscount on that product, decided by
+ * policy like any discount: within the limit it is granted, above it the owner approves EXACT terms.
+ * It never adds to a cart and never starts a checkout.
+ */
+function planProductDiscount(ir: BarryIR, pct: number, known: Record<string, string>, options: CompileOptions): CompileOutcome | undefined {
+  const lastIds = known[SCRATCH_KEYS.commerceLastProductIds]?.split(",").filter(Boolean) ?? [];
+  const commerce = ir.commerce;
+  let productId: string | undefined;
+  if (commerce?.subject?.trim()) {
+    const named = resolveNamedProduct(commerce, known, options);
+    if (!named.productId) return unresolvedNamedAdd(named.grounding, options);
+    productId = named.productId;
+  } else {
+    productId = commerce ? resolveShownProduct(commerce, known) : known[SCRATCH_KEYS.commercePendingProductId] || (lastIds.length === 1 ? lastIds[0] : undefined);
+  }
+  const product = productId ? [...(options.shownProducts ?? []), ...(options.namedProducts ?? [])].find((p) => p.id === productId) : undefined;
+  if (!productId || !product) return { kind: "clarify_reference", available: lastIds.length, stage: "offer_selection" };
+  const wanted = commerce?.variant && Object.keys(commerce.variant).length > 0 ? commerce.variant : undefined;
+  const matching = product.variants.filter((v) => optionsCarry(v.options, wanted));
+  const askOption = (available: Record<string, string>[]): CompileOutcome => ({ kind: "ask_variant", productTitle: product.title, ...(wanted ? { requested: wanted } : {}), availableOptions: available, stage: "offer_selection" });
+  if (matching.length === 0) return askOption(product.variants.map((v) => v.options));
+  const prices = [...new Map(matching.map((v) => parsePrice(v.price)).filter((x): x is { amount: number; currency: string } => Boolean(x)).map((x) => [`${x.amount}:${x.currency}`, x])).values()];
+  if (prices.length !== 1 || matching.some((v) => !parsePrice(v.price))) return askOption(matching.map((v) => v.options));
+  const already = readGrantedDiscount(known);
+  if (already && already.productId === productId && already.pct === pct && already.unitAmount === prices[0].amount) return undefined;
+  // The variant is part of the terms only when it is what made the price unique.
+  const pricedByVariant = wanted && new Set(product.variants.map((v) => v.price)).size > 1;
+  return finalizeAction(
+    "grantDiscount",
+    { productId, discountPct: pct, item: product.title, currency: prices[0].currency, listAmount: prices[0].amount, ...(pricedByVariant ? { variant: wanted } : {}) },
+    "offer_selection"
   );
 }
 

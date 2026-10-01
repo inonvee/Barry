@@ -13,12 +13,14 @@ import type { TrainBarryView } from "@/lib/learn-business/train";
  */
 
 type Api = ReturnType<typeof useOwnerApi>;
+const FIELD: Record<string, Status> = { active: "ok", understood_only: "neutral", replaced: "neutral", needs_review: "attention", blocked: "blocked" };
 const AVAIL: Record<string, { status: Status; word: string }> = { can_do_now: { status: "ok", word: "Can do now" }, after_setup: { status: "not_ready", word: "After setup" }, simulator_only: { status: "simulator", word: "Simulator only" }, not_supported: { status: "neutral", word: "Not supported" } };
 
 export function TrainBarry({ api }: { api: Api }) {
   const { businessId, call, authorized } = api;
   const [view, setView] = useState<TrainBarryView | null>(null);
   const [error, setError] = useState("");
+  const [actionError, setActionError] = useState("");
   const [busy, setBusy] = useState(false);
   const [factsText, setFactsText] = useState("");
   const [doc, setDoc] = useState({ name: "", text: "" });
@@ -38,9 +40,9 @@ export function TrainBarry({ api }: { api: Api }) {
       const r = await call<{ train?: TrainBarryView }>(path, { body: { businessId, ...body } });
       if (r.train) setView(r.train);
       else load();
-      setError("");
+      setActionError("");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "failed");
+      setActionError(e instanceof Error ? e.message : "failed");
     } finally {
       setBusy(false);
     }
@@ -50,6 +52,7 @@ export function TrainBarry({ api }: { api: Api }) {
   if (!view) return <div className="rounded-2xl bg-white p-5"><Skeleton lines={4} /></div>;
   return (
     <div className="flex flex-col gap-5">
+      {actionError && <StateNotice tone="bad" title="BARRY didn't save that">{actionError}</StateNotice>}
       <Section title="What needs your confirmation" subtitle={view.needsConfirmation.length ? "One question each. BARRY keeps your approved values until you decide." : "Nothing waits on you."}>
         {view.needsConfirmation.length > 0 && (
           <ul className="divide-y divide-[#f2f4f7]">
@@ -68,11 +71,24 @@ export function TrainBarry({ api }: { api: Api }) {
         )}
       </Section>
 
-      <Section title="What BARRY understands" subtitle={`${view.counts.understands} things BARRY acts on. Each says where it came from and whether you approved it.`}>
+      {view.rules.length > 0 && (
+        <Section title="Rules BARRY enforces" subtitle="The policy engine decides with exactly these. Above a limit, you approve the exact terms.">
+          <ul className="divide-y divide-[#f2f4f7]">
+            {view.rules.map((r) => (
+              <li key={r.revision} className="flex flex-col gap-0.5 py-2 text-[13px]">
+                <span className="flex flex-wrap items-center gap-2"><StatusPill status="ok">{r.statusWords}</StatusPill><span className="font-medium text-[#101828]">{r.headline}</span></span>
+                <span className="text-[12px] text-[#667085]">{r.source}</span>
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
+
+      <Section title="What BARRY understands" subtitle={`${view.counts.active} of these are active — BARRY runs on them. “Understood only” is on record but doesn't change what BARRY does.`}>
         <ul className="divide-y divide-[#f2f4f7]">
-          {view.understands.slice(0, 12).map((u) => (
-            <li key={u.key} className="flex flex-col gap-0.5 py-2 text-[13px]">
-              <span><span className="font-medium text-[#101828]">{u.label}</span>: {u.value}</span>
+          {view.understands.slice(0, 12).map((u, i) => (
+            <li key={`${u.key}:${i}`} className="flex flex-col gap-0.5 py-2 text-[13px]">
+              <span className="flex flex-wrap items-center gap-2"><StatusPill status={FIELD[u.status] ?? "neutral"}>{u.statusWords}</StatusPill><span><span className="font-medium text-[#101828]">{u.label}</span>: {u.value}</span></span>
               <span className="text-[12px] text-[#667085]">{u.why}{u.freshness !== "n/a" ? ` · ${u.freshness}` : ""}</span>
             </li>
           ))}

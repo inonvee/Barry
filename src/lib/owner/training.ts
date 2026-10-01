@@ -1,6 +1,7 @@
 import type { BusinessGraph } from "@/lib/business-graph";
 import { buildCapabilitySurface } from "@/lib/capabilities/surface";
 import { resolveCapabilityProfiles } from "@/lib/capabilities";
+import { effectiveGraph } from "@/lib/policy/effective";
 import { describeBusinessConnections } from "@/lib/connections/status";
 import { money } from "@/lib/reasoner/deterministic-compose";
 import { handoffPath } from "@/lib/runtime/handoff";
@@ -34,7 +35,7 @@ function policyWords(graph: BusinessGraph): string[] {
   return graph.policies.map((p) => {
     switch (p.rule.type) {
       case "max_auto_discount_pct":
-        return `Discounts up to ${p.rule.value}% without asking you; above that, you approve.`;
+        return `Discounts up to ${p.rule.value}% without asking you; above that, you approve.${p.provenance?.source === "owner_trained" ? " (You taught BARRY.)" : ""}`;
       case "max_auto_payment_amount":
         return `Payment requests up to ${money(p.rule.value, cur)} go out automatically; above that, you approve.`;
       case "refund_requires_approval":
@@ -51,7 +52,8 @@ function policyWords(graph: BusinessGraph): string[] {
   });
 }
 
-export async function getTrainingProfile(graph: BusinessGraph) {
+export async function getTrainingProfile(staticGraph: BusinessGraph) {
+  const graph = await effectiveGraph(staticGraph);
   const b = graph.business;
   const surface = await buildCapabilitySurface(graph).catch(() => []);
   const profiles = await resolveCapabilityProfiles(graph).catch(() => undefined);

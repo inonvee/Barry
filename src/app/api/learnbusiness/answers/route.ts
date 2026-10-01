@@ -3,6 +3,7 @@ import { z } from "zod";
 import { ownerAuthError } from "@/lib/owner-auth";
 import { answerOwnerQuestion, getLearningWorkspace } from "@/lib/learn-business/service";
 import { graphOrNull, learnErrorResponse } from "@/lib/learn-business/http";
+import { trainBarryView } from "@/lib/learn-business/train";
 
 const AnswerSchema = z.object({
   businessId: z.string().min(1),
@@ -20,7 +21,8 @@ export async function POST(req: NextRequest) {
   if (!graph) return Response.json({ error: "Unknown business" }, { status: 404 });
   try {
     const fact = await answerOwnerQuestion(parsed.data);
-    return Response.json({ fact, workspace: await getLearningWorkspace(graph) });
+    // The Train view comes back with it: the answer shows as ACTIVE only if the runtime really enforces it.
+    return Response.json({ fact, workspace: await getLearningWorkspace(graph), train: await trainBarryView(graph) });
   } catch (err) {
     return learnErrorResponse(err);
   }

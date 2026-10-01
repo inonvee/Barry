@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { ConversationState, TurnLog } from "@/lib/state";
+import type { ConversationState, TurnLog, TurnStep } from "@/lib/state";
 import { readLedgerField, recoveryChains, type RecoveryChain } from "@/lib/inspector/recovery-chain";
 
 /**
@@ -48,6 +48,12 @@ function Chip({ children, tone = "neutral" }: { children: React.ReactNode; tone?
     accent: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-200",
   };
   return <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${tones[tone]}`}>{children}</span>;
+}
+
+/** Which effective rule governed a discount decision, in one line. */
+function authorityLine(a: NonNullable<TurnStep["policy"]["authority"]>): string {
+  const src = a.source === "owner_trained" ? `owner-trained rule (${a.revision}${a.reviewer ? `, reviewed by ${a.reviewer}` : ""})` : "static business profile";
+  return `Discount rule: ${a.requested}% requested · auto limit ${a.effectiveMax}% · ${a.result.replace(/_/g, " ")} · source: ${src}`;
 }
 
 function policyTone(status?: string) {
@@ -141,6 +147,7 @@ function TurnSummary({ turn }: { turn: TurnLog }) {
               {st.ownerRequest && <Chip tone="warn">{st.ownerRequest === "requested" ? "sent to owner" : st.ownerRequest.replace(/_/g, " ")}</Chip>}
               {st.result && <Chip tone={st.result.ok ? "good" : "bad"}>{st.result.ok ? "executed" : "failed"}</Chip>}
               {st.generic?.executed && <Chip tone={st.generic.verified ? "good" : "neutral"}>{st.generic.verified ? "provider-verified" : "not verified"}</Chip>}
+              {st.policy.authority && <span className="w-full text-xs text-neutral-600 dark:text-neutral-400">{authorityLine(st.policy.authority)}</span>}
             </li>
           ))}
         </ul>
@@ -330,6 +337,16 @@ export function TurnView({ state, turn, isLatest }: { state: ConversationState; 
                   </>
                 )}
                 {step.policy.status !== "allowed" && <p className="text-xs text-neutral-500">{step.policy.reason}</p>}
+                {step.policy.authority && (
+                  <>
+                    <Kv k="Effective max auto discount" v={`${step.policy.authority.effectiveMax}%`} />
+                    <Kv k="Rule source" v={step.policy.authority.source === "owner_trained" ? "owner-trained (taught in Train BARRY)" : "static business profile"} />
+                    <Kv k="Source fact / revision" v={`${step.policy.authority.factId ?? "—"} · ${step.policy.authority.revision}`} />
+                    <Kv k="Reviewer" v={step.policy.authority.reviewer ? `${step.policy.authority.reviewer}${step.policy.authority.reviewedAt ? ` · ${step.policy.authority.reviewedAt}` : ""}` : "—"} />
+                    <Kv k="Requested discount" v={`${step.policy.authority.requested}%`} />
+                    <Kv k="Result" v={`${step.policy.authority.result.replace(/_/g, " ")} — ${step.policy.authority.reason}`} />
+                  </>
+                )}
                 {step.result?.error && <p className="text-xs text-red-600 dark:text-red-400 break-all">{step.result.error}</p>}
                 <Kv k="Stage" v={`${step.stageBefore} → ${step.stageAfter}`} />
                 {step.stateKeysChanged.length > 0 && <Kv k="State keys changed" v={step.stateKeysChanged.join(", ")} />}

@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import type { BusinessGraph } from "@/lib/business-graph";
 import { findOffer } from "@/lib/business-graph";
+import { discountPolicyOf, discountWords } from "@/lib/policy/effective-rules";
 import { LlmIRSchema, irJsonSchema, type CustomerFact, type LlmCommerce, type LlmIR, type LlmSchedulingWindow, type KeyValuePair } from "./schemas";
 import { catalogForModel } from "@/lib/commerce/catalog";
 import { profilesForModel } from "@/lib/capabilities/model";
@@ -63,8 +64,12 @@ export function sanitizeOutcomeForCompose(outcome: CompileOutcome): unknown {
 /** What BARRY may decide alone vs. what goes to the owner — from the Genome's policies, never assumed. */
 export function authorityForModel(graph: BusinessGraph) {
   const rule = <T extends string>(type: T) => graph.policies.find((p) => p.rule.type === type)?.rule as { value: number | boolean } | undefined;
+  // The EFFECTIVE rule (the same overlay the policy engine enforces), with where it came from — so the
+  // model can explain behaviour. It never enforces it: decide() does.
+  const discount = discountPolicyOf(graph);
   return {
     maxAutomaticDiscountPct: (rule("max_auto_discount_pct")?.value as number | undefined) ?? 0,
+    ...(discount ? { discountRule: { words: discountWords(discount.value), source: discount.provenance.source === "owner_trained" ? "taught by the owner" : "business profile", enforcedBy: "BARRY's policy engine — above the limit the owner approves the exact terms" } } : {}),
     maxAutomaticPaymentAmount: (rule("max_auto_payment_amount")?.value as number | undefined) ?? null,
     customPricingNeedsOwner: Boolean(rule("custom_pricing_requires_approval")?.value),
     refundsNeedOwner: rule("refund_requires_approval")?.value !== false,

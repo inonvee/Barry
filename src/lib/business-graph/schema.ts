@@ -132,9 +132,27 @@ export const KnowledgeItemSchema = z.object({
 export type KnowledgeItem = z.infer<typeof KnowledgeItemSchema>;
 
 /** Rules defining what BARRY can promise or do without escalating to the owner. */
+/**
+ * Where an EFFECTIVE policy came from: the static business profile, or an owner-trained rule compiled from
+ * an owner-approved learned fact (with its source fact, reviewer, revision and what it superseded).
+ */
+export const PolicyProvenanceSchema = z.object({
+  source: z.enum(["static", "owner_trained"]),
+  factId: z.string().optional(),
+  factKey: z.string().optional(),
+  sourceKind: z.string().optional(),
+  reviewer: z.string().optional(),
+  reviewedAt: z.string().optional(),
+  revision: z.string(),
+  supersedes: z.array(z.object({ source: z.enum(["static", "owner_trained"]), value: z.number(), revision: z.string(), factId: z.string().optional() })).default([]),
+});
+export type PolicyProvenance = z.infer<typeof PolicyProvenanceSchema>;
+
 export const PolicySchema = z.object({
   id: z.string(),
   description: z.string(),
+  /** Absent on profile-declared policies (treated as static). */
+  provenance: PolicyProvenanceSchema.optional(),
   rule: z.discriminatedUnion("type", [
     z.object({
       type: z.literal("max_auto_discount_pct"),

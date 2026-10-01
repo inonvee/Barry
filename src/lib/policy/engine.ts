@@ -2,13 +2,30 @@ import { applyFounderControls, currentControls } from "@/lib/hq/controls";
 import type { BusinessGraph } from "@/lib/business-graph";
 import { getPolicy, isActionAvailable } from "@/lib/business-graph";
 import { decideCapability } from "./authority";
+import { discountPolicyOf } from "./effective-rules";
 
 export type PolicyStatus = "allowed" | "requires_approval" | "denied";
+
+/** Which effective rule governed a discount decision — shown verbatim in the Inspector. */
+export type DiscountAuthorityTrace = {
+  rule: "max_auto_discount_pct";
+  effectiveMax: number;
+  source: "static" | "owner_trained";
+  policyId: string;
+  factId?: string;
+  revision: string;
+  reviewer?: string;
+  reviewedAt?: string;
+  requested: number;
+  result: PolicyStatus;
+  reason: string;
+};
 
 export type PolicyDecision = {
   status: PolicyStatus;
   reason: string;
   policyId?: string;
+  authority?: DiscountAuthorityTrace;
 };
 
 /**
@@ -46,7 +63,7 @@ export function decide(graph: BusinessGraph, request: ActionRequest): PolicyDeci
   // The founder's controls run AFTER the business's own rules and only ever tighten them.
   const founder = applyFounderControls(currentControls(graph.business.id), request.action, request.params as Record<string, unknown>, base);
   if (founder.status === "allowed") return base;
-  return { status: founder.status, reason: founder.reason, policyId: founder.policyId };
+  return { status: founder.status, reason: founder.reason, policyId: founder.policyId, ...(base.authority ? { authority: { ...base.authority, result: founder.status, reason: founder.reason } } : {}) };
 }
 
 function decideByBusinessRules(graph: BusinessGraph, request: ActionRequest): PolicyDecision {
@@ -96,11 +113,7 @@ function decideByBusinessRules(graph: BusinessGraph, request: ActionRequest): Po
       // A discount is granted by the business's own limit: within it BARRY may give it; above it the
       // owner decides on exactly these terms.
       const pct = (request.params as { discountPct?: number }).discountPct ?? 0;
-      const cap = getPolicy(graph, "max_auto_discount_pct")?.value ?? 0;
-      if (pct > cap) {
-        return { status: "requires_approval", reason: `Requested discount ${pct}% exceeds automatic limit of ${cap}%.`, policyId: "max_auto_discount_pct" };
-      }
-      return { status: "allowed", reason: `Discount ${pct}% is within the automatic limit of ${cap}%.` };
+      return discountDecision(graph, pct, `Discount ${pct}% is within the automatic limit`);
     }
 
     case "createPaymentRequest": {
@@ -117,16 +130,11 @@ function decideByBusinessRules(graph: BusinessGraph, request: ActionRequest): Po
         }
       }
 
+      let discountAuthority: DiscountAuthorityTrace | undefined;
       if (params.discountPct && params.discountPct > 0) {
-        const maxDiscount = getPolicy(graph, "max_auto_discount_pct");
-        const cap = maxDiscount?.value ?? 0;
-        if (params.discountPct > cap) {
-          return {
-            status: "requires_approval",
-            reason: `Requested discount ${params.discountPct}% exceeds automatic limit of ${cap}%.`,
-            policyId: "max_auto_discount_pct",
-          };
-        }
+        const d = discountDecision(graph, params.discountPct, `Discount ${params.discountPct}% is within the automatic limit`);
+        if (d.status !== "allowed") return d;
+        discountAuthority = d.authority;
       }
 
       const maxAmount = getPolicy(graph, "max_auto_payment_amount");
@@ -135,10 +143,11 @@ function decideByBusinessRules(graph: BusinessGraph, request: ActionRequest): Po
           status: "requires_approval",
           reason: `Payment amount ${params.amount} exceeds automatic limit of ${maxAmount.value}.`,
           policyId: "max_auto_payment_amount",
+          ...(discountAuthority ? { authority: discountAuthority } : {}),
         };
       }
 
-      return { status: "allowed", reason: "Payment request is within policy limits." };
+      return { status: "allowed", reason: "Payment request is within policy limits.", ...(discountAuthority ? { authority: discountAuthority } : {}) };
     }
 
     case "refund": {
@@ -156,4 +165,33 @@ function decideByBusinessRules(graph: BusinessGraph, request: ActionRequest): Po
     default:
       return { status: "allowed", reason: "No specific policy constrains this action." };
   }
+}
+
+/**
+ * A discount is decided ONLY by the effective discount rule (static profile or the owner's approved,
+ * compiled teaching — see effective-rules.ts). The decision carries that rule's provenance.
+ */
+function discountDecision(graph: BusinessGraph, pct: number, withinWords: string): PolicyDecision {
+  const effective = discountPolicyOf(graph);
+  const cap = effective?.value ?? 0;
+  const p = effective?.provenance;
+  const trace = (result: PolicyStatus, reason: string): DiscountAuthorityTrace => ({
+    rule: "max_auto_discount_pct",
+    effectiveMax: cap,
+    source: p?.source ?? "static",
+    policyId: effective?.policyId ?? "none",
+    ...(p?.factId ? { factId: p.factId } : {}),
+    revision: p?.revision ?? "static:none",
+    ...(p?.reviewer ? { reviewer: p.reviewer } : {}),
+    ...(p?.reviewedAt ? { reviewedAt: p.reviewedAt } : {}),
+    requested: pct,
+    result,
+    reason,
+  });
+  if (pct > cap) {
+    const reason = `Requested discount ${pct}% exceeds automatic limit of ${cap}%.`;
+    return { status: "requires_approval", reason, policyId: "max_auto_discount_pct", authority: trace("requires_approval", reason) };
+  }
+  const reason = `${withinWords} of ${cap}%.`;
+  return { status: "allowed", reason, authority: trace("allowed", reason) };
 }

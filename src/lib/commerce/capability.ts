@@ -246,6 +246,38 @@ export function discountedCartTotal(cart: Pick<Cart, "lines" | "total">, discoun
   return { before: cart.total, after: { amount: after, currency: cart.total.currency }, discountable };
 }
 
+/** Do a variant's options carry every requested option (case-insensitive, by the catalog's own option names)? */
+export function variantMatches(options: Record<string, string>, wanted: Record<string, string> | undefined): boolean {
+  if (!wanted) return true;
+  const have = Object.fromEntries(Object.entries(options).map(([k, v]) => [k.toLowerCase(), v.toLowerCase()]));
+  return Object.entries(wanted).every(([k, v]) => have[k.toLowerCase()] === v.toLowerCase());
+}
+
+/**
+ * THE unit price a product-scoped discount is granted on: the one price every matching variant shares.
+ * Variants that differ in price without a chosen option give no price (the customer is asked) — never a guess.
+ */
+export function productUnitPrice(product: Pick<Product, "variants">, variant?: Record<string, string>): Money | undefined {
+  const matching = product.variants.filter((v) => variantMatches(v.options, variant));
+  const prices = [...new Map(matching.map((v) => [`${Math.round(v.price.amount * 100)}:${v.price.currency.toUpperCase()}`, v.price])).values()];
+  return prices.length === 1 ? prices[0] : undefined;
+}
+
+/**
+ * A PRODUCT-scoped grant priced against the real cart: the percentage applies only to lines of that
+ * product (and variant, when it was granted for one). A matching line whose unit price is no longer the
+ * granted price fails closed — the customer is never charged on terms the owner didn't approve.
+ */
+export function productGrantTotal(cart: Pick<Cart, "lines" | "total">, grant: { pct: number; productId: string; unitAmount?: number; variant?: Record<string, string> }): Money {
+  const lines = cart.lines.filter((l) => l.productId === grant.productId && variantMatches(l.options, grant.variant));
+  if (typeof grant.unitAmount === "number" && lines.some((l) => Math.round(l.unitPrice.amount * 100) !== Math.round(grant.unitAmount! * 100))) {
+    throw new Error("The price changed since the discount was approved — the discount needs a fresh look");
+  }
+  const discountable = lines.reduce((sum, l) => sum + l.unitPrice.amount * l.quantity, 0);
+  const off = Math.round(discountable * grant.pct) / 100;
+  return { amount: Math.max(0, Math.round((cart.total.amount - off) * 100) / 100), currency: cart.total.currency };
+}
+
 export function commerceOrderIdempotencyKey(input: { businessId: string; conversationId: string; cartId: string; paymentRequestId: string }): string {
   return [input.businessId, input.conversationId, input.cartId, input.paymentRequestId, "order"].join(":");
 }

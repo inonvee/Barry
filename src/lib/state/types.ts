@@ -1,4 +1,4 @@
-import type { PolicyDecision } from "@/lib/policy";
+import type { DiscountAuthorityTrace, PolicyDecision } from "@/lib/policy";
 import type { SchedulingConstraint } from "@/lib/scheduling/resolver";
 import type { CompileDebugInfo } from "@/lib/reasoner/ir";
 import type { CustomerFacingLocalDisplay } from "@/lib/reasoner/types";
@@ -30,7 +30,7 @@ export type TurnStep = {
   trigger: "customer" | "continuation" | "approval";
   action: string;
   capabilities: { capability: string; provider: string | null }[];
-  policy: { status: string; reason: string; policyId?: string };
+  policy: { status: string; reason: string; policyId?: string; authority?: DiscountAuthorityTrace };
   result: { ok: boolean; error?: string } | null;
   stageBefore: string;
   stageAfter: string;

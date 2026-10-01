@@ -87,7 +87,7 @@ export function whyApproval(graph: BusinessGraph, a: ApprovalWithLifecycle): str
     case "max_auto_payment_amount":
       return `Above your automatic payment limit of ${money(policy.rule.value, currency)}.`;
     case "max_auto_discount_pct":
-      return `Above the ${policy.rule.value}% discount BARRY may give on its own.`;
+      return policy.provenance?.source === "owner_trained" ? `Above the ${policy.rule.value}% you taught BARRY it may give on its own.` : `Above the ${policy.rule.value}% discount BARRY may give on its own.`;
     case "custom_pricing_requires_approval":
       return "Your rules: any custom price needs your approval.";
     case "bookings_auto_allowed":
@@ -115,7 +115,9 @@ export function afterApproval(graph: BusinessGraph, a: ApprovalWithLifecycle): s
     case "createPaymentRequest":
       return `BARRY sends the payment link${amount ? ` for ${amount}` : ""} in the chat and waits for the payment provider to confirm payment — it counts as collected only once verified. Nothing else runs on its own.`;
     case "grantDiscount":
-      return "BARRY tells the customer the discount is approved and prices their checkout with exactly it, once — nothing is sent or charged by the approval itself.";
+      return (a.requestedInput as { cartId?: unknown })?.cartId
+        ? "BARRY tells the customer the discount is approved and prices their checkout with exactly it, once — nothing is sent or charged by the approval itself."
+        : "BARRY tells the customer the discount is approved. Nothing is added to a cart, sent or charged: it applies only if they order this item at this price — if the price changes, it needs a fresh look.";
     case "createBooking":
       return "BARRY books the appointment through your scheduling system and confirms it to the customer.";
     case "refund":

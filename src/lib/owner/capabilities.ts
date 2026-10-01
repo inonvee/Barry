@@ -1,6 +1,7 @@
 import type { BusinessGraph } from "@/lib/business-graph";
 import type { CapabilityProfiles } from "@/lib/capabilities/model";
 import { resolveCapabilityProfiles } from "@/lib/capabilities";
+import { effectiveGraph } from "@/lib/policy/effective";
 import { buildCapabilitySurface } from "@/lib/capabilities/surface";
 import { describeBusinessConnections, type ConnectionView } from "@/lib/connections/status";
 import { listBusinessSystems } from "@/lib/fabric/registry";
@@ -369,7 +370,8 @@ export function ownerAccessFor(businessId: string): { scoped: boolean; global: b
 }
 
 /** Gather the inputs from the running system and derive the assessment. */
-export async function assessCapabilities(graph: BusinessGraph, opts: { profiles?: CapabilityProfiles; connections?: ConnectionView[] } = {}): Promise<CapabilityAssessment> {
+export async function assessCapabilities(staticGraph: BusinessGraph, opts: { profiles?: CapabilityProfiles; connections?: ConnectionView[] } = {}): Promise<CapabilityAssessment> {
+  const graph = await effectiveGraph(staticGraph);
   const businessId = graph.business.id;
   const profiles = opts.profiles ?? (await resolveCapabilityProfiles(graph).catch(() => undefined));
   const [surface, systems, connections] = await Promise.all([

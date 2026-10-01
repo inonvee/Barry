@@ -2,6 +2,7 @@ import type { BusinessGraph } from "@/lib/business-graph";
 import { isActionAvailable, knowledgeSearch } from "@/lib/business-graph";
 import { resolveBusinessGraph } from "@/lib/business-graph-repository";
 import { decide, type PolicyDecision } from "@/lib/policy";
+import { effectiveGraph } from "@/lib/policy/effective";
 import { getReasoner } from "@/lib/reasoner";
 import { callTool, listTools } from "@/lib/tools";
 import type { ToolCallResult, ToolContext } from "@/lib/tools";
@@ -44,7 +45,7 @@ import { cancelPaymentRequest } from "@/lib/payments/capability";
 import type { NormalizedOutboundMessage } from "@/lib/channels/types";
 import type { Product } from "@/lib/commerce/types";
 import type { BarryIR } from "@/lib/reasoner/ir";
-import { compile, lineNamedBy, planCapabilityCall, SCRATCH_KEYS, type CompileOutcome } from "./compiler";
+import { compile, lineNamedBy, planCapabilityCall, SCRATCH_KEYS, type CompileOutcome, type GrantedDiscount } from "./compiler";
 import { buildCapabilitySurface } from "@/lib/capabilities/surface";
 import { callFingerprint, INVOKE_CAPABILITY, type CapabilityCallResult } from "@/lib/tools/capability-tool";
 import { askOutcomes, mandatoryAsks } from "./ask-outcomes";
@@ -161,10 +162,14 @@ async function patchStateAfterTool(state: ConversationState, toolName: string, o
       break;
     }
     case "grantDiscount": {
-      // The one record a checkout may be priced from: granted by policy or by the owner, on this cart.
-      const { cartId, discountPct, item } = output as { cartId: string; discountPct: number; item: string };
-      known[SCRATCH_KEYS.discountGranted] = JSON.stringify({ pct: discountPct, item, cartId });
-      known[SCRATCH_KEYS.discountPct] = String(discountPct);
+      // The one record a checkout may be priced from: granted by policy or by the owner, on this cart —
+      // or, asked before any cart, on exactly this product at exactly this price (nothing is added to a cart).
+      const o = output as { cartId?: string; productId?: string; variant?: Record<string, string>; discountPct: number; item: string; before: { amount: number; currency: string } };
+      const grant: GrantedDiscount = o.cartId
+        ? { pct: o.discountPct, item: o.item, cartId: o.cartId }
+        : { pct: o.discountPct, item: o.item, productId: o.productId, unitAmount: o.before.amount, currency: o.before.currency, ...(o.variant ? { variant: o.variant } : {}) };
+      known[SCRATCH_KEYS.discountGranted] = JSON.stringify(grant);
+      known[SCRATCH_KEYS.discountPct] = String(o.discountPct);
       break;
     }
     case "createCommerceCheckout": {
@@ -335,11 +340,14 @@ function buildSchedulingDisplay(
 }
 
 export async function handleCustomerMessage(
-  graph: BusinessGraph,
+  staticGraph: BusinessGraph,
   conversationId: string,
   customerId: string,
   message: string
 ): Promise<TurnOutcome> {
+  // THE effective runtime contract: the static profile + the owner's approved, compiled teaching. The
+  // same graph feeds the reasoner context, the policy engine and the trace — never the static one alone.
+  const graph = await effectiveGraph(staticGraph);
   const store = getConversationStore();
   const state = await store.getOrCreate(conversationId, graph.business.id, customerId);
   const now = new Date().toISOString();
@@ -657,7 +665,8 @@ export async function handleCustomerMessage(
  */
 export type RevalidationResult = { revalidated: number; stillUnresolved: number; changedRequests: number; recovered: RecoveredIntent[] };
 
-export async function revalidateUnresolvedTurns(graph: BusinessGraph, state: ConversationState): Promise<RevalidationResult> {
+export async function revalidateUnresolvedTurns(staticGraph: BusinessGraph, state: ConversationState): Promise<RevalidationResult> {
+  const graph = await effectiveGraph(staticGraph);
   const pending = (await conversationApprovals(graph.business.id, state.id)).filter((a) => a.status === "pending");
   const unresolved = unresolvedUnderstanding(readLedger(state)).slice(-3);
   if (pending.length === 0 || unresolved.length === 0) return { revalidated: 0, stillUnresolved: unresolved.length, changedRequests: 0, recovered: [] };
@@ -889,7 +898,9 @@ async function understandingUnavailableTurn(args: {
  */
 async function namedProductCandidates(graph: BusinessGraph, ir: BarryIR, grounded: GroundedContext): Promise<NonNullable<GroundedContext["namedProducts"]>> {
   const named = ir.commerce?.subject?.trim();
-  if (!named || !ir.commerce || !["select", "inquire"].includes(ir.commerce.intent)) return [];
+  // A discount asked on a NAMED item is grounded the same way (the price the terms are made on is real).
+  const asksDiscount = Boolean(ir.constraints.discountPct && ir.constraints.discountPct > 0);
+  if (!named || !ir.commerce || !(["select", "inquire"].includes(ir.commerce.intent) || asksDiscount)) return [];
   const nameOf = (title: string) => lineNamedBy(named, { title, options: {} });
   if ((grounded.shownProducts ?? []).some((p) => nameOf(p.title)) || (grounded.cartLines ?? []).some((l) => l.productId && nameOf(l.title))) return [];
   if (!isActionAvailable(graph, "searchProducts")) return [];
@@ -1128,7 +1139,7 @@ async function runStep(
       ...(existing ? { ownerRequest: existing } : policyDecision.status === "requires_approval" ? { ownerRequest: "requested" as const } : {}),
       ...(outcome.action.name === INVOKE_CAPABILITY ? { generic: genericStepTrace(outcome.action.input, policyDecision, toolResult) } : {}),
       capabilities: outcome.action.name === INVOKE_CAPABILITY ? genericCapabilities(outcome.action.input, toolResult) : capabilities,
-      policy: { status: policyDecision.status, reason: policyDecision.reason, ...(policyDecision.policyId ? { policyId: policyDecision.policyId } : {}) },
+      policy: { status: policyDecision.status, reason: policyDecision.reason, ...(policyDecision.policyId ? { policyId: policyDecision.policyId } : {}), ...(policyDecision.authority ? { authority: policyDecision.authority } : {}) },
       result: toolResult ? (toolResult.ok ? { ok: true } : { ok: false, error: toolResult.error }) : null,
       stageBefore,
       stageAfter: state.stage,
@@ -1571,12 +1582,13 @@ async function intentHeldTurn(state: ConversationState, approval: ApprovalRecord
 
 /** Owner resolves a pending approval; BARRY resumes the conversation with the decision. */
 export async function resumeAfterApproval(
-  graph: BusinessGraph,
+  staticGraph: BusinessGraph,
   approvalId: string,
   decision: "approved" | "declined",
   decidedBy: string,
   alternateValue?: unknown
 ): Promise<TurnOutcome> {
+  const graph = await effectiveGraph(staticGraph);
   const backend = getBackend();
 
   // Idempotency guard: resolving the SAME approval twice (a double-click

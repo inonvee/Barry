@@ -182,8 +182,9 @@ describe("effective genome, plays and the Train BARRY view", () => {
     const facts = await getBackend().listLearnedFacts(g.business.id);
     const genome = effectiveGenome({ graph: g, facts, sources: await listSources(g.business.id), profiles: await resolveCapabilityProfiles(g), now: NOW });
     const hours = genome.find((f) => f.key === "hours.opening")!;
-    expect(hours).toMatchObject({ effective: true, ownerApproved: true, origin: "owner_approved_fact", from: "you" });
-    expect(hours.why).toBe("You told BARRY.");
+    // Approved by the owner, but no runtime rule reads it: on record, NOT presented as acted on.
+    expect(hours).toMatchObject({ effective: false, status: "understood_only", ownerApproved: true, origin: "owner_approved_fact", from: "you" });
+    expect(hours.why).toMatch(/^You taught BARRY\. BARRY has it on record — it doesn't change what BARRY does/);
     const wrap = genome.find((f) => f.key === "service.gift_wrapping")!;
     expect(wrap).toMatchObject({ effective: false, ownerApproved: false, origin: "learned_candidate", freshness: "fresh" });
     expect(wrap.from).toContain("faq.txt");

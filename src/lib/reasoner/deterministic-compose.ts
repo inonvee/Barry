@@ -413,7 +413,9 @@ function composeHebrew(input: ComposeResponseInput): string | undefined {
         case "createLead":
           return `תודה — רשמתי את הפנייה שלך עבור הצוות.`;
         case "grantDiscount": {
-          const o = output as { discountPct: number; item: string; before: { amount: number; currency: string }; after: { amount: number; currency: string } };
+          const o = output as { scope?: "cart" | "product"; discountPct: number; item: string; before: { amount: number; currency: string }; after: { amount: number; currency: string } };
+          // On a product (no cart yet): what it costs with the discount — nothing was added, nothing is charged.
+          if (o.scope === "product") return `יש לך ${o.discountPct}% הנחה על ${o.item} — ${money(o.after.amount, o.after.currency, "he")} במקום ${money(o.before.amount, o.before.currency, "he")}. ההנחה תחול בהזמנה. להוסיף לעגלה?`;
           const on = o.item === "the whole cart" ? "על כל העגלה" : `על ${o.item}`;
           return `${o.discountPct}% הנחה ${on} — הסה״כ שלך עכשיו ${money(o.after.amount, o.after.currency, "he")} (במקום ${money(o.before.amount, o.before.currency, "he")}). רוצה שנעבור לתשלום?`;
         }
@@ -602,7 +604,9 @@ function composeSingle(input: ComposeResponseInput): string {
           return `Here's your secure payment link — once the payment is verified, I'll confirm everything.`;
         }
         case "grantDiscount": {
-          const o = toolResult.output as { discountPct: number; item: string; before: { amount: number; currency: string }; after: { amount: number; currency: string } };
+          const o = toolResult.output as { scope?: "cart" | "product"; discountPct: number; item: string; before: { amount: number; currency: string }; after: { amount: number; currency: string } };
+          // On a product (no cart yet): what it costs with the discount — nothing was added, nothing is charged.
+          if (o.scope === "product") return `You've got ${o.discountPct}% off the ${o.item} — ${money(o.after.amount, o.after.currency)} instead of ${money(o.before.amount, o.before.currency)}. It applies when you order it. Want me to add it to your cart?`;
           const on = o.item === "the whole cart" ? "your whole cart" : `the ${o.item}`;
           return `${o.discountPct}% off ${on} is applied — your total is now ${money(o.after.amount, o.after.currency)} (was ${money(o.before.amount, o.before.currency)}). Want to check out now?`;
         }

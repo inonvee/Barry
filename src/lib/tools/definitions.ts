@@ -11,6 +11,8 @@ import {
   addCommerceItem,
   createCommerceCheckout as createCommerceCheckoutCapability,
   discountedCartTotal,
+  productGrantTotal,
+  productUnitPrice,
   createCommerceOrder as createCommerceOrderCapability,
   getCommerceProduct,
   getOwnedCart,
@@ -360,6 +362,10 @@ export const createCommerceCheckout = defineTool({
     /** A discount the RUNTIME granted (policy-allowed or owner-approved), priced here against the real cart. */
     discountPct: z.number().positive().max(99).optional(),
     discountItem: z.string().optional(),
+    /** A PRODUCT-scoped grant: it applies only to lines of this product, at the price it was granted for. */
+    discountProductId: z.string().optional(),
+    discountUnitAmount: z.number().optional(),
+    discountVariant: z.record(z.string(), z.string()).optional(),
   }),
   outputSchema: z.object({
     checkoutId: z.string(),
@@ -385,7 +391,13 @@ export const createCommerceCheckout = defineTool({
       throw new Error("Your cart changed — please review it before checkout");
     }
     // A granted discount is applied to the real cart's lines now — the customer pays exactly this.
-    const priced = input.discountPct && input.discountItem ? discountedCartTotal(checkout.cart, { pct: input.discountPct, item: input.discountItem }).after : checkout.cart.total;
+    const priced = !input.discountPct
+      ? checkout.cart.total
+      : input.discountProductId
+        ? productGrantTotal(checkout.cart, { pct: input.discountPct, productId: input.discountProductId, unitAmount: input.discountUnitAmount, variant: input.discountVariant })
+        : input.discountItem
+          ? discountedCartTotal(checkout.cart, { pct: input.discountPct, item: input.discountItem }).after
+          : checkout.cart.total;
     const pr = await createPaymentLink({
       graph: ctx.graph,
       businessId: ctx.graph.business.id,
@@ -415,24 +427,35 @@ export const createCommerceCheckout = defineTool({
 });
 
 /**
- * A discount granted on a cart — by policy (within the automatic limit) or by the owner's approval of
- * exactly these terms. It changes nothing at the provider and sends nothing: it is the one record the
- * checkout prices from. The amounts are computed against the cart as it really is now.
+ * A discount granted by policy (within the automatic limit) or by the owner's approval of exactly these
+ * terms. It changes nothing at the provider, adds nothing to a cart and sends nothing: it is the one
+ * record a later checkout prices from.
+ *  - on a CART: priced against the cart as it really is now;
+ *  - on a PRODUCT (asked before any cart): the product's price is re-read from the catalog now and must
+ *    still be the price the terms were made for — else nothing is granted. The grant later applies ONLY
+ *    to that product at that price (the checkout re-checks).
  */
 export const grantDiscount = defineTool({
   name: "grantDiscount",
-  description: "Grant a discount on the cart (a percentage on a named item or the whole cart); the checkout is priced from it.",
+  description: "Grant a discount on the cart or on one named product (a percentage); a later checkout is priced from it.",
   inputSchema: z.object({
-    cartId: z.string(),
+    cartId: z.string().optional(),
+    /** A product-scoped grant (no cart yet): the catalog product it applies to. */
+    productId: z.string().optional(),
+    /** The variant options the price was grounded for, when the product's variants differ in price. */
+    variant: z.record(z.string(), z.string()).optional(),
     discountPct: z.number().positive().max(99),
-    /** The item the discount applies to (a cart line's title), or "the whole cart". */
+    /** The item the discount applies to (a cart line's or product's title), or "the whole cart". */
     item: z.string().min(1),
     currency: z.string().optional(),
-    /** The list total when the discount was asked (for the owner's card); the real cart is re-read here. */
+    /** The list price/total the terms were made for (the owner's card shows it); re-checked here. */
     listAmount: z.number().optional(),
   }),
   outputSchema: z.object({
-    cartId: z.string(),
+    cartId: z.string().optional(),
+    productId: z.string().optional(),
+    variant: z.record(z.string(), z.string()).optional(),
+    scope: z.enum(["cart", "product"]),
     discountPct: z.number(),
     item: z.string(),
     before: moneySchema,
@@ -440,10 +463,30 @@ export const grantDiscount = defineTool({
     revision: z.number().optional(),
   }),
   async execute(input, ctx) {
-    const cart = await getOwnedCart({ graph: ctx.graph, customerId: ctx.customerId, conversationId: ctx.conversationId }, input.cartId);
-    const priced = discountedCartTotal(cart, { pct: input.discountPct, item: input.item });
-    if (priced.discountable <= 0) throw new Error("That item is not in the cart");
-    return { cartId: cart.id, discountPct: input.discountPct, item: input.item, before: priced.before, after: priced.after, ...(typeof cart.revision === "number" ? { revision: cart.revision } : {}) };
+    if (input.cartId) {
+      const cart = await getOwnedCart({ graph: ctx.graph, customerId: ctx.customerId, conversationId: ctx.conversationId }, input.cartId);
+      const priced = discountedCartTotal(cart, { pct: input.discountPct, item: input.item });
+      if (priced.discountable <= 0) throw new Error("That item is not in the cart");
+      return { cartId: cart.id, scope: "cart" as const, discountPct: input.discountPct, item: input.item, before: priced.before, after: priced.after, ...(typeof cart.revision === "number" ? { revision: cart.revision } : {}) };
+    }
+    if (!input.productId) throw new Error("A discount needs the cart or the product it applies to");
+    const product = await getCommerceProduct(ctx.graph, input.productId);
+    if (!product) throw new Error("That product is no longer in the catalog");
+    const price = productUnitPrice(product, input.variant);
+    if (!price) throw new Error("That product's price depends on the option — choose one first");
+    if (typeof input.listAmount === "number" && (Math.round(price.amount * 100) !== Math.round(input.listAmount * 100) || (input.currency && price.currency.toUpperCase() !== input.currency.toUpperCase()))) {
+      throw new Error("The price changed since the discount was asked — the terms need a fresh look");
+    }
+    const after = Math.round(price.amount * (100 - input.discountPct)) / 100;
+    return {
+      productId: product.id,
+      ...(input.variant ? { variant: input.variant } : {}),
+      scope: "product" as const,
+      discountPct: input.discountPct,
+      item: product.title,
+      before: { amount: price.amount, currency: price.currency },
+      after: { amount: after, currency: price.currency },
+    };
   },
 });
 

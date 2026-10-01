@@ -1,5 +1,6 @@
 import type { BusinessGraph } from "@/lib/business-graph";
 import { getBackend } from "@/lib/store";
+import { effectiveGraph } from "@/lib/policy/effective";
 import { getConversationStore, type ConversationState } from "@/lib/state";
 import { getReasoner } from "@/lib/reasoner";
 import { describeBusinessConnections, type ConnectionView } from "@/lib/connections/status";
@@ -218,7 +219,9 @@ function approvalView(a: ApprovalWithLifecycle, customer: string): OwnerApproval
 }
 
 /** The whole owner workspace for one business, for a time window (default: today, business time). */
-export async function getOwnerWorkspace(graph: BusinessGraph, opts: { since?: string; label?: string; now?: Date } = {}): Promise<OwnerWorkspace> {
+export async function getOwnerWorkspace(staticGraph: BusinessGraph, opts: { since?: string; label?: string; now?: Date } = {}): Promise<OwnerWorkspace> {
+  // The owner sees the rules the runtime enforces (static profile + approved owner-trained overlay).
+  const graph = await effectiveGraph(staticGraph);
   const now = opts.now ?? new Date();
   const businessId = graph.business.id;
   const since = opts.since ?? startOfLocalDay(graph.business.timezone, now);
