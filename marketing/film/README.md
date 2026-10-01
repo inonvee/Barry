@@ -16,8 +16,8 @@ Remotion's own Chrome download may be blocked; `remotion.config.ts` falls back t
 Official Remotion agent skills were installed with `npx skills add remotion-dev/skills` (folders git-ignored; re-run to restore).
 
 ## Spec
-1920×1080, 30 fps, 2905 frames = **96.8 s** (HE and EN identical), H.264 CRF 18, AAC stereo.
-Audio mastered to ≈ −19.7 LUFS integrated, −1.7 dBTP true peak. All cuts are hard cuts; the corner day-clock (with a 24h line that fills as the day passes) connects the scenes.
+1920×1080, 30 fps, 3151 frames = **105.0 s** (HE and EN identical), H.264 CRF 18, AAC stereo.
+Audio mastered to ≈ −19.8 LUFS integrated, −1.7 dBTP true peak. All cuts are hard cuts; the corner day-clock (with a 24h line that fills as the day passes) connects the scenes.
 
 ## Story — "People stop. Barry works." (one day inside one business, no people on screen)
 | Scene | Start | What it proves |
@@ -29,12 +29,13 @@ Audio mastered to ≈ −19.7 LUFS integrated, −1.7 dBTP true peak. All cuts a
 | 16:02 escalate | 0:32.5 | Stubborn customer → one concise owner decision (₪90 difference) → paid. **Not every decision needs you. / The important ones do.** |
 | 18:42 owner | 0:41.7 | COO-style briefing; ₪1,240 recovery started; what went well → outcome cards |
 | 21:16 supplier | 0:49.8 | "the usual order" → nine business signals → usual supplier chosen *for reasons*, not price → PO → "Done…Arriving Thursday." |
-| montage | 1:01.3 | Fashion, spa, garage, delivery, wholesale, clinic — hard cuts on the beat |
-| systems | 1:07.3 | 12 system modules; Barry acts across them. **Different business. Different systems. Same operator.** |
-| adapt | 1:12.7 | **Your business doesn't adapt to Barry. / Barry adapts to your business.** |
-| 00:37 night | 1:18.7 | The ₪1,240 customer from 18:42 comes back and pays. *Barry works.* |
-| 07:01 next day | 1:22.8 | "Quiet night — the good kind." Sam: back today 💪 |
-| brand | 1:27.8 | Vacuum → BARRY → **WORKS.** / **עובד.** → COMING SOON |
+| 22:05 margins | 1:01.3 | BARRY Margins: Barry reviews the whole cost structure, leads with a proactive supplier-pricing finding (spend, why, saving, action), lists more savings + monthly total. **Make more. / Keep more.** |
+| montage | 1:10.5 | Fashion, spa, auto/garage, delivery, clinic — hard cuts on the beat |
+| systems | 1:15.5 | 12 system modules; Barry acts across them. **Different business. Different systems. Same operator.** |
+| adapt | 1:20.9 | **Your business doesn't adapt to Barry. / Barry adapts to your business.** |
+| 00:37 night | 1:26.9 | The ₪1,240 customer from 18:42 comes back and pays. *Barry works.* |
+| 07:01 next day | 1:31.0 | "Quiet night — the good kind." Sam: back today 💪 |
+| brand | 1:36.0 | Vacuum → BARRY → **WORKS.** / **עובד.** → COMING SOON |
 
 ## Architecture
 - `src/timing.ts` — one clock: scene durations, transition overlaps, cue table (`Q`). Scenes animate from it; the audio generator schedules from it. 120 BPM (15 f/beat); the montage sits on the beat grid.
