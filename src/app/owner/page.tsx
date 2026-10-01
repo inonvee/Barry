@@ -692,9 +692,13 @@ function MoneyView({ ws, range, setRange, onOpen, onIntervention, loadedAt }: { 
           <dt className="text-[#667085]">BARRY MADE</dt>
           <dd><MoneyFigures money={impact.generated} tone="good" empty="nothing verified yet" /> <span className="text-[12px] text-[#98a2b3]">generated{Object.keys(impact.recovered).length ? ` · ${formatMoney(impact.recovered)} of it recovered` : ""}</span></dd>
           <dt className="text-[#667085]">BARRY SAVED</dt>
-          <dd><MoneyFigures money={impact.saved.realized} empty="nothing yet" /> <span className="text-[12px] text-[#98a2b3]">realised · potential {formatMoney(impact.saved.potential)} · proposed {formatMoney(impact.saved.proposed)} · negotiated {formatMoney(impact.saved.negotiated)}</span></dd>
+          {ws.plan?.name && !ws.plan.marginsIncluded ? (
+            <dd className="text-[13px] text-[#667085]">BARRY Margins (cost intelligence and savings) is part of BARRY Intelligence — not in your {ws.plan.name} plan. <a href="/owner/settings" className="underline">See your plan ›</a></dd>
+          ) : (
+            <dd><MoneyFigures money={impact.saved.realized} empty="nothing yet" /> <span className="text-[12px] text-[#98a2b3]">realised · potential {formatMoney(impact.saved.potential)} · proposed {formatMoney(impact.saved.proposed)} · negotiated {formatMoney(impact.saved.negotiated)}</span></dd>
+          )}
         </dl>
-        {impact.evidenceCount === 0 && <p className="mt-2 text-[12px] text-[#667085]">No cost evidence is connected yet, so there is nothing to save from. BARRY will not invent a saving.</p>}
+        {impact.evidenceCount === 0 && (!ws.plan?.name || ws.plan.marginsIncluded) && <p className="mt-2 text-[12px] text-[#667085]">BARRY Margins needs connected cost evidence — nothing is connected yet, so there is nothing to save from. BARRY will not invent a saving.</p>}
       </Section>
       <Section title="Money in motion" subtitle="What can you do about it? Each line says whose move it is.">
         <MoneyInMotion items={ws.opportunities.items} summary={ws.opportunities.summary} onOpen={onOpen} onIntervention={onIntervention} />

@@ -95,9 +95,11 @@ export function unitEconomics(input: { account: CommercialAccount | null; events
   const grossContribution = costToServe === null ? null : r2(recurringRevenue - costToServe);
   const grossMarginPct = grossContribution !== null && recurringRevenue > 0 ? Math.round((grossContribution / recurringRevenue) * 1000) / 10 : null;
   const guardrail = account ? PLAN_CATALOG[account.plan].costGuardrail : null;
-  const monthlyCost = costToServe === null ? null : (costToServe * 30) / Math.max(1, Math.min(periodDays, elapsedDays(period, input.now)));
-  const aboveGuardrail = guardrail !== null && monthlyCost !== null && currency === "USD" && monthlyCost > guardrail;
-  if (aboveGuardrail) notes.push(`Cost-to-serve runs at ~${r2(monthlyCost!)} USD/month, above the ${guardrail} USD guardrail for ${account ? PLAN_CATALOG[account.plan].name : "this plan"}.`);
+  // The period's RECORDED cost against the monthly guardrail (prorated only for a period that isn't a
+  // month). Never extrapolated: a full-month invoice on day 1 is not a run-rate.
+  const periodGuardrail = guardrail === null ? null : r2((guardrail * periodDays) / 30);
+  const aboveGuardrail = periodGuardrail !== null && costToServe !== null && currency === "USD" && costToServe > periodGuardrail;
+  if (aboveGuardrail) notes.push(`Cost-to-serve this period is ${r2(costToServe!)} USD, above the ${periodGuardrail} USD guardrail for ${account ? PLAN_CATALOG[account.plan].name : "this plan"}.`);
   const freeCost = costToServe !== null && freeDays > 0 ? (costToServe * freeDays) / Math.max(1, freeDays + paidDays) : null;
   const freePeriodCoverage = account?.setupPrice !== null && account?.setupPrice !== undefined && freeCost !== null && (account.setupStatus === "paid") ? r2(account.setupPrice - freeCost) : null;
 
@@ -124,10 +126,4 @@ export function unitEconomics(input: { account: CommercialAccount | null; events
     freePeriodCoverage,
     notes,
   };
-}
-
-/** Days of the period elapsed by `now` (a running month is normalised by what has passed). */
-function elapsedDays(p: Period, now = new Date()): number {
-  const end = Math.min(now.getTime(), Date.parse(p.end));
-  return Math.max(1, (end - Date.parse(p.start)) / DAY);
 }

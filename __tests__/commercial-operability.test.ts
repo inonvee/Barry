@@ -228,6 +228,9 @@ describe("CHECKPOINTS 4–7 — cost to serve and unit economics", () => {
     const high = unitEconomics({ account, events, cost: costToServe({ period: october, records: [{ ...records[0], amount: 300 }], usage: [], support: [] }), now: new Date("2026-10-31T23:00:00.000Z") });
     expect(high.aboveGuardrail).toBe(true);
     expect(high.belowMarginTarget).toBe(true);
+    // A full-month invoice recorded on day 1 is not a run-rate: no extrapolation into a false breach.
+    const day1 = unitEconomics({ account, events, cost: costToServe({ period: october, records: [{ ...records[0], amount: 100 }], usage: [], support: [] }), now: new Date("2026-10-01T06:00:00.000Z") });
+    expect(day1.aboveGuardrail).toBe(false);
   });
 });
 

@@ -7,6 +7,7 @@ import { OwnerShell } from "@/components/owner/OwnerShell";
 import { Section, Skeleton, StateNotice, btn } from "@/components/owner/ui";
 import { Disclosure, StatusPill } from "@/components/ds/primitives";
 import type { ConnectionView } from "@/lib/connections/status";
+import { PlanAndValue } from "@/components/owner/PlanAndValue";
 
 /**
  * OWNER SETTINGS — two halves kept apart: the BUSINESS SETUP the owner owns (identity, how BARRY
@@ -43,6 +44,7 @@ function SettingsPage() {
         </div>
         {authorized && (
           <>
+            <PlanAndValue api={api} />
             <Section title="Business setup" subtitle="What BARRY knows about you and how it behaves.">
               <dl className="grid gap-x-6 gap-y-2 text-[14px] sm:grid-cols-[12rem_1fr]">
                 <dt className="text-[#667085]">Business</dt>

@@ -1,6 +1,9 @@
 import type { BusinessGraph } from "@/lib/business-graph";
 import { getBackend } from "@/lib/store";
 import { effectiveGraph } from "@/lib/policy/effective";
+import { loadEntitlement } from "@/lib/commercial/account";
+import { hasFeature } from "@/lib/commercial/entitlements";
+import { PLAN_CATALOG } from "@/lib/commercial/plans";
 import { getConversationStore, type ConversationState } from "@/lib/state";
 import { getReasoner } from "@/lib/reasoner";
 import { describeBusinessConnections, type ConnectionView } from "@/lib/connections/status";
@@ -119,6 +122,8 @@ export type OwnerWorkspace = {
   health: { ai: AiHealth; systems: SystemHealth[] };
   /** What BARRY can do for this business right now, what works only on a simulator, and the setup steps with what they unlock. */
   capabilities: ReturnType<typeof capabilitySummary>;
+  /** The plan (owner-safe): its name and whether BARRY Margins is included. Never economics. */
+  plan: { name: string | null; marginsIncluded: boolean };
   /** Sources that could not be read (shown, never zeroed). */
   unavailable: string[];
 };
@@ -321,6 +326,10 @@ export async function getOwnerWorkspace(staticGraph: BusinessGraph, opts: { sinc
     handoffs,
     health: { ai: aiHealth(conversations, now), systems: connections.map(systemHealth) },
     capabilities,
+    plan: await safe("plan", async () => {
+      const e = await loadEntitlement(businessId);
+      return { name: e.plan ? PLAN_CATALOG[e.plan].name : null, marginsIncluded: hasFeature(e, "margins") };
+    }, { name: null, marginsIncluded: false }),
     unavailable,
   };
 }

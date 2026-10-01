@@ -1,5 +1,7 @@
 import type { BusinessGraph } from "@/lib/business-graph";
 import { graphOrNull } from "@/lib/learn-business/http";
+import { isActionAvailable } from "@/lib/business-graph";
+import { listBusinessSummaries } from "@/lib/fixtures";
 import { decide } from "@/lib/policy";
 import { applyControlChange, loadControls } from "@/lib/hq/controls";
 import { activateFreePeriod, cancelSubscription, commercialStage, CommercialError, freePeriodProgress, getCommercialAccount, listCommercialEvents, markSetupPaid, quoteSetup, selectPlan } from "@/lib/commercial/account";
@@ -72,9 +74,10 @@ export async function runCommercialQaScenario(id: CommercialQaScenarioId, opts: 
     const economics = unitEconomics({ account, events: await listCommercialEvents(businessId), cost, now });
     return { account, cost, economics };
   };
-  const rina = (): BusinessGraph => {
-    const g = graphOrNull("fashion-retailer");
-    if (!g) throw new Error("The fashion-retailer fixture is not available here");
+  // Any available business that sells through a cart, copied onto the sandbox id (no real tenant touched).
+  const seller = (): BusinessGraph => {
+    const g = listBusinessSummaries().map((b) => graphOrNull(b.id)).find((x): x is BusinessGraph => !!x && isActionAvailable(x, "addToCart"));
+    if (!g) throw new Error("No cart-selling business is available here");
     return { ...g, business: { ...g.business, id: businessId } };
   };
 
@@ -129,10 +132,10 @@ export async function runCommercialQaScenario(id: CommercialQaScenarioId, opts: 
       break;
     }
     case "core_denied_operator_capability": {
-      const g = rina();
+      const g = seller();
       setEntitlement(businessId, { plan: "CORE", features: [...PLAN_CATALOG.CORE.features], emulated: true });
-      const cart = decide(g, { action: "addToCart", params: { productId: "prod-midnight-wrap-dress", quantity: 1 } });
-      const search = decide(g, { action: "searchProducts", params: { text: "dress" } });
+      const cart = decide(g, { action: "addToCart", params: { productId: "qa-product", quantity: 1 } });
+      const search = decide(g, { action: "searchProducts", params: { text: "qa" } });
       Object.assign(observed, { addToCart: executability(cart), addToCartReason: cart.reason, searchProducts: executability(search) });
       expect(executability(cart) === "unavailable", "addToCart is not UNAVAILABLE on CORE");
       expect(cart.status !== "requires_approval", "a plan-locked action became an owner request");
@@ -140,11 +143,11 @@ export async function runCommercialQaScenario(id: CommercialQaScenarioId, opts: 
       break;
     }
     case "intelligence_denied_by_authority": {
-      const g = rina();
+      const g = seller();
       setEntitlement(businessId, { plan: "INTELLIGENCE", features: [...PLAN_CATALOG.INTELLIGENCE.features], emulated: true });
       await applyControlChange(businessId, { pauseConsequentialWrites: true }, { by: FOUNDER, reason: "QA: authority denies" });
       await loadControls(businessId);
-      const cart = decide(g, { action: "addToCart", params: { productId: "prod-midnight-wrap-dress", quantity: 1 } });
+      const cart = decide(g, { action: "addToCart", params: { productId: "qa-product", quantity: 1 } });
       Object.assign(observed, { addToCart: executability(cart), policyId: cart.policyId });
       expect(executability(cart) === "denied", "authority denial was not DENIED");
       break;

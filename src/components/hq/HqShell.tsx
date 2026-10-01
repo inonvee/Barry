@@ -11,7 +11,7 @@ import type { CommandResult } from "@/components/ds/CommandBar";
  * the fleet through a founder-only API (real records only).
  */
 
-export type HqSurface = "focus" | "fleet" | "incidents" | "activity" | "money" | "releases" | "barry" | "settings" | "ask" | "business";
+export type HqSurface = "focus" | "fleet" | "incidents" | "activity" | "money" | "commercial" | "releases" | "barry" | "settings" | "ask" | "business";
 
 export const HQ_NAV: NavItem[] = [
   { id: "focus", href: "/hq", label: "Focus", short: "Focus" },
@@ -19,6 +19,7 @@ export const HQ_NAV: NavItem[] = [
   { id: "incidents", href: "/hq/incidents", label: "Incidents" },
   { id: "activity", href: "/hq/activity", label: "Activity" },
   { id: "money", href: "/hq/money", label: "Money" },
+  { id: "commercial", href: "/hq/commercial", label: "Commercial" },
   { id: "releases", href: "/hq/releases", label: "Releases" },
   { id: "barry", href: "/hq/barry", label: "BARRY" },
   { id: "settings", href: "/hq/settings", label: "Settings" },

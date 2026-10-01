@@ -50,7 +50,7 @@ export function commercialAlerts(input: {
   const free = freePeriodProgress(a, now);
   if (stage === "free_month_ending" && free) out.push({ kind: "free_period_ending", severity: "medium", title: `Free month ends in ${free.daysLeft} day(s)`, why: `Day ${free.day} of 30; ends ${free.endsAt.slice(0, 10)}.`, nextAction: "Review the trial summary with the owner." });
   if (stage === "awaiting_recurring") out.push({ kind: "recurring_should_start", severity: "high", title: "Free month is over — confirm the recurring start", why: `The free period ended ${a.freePeriodEndsAt?.slice(0, 10)}; recurring is not confirmed.`, nextAction: "Confirm recurring (manual invoice) or record a pause / cancellation." });
-  if (economics.aboveGuardrail) out.push({ kind: "cost_above_guardrail", severity: "high", title: "Cost-to-serve above the plan guardrail", why: `${economics.notes.find((n) => n.startsWith("Cost-to-serve")) ?? "Above guardrail."}`, nextAction: "Check model usage and support time; nothing changes for the customer automatically." });
+  if (economics.aboveGuardrail) out.push({ kind: "cost_above_guardrail", severity: "high", title: "Cost-to-serve above the plan guardrail", why: `${economics.notes.find((n) => n.startsWith("Cost-to-serve this period")) ?? "Above guardrail."}`, nextAction: "Check model usage and support time; nothing changes for the customer automatically." });
 
   // Unusual model usage: the last 24h cost > 3× the trailing daily average (and at least 1 USD), or calls on a model with no rate.
   const t = now.getTime();
