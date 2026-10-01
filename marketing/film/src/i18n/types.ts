@@ -61,6 +61,15 @@ export type Copy = {
     poTitle: string; poPreparing: string; poAuth: string; poSubmitted: string; poEta: string;
     done: {l1: string; l2: string};
   };
+  margins: {
+    notif: string; feature: string;
+    sweepLabel: string; sweep: {area: string; flag?: string}[]; ok: string;
+    leadLabel: string; current: string; currentUnit: string; why: string;
+    saving: string; savingUnit: string; actions: string[];
+    moreLabel: string; more: {what: string; saving: string}[];
+    totalLabel: string; total: string;
+    t1: string; t2: string;
+  };
   montage: {kind: string; name: string; msg: string; chips: string[]}[];
   systems: {modules: string[]; w1: string; w2: string; w3: string};
   adapt: {l1: string; l2: string};

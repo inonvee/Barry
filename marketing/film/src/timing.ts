@@ -5,11 +5,11 @@ export const BEAT = 15;
 
 export type Lang = 'he' | 'en';
 export type SceneId =
-  | 'morning' | 'dress' | 'patience' | 'close5' | 'escalate' | 'owner' | 'supplier'
+  | 'morning' | 'dress' | 'patience' | 'close5' | 'escalate' | 'owner' | 'supplier' | 'margins'
   | 'montage' | 'systems' | 'adapt' | 'night' | 'nextDay' | 'brand';
 
 export const SCENE_ORDER: SceneId[] = [
-  'morning', 'dress', 'patience', 'close5', 'escalate', 'owner', 'supplier',
+  'morning', 'dress', 'patience', 'close5', 'escalate', 'owner', 'supplier', 'margins',
   'montage', 'systems', 'adapt', 'night', 'nextDay', 'brand',
 ];
 
@@ -21,7 +21,8 @@ const BASE_DUR: Record<SceneId, number> = {
   escalate: 276,
   owner: 244,
   supplier: 346,
-  montage: 180,
+  margins: 276, // BARRY Margins: one beat — the cost structure, reviewed
+  montage: 150, // five businesses (wholesale flash cut — it repeated the supplier beat)
   systems: 160, // longer hold on "Same operator."
   adapt: 180, // a beat of black before the positioning line
   night: 125,
@@ -58,7 +59,8 @@ export const CLOCK: Partial<Record<SceneId, {from?: string; time: string; roll?:
   escalate: {from: '15:44', time: '16:02'},
   owner: {from: '16:02', time: '18:42'},
   supplier: {from: '18:42', time: '21:16'},
-  night: {from: '21:16', time: '00:37'},
+  margins: {from: '21:16', time: '22:05'},
+  night: {from: '22:05', time: '00:37'},
   nextDay: {from: '00:37', time: '07:01'},
 };
 
@@ -80,7 +82,8 @@ export const Q = {
     nodeStart: 96, nodeGap: 6, understand: 152, converge: 194, suppliers: 204, select: 228, reasonStart: 232, reasonGap: 6,
     po: 256, authOK: 270, submitted: 284, eta: 292, phoneBack: 300, done: 310,
   },
-  montage: {start: 0, gap: 30},
+  margins: {notif: 10, sweep: 30, sweepGap: 5, card: 54, current: 62, why: 76, saving: 94, actions: 110, more: 124, moreGap: 8, total: 152, cut: 210, t1: 216, t2: 234},
+  montage: {start: 0, gap: 30, count: 5},
   systems: {modules: 0, moduleGap: 3, w1: 30, w2: 60, w3: 90},
   adapt: {l1: 26, l2: 92},
   night: {e1: 16, gap: 20, t: 82},

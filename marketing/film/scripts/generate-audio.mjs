@@ -244,7 +244,9 @@ function build(lang) {
   padAt('Gm9', T('escalate'), Q.escalate.cut / FPS, 0.22, {atk: 1, rel: 0.15, cut: 1300});
   padAt('Gm9', at('escalate', Q.escalate.t1), (A.owner - A.escalate - Q.escalate.t1) / FPS, 0.24, {atk: 0.6, rel: 1.5, cut: 1700});
   padAt('Fadd9', T('owner'), (A.supplier - A.owner) / FPS + 0.3, 0.24, {atk: 1.2, rel: 2, cut: 2000});
-  padAt('DmS', at('supplier', Q.supplier.open), (A.montage - A.supplier - Q.supplier.open) / FPS, 0.34, {atk: 1, rel: 0.2, cut: 2200, lfo: 0.3});
+  padAt('DmS', at('supplier', Q.supplier.open), (A.margins - A.supplier - Q.supplier.open) / FPS, 0.34, {atk: 1, rel: 0.2, cut: 2200, lfo: 0.3});
+  padAt('Bbmaj7', T('margins'), Q.margins.cut / FPS + 0.1, 0.18, {atk: 1, rel: 0.12, cut: 1700, lfo: 0.1});
+  padAt('Fadd9', at('margins', Q.margins.t1), (A.montage - A.margins - Q.margins.t1) / FPS, 0.24, {atk: 0.5, rel: 0.4, cut: 2200});
   padAt('Dm9', T('adapt'), (A.night - A.adapt) / FPS + 0.5, 0.3, {atk: 0.4, rel: 1.5, cut: 1600});
   padAt('night', T('night'), (A.nextDay - A.night) / FPS + 0.4, 0.16, {atk: 1.2, rel: 1.2, cut: 3000, lfo: 0.05});
   M(pad(chords.morning, (A.brand - A.nextDay) / FPS - 0.06, {atk: 1.8, rel: 0.05, cut: 2600, lfo: 0.08}), T('nextDay'), {gain: 0.2, verb: 0.5});
@@ -260,6 +262,7 @@ function build(lang) {
   pulse(A.close5, A.escalate, 0.16);
   pulse(A.escalate, A.escalate + Q.escalate.cut, 0.15);
   pulse(A.owner, A.supplier, 0.13);
+  pulse(A.margins, A.margins + Q.margins.cut, 0.13);
   pulse(A.supplier + Q.supplier.open, A.supplier + Q.supplier.submitted, 0.2, 1);
 
   // --- montage + systems: the groove ---
@@ -400,8 +403,23 @@ function build(lang) {
   S(chimeChord([65, 72, 77, 84], 3.4, 1.5), at('supplier', s.done + 2), {gain: 0.24, verb: 0.7});
   S(riser(1.6, 500, 9000, 150, 1200), T('montage') - 1.6, {gain: 0.26, verb: 0.2});
 
+  // margins: Barry reviews the cost structure and finds the leaks
+  const mg = Q.margins;
+  S(tick(3000, 0.7), at('margins', 2), {gain: 0.09, verb: 0.4});
+  notif(at('margins', mg.notif), 0.2);
+  for (let k = 0; k < 8; k++) S(tick(2000 + k * 120, 0.8), at('margins', mg.sweep + k * mg.sweepGap + 6), {gain: k < 4 ? 0.1 : 0.06, pan: 0.3 - k * 0.05, verb: 0.3});
+  S(whoosh(0.6, 400, 3000, 1, 0.5), at('margins', mg.card - 2), {gain: 0.16, verb: 0.35});
+  S(tick(2300), at('margins', mg.current), {gain: 0.12, verb: 0.35});
+  S(chimeChord([69, 72], 1.6, 2.2), at('margins', mg.why), {gain: 0.12, verb: 0.55});
+  success(at('margins', mg.saving + 2), 0.3);
+  S(tick(2600), at('margins', mg.actions), {gain: 0.1, verb: 0.3});
+  for (let k = 0; k < 3; k++) check(at('margins', mg.more + k * mg.moreGap), 81 + k * 3, 0.1);
+  S(chimeChord([74, 81, 86], 2.4, 1.8), at('margins', mg.total), {gain: 0.22, verb: 0.6});
+  hit(at('margins', mg.t1), 0.4, 2.6);
+  hit(at('margins', mg.t2), 0.7, 3.4);
+
   // montage: an impact per cut, a pluck per resolved chip
-  for (let k = 0; k < 6; k++) {
+  for (let k = 0; k < Q.montage.count; k++) {
     const f0 = Q.montage.start + k * Q.montage.gap;
     S(kick(0.5, 200, 44), at('montage', f0), {gain: 0.35});
     S(whoosh(0.35, 3000, 600, 1, 0.4), at('montage', f0) - 0.06, {gain: 0.1});

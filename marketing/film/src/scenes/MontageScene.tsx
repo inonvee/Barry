@@ -8,14 +8,13 @@ import {Backdrop, Label, Ltr, Mono, SceneRoot} from '../ui/base';
 import {Bubble} from '../ui/chat';
 import {BarryCore, Glyph, SystemConnection} from '../ui/system';
 
-const GLYPH = ['stack', 'calendar', 'grid', 'truck', 'factory', 'calendar'];
+const GLYPH = ['stack', 'calendar', 'grid', 'truck', 'calendar'];
 // Deliberately varied framing so the cuts feel like different places, not one template.
 const LAYOUT = [
   {bx: 180, by: 300, cx: 900, cy: 660},
   {bx: 260, by: 540, cx: 900, cy: 320},
   {bx: 150, by: 280, cx: 860, cy: 720},
   {bx: 300, by: 600, cx: 960, cy: 340},
-  {bx: 200, by: 360, cx: 980, cy: 660},
   {bx: 240, by: 520, cx: 920, cy: 300},
 ];
 
@@ -27,7 +26,6 @@ const Flash: React.FC<{i: number}> = ({i}) => {
   const L = LAYOUT[i];
   const s = Q.montage.start + i * Q.montage.gap;
   const pop = enterImpact(frame, fps, s, 10);
-  const who = i === 4 ? 'owner' : 'customer';
   const bubbleAnchor = {x: mx(L.bx + 60), y: L.by + 150};
   const chipsAnchor = {x: mx(L.cx - 20), y: L.cy + 40};
   return (
@@ -41,11 +39,11 @@ const Flash: React.FC<{i: number}> = ({i}) => {
         <span style={{fontSize: 26, color: C.dim}}>{m.name}</span>
       </div>
       <div style={{position: 'absolute', insetInlineEnd: 84, top: 72, opacity: prog(frame, s, 5)}}>
-        <Mono size={15} color={C.faint}><Ltr>{`0${i + 1} / 06`}</Ltr></Mono>
+        <Mono size={15} color={C.faint}><Ltr>{`0${i + 1} / 0${Q.montage.count}`}</Ltr></Mono>
       </div>
       <SystemConnection a={bubbleAnchor} b={chipsAnchor} curve={i % 2 ? 80 : -80} draw={prog(frame, s + 4, 8, EASE.out)} travel={connectionTravel(frame, s + 5, 10)} opacity={0.3} />
       <div style={{position: 'absolute', insetInlineStart: L.bx, top: L.by, scale: 1.04 - 0.04 * pop, opacity: prog(frame, s, 3)}}>
-        <Bubble who={who} side={who === 'owner' ? 'end' : 'start'} text={m.msg} size={52} maxWidth={900} />
+        <Bubble who="customer" side="start" text={m.msg} size={52} maxWidth={900} />
       </div>
       <div style={{position: 'absolute', insetInlineStart: L.cx, top: L.cy, display: 'flex', alignItems: 'center', gap: 18}}>
         {m.chips.map((c, k) => {
@@ -74,6 +72,6 @@ const Flash: React.FC<{i: number}> = ({i}) => {
 export const MontageScene: React.FC = () => {
   const frame = useCurrentFrame();
   const q = Q.montage;
-  const i = Math.min(5, Math.floor((frame - q.start) / q.gap));
+  const i = Math.min(q.count - 1, Math.floor((frame - q.start) / q.gap));
   return <SceneRoot>{i >= 0 && <Flash key={i} i={i} />}</SceneRoot>;
 };

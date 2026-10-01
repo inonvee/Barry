@@ -7,6 +7,7 @@ import {Close5Scene} from './Close5Scene';
 import {EscalateScene} from './EscalateScene';
 import {OwnerScene} from './OwnerScene';
 import {SupplierScene} from './SupplierScene';
+import {MarginsScene} from './MarginsScene';
 import {MontageScene} from './MontageScene';
 import {SystemsScene} from './SystemsScene';
 import {AdaptScene} from './AdaptScene';
@@ -22,6 +23,7 @@ export const SCENES: Record<SceneId, React.FC> = {
   escalate: EscalateScene,
   owner: OwnerScene,
   supplier: SupplierScene,
+  margins: MarginsScene,
   montage: MontageScene,
   systems: SystemsScene,
   adapt: AdaptScene,
