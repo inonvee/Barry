@@ -54,6 +54,9 @@ export type QaScenarioRun = {
   links: { label: string; href: string }[];
   replies: string[];
   note?: string;
+  /** "created": the acceptance state exists. "expectedly_blocked": a founder control or policy refused the write — that refusal IS the expected result (PASS), not an error. */
+  outcome: "created" | "expectedly_blocked";
+  blocked?: { policyId: string; reason: string; step: string };
 };
 
 const RINA = "fashion-retailer";
@@ -118,6 +121,7 @@ export async function runQaScenario(id: QaScenarioId, opts: { runId?: string; no
   const records: QaScenarioRun["records"] = {};
   const created: string[] = [...scenario.creates];
   let note: string | undefined;
+  let blocked: QaScenarioRun["blocked"];
 
   await withQaReasoner(new QaScriptedReasoner(SCRIPT), async () => {
     const step = async (m: string) => {
@@ -141,7 +145,13 @@ export async function runQaScenario(id: QaScenarioId, opts: { runId?: string; no
         const out = await step("checkout please, QA Dana 0501234567");
         records.cartId = out.state.knownFields.__commerceCartId;
         records.paymentRequestId = out.state.knownFields.__paymentRequestId;
-        if (!records.paymentRequestId) throw new Error("The checkout did not produce a payment request (see the replies)");
+        if (!records.paymentRequestId) {
+          const refusal = expectedRefusal(out.turn.trace?.steps ?? []);
+          if (!refusal) throw new Error("The checkout did not produce a payment request (see the replies)");
+          blocked = { ...refusal, step: "checkout" };
+          note = `Expectedly blocked: ${refusal.reason}`;
+          break;
+        }
         if (id === "rina_payment_unverified_claim") await step("I paid");
         if (id === "rina_completed_order") {
           await getBackend().simulatePaymentOutcome(records.paymentRequestId, "paid");
@@ -211,9 +221,17 @@ export async function runQaScenario(id: QaScenarioId, opts: { runId?: string; no
     links: links(graph.business.id, conversationId, [{ label: "Simulator (this business)", href: `/simulator?businessId=${encodeURIComponent(graph.business.id)}` }]),
     replies,
     ...(note ? { note } : {}),
+    outcome: blocked ? "expectedly_blocked" : "created",
+    ...(blocked ? { blocked } : {}),
   };
   await getBackend().upsertOperatorRecord({ businessId: graph.business.id, kind: "qa_scenario", key: runId, data: run });
   return run;
+}
+
+/** A write refused by a founder control or a policy rule is an EXPECTED result when the founder set that control. */
+function expectedRefusal(steps: { policy: { status: string; reason: string; policyId?: string } }[]): { policyId: string; reason: string } | undefined {
+  const refused = steps.find((s) => s.policy.status === "denied" && s.policy.policyId?.startsWith("founder_control:"));
+  return refused ? { policyId: refused.policy.policyId!, reason: refused.policy.reason } : undefined;
 }
 
 export async function listQaScenarioRuns(businessId: string): Promise<QaScenarioRun[]> {

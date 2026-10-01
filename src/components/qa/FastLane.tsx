@@ -125,12 +125,13 @@ export function ScenarioFactory({ api }: { api: Api }) {
           {runs.slice(0, 8).map((r) => (
             <li key={r.runId} className="rounded-lg border border-[#eaecf0] p-3 text-sm">
               <div className="flex flex-wrap items-center gap-2">
-                <Pill tone="good">created</Pill>
+                {r.outcome === "expectedly_blocked" ? <Pill tone="good">EXPECTEDLY BLOCKED · PASS</Pill> : <Pill tone="good">created</Pill>}
                 <span className="font-medium">{scenarios.find((s) => s.id === r.scenario)?.title ?? r.scenario}</span>
                 <span className="break-all font-mono text-xs text-[#667085]">{r.conversationId}</span>
               </div>
               <p className="mt-1 text-[12px] text-[#667085]">Created: {r.created.join(", ")}{r.records.approvalId ? ` · approval ${r.records.approvalId.slice(0, 14)}` : ""}{r.records.paymentRequestId ? ` · payment ${r.records.paymentRequestId.slice(0, 14)}` : ""}{r.records.orderId ? ` · order ${r.records.orderId}` : ""}{r.records.handoffId ? ` · handoff ${r.records.handoffId.slice(0, 14)}` : ""}</p>
-              {r.note && <p className="mt-1 text-[12px] text-[#b54708]">{r.note}</p>}
+              {r.outcome === "expectedly_blocked" && r.blocked && <p className="mt-1 text-[12px] text-[#067647]">The {r.blocked.step} was refused by {r.blocked.policyId.replace("founder_control:", "the founder control “").replace(/_/g, " ")}” — the refusal is the expected result of that control, not a failure. No payment request was created.</p>}
+              {r.note && r.outcome !== "expectedly_blocked" && <p className="mt-1 text-[12px] text-[#b54708]">{r.note}</p>}
               <div className="mt-1 flex flex-wrap gap-1.5">
                 {r.links.map((l) => (
                   <Link key={l.href + l.label} href={l.href} className="rounded-full bg-[#f2f4f7] px-2 py-0.5 text-[12px] hover:underline">{l.label}</Link>

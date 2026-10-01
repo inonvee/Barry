@@ -203,7 +203,7 @@ export type FollowUpRecord = {
  * incident acknowledgements, operational obligations, release verdicts, QA scenario runs): each has a
  * `kind`, a stable `key` per (business, kind) and a JSON `data` body. Never customer data.
  */
-export type OperatorRecordKind = "controls" | "audit" | "incident" | "obligation" | "release" | "qa_scenario";
+export type OperatorRecordKind = "controls" | "audit" | "incident" | "obligation" | "release" | "qa_scenario" | "founder_state";
 
 export type OperatorRecord = {
   id: string;

@@ -17,7 +17,9 @@ import { whatsappConfig, whatsappNumbersFor } from "@/lib/channels/whatsapp";
 import { runtimeCommit, BARRY_RUNTIME_VERSION } from "@/lib/runtime/version";
 import { environmentLabel } from "@/lib/qa/mode";
 import { deriveIncidents, loadIncidentStates, type Incident } from "./incidents";
-import { loadControls, listControlAudit, type BusinessControls, type ControlAudit } from "./controls";
+import { loadControls, listControlAudit, describeChange, type BusinessControls, type ControlAudit } from "./controls";
+import { businessActivity, type ActivityEvent } from "./activity";
+import { isVerifiedPaid, isSimulatedPayment } from "@/lib/owner/revenue";
 import { reconcileObligations, type Obligation } from "@/lib/operator/obligations";
 
 /**
@@ -34,6 +36,7 @@ export type OperatingStage = "simulator_only" | "supervised" | "live_ready";
 export type BusinessStatus = {
   id: string;
   name: string;
+  timezone: string;
   health: BusinessHealth;
   stage: OperatingStage;
   controls: BusinessControls;
@@ -49,7 +52,7 @@ export type BusinessStatus = {
   handoffsOpen: number;
   incidents: { high: number; medium: number; low: number; open: Incident[] };
   obligations: { open: number; needsOwner: number; barryCanAct: number; waitingOnCustomer: number; blocked: number };
-  money: { stuckWithOwner: Money; waitingOnCustomer: Money; atRisk: Money; simulated: Money };
+  money: { stuckWithOwner: Money; waitingOnCustomer: Money; atRisk: Money; simulated: Money; /** Provider-verified, non-test payments (count). */ verifiedPayments: number };
   conversations: { total: number; last24h: number; latestActivityAt: string | null };
   /** Founder control changes in the last 24h. */
   recentChanges: ControlAudit[];
@@ -73,6 +76,8 @@ export type BusinessStatusDetail = BusinessStatus & {
   interventionQueue: Intervention[];
   obligationList: Obligation[];
   audit: ControlAudit[];
+  /** The live activity read model (newest first), only with `detail`. */
+  activity: ActivityEvent[];
 };
 
 const D = 24 * 3600_000;
@@ -139,6 +144,7 @@ export async function getBusinessStatus(graph: BusinessGraph, opts: { now?: Date
   return {
     id,
     name: graph.business.name,
+    timezone: graph.business.timezone,
     health,
     stage,
     controls,
@@ -160,13 +166,14 @@ export async function getBusinessStatus(graph: BusinessGraph, opts: { now?: Date
       waitingOnCustomer: openObligations.filter((o) => o.nextMove === "waiting_on_customer").length,
       blocked: openObligations.filter((o) => o.nextMove === "blocked_by_capability").length,
     },
-    money: { stuckWithOwner: opportunities.summary.stuckWithYou, waitingOnCustomer: opportunities.summary.waitingOnCustomer, atRisk: opportunities.summary.atRisk, simulated: opportunities.summary.simulated },
+    money: { stuckWithOwner: opportunities.summary.stuckWithYou, waitingOnCustomer: opportunities.summary.waitingOnCustomer, atRisk: opportunities.summary.atRisk, simulated: opportunities.summary.simulated, verifiedPayments: payments.filter((p) => isVerifiedPaid(p) && !isSimulatedPayment(p)).length },
     conversations: { total: conversations.length, last24h: conversations.filter((c) => now.getTime() - Date.parse(c.updatedAt) <= D).length, latestActivityAt: latest },
     recentChanges: audit.filter((a) => now.getTime() - Date.parse(a.at) <= D),
     unavailable,
     interventionQueue: opts.detail ? interventions : [],
     obligationList: opts.detail ? obligations : [],
     audit: opts.detail ? audit : [],
+    activity: opts.detail ? businessActivity({ graph, conversations, approvals, payments, obligations, incidents, audit }) : [],
   };
 }
 
@@ -203,15 +210,7 @@ export function summarizeFleet(businesses: BusinessStatus[]): FleetSummary {
   };
 }
 
-export function describeChange(a: ControlAudit): string {
-  const parts: string[] = [];
-  if (a.change.mode) parts.push(`mode → ${a.change.mode}`);
-  if (typeof a.change.pauseConsequentialWrites === "boolean") parts.push(a.change.pauseConsequentialWrites ? "consequential writes paused" : "writes resumed");
-  if (typeof a.change.approvalRequiredForAll === "boolean") parts.push(a.change.approvalRequiredForAll ? "human-only (approval for everything)" : "approval-for-everything lifted");
-  if (a.change.pausedCapabilities) parts.push(a.change.pausedCapabilities.length ? `paused: ${a.change.pausedCapabilities.join(", ")}` : "no capabilities paused");
-  if (a.change.disabledChannels) parts.push(a.change.disabledChannels.length ? `channels disabled: ${a.change.disabledChannels.join(", ")}` : "all channels enabled");
-  return parts.length ? `${parts.join("; ")} — ${a.reason}` : a.reason;
-}
+export { describeChange };
 
 export async function getFleet(opts: { now?: Date } = {}): Promise<Fleet> {
   const now = opts.now ?? new Date();
@@ -220,9 +219,10 @@ export async function getFleet(opts: { now?: Date } = {}): Promise<Fleet> {
 }
 
 function stripDetail(d: BusinessStatusDetail): BusinessStatus {
-  const { interventionQueue: _q, obligationList: _o, audit: _a, ...rest } = d;
+  const { interventionQueue: _q, obligationList: _o, audit: _a, activity: _v, ...rest } = d;
   void _q;
   void _o;
   void _a;
+  void _v;
   return rest;
 }

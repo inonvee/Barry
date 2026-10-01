@@ -1,49 +1,11 @@
 import type { ReactNode } from "react";
-import Link from "next/link";
 import type { Sourced } from "@/lib/hq/service";
-
-export function HqHeader({ crumbs }: { crumbs: { href?: string; label: string }[] }) {
-  return (
-    <header className="sticky top-0 z-10 border-b border-neutral-200 dark:border-neutral-800 bg-white/90 dark:bg-neutral-950/90 backdrop-blur">
-      <div className="mx-auto max-w-6xl px-4 py-3 flex items-center gap-3">
-        <nav className="flex min-w-0 flex-1 items-center gap-1.5 text-sm">
-          <Link href="/hq" className="font-semibold shrink-0">
-            BARRY HQ
-          </Link>
-          {crumbs.map((c, i) => (
-            <span key={i} className="flex min-w-0 items-center gap-1.5">
-              <span className="text-neutral-400">/</span>
-              {c.href ? (
-                <Link href={c.href} className="truncate hover:underline">
-                  {c.label}
-                </Link>
-              ) : (
-                <span className="truncate text-neutral-500">{c.label}</span>
-              )}
-            </span>
-          ))}
-        </nav>
-        <nav className="hidden md:flex items-center gap-3 text-xs text-neutral-500">
-          <Link href="/simulator" className="hover:underline">Simulator</Link>
-          <Link href="/owner" className="hover:underline">Owner</Link>
-          <Link href="/owner/train" className="hover:underline">Train</Link>
-          <Link href="/qa" className="hover:underline">QA</Link>
-          <Link href="/hq/ask" className="hover:underline">Ask HQ</Link>
-        </nav>
-        <span className="hidden sm:inline text-xs rounded-full bg-neutral-100 dark:bg-neutral-800 px-2 py-0.5 text-neutral-600 dark:text-neutral-300">founder</span>
-        <form action="/api/hq/logout" method="post">
-          <button className="text-xs text-neutral-500 hover:underline">Sign out</button>
-        </form>
-      </div>
-    </header>
-  );
-}
 
 export function Card({ title, children, right }: { title: string; children: ReactNode; right?: ReactNode }) {
   return (
-    <section className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-4">
+    <section className="rounded-2xl bg-white p-4 shadow-[0_1px_2px_rgba(16,24,40,0.06),0_0_0_1px_rgba(16,24,40,0.04)] md:p-5">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">{title}</h2>
+        <h2 className="text-[15px] font-semibold text-[#101828]">{title}</h2>
         {right}
       </div>
       {children}
@@ -52,29 +14,29 @@ export function Card({ title, children, right }: { title: string; children: Reac
 }
 
 const TONES = {
-  good: "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300",
-  warn: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
-  bad: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
-  info: "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300",
-  neutral: "bg-neutral-100 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300",
+  good: "bg-[#ecfdf3] text-[#067647] ring-[#abefc6]",
+  warn: "bg-[#fffaeb] text-[#b54708] ring-[#fedf89]",
+  bad: "bg-[#fef3f2] text-[#b42318] ring-[#fecdca]",
+  info: "bg-[#eff8ff] text-[#175cd3] ring-[#b2ddff]",
+  neutral: "bg-[#f2f4f7] text-[#344054] ring-[#e4e7ec]",
 } as const;
 export type Tone = keyof typeof TONES;
 
 export function Badge({ tone = "neutral", children }: { tone?: Tone; children: ReactNode }) {
-  return <span className={`inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium ${TONES[tone]}`}>{children}</span>;
+  return <span className={`inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset ${TONES[tone]}`}>{children}</span>;
 }
 
 export function Kv({ k, v }: { k: string; v: ReactNode }) {
   return (
-    <div className="flex justify-between gap-3 py-0.5 text-sm">
-      <span className="shrink-0 text-neutral-500">{k}</span>
-      <span className="min-w-0 break-words text-right font-medium">{v}</span>
+    <div className="flex flex-col gap-0.5 py-1 text-[13px] sm:flex-row sm:justify-between sm:gap-3">
+      <span className="shrink-0 text-[#667085]">{k}</span>
+      <span className="min-w-0 break-words font-medium text-[#101828] sm:text-right">{v}</span>
     </div>
   );
 }
 
 export function Unavailable({ reason }: { reason: string }) {
-  return <span className="text-sm italic text-neutral-500">{reason}</span>;
+  return <span className="text-sm italic text-[#667085]">{reason}</span>;
 }
 
 /** Renders a sourced value, or says it is unavailable — never a fabricated zero. */

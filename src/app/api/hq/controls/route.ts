@@ -40,7 +40,7 @@ export async function POST(req: Request) {
   if (!parsed.success) return Response.json({ error: "A business, a reason and an explicit confirmation are required." }, { status: 400 });
   const graph = fleetTenant(parsed.data.businessId);
   if (!graph) return Response.json({ error: "Unknown business" }, { status: 404 });
-  const { controls, audit } = await applyControlChange(
+  const { controls, audit, changed } = await applyControlChange(
     graph.business.id,
     {
       ...(parsed.data.mode ? { mode: parsed.data.mode } : {}),
@@ -51,6 +51,6 @@ export async function POST(req: Request) {
     },
     { by: "founder", reason: parsed.data.reason }
   );
-  if (wantsJson) return Response.json({ controls, audit });
-  return NextResponse.redirect(new URL(`/hq/${encodeURIComponent(graph.business.id)}#controls`, req.url), 303);
+  if (wantsJson) return Response.json({ controls, audit, changed });
+  return NextResponse.redirect(new URL(`/hq/${encodeURIComponent(graph.business.id)}?view=controls${changed ? "" : "&noop=1"}`, req.url), 303);
 }

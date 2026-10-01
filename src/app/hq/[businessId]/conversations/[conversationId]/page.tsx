@@ -3,7 +3,10 @@ import { requireFounder } from "@/lib/hq/guard";
 import { getHqConversation } from "@/lib/hq/service";
 import { hqConversationView } from "@/lib/hq/conversation-view";
 import { TurnView } from "@/components/InspectorPanel";
-import { Badge, Card, HqHeader } from "@/components/hq/ui";
+import { Badge, Card } from "@/components/hq/ui";
+import { HqShell } from "@/components/hq/HqShell";
+import { hqShellLight } from "@/lib/hq/shell-data";
+import Link from "next/link";
 
 export default async function HqConversationPage({ params }: { params: Promise<{ businessId: string; conversationId: string }> }) {
   await requireFounder();
@@ -14,8 +17,8 @@ export default async function HqConversationPage({ params }: { params: Promise<{
   const turns = conversation.turns;
 
   return (
-    <>
-      <HqHeader crumbs={[{ href: `/hq/${encodeURIComponent(found.business.id)}`, label: found.business.name }, { label: conversation.id }]} />
+    <HqShell active="business" data={hqShellLight()}>
+      <p className="mx-auto max-w-6xl px-4 pt-4 text-[12px] text-[#667085]"><Link href="/hq" className="hover:underline">Focus</Link> › <Link href={`/hq/${encodeURIComponent(found.business.id)}`} className="hover:underline">{found.business.name}</Link> › <Link href={`/hq/${encodeURIComponent(found.business.id)}?view=technical`} className="hover:underline">Technical</Link> › conversation</p>
       <main className="mx-auto max-w-6xl space-y-4 px-4 py-6">
         <div className="flex flex-wrap items-center gap-2">
           <h1 className="break-all text-lg font-semibold">{conversation.id}</h1>
@@ -61,6 +64,6 @@ export default async function HqConversationPage({ params }: { params: Promise<{
           </div>
         </div>
       </main>
-    </>
+    </HqShell>
   );
 }

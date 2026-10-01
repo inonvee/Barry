@@ -16,5 +16,5 @@ export async function POST(req: Request) {
   const failed = parsed.data.failedChecks === undefined ? undefined : Array.isArray(parsed.data.failedChecks) ? parsed.data.failedChecks : parsed.data.failedChecks.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
   const verdict = await recordWorkVerdict({ sha: parsed.data.sha.trim(), verdict: parsed.data.verdict, by: "founder", ...(parsed.data.note?.trim() ? { note: parsed.data.note.trim() } : {}), ...(failed?.length ? { failedChecks: failed } : {}) });
   if (type.includes("application/json")) return Response.json({ verdict });
-  return NextResponse.redirect(new URL("/hq#release", req.url), 303);
+  return NextResponse.redirect(new URL("/hq/releases", req.url), 303);
 }

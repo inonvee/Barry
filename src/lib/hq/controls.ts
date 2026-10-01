@@ -104,10 +104,12 @@ export type ControlChange = Partial<Pick<BusinessControls, "mode" | "pauseConseq
  * Apply a founder change: durable, audited, reversible (every audit entry carries before/after).
  * `by` is the founder identity HQ authenticated; `reason` is required.
  */
-export async function applyControlChange(businessId: string, change: ControlChange, meta: { by: string; reason: string; now?: Date }): Promise<{ controls: BusinessControls; audit: ControlAudit }> {
+export async function applyControlChange(businessId: string, change: ControlChange, meta: { by: string; reason: string; now?: Date }): Promise<{ controls: BusinessControls; audit: ControlAudit | null; changed: boolean }> {
   if (!meta.reason.trim()) throw new Error("A reason is required for every founder control change");
   const before = await loadControls(businessId);
   const at = (meta.now ?? new Date()).toISOString();
+  // NO-OP: a change that leaves every lever where it is writes nothing — no controls record, no audit entry.
+  if (isNoop(before, change)) return { controls: before, audit: null, changed: false };
   const after: BusinessControls = {
     ...before,
     ...(change.mode ? { mode: change.mode } : {}),
@@ -124,8 +126,29 @@ export async function applyControlChange(businessId: string, change: ControlChan
   const audit: ControlAudit = { id: `ctl_${Date.parse(at).toString(36)}_${Math.random().toString(36).slice(2, 8)}`, at, by: meta.by, reason: after.reason, change, before: strip(before), after: strip(after) };
   await backend.upsertOperatorRecord({ businessId, kind: "audit", key: audit.id, data: audit });
   cache.set(businessId, after);
-  return { controls: after, audit };
+  return { controls: after, audit, changed: true };
 }
+
+const sameList = (a: string[], b: string[]) => a.length === b.length && [...a].sort().every((x, i) => x === [...b].sort()[i]);
+
+/** True when applying `change` to `before` would leave every lever as it is. */
+export function isNoop(before: BusinessControls, change: ControlChange): boolean {
+  if (change.mode !== undefined && change.mode !== before.mode) return false;
+  if (typeof change.pauseConsequentialWrites === "boolean" && change.pauseConsequentialWrites !== before.pauseConsequentialWrites) return false;
+  if (typeof change.approvalRequiredForAll === "boolean" && change.approvalRequiredForAll !== before.approvalRequiredForAll) return false;
+  if (change.pausedCapabilities && !sameList([...new Set(change.pausedCapabilities.map((s) => s.trim()).filter(Boolean))], before.pausedCapabilities)) return false;
+  if (change.disabledChannels && !sameList([...new Set(change.disabledChannels.map((s) => s.trim().toLowerCase()).filter(Boolean))], before.disabledChannels)) return false;
+  return true;
+}
+
+/** Plain words for each founder control: what it does, its scope, its effect and how it is reversed. */
+export const CONTROL_ACTIONS = {
+  pause_writes: { title: "Pause consequential actions", effect: "Every consequential action (carts, checkouts, bookings, tickets, approval requests) is refused for this business. Reads and answers continue.", reversibility: "Resume with one action; the audit shows both." },
+  require_approval: { title: "Require approval for everything", effect: "Every consequential action the business's own rules would allow now waits for the owner's approval. Nothing the rules deny is loosened.", reversibility: "Lift with one action; pending requests stay pending." },
+  pause_capability: { title: "Pause a capability", effect: "The named capability (or family, e.g. support.*) is refused until unpaused — for an unhealthy provider or an incident.", reversibility: "Unpause by name." },
+  disable_channel: { title: "Disable a channel", effect: "BARRY stops answering on that channel; inbound messages are refused and logged. Nothing is sent.", reversibility: "Enable the channel again." },
+  change_mode: { title: "Change the operating mode", effect: "SIMULATOR / SUPERVISED / LIVE change readiness and how aggressively incidents reach you. The mode never loosens authority by itself.", reversibility: "Set another mode." },
+} as const;
 
 export async function listControlAudit(businessId: string): Promise<ControlAudit[]> {
   const records = await getBackend().listOperatorRecords(businessId, "audit");
@@ -133,6 +156,17 @@ export async function listControlAudit(businessId: string): Promise<ControlAudit
     .map((r) => r.data as unknown as ControlAudit)
     .filter((a) => a && typeof a.at === "string")
     .sort((a, b) => b.at.localeCompare(a.at));
+}
+
+/** One line for an audit entry: what changed and why. */
+export function describeChange(a: ControlAudit): string {
+  const parts: string[] = [];
+  if (a.change.mode) parts.push(`mode → ${a.change.mode}`);
+  if (typeof a.change.pauseConsequentialWrites === "boolean") parts.push(a.change.pauseConsequentialWrites ? "consequential writes paused" : "writes resumed");
+  if (typeof a.change.approvalRequiredForAll === "boolean") parts.push(a.change.approvalRequiredForAll ? "human-only (approval for everything)" : "approval-for-everything lifted");
+  if (a.change.pausedCapabilities) parts.push(a.change.pausedCapabilities.length ? `paused: ${a.change.pausedCapabilities.join(", ")}` : "no capabilities paused");
+  if (a.change.disabledChannels) parts.push(a.change.disabledChannels.length ? `channels disabled: ${a.change.disabledChannels.join(", ")}` : "all channels enabled");
+  return parts.length ? `${parts.join("; ")} — ${a.reason}` : a.reason;
 }
 
 // ── Enforcement (policy engine) ──────────────────────────────────────────

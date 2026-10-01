@@ -83,3 +83,37 @@ export async function launchChecklist(graph: BusinessGraph, input: { controls: B
     unknown,
   };
 }
+
+// ── Grouped checklist (the founder reads sections, not a flat list) ────────────────────────────────
+
+export type LaunchGroupId = "understanding" | "connections" | "authority" | "channel" | "commerce" | "payments" | "model" | "live_proof" | "supervision";
+export type LaunchGroup = { id: LaunchGroupId; title: string; items: LaunchItem[]; ready: number; blocked: number; unknown: number };
+export type GroupedLaunch = { groups: LaunchGroup[]; primary: { item: LaunchItem; group: string } | null; ready: number; blocked: number; unknown: number };
+
+const GROUP_TITLES: Record<LaunchGroupId, string> = { understanding: "Business understanding", connections: "Connections", authority: "Authority", channel: "Customer channel", commerce: "Commerce / scheduling", payments: "Payments", model: "Model", live_proof: "Live proof", supervision: "Founder supervision" };
+
+export function launchGroupOf(itemId: string): LaunchGroupId {
+  if (itemId.startsWith("knowledge.")) return "understanding";
+  if (itemId === "platform.owner_access" || itemId === "platform.persistence" || itemId === "capabilities.critical") return "connections";
+  if (itemId.startsWith("authority.") || itemId === "handoff.path") return "authority";
+  if (itemId.startsWith("channel.")) return "channel";
+  if (itemId === "commerce.provider") return "commerce";
+  if (itemId.startsWith("payments.")) return "payments";
+  if (itemId === "ai.model") return "model";
+  if (itemId === "qa.live_proof" || itemId === "readiness.level") return "live_proof";
+  return "supervision";
+}
+
+/** Sections with ready / blocked / unknown counts, and ONE primary blocker (first required blocked, else first required unknown). Pure. */
+export function groupLaunch(gate: LaunchGate): GroupedLaunch {
+  const order: LaunchGroupId[] = ["understanding", "connections", "authority", "channel", "commerce", "payments", "model", "live_proof", "supervision"];
+  const groups = order
+    .map((id) => {
+      const items = gate.items.filter((i) => launchGroupOf(i.id) === id);
+      return { id, title: GROUP_TITLES[id], items, ready: items.filter((i) => i.status === "ready").length, blocked: items.filter((i) => i.status === "blocked").length, unknown: items.filter((i) => i.status === "unknown").length };
+    })
+    .filter((g) => g.items.length > 0);
+  const required = gate.items.filter((i) => i.requiredForSupervised);
+  const first = required.find((i) => i.status === "blocked") ?? required.find((i) => i.status === "unknown") ?? null;
+  return { groups, primary: first ? { item: first, group: GROUP_TITLES[launchGroupOf(first.id)] } : null, ready: gate.items.filter((i) => i.status === "ready").length, blocked: gate.items.filter((i) => i.status === "blocked").length, unknown: gate.items.filter((i) => i.status === "unknown").length };
+}

@@ -4,7 +4,7 @@ import { hqAuthError } from "@/lib/hq/auth";
 import { fleetTenant } from "@/lib/hq/fleet";
 import { setIncidentState } from "@/lib/hq/incidents";
 
-const Body = z.object({ businessId: z.string().min(1), key: z.string().min(1), action: z.enum(["acknowledge", "resolve", "reopen"]), note: z.string().max(300).optional() });
+const Body = z.object({ businessId: z.string().min(1), key: z.string().min(1), action: z.enum(["acknowledge", "resolve", "reopen"]), note: z.string().max(300).optional(), back: z.string().max(200).optional() });
 
 /** Founder acknowledges / resolves / reopens an incident (durable, with who/when/note). */
 export async function POST(req: Request) {
@@ -18,5 +18,6 @@ export async function POST(req: Request) {
   if (!graph) return Response.json({ error: "Unknown business" }, { status: 404 });
   const state = await setIncidentState(graph.business.id, parsed.data.key, parsed.data.action, { by: "founder", note: parsed.data.note?.trim() || undefined });
   if (type.includes("application/json")) return Response.json({ state });
-  return NextResponse.redirect(new URL(`/hq/${encodeURIComponent(graph.business.id)}#incidents`, req.url), 303);
+  const back = parsed.data.back?.startsWith("/hq") ? parsed.data.back : `/hq/${encodeURIComponent(graph.business.id)}?view=attention`;
+  return NextResponse.redirect(new URL(back, req.url), 303);
 }

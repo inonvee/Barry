@@ -2,428 +2,293 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireFounder } from "@/lib/hq/guard";
 import { getHqBusiness } from "@/lib/hq/service";
-import { fleetTenant, getBusinessStatus } from "@/lib/hq/fleet";
-import { launchChecklist } from "@/lib/hq/launch";
+import { fleetTenant, getBusinessStatus, getFleet } from "@/lib/hq/fleet";
+import { groupLaunch, launchChecklist } from "@/lib/hq/launch";
+import { businessPresence } from "@/lib/hq/presence";
+import { loadPins, loadRecent, pushRecent, saveRecent } from "@/lib/hq/visits";
+import { hqShellData } from "@/lib/hq/shell-data";
 import { getConversationStore } from "@/lib/state";
-import { Badge, Card, HqHeader, Kv, WithSource, label, statusTone } from "@/components/hq/ui";
-import { AuditCard, ControlsCard, IncidentsCard, LaunchCard, ObligationsCard, OperationalStatus, ProfitCard } from "@/components/hq/operate";
 import { financialImpact, profitOpportunities } from "@/lib/finance/impact";
 import { getOwnerWorkspace } from "@/lib/owner/service";
+import { NEXT_MOVE_WORDS, isOpen } from "@/lib/operator/obligation-model";
+import { formatLocal } from "@/lib/format/time";
+import { hasMoney } from "@/lib/format/money";
+import { HqShell } from "@/components/hq/HqShell";
+import { ActivityList, ControlActions, IncidentItem, LaunchGrouped, MoneyLine, PinButton, STAGE_WORDS, businessSentence, healthStatus, stageStatus } from "@/components/hq/views";
+import { TechnicalView } from "@/components/hq/technical";
+import { Badge, WithSource, label, statusTone } from "@/components/hq/ui";
+import { Disclosure, EmptyState, FocusItem, FocusList, HeroBrief, Notice, Page, Section, StatusPill, Technical } from "@/components/ds/primitives";
+import { describeChange } from "@/lib/hq/controls";
+
+const VIEWS = ["overview", "attention", "activity", "money", "capabilities", "launch", "controls", "technical"] as const;
+type View = (typeof VIEWS)[number];
+const VIEW_LABEL: Record<View, string> = { overview: "Overview", attention: "Needs attention", activity: "Activity", money: "Money", capabilities: "Capabilities", launch: "Launch", controls: "Controls", technical: "Technical" };
 
 /** The 30-day window start (computed outside render so the page stays pure). */
-function thirtyDaysAgo(): string {
-  return new Date(Date.now() - 30 * 24 * 3600_000).toISOString();
+function thirtyDaysAgo(now: Date): string {
+  return new Date(now.getTime() - 30 * 24 * 3600_000).toISOString();
 }
 
-const when = (iso: string | null) => (iso ? new Date(iso).toISOString().replace("T", " ").slice(0, 16) : "—");
-
-export default async function HqBusinessPage({ params }: { params: Promise<{ businessId: string }> }) {
+/**
+ * BUSINESS FOCUS MODE — one business, one sentence, one sub-navigation. Overview is the brief; every
+ * other view is one concern. Technical is the only place raw ids and traces live.
+ */
+export default async function HqBusinessPage({ params, searchParams }: { params: Promise<{ businessId: string }>; searchParams: Promise<{ view?: string; noop?: string }> }) {
   await requireFounder();
   const { businessId } = await params;
+  const sp = await searchParams;
+  const view: View = (VIEWS as readonly string[]).includes(sp.view ?? "") ? (sp.view as View) : "overview";
   const b = await getHqBusiness(businessId);
   if (!b) notFound();
   const graph = fleetTenant(businessId)!;
-  const status = await getBusinessStatus(graph, { detail: true });
-  const gate = await launchChecklist(graph, { controls: status.controls, conversations: await getConversationStore().listByBusiness(businessId).catch(() => []) });
-  // Profit foundation: no cost evidence is connected yet — zero opportunities, verified revenue only.
-  const opportunities = profitOpportunities(businessId, []);
-  const impact = financialImpact((await getOwnerWorkspace(graph, { since: thirtyDaysAgo(), label: "last 30 days" })).revenue, opportunities);
-  const convoHref = (id: string) => `/hq/${encodeURIComponent(b.id)}/conversations/${encodeURIComponent(id)}`;
+  const now = new Date();
+  const [fleet, status, pins, recent] = await Promise.all([getFleet({ now }), getBusinessStatus(graph, { now, detail: true }), loadPins(), loadRecent()]);
+  await saveRecent(pushRecent(recent, { href: `/hq/${encodeURIComponent(b.id)}${view === "overview" ? "" : `?view=${view}`}`, label: `${b.name} · ${VIEW_LABEL[view]}`, at: now.toISOString() })).catch(() => undefined);
+  const tz = status.timezone;
+  const base = `/hq/${encodeURIComponent(b.id)}`;
+  const href = (v: View) => (v === "overview" ? base : `${base}?view=${v}`);
+  const openIncidents = status.incidents.open;
+  const queue = status.interventionQueue;
+  const openObligations = status.obligationList.filter(isOpen);
+  const shell = hqShellData(fleet, { presence: businessPresence(status) });
 
   return (
-    <>
-      <HqHeader crumbs={[{ label: b.name }]} />
-      <main className="mx-auto max-w-6xl space-y-4 px-4 py-6">
-        <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-lg font-semibold">{b.name}</h1>
-          <span className="text-xs text-neutral-500">
-            {b.id} · {b.locale} · {b.timezone}
-          </span>
-          <WithSource value={b.readiness}>{(r) => <Badge tone={statusTone(r.operational.state)}>{label(r.operational.state)}</Badge>}</WithSource>
-          <WithSource value={b.mode}>{(m) => <Badge tone={statusTone(m)}>providers: {m}</Badge>}</WithSource>
-        </div>
+    <HqShell active="business" data={shell}>
+      <Page>
+        <HeroBrief
+          eyebrow={
+            <span className="flex flex-wrap items-center gap-2">
+              <Link href="/hq/fleet" className="hover:underline">Fleet</Link>
+              <span>›</span>
+              <span>{b.name}</span>
+            </span>
+          }
+          title={b.name}
+          lead={
+            <span className="flex flex-col gap-2">
+              <span className="flex flex-wrap items-center gap-2">
+                <StatusPill status={healthStatus(status)} />
+                <StatusPill status={stageStatus(status)}>{STAGE_WORDS[status.stage]}</StatusPill>
+                {!(status.stage === "simulator_only" && status.controls.mode === "simulator") && <StatusPill status={status.controls.mode === "live" ? "ok" : status.controls.mode === "supervised" ? "info" : "simulator"}>mode: {status.controls.mode}</StatusPill>}
+                <span className="text-[12px] text-[#98a2b3]">{b.timezone} · {b.locale}</span>
+              </span>
+              <span>{businessSentence(status)}</span>
+            </span>
+          }
+          aside={<PinButton businessId={b.id} pinned={pins.businessIds.includes(b.id)} back={href(view)} />}
+        />
 
-        <OperationalStatus b={status} />
-        <div className="grid gap-4 lg:grid-cols-2">
-          <IncidentsCard b={status} />
-          <ObligationsCard b={status} />
-        </div>
-        <ControlsCard b={status} />
-        <LaunchCard gate={gate} />
-        <ProfitCard impact={impact} opportunities={opportunities} />
-        <AuditCard b={status} />
+        <nav className="-mx-4 mb-5 overflow-x-auto px-4 md:mx-0 md:px-0" aria-label="Business views">
+          <ul className="flex min-w-max gap-1 border-b border-[#e4e7ec]">
+            {VIEWS.map((v) => (
+              <li key={v}>
+                <Link href={href(v)} aria-current={view === v ? "page" : undefined} className={`inline-block whitespace-nowrap border-b-2 px-3 py-2.5 text-[13px] font-medium ${view === v ? "border-[#1d2939] text-[#101828]" : "border-transparent text-[#667085] hover:text-[#101828]"}`}>
+                  {VIEW_LABEL[v]}
+                  {v === "attention" && openIncidents.length + queue.length > 0 && <span className="ml-1.5 rounded-full bg-[#b42318] px-1.5 text-[11px] text-white">{openIncidents.length + queue.length}</span>}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </nav>
 
-        <div className="grid gap-4 lg:grid-cols-2">
-          <Card title="Readiness (same as Learn Business)">
-            <WithSource value={b.readiness}>
-              {(r) => (
-                <>
-                  <Kv k="Understanding" v={<Badge tone={statusTone(r.understanding.state)}>{label(r.understanding.state)}</Badge>} />
-                  <Kv k="Requirements met" v={`${r.understanding.requirementsMet} / ${r.understanding.requirementsTotal}`} />
-                  <Kv k="Facts verified / to review" v={`${r.understanding.verifiedFacts} / ${r.understanding.candidateFacts}`} />
-                  <ul className="mt-2 space-y-1.5 text-sm">
-                    {r.operational.blockers.map((x, i) => (
-                      <li key={i}>
-                        <Badge tone="warn">{x.capability}</Badge> {x.reason} <span className="text-neutral-500">— {x.fix}</span>
+        {status.unavailable.length > 0 && (
+          <div className="mb-4">
+            <Notice status="unknown" title="Some sources could not be read">{status.unavailable.join(", ")} — figures from them are shown as unavailable, never as zero.</Notice>
+          </div>
+        )}
+
+        {view === "overview" && (
+          <div className="flex flex-col gap-5">
+            <Section title="Needs attention" subtitle={openIncidents.length + queue.length ? "Top items. The full list is under Needs attention." : undefined} right={<Link href={href("attention")} className="text-[13px] text-[#475467] hover:underline">All ›</Link>}>
+              {openIncidents.length + queue.length === 0 ? <EmptyState title="Nothing waits on a person">Approvals, held requests, handoffs and incidents show here.</EmptyState> : (
+                <FocusList>
+                  {openIncidents.slice(0, 2).map((i) => (
+                    <FocusItem key={i.key} status={i.severity === "high" ? "blocked" : "attention"} title={i.title} why={i.impact} move={i.nextAction} href={`${href("attention")}#${encodeURIComponent(i.key)}`} />
+                  ))}
+                  {queue.slice(0, 3).map((q) => (
+                    <FocusItem key={q.id} status={q.priority === 1 ? "attention" : q.priority === 2 ? "blocked" : "neutral"} title={q.title} why={q.why} move={q.decision} meta={`${q.customer} · since ${formatLocal(q.since, tz, now)}`} href={`${base}/conversations/${encodeURIComponent(q.conversationId)}`} />
+                  ))}
+                </FocusList>
+              )}
+            </Section>
+            <Section title="Money" right={<Link href={href("money")} className="text-[13px] text-[#475467] hover:underline">Money ›</Link>}>
+              <dl className="grid gap-x-6 gap-y-1 text-[13px] sm:grid-cols-2">
+                <dt className="text-[#667085]">With the owner</dt><dd><MoneyLine money={status.money.stuckWithOwner} status={hasMoney(status.money.stuckWithOwner) ? "blocked" : undefined} /></dd>
+                <dt className="text-[#667085]">At risk</dt><dd><MoneyLine money={status.money.atRisk} /></dd>
+                <dt className="text-[#667085]">Waiting on customers</dt><dd><MoneyLine money={status.money.waitingOnCustomer} /></dd>
+                <dt className="text-[#667085]">Verified payments</dt><dd className="tabular-nums">{status.money.verifiedPayments}</dd>
+              </dl>
+            </Section>
+            <Section title="BARRY is watching" subtitle={`${openObligations.length} open · ${status.obligations.needsOwner} need the owner · ${status.obligations.barryCanAct} BARRY can act · ${status.obligations.waitingOnCustomer} on customers · ${status.obligations.blocked} blocked`}>
+              {openObligations.length === 0 ? <p className="text-[13px] text-[#667085]">Nothing outstanding by the records.</p> : (
+                <FocusList>
+                  {openObligations.slice(0, 4).map((o) => (
+                    <FocusItem key={o.key} status={o.nextMove === "needs_owner" ? "attention" : o.nextMove === "blocked_by_capability" ? "blocked" : "neutral"} title={`${o.customer}: ${o.subject}`} why={o.reason} move={`${NEXT_MOVE_WORDS[o.nextMove]} — ${o.nextAction}`} meta={o.dueAt ? `Due ${formatLocal(o.dueAt, tz, now)}` : undefined} href={`${base}/conversations/${encodeURIComponent(o.conversationId)}`} />
+                  ))}
+                </FocusList>
+              )}
+            </Section>
+            <Section title="Latest activity" right={<Link href={href("activity")} className="text-[13px] text-[#475467] hover:underline">All activity ›</Link>}>
+              <ActivityList events={status.activity.slice(0, 5)} timezone={() => tz} now={now} />
+            </Section>
+          </div>
+        )}
+
+        {view === "attention" && (
+          <div className="flex flex-col gap-5">
+            <Section title="Incidents" subtitle={openIncidents.length ? "Impact, technical cause and the next move for each." : undefined}>
+              {openIncidents.length === 0 ? <EmptyState>No open incidents.</EmptyState> : (
+                <div className="divide-y divide-[#f2f4f7]">
+                  {openIncidents.map((i) => (
+                    <IncidentItem key={i.key} i={i} businessId={b.id} timezone={tz} now={now} back={href("attention")} />
+                  ))}
+                </div>
+              )}
+            </Section>
+            <Section title="Waiting on the owner" subtitle="The owner's queue, as the owner sees it. HQ never decides for them.">
+              {queue.length === 0 ? <EmptyState>Nothing waits on the owner.</EmptyState> : (
+                <FocusList>
+                  {queue.map((q) => (
+                    <FocusItem key={q.id} status={q.priority === 1 ? "attention" : q.priority === 2 ? "blocked" : "neutral"} title={q.title} why={q.why} move={`${q.decision} Then: ${q.then}`} meta={`${q.customer} · since ${formatLocal(q.since, tz, now)} · ${q.freshness}`} href={`${base}/conversations/${encodeURIComponent(q.conversationId)}`} />
+                  ))}
+                </FocusList>
+              )}
+            </Section>
+          </div>
+        )}
+
+        {view === "activity" && (
+          <Section title="Activity" subtitle="What BARRY and people did here — effects, approvals, payments, handoffs, obligations, incidents, founder changes.">
+            <ActivityList events={status.activity} timezone={() => tz} now={now} />
+          </Section>
+        )}
+
+        {view === "money" && <MoneyView status={status} now={now} tz={tz} graph={graph} base={base} />}
+
+        {view === "capabilities" && (
+          <div className="flex flex-col gap-5">
+            <Section title="Model and systems">
+              <dl className="grid gap-x-6 gap-y-1 text-[13px] sm:grid-cols-2">
+                <dt className="text-[#667085]">Model</dt><dd className="flex items-center gap-2"><StatusPill status={status.model.status === "unavailable" ? "blocked" : status.model.status === "degraded" ? "degraded" : status.model.mode === "simulated" ? "simulator" : "ok"} /> {status.model.summary}</dd>
+                <dt className="text-[#667085]">Storage</dt><dd>{status.storage}</dd>
+                <dt className="text-[#667085]">WhatsApp</dt><dd>{status.channel.whatsapp.replace(/_/g, " ")}</dd>
+                <dt className="text-[#667085]">Providers</dt><dd>commerce {status.providers.commerce} · payments {status.providers.payments} · scheduling {status.providers.scheduling}</dd>
+              </dl>
+            </Section>
+            <Section title="What BARRY can operate here">
+              <WithSource value={b.capabilities}>
+                {(caps) => (
+                  <ul className="divide-y divide-[#f2f4f7]">
+                    {caps.map((c) => (
+                      <li key={c.capability} className="py-2.5 text-[13px]">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="font-medium text-[#101828]">{c.capability}</span>
+                          <Badge tone={statusTone(c.status)}>{label(c.status)}</Badge>
+                          {c.provider && <span className="text-[12px] text-[#667085]">{c.provider}</span>}
+                        </div>
+                        {c.canDo.length > 0 && <p className="text-[12px] text-[#475467]">Can: {c.canDo.join(", ")}</p>}
+                        {c.needed && c.cannotDo.length > 0 && <p className="text-[12px] text-[#667085]">Cannot: {c.cannotDo.join(", ")}</p>}
+                        {c.unlock && <p className="text-[12px] text-[#b54708]">{c.unlock}</p>}
                       </li>
                     ))}
-                    {r.operational.blockers.length === 0 && <li className="text-neutral-500">No blockers.</li>}
                   </ul>
-                </>
-              )}
-            </WithSource>
-          </Card>
-
-          <Card title="What BARRY can operate">
-            <WithSource value={b.capabilities}>
-              {(caps) => (
-                <ul className="space-y-2 text-sm">
-                  {caps.map((c) => (
-                    <li key={c.capability}>
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="font-medium">{c.capability}</span>
-                        <Badge tone={statusTone(c.status)}>{label(c.status)}</Badge>
-                        {c.provider && <span className="text-xs text-neutral-500">{c.provider}</span>}
-                      </div>
-                      {c.canDo.length > 0 && <p className="text-xs text-neutral-600 dark:text-neutral-400">Can: {c.canDo.join(", ")}</p>}
-                      {c.needed && c.cannotDo.length > 0 && <p className="text-xs text-neutral-500">Cannot: {c.cannotDo.join(", ")}</p>}
-                      {c.unlock && <p className="text-xs text-amber-700 dark:text-amber-400">{c.unlock}</p>}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </WithSource>
-          </Card>
-        </div>
-
-        <Card title="What BARRY can do for this business (owner's Train BARRY view)">
-          <WithSource value={b.assessment}>
-            {(a) => (
-              <>
-                <ul className="space-y-1 text-sm">
-                  {a.needs.map((n) => (
-                    <li key={n.id} className="flex flex-wrap items-center gap-1.5">
-                      <Badge tone={n.status === "ready" ? "good" : n.status === "ready_simulated" ? "warn" : "bad"}>{label(n.status)}</Badge>
-                      <span className="font-medium">{n.title}</span>
-                      <span className="text-xs text-neutral-500">{n.authority === "read" ? "read" : label(n.authority)}{n.provider ? ` · ${n.provider}` : ""}</span>
-                    </li>
-                  ))}
-                </ul>
-                {a.steps.length > 0 && (
-                  <div className="mt-3">
-                    <p className="text-xs font-medium text-neutral-500">Setup plan (most unlocked first)</p>
-                    <ol className="mt-1 list-decimal space-y-0.5 pl-5 text-xs">
-                      {a.steps.map((s) => (
-                        <li key={s.id}>
-                          <span className="font-medium">{s.title}</span> <span className="text-neutral-500">({s.who === "you" ? "owner" : "BARRY team"}, {label(s.gate)})</span> → {s.unlocks.join(", ")}
-                        </li>
-                      ))}
-                    </ol>
-                  </div>
                 )}
-              </>
-            )}
-          </WithSource>
-        </Card>
-
-        <Card title="Design-partner readiness">
-          <p className="mb-2 text-xs text-neutral-500">
-            live proven = a real provider completed it in a persisted, provider-verified transaction · ready = real provider connected, not yet proven · simulated = BARRY&apos;s
-            simulator only · needs client&apos;s provider = the retailer must connect their system · not built = no BARRY adapter yet.
-          </p>
-          <WithSource value={b.designPartner}>
-            {(rows) => (
-              <ul className="divide-y divide-neutral-100 dark:divide-neutral-800 text-sm">
-                {rows.map((r) => (
-                  <li key={r.surface} className="flex flex-col gap-0.5 py-1.5 sm:flex-row sm:items-center sm:gap-3">
-                    <span className="w-48 shrink-0 font-medium">{r.surface}</span>
-                    <span className="shrink-0">
-                      <Badge tone={statusTone(r.status)}>{label(r.status)}</Badge>
-                    </span>
-                    <span className="text-xs text-neutral-500">{r.detail}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </WithSource>
-        </Card>
-
-        <div className="grid gap-4 lg:grid-cols-2">
-          <Card title="Genome — identity, goals, playbook">
-            <p className="text-sm">{b.genome.identity.description}</p>
-            <Kv k="Goals" v={b.genome.goals.join(", ") || "—"} />
-            <Kv k="Checkout" v={b.genome.playbook.commerce.advanceToCheckout.replace(/_/g, " ")} />
-            <Kv k="Checkout requires" v={b.genome.playbook.commerce.checkoutRequires.join(", ") || "nothing"} />
-            <Kv k="Suggestions" v={b.genome.playbook.suggestions.replace(/_/g, " ")} />
-            {b.genome.playbook.salesStyle && <Kv k="Sales style" v={b.genome.playbook.salesStyle} />}
-            {b.genome.playbook.handoff && <Kv k="Handoff" v={b.genome.playbook.handoff} />}
-            <Kv k="Enabled actions" v={b.genome.enabledActions.join(", ")} />
-          </Card>
-
-          <Card title="Genome — policies & authority">
-            <ul className="space-y-1 text-sm">
-              {b.genome.policies.map((p) => (
-                <li key={p.id}>
-                  <span className="font-medium">{p.id}</span> <span className="text-neutral-500">{p.description}</span>
-                </li>
-              ))}
-            </ul>
-            <div className="mt-2">
-              <WithSource value={b.genome.authority}>
-                {(a) => (
+              </WithSource>
+            </Section>
+            <Section title="Readiness" subtitle="The same assessment the owner sees in Train BARRY.">
+              <WithSource value={b.readiness}>
+                {(r) => (
                   <>
-                    <Kv k="Discounts" v={a.discounts} />
-                    <Kv k="Refunds" v={a.refunds} />
-                    <Kv k="Escalation" v={a.escalation} />
+                    <p className="text-[13px] text-[#344054]"><Badge tone={statusTone(r.understanding.state)}>{label(r.understanding.state)}</Badge> {r.understanding.requirementsMet} of {r.understanding.requirementsTotal} requirements · {r.understanding.verifiedFacts} facts verified, {r.understanding.candidateFacts} to review</p>
+                    <ul className="mt-2 space-y-1 text-[13px]">
+                      {r.operational.blockers.map((x, i) => (
+                        <li key={i}><Badge tone="warn">{x.capability}</Badge> {x.reason} <span className="text-[#667085]">— {x.fix}</span></li>
+                      ))}
+                      {r.operational.blockers.length === 0 && <li className="text-[#667085]">No blockers.</li>}
+                    </ul>
                   </>
                 )}
               </WithSource>
-            </div>
-          </Card>
-        </div>
-
-        <Card title="Genome — learned facts">
-          <WithSource value={b.genome.facts}>
-            {(facts) =>
-              facts.length === 0 ? (
-                <p className="text-sm text-neutral-500">Nothing learned yet.</p>
-              ) : (
-                <ul className="divide-y divide-neutral-100 dark:divide-neutral-800 text-sm">
-                  {facts.map((f) => (
-                    <li key={f.key} className="py-1.5">
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="font-medium">{f.key}</span>
-                        <Badge tone={statusTone(f.status)}>{f.status}</Badge>
-                        <Badge>{f.classification}</Badge>
-                        <Badge>{f.confidence} confidence</Badge>
-                        {f.ownerVerified && <Badge tone="good">owner verified</Badge>}
-                      </div>
-                      <p className="break-words">{f.value}</p>
-                      <p className="break-all text-xs text-neutral-500">
-                        from {f.provenance}
-                        {f.correctedFrom ? ` · corrected from “${f.correctedFrom}”` : ""}
-                        {f.reviewedAt ? ` · reviewed ${when(f.reviewedAt)}` : ""}
-                      </p>
-                    </li>
-                  ))}
-                </ul>
-              )
-            }
-          </WithSource>
-        </Card>
-
-        <Card title="Capabilities the model may propose · authority">
-          <p className="mb-2 text-xs text-neutral-500">
-            Beyond the typed flows: what this business&apos;s own systems can execute now, and how the business governs each. The model proposes; these rules decide. A capability no rule allows is refused — reads included.
-          </p>
-          <WithSource value={b.capabilitySurface}>
-            {(caps) =>
-              caps.length === 0 ? (
-                <p className="text-sm text-neutral-500">None — this business runs only through the typed flows.</p>
-              ) : (
-                <ul className="space-y-1 text-sm">
-                  {caps.map((c) => (
-                    <li key={c.id} className="flex flex-wrap items-center gap-1.5">
-                      <span className="font-mono text-xs">{c.id}</span>
-                      <Badge tone={c.effect === "read" ? "neutral" : "warn"}>{c.effect}</Badge>
-                      <Badge tone={c.authority === "not_permitted" ? "bad" : c.authority === "owner_approval" ? "warn" : "good"}>{label(c.authority)}</Badge>
-                      <span className="text-xs text-neutral-500">inputs: {c.inputs.map((i) => `${i.name}${i.required ? "" : "?"}`).join(", ") || "—"}</span>
-                    </li>
-                  ))}
-                </ul>
-              )
-            }
-          </WithSource>
-          <div className="mt-3">
-            <p className="text-xs font-medium text-neutral-500">Authority rules</p>
-            {b.authorityRules.length === 0 ? (
-              <p className="text-sm text-neutral-500">No rules — every capability call is refused.</p>
-            ) : (
-              <ul className="mt-1 space-y-0.5 text-xs">
-                {b.authorityRules.map((r) => (
-                  <li key={r.id}>
-                    <span className="font-mono">{r.capability}</span> → <Badge tone={r.effect === "allow" ? "good" : r.effect === "deny" ? "bad" : "warn"}>{label(r.effect)}</Badge>
-                    {r.when.length > 0 && <span className="text-neutral-500"> when {r.when.map((w) => `${w.field} ${w.op} ${w.value === undefined ? "" : JSON.stringify(w.value)}`).join(" and ")}</span>}
-                    <span className="text-neutral-400"> ({r.id})</span>
-                  </li>
-                ))}
-              </ul>
-            )}
+            </Section>
           </div>
-        </Card>
+        )}
 
-        <Card title="Connected systems (capability fabric)">
-          <WithSource value={b.connections}>
-            {(cs) => (
-              <ul className="divide-y divide-neutral-100 dark:divide-neutral-800 text-sm">
-                {cs.map((c) => (
-                  <li key={c.capability} className="py-1.5">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="font-medium">{c.capability}</span>
-                      <Badge tone={statusTone(c.status)}>{label(c.status)}</Badge>
-                      {c.provider && <span className="text-xs">{c.provider}</span>}
-                      {c.simulated && <Badge tone="info">simulated</Badge>}
-                      <span className="text-xs text-neutral-500">{c.origin.replace(/_/g, " ")}</span>
-                    </div>
-                    <p className="text-xs text-neutral-500">
-                      last verified {when(c.lastVerifiedAt)}
-                      {c.system ? ` · ${c.system.system.kind.replace(/_/g, " ")} via ${c.system.connector} · health ${c.system.health.state} · ${c.system.activation}` : ""}
-                    </p>
-                    {c.missing.length > 0 && <p className="text-xs text-amber-700 dark:text-amber-400">Blocked: missing {c.missing.join(", ")}</p>}
-                    {c.system && c.system.capabilities.length > 0 && (
-                      <details className="mt-1">
-                        <summary className="cursor-pointer text-xs text-neutral-500">{c.system.capabilities.length} mapped capabilities</summary>
-                        <ul className="mt-1 space-y-0.5 text-xs">
-                          {c.system.capabilities.map((m) => (
-                            <li key={m.id} className="flex flex-wrap items-center gap-1.5">
-                              <span className="font-mono">{m.id}</span>
-                              <span className="text-neutral-500">v{m.version}</span>
-                              <Badge tone={m.status === "active" ? "good" : m.status === "disabled" ? "bad" : "warn"}>{label(m.status)}</Badge>
-                              <span className="text-neutral-500">{label(m.provenance)}</span>
-                              {m.conformance && <span className="text-neutral-500">conformance {when(m.conformance.passedAt)}</span>}
-                              {m.ownerVerificationRequired && m.status !== "active" && <span className="text-amber-700 dark:text-amber-400">needs owner activation</span>}
-                            </li>
-                          ))}
-                        </ul>
-                      </details>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </WithSource>
-        </Card>
+        {view === "launch" && <LaunchView graph={graph} status={status} businessId={b.id} />}
 
-        <div className="grid gap-4 lg:grid-cols-2">
-          <Card title="Recent conversations">
-            <WithSource value={b.recentConversations}>
-              {(cs) =>
-                cs.length === 0 ? (
-                  <p className="text-sm text-neutral-500">No conversations yet.</p>
-                ) : (
-                  <ul className="divide-y divide-neutral-100 dark:divide-neutral-800 text-sm">
-                    {cs.map((c) => (
-                      <li key={c.id} className="flex items-center justify-between gap-2 py-1.5">
-                        <Link href={convoHref(c.id)} className="min-w-0 truncate hover:underline">
-                          {c.id}
-                        </Link>
-                        <span className="flex shrink-0 items-center gap-1.5">
-                          <Badge>{c.stage}</Badge>
-                          <Badge tone={statusTone(c.outcome ?? "pending")}>{c.outcome ?? "pending"}</Badge>
-                          <span className="hidden text-xs text-neutral-500 sm:inline">{when(c.updatedAt)}</span>
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                )
-              }
-            </WithSource>
-          </Card>
-
-          <Card title="Recent turns">
-            <WithSource value={b.recentTurns}>
-              {(ts) =>
-                ts.length === 0 ? (
-                  <p className="text-sm text-neutral-500">No turns yet.</p>
-                ) : (
-                  <ul className="divide-y divide-neutral-100 dark:divide-neutral-800 text-sm">
-                    {ts.map((t, i) => (
-                      <li key={i} className="py-1.5">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <Link href={convoHref(t.conversationId)} className="text-xs text-neutral-500 hover:underline">
-                            {when(t.at)}
-                          </Link>
-                          <span className="font-medium">{t.intent ?? "—"}</span>
-                          {t.failed && <Badge tone="bad">step failed</Badge>}
-                          {t.fallback && <Badge tone="warn">reply fallback</Badge>}
-                          {t.intent === "understanding_failed" && <Badge tone="bad">not understood</Badge>}
-                        </div>
-                        <p className="text-xs text-neutral-500">
-                          {t.actions.length ? t.actions.join(" → ") : "no action"} · {t.stop ?? "no trace (before 0011)"}
-                        </p>
-                        {t.capabilities.map((c, j) => (
-                          <p key={j} className="text-xs">
-                            <span className="font-mono">{c.capability}</span> · authority {c.authority}
-                            {c.ruleId ? ` (${c.ruleId})` : ""} · {c.system ?? "no system"} · {c.executed ? (c.verified ? "executed, verified" : "executed") : "not executed"}
-                            {c.code ? ` · ${c.code}` : ""}
-                          </p>
-                        ))}
-                      </li>
-                    ))}
-                  </ul>
-                )
-              }
-            </WithSource>
-          </Card>
-        </div>
-
-        <div className="grid gap-4 lg:grid-cols-2">
-          <Card title="Approvals">
-            <WithSource value={b.approvals}>
-              {(xs) =>
-                xs.length === 0 ? (
-                  <p className="text-sm text-neutral-500">None.</p>
-                ) : (
-                  <ul className="space-y-1 text-sm">
-                    {xs.map((a) => (
-                      <li key={a.id}>
-                        <Badge tone={statusTone(a.status)}>{a.status}</Badge> <span className="font-medium">{a.requestedAction}</span>{" "}
-                        <span className="text-neutral-500">{a.reason}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )
-              }
-            </WithSource>
-          </Card>
-
-          <Card title="Payments · orders · bookings">
-            <WithSource value={b.payments}>
-              {(xs) => (
-                <ul className="space-y-1 text-sm">
-                  {xs.length === 0 && <li className="text-neutral-500">No payment requests.</li>}
-                  {xs.map((p) => (
-                    <li key={p.id}>
-                      <Badge tone={statusTone(p.status)}>{p.status}</Badge> {p.amount} <span className="text-xs text-neutral-500">{p.provider ?? "—"} · {when(p.createdAt)}</span>
+        {view === "controls" && (
+          <div className="flex flex-col gap-5">
+            {sp.noop === "1" && <Notice status="neutral" title="Nothing changed">The controls were already in that state, so nothing was written and nothing was added to the audit.</Notice>}
+            <Section title="Founder controls" subtitle="Focused actions. Each states its scope, effect and reversibility, needs a reason and a confirmation, and is audited. Controls only ever tighten what the business's rules allow.">
+              <ControlActions b={status} />
+            </Section>
+            <Section title="Audit" subtitle={`${status.audit.length} change${status.audit.length === 1 ? "" : "s"} · who, when, why, before → after.`}>
+              {status.audit.length === 0 ? <p className="text-[13px] text-[#667085]">No founder changes yet.</p> : (
+                <ul className="divide-y divide-[#f2f4f7]">
+                  {status.audit.slice(0, 30).map((a) => (
+                    <li key={a.id} className="py-2 text-[13px]">
+                      <span className="text-[#667085]">{formatLocal(a.at, tz, now)} · {a.by}</span> — {describeChange(a)}
+                      <Disclosure summary="before → after" muted>
+                        <Technical>{JSON.stringify(a.before)}</Technical> → <Technical>{JSON.stringify(a.after)}</Technical>
+                      </Disclosure>
                     </li>
                   ))}
                 </ul>
               )}
-            </WithSource>
-            <div className="mt-2">
-              <WithSource value={b.orders}>
-                {(xs) => (
-                  <ul className="space-y-1 text-sm">
-                    {xs.length === 0 && <li className="text-neutral-500">No orders.</li>}
-                    {xs.map((o) => (
-                      <li key={o.orderId}>
-                        <Badge tone={statusTone(o.status)}>order {o.status}</Badge> {o.total} <span className="text-xs text-neutral-500">{when(o.createdAt)}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </WithSource>
-            </div>
-            <div className="mt-2">
-              <WithSource value={b.bookings}>
-                {(xs) => (
-                  <ul className="space-y-1 text-sm">
-                    {xs.length === 0 && <li className="text-neutral-500">No bookings.</li>}
-                    {xs.map((x) => (
-                      <li key={x.id}>
-                        <Badge tone={statusTone(x.status)}>booking {x.status}</Badge> {when(x.start)} <span className="text-xs text-neutral-500">{x.provider ?? "—"}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </WithSource>
-            </div>
-          </Card>
-        </div>
+            </Section>
+          </div>
+        )}
 
+        {view === "technical" && <TechnicalView b={b} />}
+      </Page>
+    </HqShell>
+  );
+}
 
-        <p className="text-xs text-neutral-500">Not tracked yet: {b.notTracked.join(" · ")}.</p>
-      </main>
-    </>
+async function LaunchView({ graph, status, businessId }: { graph: NonNullable<ReturnType<typeof fleetTenant>>; status: Awaited<ReturnType<typeof getBusinessStatus>>; businessId: string }) {
+  const gate = await launchChecklist(graph, { controls: status.controls, conversations: await getConversationStore().listByBusiness(businessId).catch(() => []) });
+  const grouped = groupLaunch(gate);
+  return (
+    <Section title="Design-partner launch" subtitle="Grouped by concern. The one blocker (or the one thing needing proof) is on top; evidence is under each group.">
+      <LaunchGrouped grouped={grouped} level={gate.level} reason={gate.reason} />
+    </Section>
+  );
+}
+
+async function MoneyView({ status, now, tz, graph, base }: { status: Awaited<ReturnType<typeof getBusinessStatus>>; now: Date; tz: string; graph: NonNullable<ReturnType<typeof fleetTenant>>; base: string }) {
+  const opportunities = profitOpportunities(status.id, []);
+  const ws = await getOwnerWorkspace(graph, { since: thirtyDaysAgo(now), label: "last 30 days", now });
+  const impact = financialImpact(ws.revenue, opportunities);
+  const moneyObligations = status.obligationList.filter((o) => isOpen(o) && (o.kind === "unpaid_payment_followup" || o.kind === "booking_deposit_missing" || o.kind === "approval_blocking_transaction"));
+  return (
+    <div className="flex flex-col gap-5">
+      <Section title="Where money stands" subtitle="Per currency. Never added across currencies; test money apart.">
+        <dl className="grid gap-x-6 gap-y-1.5 text-[13px] sm:grid-cols-2">
+          <dt className="text-[#667085]">Collected (verified, last 30 days)</dt><dd><MoneyLine money={ws.revenue.direct} status="ok" empty="nothing yet" /></dd>
+          <dt className="text-[#667085]">Booked, not collected</dt><dd><MoneyLine money={ws.revenue.influenced} empty="nothing" /></dd>
+          <dt className="text-[#667085]">Pending (unpaid links)</dt><dd><MoneyLine money={ws.revenue.potential} empty="nothing" /></dd>
+          <dt className="text-[#667085]">With the owner</dt><dd><MoneyLine money={status.money.stuckWithOwner} status={hasMoney(status.money.stuckWithOwner) ? "blocked" : undefined} /></dd>
+          <dt className="text-[#667085]">At risk</dt><dd><MoneyLine money={status.money.atRisk} /></dd>
+          <dt className="text-[#667085]">Test money (apart)</dt><dd><MoneyLine money={status.money.simulated} /></dd>
+        </dl>
+      </Section>
+      <Section title="BARRY MADE · BARRY SAVED" subtitle="Generated and recovered are verified revenue. Savings are shown by state and never estimated as realised.">
+        <dl className="grid gap-x-6 gap-y-1.5 text-[13px] sm:grid-cols-2">
+          <dt className="text-[#667085]">BARRY MADE · generated</dt><dd><MoneyLine money={impact.generated} status="ok" empty="nothing verified yet" /></dd>
+          <dt className="text-[#667085]">of which recovered</dt><dd><MoneyLine money={impact.recovered} empty="none" /></dd>
+          <dt className="text-[#667085]">BARRY SAVED · realised</dt><dd><MoneyLine money={impact.saved.realized} empty="none" /></dd>
+          <dt className="text-[#667085]">potential / proposed / negotiated</dt><dd className="flex flex-wrap gap-x-3"><MoneyLine money={impact.saved.potential} empty="none" /> · <MoneyLine money={impact.saved.proposed} empty="none" /> · <MoneyLine money={impact.saved.negotiated} empty="none" /></dd>
+        </dl>
+        <p className="mt-2 text-[12px] text-[#667085]">{impact.evidenceCount === 0 ? "No cost evidence is connected yet, so there are zero real savings opportunities." : `${impact.evidenceCount} cost evidence records · ${opportunities.length} opportunities.`}</p>
+      </Section>
+      <Section title="Money BARRY is watching" subtitle="Unpaid links, deposits and blocked transactions, with whose move it is.">
+        {moneyObligations.length === 0 ? <EmptyState>Nothing outstanding.</EmptyState> : (
+          <FocusList>
+            {moneyObligations.map((o) => (
+              <FocusItem key={o.key} status={o.nextMove === "needs_owner" ? "attention" : o.nextMove === "blocked_by_capability" ? "blocked" : "neutral"} title={`${o.customer}: ${o.subject}`} why={o.reason} move={`${NEXT_MOVE_WORDS[o.nextMove]} — ${o.nextAction}`} meta={`${o.amount !== undefined && o.currency ? `${o.amount} ${o.currency} · ` : ""}${o.simulated ? "test · " : ""}${o.dueAt ? `due ${formatLocal(o.dueAt, tz, now)}` : `since ${formatLocal(o.createdAt, tz, now)}`}`} href={`${base}/conversations/${encodeURIComponent(o.conversationId)}`} />
+            ))}
+          </FocusList>
+        )}
+      </Section>
+    </div>
   );
 }
