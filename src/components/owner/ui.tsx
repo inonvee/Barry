@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { moneyParts } from "@/lib/format/money";
 
 /**
  * The owner product's visual language: quiet neutrals, one dark accent, status always as icon + word,
@@ -96,18 +97,28 @@ export function StateNotice({ tone, title, children, action }: { tone: Tone; tit
   );
 }
 
+/**
+ * Money in words: one figure per currency. Two currencies are two figures separated by " · " —
+ * never "+" and never a combined number (BARRY does not add across currencies).
+ */
 export function formatMoney(m: Record<string, number> | undefined): string {
-  const entries = Object.entries(m ?? {});
-  if (entries.length === 0) return "—";
-  return entries
-    .map(([currency, amount]) => {
-      try {
-        return new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 2 }).format(amount);
-      } catch {
-        return `${amount} ${currency}`;
-      }
-    })
-    .join(" + ");
+  const parts = moneyParts(m);
+  if (parts.length === 0) return "—";
+  return parts.map((p) => p.text).join(" · ");
+}
+
+/** Per-currency figures as separate chips (the visual form of `formatMoney`). */
+export function MoneyFigures({ money, tone, empty = "—" }: { money: Record<string, number> | undefined; tone?: Tone; empty?: string }) {
+  const parts = moneyParts(money);
+  if (parts.length === 0) return <span className="text-[#98a2b3]">{empty}</span>;
+  return (
+    <span className="inline-flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+      {parts.map((p) => (
+        <span key={p.currency} className={`font-semibold tabular-nums ${tone === "good" ? "text-[#067647]" : tone === "bad" ? "text-[#b42318]" : "text-[#101828]"}`}>{p.text}</span>
+      ))}
+      {parts.length > 1 && <span className="text-[11px] font-normal text-[#98a2b3]">separate currencies</span>}
+    </span>
+  );
 }
 
 export function timeAgo(iso: string): string {

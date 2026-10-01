@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useState, type ReactNode } from "react";
 import type { useOwnerApi } from "./useOwnerApi";
+import { AppShell, BusinessSwitcher, type Presence } from "@/components/ds/shell";
+import type { CommandResult } from "@/components/ds/CommandBar";
 import { useQaStatus } from "@/components/shell/TestShell";
 import { StateNotice, btn, primary } from "./ui";
 
@@ -21,56 +23,33 @@ export const OWNER_NAV: { id: OwnerSection; href: string; label: string; short: 
   { id: "money", href: "/owner?tab=money", label: "Money", short: "Money" },
   { id: "ask", href: "/owner?tab=ask", label: "Ask BARRY", short: "Ask" },
   { id: "train", href: "/owner/train", label: "Train BARRY", short: "Train" },
-  { id: "settings", href: "/connections", label: "Settings", short: "Settings" },
+  { id: "settings", href: "/owner/settings", label: "Settings", short: "Settings" },
 ];
 
 type Api = ReturnType<typeof useOwnerApi>;
 
-export function OwnerShell({ api, active, badge, onNavigate, children }: { api: Api; active: OwnerSection; badge?: Partial<Record<OwnerSection, number>>; onNavigate?: (section: OwnerSection) => boolean | void; children: ReactNode }) {
+export function OwnerShell({ api, active, badge, onNavigate, presence, commands, children }: { api: Api; active: OwnerSection; badge?: Partial<Record<OwnerSection, number>>; onNavigate?: (section: OwnerSection) => boolean | void; presence?: Presence; commands?: CommandResult[]; children: ReactNode }) {
   const status = useQaStatus(api.businessId);
   const s = api.session;
-  const nav = (id: OwnerSection, href: string) => (e: React.MouseEvent) => {
-    if (onNavigate?.(id)) e.preventDefault();
-    void href;
-  };
+  const items: CommandResult[] = [
+    ...OWNER_NAV.map((n) => ({ id: `surface:${n.id}`, kind: "surface" as const, title: n.label, href: n.href })),
+    ...(api.businesses.length > 1 ? api.businesses.map((b) => ({ id: `business:${b.id}`, kind: "business" as const, title: b.name, subtitle: "Switch business", href: `/owner?tab=today&business=${encodeURIComponent(b.id)}`, keywords: [b.id] })) : []),
+    ...(commands ?? []),
+  ];
   return (
-    <div className="min-h-screen bg-[#f4f5f7] text-[#101828]">
-      <header className="sticky top-0 z-20 border-b border-[#e4e7ec]/80 bg-white/95 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-2.5">
-          <Link href="/owner" className="shrink-0 text-[15px] font-bold tracking-tight">
-            BARRY
-          </Link>
-          <nav className="hidden min-w-0 flex-1 items-center gap-0.5 md:flex" aria-label="Owner">
-            {OWNER_NAV.map((n) => (
-              <Link key={n.id} href={n.href} onClick={nav(n.id, n.href)} className={`relative whitespace-nowrap rounded-lg px-3 py-1.5 text-[13px] font-medium ${active === n.id ? "bg-[#1d2939] text-white" : "text-[#475467] hover:bg-[#f2f4f7]"}`} aria-current={active === n.id ? "page" : undefined}>
-                {n.label}
-                {badge?.[n.id] ? <span className={`ml-1.5 rounded-full px-1.5 text-[11px] ${active === n.id ? "bg-white/20 text-white" : "bg-[#b42318] text-white"}`}>{badge[n.id]}</span> : null}
-              </Link>
-            ))}
-          </nav>
-          <div className="ml-auto flex min-w-0 items-center gap-2">
-            {api.businesses.length > 1 ? (
-              <label className="flex min-w-0 items-center gap-1.5 text-[12px] text-[#667085]">
-                <span className="hidden sm:inline">Business</span>
-                <select aria-label="Current business" value={api.businessId} onChange={(e) => api.setBusinessId(e.target.value)} className="max-w-[11rem] truncate rounded-lg border border-[#d0d5dd] bg-white px-2 py-1.5 text-[13px] font-medium text-[#101828]">
-                  {api.businesses.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : (
-              <span className="truncate text-[13px] font-medium">{api.business?.name}</span>
-            )}
-            <span className={`hidden h-2 w-2 shrink-0 rounded-full sm:block ${s?.authorized || s?.open ? "bg-[#12b76a]" : "bg-[#f79009]"}`} title={s?.authorized || s?.open ? "Signed in" : "Not signed in"} />
-          </div>
-        </div>
-      </header>
-
-      <div className="mx-auto w-full max-w-6xl px-4 pb-24 pt-4 md:pb-10 md:pt-6">
-        <SessionState api={api} />
-        {children}
+    <AppShell
+      brand="BARRY"
+      brandHref="/owner"
+      nav={OWNER_NAV.map((n) => ({ ...n, badge: badge?.[n.id] }))}
+      active={active}
+      presence={presence}
+      switcher={<BusinessSwitcher value={api.businessId} options={api.businesses} onChange={(id) => api.setBusinessId(id)} />}
+      commands={items}
+      askHref={(q) => `/owner?tab=ask&q=${encodeURIComponent(q)}`}
+      askLabel="Ask BARRY"
+      onNavigate={(id) => onNavigate?.(id as OwnerSection)}
+      right={<span className={`hidden h-2 w-2 shrink-0 rounded-full sm:block ${s?.authorized || s?.open ? "bg-[#12b76a]" : "bg-[#f79009]"}`} title={s?.authorized || s?.open ? "Signed in" : "Not signed in"} />}
+      footer={
         <footer className="mt-10 flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#98a2b3]">
           <span>
             {status?.build.commit ? `Build ${status.build.commit.slice(0, 7)}` : "Local build"}
@@ -81,18 +60,13 @@ export function OwnerShell({ api, active, badge, onNavigate, children }: { api: 
             Testing tools ›
           </Link>
         </footer>
+      }
+    >
+      <div className="w-full px-4 pb-6 pt-4 md:pt-6">
+        <SessionState api={api} />
+        {children}
       </div>
-
-      <nav className="fixed inset-x-0 bottom-0 z-20 grid grid-cols-6 border-t border-[#e4e7ec] bg-white/95 backdrop-blur md:hidden" aria-label="Owner">
-        {OWNER_NAV.map((n) => (
-          <Link key={n.id} href={n.href} onClick={nav(n.id, n.href)} className={`relative flex min-h-14 flex-col items-center justify-center gap-0.5 text-[11px] font-medium ${active === n.id ? "text-[#101828]" : "text-[#667085]"}`} aria-current={active === n.id ? "page" : undefined}>
-            <span className={`h-1 w-6 rounded-full ${active === n.id ? "bg-[#1d2939]" : "bg-transparent"}`} />
-            {n.short}
-            {badge?.[n.id] ? <span className="absolute right-3 top-2 rounded-full bg-[#b42318] px-1.5 text-[10px] text-white">{badge[n.id]}</span> : null}
-          </Link>
-        ))}
-      </nav>
-    </div>
+    </AppShell>
   );
 }
 

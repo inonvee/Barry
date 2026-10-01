@@ -152,7 +152,7 @@ export default function TrainBarryPage() {
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#667085]">Train BARRY · {api.business?.name ?? "—"}</p>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight md:text-3xl">{a ? (a.afterSetup.length === 0 ? "BARRY is fully trained for your business" : `${a.now.length} thing${a.now.length === 1 ? "" : "s"} BARRY does for real · ${a.afterSetup.length} to unlock`) : "What BARRY knows and can do"}</h1>
-          <p className="mt-1 text-sm text-[#667085]">Everything here comes from what BARRY actually runs on — your goals, your connected systems and your rules — never a separate form.</p>
+          <p className="mt-1 text-sm text-[#667085]">You are teaching an operator, not filling in a form: what BARRY knows, what it may do on its own, and what it should ask you first — all from what it actually runs on.</p>
         </div>
         {error && <StateNotice tone="bad" title="Couldn't load BARRY's training profile">{error}</StateNotice>}
         {authorized && !p && !error && (

@@ -1,11 +1,15 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useOwnerApi } from "@/components/owner/useOwnerApi";
 import { OwnerShell, type OwnerSection } from "@/components/owner/OwnerShell";
-import { Empty, Pill, Section, Skeleton, Stat, StateNotice, btn, formatMoney, primary, quiet, timeAgo, type Tone } from "@/components/owner/ui";
+import { Empty, MoneyFigures, Pill, Section, Skeleton, StateNotice, btn, formatMoney, primary, quiet, timeAgo, type Tone } from "@/components/owner/ui";
+import { ownerPresence } from "@/lib/owner/presence-model";
+import { financialImpact } from "@/lib/finance/impact";
+import { formatLocal } from "@/lib/format/time";
+import type { CommandResult } from "@/components/ds/CommandBar";
 import { InterventionCard, InterventionQueue, MoneyInMotion, OpportunityRow, StoryView, type Act, NextExpectedAction, WatchingList } from "@/components/owner/operating";
 import { isOpen } from "@/lib/operator/obligation-model";
 import type { OwnerWorkspace, OwnerConversationRow, OwnerApproval } from "@/lib/owner/service";
@@ -75,6 +79,8 @@ function OwnerDashboard() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [openConversation, setOpenConversation] = useState<string | null>(params.get("conversation"));
+  const [loadedAt, setLoadedAt] = useState<Date | null>(null);
+  const wantBusiness = params.get("business");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: Tone; text: string } | null>(null);
 
@@ -103,6 +109,7 @@ function OwnerDashboard() {
       .then((data) => {
         if (cancelled) return;
         setWs(data);
+        setLoadedAt(new Date());
         setError("");
       })
       .catch((e: Error) => {
@@ -117,6 +124,14 @@ function OwnerDashboard() {
       cancelled = true;
     };
   }, [businessId, authorized, fetchWorkspace]);
+
+  // The command bar switches business through the URL (?business=); honour it once, then clean the URL.
+  useEffect(() => {
+    if (wantBusiness && wantBusiness !== businessId && api.businesses.some((b) => b.id === wantBusiness)) {
+      api.setBusinessId(wantBusiness);
+      router.replace("/owner?tab=today", { scroll: false });
+    }
+  }, [wantBusiness, businessId, api, router]);
 
   const setTab = (t: Tab, conversation?: string | null) => {
     const q = new URLSearchParams();
@@ -175,9 +190,18 @@ function OwnerDashboard() {
 
   const queue = ws?.interventions ?? [];
   const badge = { today: queue.length || undefined, inbox: ws?.conversations.filter((c) => c.status === "needs_you").length || undefined };
+  const presence = ws ? ownerPresence(ws) : undefined;
+  // Command bar: real records of THIS business only (the workspace the owner's session loaded).
+  const commands: CommandResult[] = ws
+    ? [
+        ...ws.conversations.slice(0, 60).map((c) => ({ id: `conversation:${c.id}`, kind: "conversation" as const, title: c.customer, subtitle: STATUS[c.status].label, href: `/owner?tab=inbox&conversation=${encodeURIComponent(c.id)}`, keywords: [c.id] })),
+        ...ws.interventions.map((i) => ({ id: `approval:${i.id}`, kind: "approval" as const, title: i.title, subtitle: `${i.customer} · ${i.decision}`, href: "/owner?tab=today", status: "attention" as const })),
+        ...ws.opportunities.items.filter((o) => o.kind === "unpaid_link" || o.kind === "payment_failed").map((o) => ({ id: `payment:${o.id}`, kind: "payment" as const, title: `${o.amount !== undefined && o.currency ? formatMoney({ [o.currency]: o.amount }) : "Payment"} — ${o.customer}`, subtitle: o.next.action, href: `/owner?tab=inbox&conversation=${encodeURIComponent(o.conversationId)}` })),
+      ]
+    : [];
 
   return (
-    <OwnerShell api={api} active={tab} badge={badge} onNavigate={onNavigate}>
+    <OwnerShell api={api} active={tab} badge={badge} onNavigate={onNavigate} presence={presence} commands={commands}>
       {authorized && error && (
         <div className="mb-4">
           <StateNotice tone="bad" title="BARRY couldn't load your business right now" action={<button className={btn} onClick={() => void load()}>Try again</button>}>
@@ -213,9 +237,9 @@ function OwnerDashboard() {
       )}
       {!authorized && api.session && <p className="mt-2 text-sm text-[#667085]">Once you&apos;re signed in, this page shows what needs you, where money stands and what BARRY handled.</p>}
       {ws && tab === "today" && <TodayView ws={ws} act={act} busyId={busyId} loading={loading} onOpen={goToConversation} onIntervention={goToIntervention} onTab={setTab} />}
-      {ws && tab === "inbox" && <InboxView ws={ws} api={api} act={act} busyId={busyId} open={openConversation} setOpen={goToConversation} onIntervention={goToIntervention} />}
-      {ws && tab === "money" && <MoneyView ws={ws} range={range} setRange={setRange} onOpen={goToConversation} onIntervention={goToIntervention} />}
-      {ws && tab === "ask" && <AskView api={api} onIntervention={goToIntervention} onOpen={goToConversation} />}
+      {ws && tab === "inbox" && <InboxView ws={ws} api={api} act={act} busyId={busyId} open={openConversation} setOpen={goToConversation} onIntervention={goToIntervention} loadedAt={loadedAt} />}
+      {ws && tab === "money" && <MoneyView ws={ws} range={range} setRange={setRange} onOpen={goToConversation} onIntervention={goToIntervention} loadedAt={loadedAt} />}
+      {ws && tab === "ask" && <AskView api={api} onIntervention={goToIntervention} onOpen={goToConversation} initialQuestion={params.get("q") ?? ""} />}
     </OwnerShell>
   );
 }
@@ -356,7 +380,7 @@ type ConversationDetail = {
 
 type Filter = "all" | "needs_you" | "waiting_on_customer" | "completed";
 
-function InboxView({ ws, api, act, busyId, open, setOpen, onIntervention }: { ws: OwnerWorkspace; api: Api; act: Act; busyId: string | null; open: string | null; setOpen: (id: string) => void; onIntervention: (id: string) => void }) {
+function InboxView({ ws, api, act, busyId, open, setOpen, onIntervention, loadedAt }: { ws: OwnerWorkspace; api: Api; act: Act; busyId: string | null; open: string | null; setOpen: (id: string) => void; onIntervention: (id: string) => void; loadedAt: Date | null }) {
   const [filter, setFilter] = useState<Filter>("all");
   const rows = ws.conversations.filter((c) => filter === "all" || c.status === filter);
   const counts = { needs_you: ws.conversations.filter((c) => c.status === "needs_you").length, waiting_on_customer: ws.conversations.filter((c) => c.status === "waiting_on_customer").length, completed: ws.conversations.filter((c) => c.status === "completed").length };
@@ -414,7 +438,7 @@ function InboxView({ ws, api, act, busyId, open, setOpen, onIntervention }: { ws
       </div>
       <div className={showList ? "hidden lg:block" : ""}>
         {open ? (
-          <ConversationPanel key={open} id={open} api={api} ws={ws} act={act} busyId={busyId} onBack={() => setOpen("")} onIntervention={onIntervention} />
+          <ConversationPanel key={open} id={open} api={api} ws={ws} act={act} busyId={busyId} onBack={() => setOpen("")} onIntervention={onIntervention} loadedAt={loadedAt} />
         ) : (
           <div className="hidden rounded-2xl bg-white p-5 lg:block">
             <Empty title="Pick a conversation">You&apos;ll see what the customer wants, what BARRY did, what&apos;s waiting, and the money involved — before the messages.</Empty>
@@ -425,7 +449,7 @@ function InboxView({ ws, api, act, busyId, open, setOpen, onIntervention }: { ws
   );
 }
 
-function ConversationPanel({ id, api, ws, act, busyId, onBack, onIntervention }: { id: string; api: Api; ws: OwnerWorkspace; act: Act; busyId: string | null; onBack: () => void; onIntervention: (id: string) => void }) {
+function ConversationPanel({ id, api, ws, act, busyId, onBack, onIntervention, loadedAt }: { id: string; api: Api; ws: OwnerWorkspace; act: Act; busyId: string | null; onBack: () => void; onIntervention: (id: string) => void; loadedAt: Date | null }) {
   const [data, setData] = useState<ConversationDetail | null>(null);
   const [advanced, setAdvanced] = useState(false);
   const [showMessages, setShowMessages] = useState(false);
@@ -480,7 +504,7 @@ function ConversationPanel({ id, api, ws, act, busyId, onBack, onIntervention }:
             <div className="mt-1 flex flex-wrap items-center gap-2">
               {row && <Pill tone={STATUS[row.status].tone}>{STATUS[row.status].label}</Pill>}
               <span className="text-[12px] text-[#98a2b3]">{CHANNEL[data.channel as OwnerConversationRow["channel"]] ?? data.channel}</span>
-              {row && <span className="text-[12px] text-[#98a2b3]">· last activity {timeAgo(row.lastActivityAt)}</span>}
+              {row && <span className="text-[12px] text-[#98a2b3]">· last activity {loadedAt ? formatLocal(row.lastActivityAt, ws.business.timezone, loadedAt) : timeAgo(row.lastActivityAt)}</span>}
             </div>
           </div>
         </div>
@@ -602,15 +626,27 @@ const REVENUE_CATEGORIES: { id: OwnerWorkspace["revenueEvidence"][number]["categ
   { id: "excluded_unverified", label: "Not counted", explain: "Marked paid without provider verification.", tone: "neutral" },
 ];
 
-function MoneyView({ ws, range, setRange, onOpen, onIntervention }: { ws: OwnerWorkspace; range: "today" | "7d" | "30d"; setRange: (r: "today" | "7d" | "30d") => void; onOpen: (id: string) => void; onIntervention: (id: string) => void }) {
+function MoneyView({ ws, range, setRange, onOpen, onIntervention, loadedAt }: { ws: OwnerWorkspace; range: "today" | "7d" | "30d"; setRange: (r: "today" | "7d" | "30d") => void; onOpen: (id: string) => void; onIntervention: (id: string) => void; loadedAt: Date | null }) {
   const r = ws.revenue;
   const items = ws.revenueEvidence;
+  const impact = financialImpact(r, []);
+  const collected = Object.keys(r.direct).length > 0;
+  const headline = collected ? `Collected ${formatMoney(r.direct)} ${ws.window.label}.` : `Nothing collected ${ws.window.label} yet.`;
+  const atRisk = ws.opportunities.summary.atRisk;
+  const stuck = ws.opportunities.summary.stuckWithYou;
+  const lead = [
+    r.directPayments ? `${r.directPayments} verified payment${r.directPayments === 1 ? "" : "s"}` : "",
+    Object.keys(r.potential).length ? `${formatMoney(r.potential)} pending in unpaid links` : "",
+    Object.keys(stuck).length ? `${formatMoney(stuck)} waits on you` : "",
+    Object.keys(atRisk).length ? `${formatMoney(atRisk)} at risk` : "",
+  ].filter(Boolean);
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-end justify-between gap-2">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Money</h1>
-          <p className="mt-1 text-sm text-[#667085]">Only provider-verified payments count as collected. Everything else is shown apart and never added in.</p>
+        <div className="max-w-2xl">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#667085]">Money · {ws.business.name}{loadedAt ? ` · ${formatLocal(loadedAt.toISOString(), ws.business.timezone, loadedAt)}` : ""}</p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight md:text-3xl">{headline}</h1>
+          <p className="mt-1 text-sm text-[#667085]">{lead.length ? `${lead.join(" · ")}. ` : ""}Only provider-verified payments count as collected. Everything else is shown apart, each amount in its own currency, never added together.</p>
         </div>
         <select aria-label="Time range" value={range} onChange={(e) => setRange(e.target.value as typeof range)} className="min-h-10 rounded-lg border border-[#d0d5dd] bg-white px-3 text-sm">
           <option value="today">Today</option>
@@ -618,21 +654,33 @@ function MoneyView({ ws, range, setRange, onOpen, onIntervention }: { ws: OwnerW
           <option value="30d">Last 30 days</option>
         </select>
       </div>
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Stat label="Collected" value={formatMoney(r.direct)} hint={`${r.directPayments} verified payment${r.directPayments === 1 ? "" : "s"}${Object.keys(r.recovered).length ? ` · ${formatMoney(r.recovered)} recovered` : ""}`} emphasis tone={Object.keys(r.direct).length ? "good" : undefined} />
-        <Stat label="Booked, not collected" value={formatMoney(r.influenced)} hint={`${r.influencedBookings} booking${r.influencedBookings === 1 ? "" : "s"}`} />
-        <Stat
-          label="Pending"
-          value={formatMoney(r.potential)}
-          hint={`${r.potentialItems} unpaid link${r.potentialItems === 1 ? "" : "s"} or request${r.potentialItems === 1 ? "" : "s"} — not revenue${r.potentialSimulatedItems ? ` · plus ${formatMoney(r.potentialSimulated)} pending on a simulated provider (test money, ${r.potentialSimulatedItems} link${r.potentialSimulatedItems === 1 ? "" : "s"})` : ""}`}
-        />
-        <Stat label="Converted" value={r.purchaseIntentConversations ? `${r.convertedConversations} / ${r.purchaseIntentConversations}` : "—"} hint={`of conversations with buying intent · ${r.lostOpportunities} lost`} />
-      </div>
-      {(Object.keys(r.simulatedPaid).length > 0 || Object.keys(r.simulatedInfluenced).length > 0) && (
-        <StateNotice tone="neutral" title="Test money is shown apart">
-          {formatMoney(r.simulatedPaid)} paid{Object.keys(r.simulatedInfluenced).length ? ` and ${formatMoney(r.simulatedInfluenced)} booked` : ""} on simulated providers — never counted as collected.
-        </StateNotice>
-      )}
+
+      <Section title="Where money stands" subtitle="Five different things, kept apart.">
+        <dl className="grid gap-x-6 gap-y-2 text-[14px] sm:grid-cols-[12rem_1fr]">
+          <dt className="text-[#667085]">Collected</dt>
+          <dd><MoneyFigures money={r.direct} tone="good" empty="nothing yet" /> <span className="text-[12px] text-[#98a2b3]">{r.directPayments} verified payment{r.directPayments === 1 ? "" : "s"}{Object.keys(r.recovered).length ? ` · includes ${formatMoney(r.recovered)} recovered after a nudge` : ""}</span></dd>
+          <dt className="text-[#667085]">Booked, not collected</dt>
+          <dd><MoneyFigures money={r.influenced} empty="nothing" /> <span className="text-[12px] text-[#98a2b3]">{r.influencedBookings} booking{r.influencedBookings === 1 ? "" : "s"}</span></dd>
+          <dt className="text-[#667085]">Pending</dt>
+          <dd><MoneyFigures money={r.potential} empty="nothing" /> <span className="text-[12px] text-[#98a2b3]">{r.potentialItems} unpaid link{r.potentialItems === 1 ? "" : "s"} or request{r.potentialItems === 1 ? "" : "s"} — not revenue</span></dd>
+          <dt className="text-[#667085]">At risk</dt>
+          <dd><MoneyFigures money={atRisk} tone={Object.keys(atRisk).length ? "bad" : undefined} empty="nothing" /></dd>
+          <dt className="text-[#667085]">Test money (apart)</dt>
+          <dd><MoneyFigures money={{ ...r.simulatedPaid }} empty="none" /> <span className="text-[12px] text-[#98a2b3]">{Object.keys(r.simulatedInfluenced).length ? `and ${formatMoney(r.simulatedInfluenced)} booked · ` : ""}{r.potentialSimulatedItems ? `${formatMoney(r.potentialSimulated)} pending on a simulated provider · ` : ""}never counted as collected</span></dd>
+          <dt className="text-[#667085]">Converted</dt>
+          <dd className="tabular-nums">{r.purchaseIntentConversations ? `${r.convertedConversations} of ${r.purchaseIntentConversations}` : "—"} <span className="text-[12px] text-[#98a2b3]">conversations with buying intent · {r.lostOpportunities} lost</span></dd>
+        </dl>
+      </Section>
+
+      <Section title="BARRY MADE · BARRY SAVED" subtitle="What BARRY generated and recovered is verified revenue. Savings appear by state once your costs are connected — never estimated as realised.">
+        <dl className="grid gap-x-6 gap-y-2 text-[14px] sm:grid-cols-[12rem_1fr]">
+          <dt className="text-[#667085]">BARRY MADE</dt>
+          <dd><MoneyFigures money={impact.generated} tone="good" empty="nothing verified yet" /> <span className="text-[12px] text-[#98a2b3]">generated{Object.keys(impact.recovered).length ? ` · ${formatMoney(impact.recovered)} of it recovered` : ""}</span></dd>
+          <dt className="text-[#667085]">BARRY SAVED</dt>
+          <dd><MoneyFigures money={impact.saved.realized} empty="nothing yet" /> <span className="text-[12px] text-[#98a2b3]">realised · potential {formatMoney(impact.saved.potential)} · proposed {formatMoney(impact.saved.proposed)} · negotiated {formatMoney(impact.saved.negotiated)}</span></dd>
+        </dl>
+        {impact.evidenceCount === 0 && <p className="mt-2 text-[12px] text-[#667085]">No cost evidence is connected yet, so there is nothing to save from. BARRY will not invent a saving.</p>}
+      </Section>
       <Section title="Money in motion" subtitle="What can you do about it? Each line says whose move it is.">
         <MoneyInMotion items={ws.opportunities.items} summary={ws.opportunities.summary} onOpen={onOpen} onIntervention={onIntervention} />
       </Section>
@@ -718,10 +766,18 @@ function DecisionRow({ a, onOpen }: { a: OwnerApproval; onOpen: (id: string) => 
 
 const SUGGESTIONS = ["What needs me?", "Where is money stuck?", "What happened today?", "What failed?", "What can you do right now?", "Why is this waiting?"];
 
-function AskView({ api, onIntervention, onOpen }: { api: Api; onIntervention: (id: string) => void; onOpen: (id: string) => void }) {
-  const [q, setQ] = useState("");
+function AskView({ api, onIntervention, onOpen, initialQuestion }: { api: Api; onIntervention: (id: string) => void; onOpen: (id: string) => void; initialQuestion?: string }) {
+  const [q, setQ] = useState(initialQuestion ?? "");
   const [busy, setBusy] = useState(false);
   const [history, setHistory] = useState<{ q: string; a: string; note?: string; source: string; links?: OwnerAnswerLinks }[]>([]);
+  const asked = useRef(false);
+  useEffect(() => {
+    if (!initialQuestion?.trim() || asked.current) return;
+    asked.current = true;
+    const t = setTimeout(() => void ask(initialQuestion), 0);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialQuestion]);
   const ask = async (question: string) => {
     if (!question.trim()) return;
     setBusy(true);

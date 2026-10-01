@@ -196,20 +196,11 @@ export function MoneyInMotion({ items, summary, onOpen, onIntervention, limit }:
   const shown = limit ? items.slice(0, limit) : items;
   return (
     <>
-      <div className="grid grid-cols-3 gap-2 sm:gap-3">
-        <div className="rounded-xl bg-[#f9fafb] px-3 py-2.5">
-          <p className="text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#667085]">Waits on you</p>
-          <p className="mt-1 text-lg font-semibold tabular-nums sm:text-xl">{formatMoney(summary.stuckWithYou)}</p>
-        </div>
-        <div className="rounded-xl bg-[#f9fafb] px-3 py-2.5">
-          <p className="text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#667085]">On customers</p>
-          <p className="mt-1 text-lg font-semibold tabular-nums sm:text-xl">{formatMoney(summary.waitingOnCustomer)}</p>
-        </div>
-        <div className="rounded-xl bg-[#f9fafb] px-3 py-2.5">
-          <p className="text-[10px] font-semibold uppercase leading-tight tracking-[0.08em] text-[#667085]">At risk</p>
-          <p className="mt-1 text-lg font-semibold tabular-nums text-[#b42318] sm:text-xl">{formatMoney(summary.atRisk)}</p>
-        </div>
-      </div>
+      <p className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-[13px] text-[#475467]">
+        <span>Waits on you <span className="font-semibold tabular-nums text-[#101828]">{formatMoney(summary.stuckWithYou)}</span></span>
+        <span>On customers <span className="font-semibold tabular-nums text-[#101828]">{formatMoney(summary.waitingOnCustomer)}</span></span>
+        <span>At risk <span className={`font-semibold tabular-nums ${Object.keys(summary.atRisk).length ? "text-[#b42318]" : "text-[#101828]"}`}>{formatMoney(summary.atRisk)}</span></span>
+      </p>
       {Object.keys(summary.simulated).length > 0 && (
         <p className="mt-2 text-[12px] text-[#667085]">
           Plus {formatMoney(summary.simulated)} pending on a simulated provider — test money, shown apart and never counted above.
