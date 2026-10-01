@@ -18,8 +18,8 @@ const DOT: Record<string, string> = { high: "bg-[#d92d20]", medium: "bg-[#f79009
 const STATUS_WORDS: Record<string, string> = { needs_confirmation: "Needs your confirmation", executed: "Done · verified", no_change: "No change needed", proposed: "Proposal prepared", handled: "Handled", clarify: "Which one?", refused: "Not something I do", failed: "Failed" };
 const newKey = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? `fc_${crypto.randomUUID()}` : `fc_${Date.now()}_${Math.random().toString(36).slice(2)}`);
 
-export function FounderCommand({ initial, suggestions }: { initial?: string; suggestions: string[] }) {
-  const [text, setText] = useState("");
+export function FounderCommand({ initial, draft, suggestions }: { initial?: string; draft?: string; suggestions: string[] }) {
+  const [text, setText] = useState(draft ?? "");
   const [busy, setBusy] = useState(false);
   const [log, setLog] = useState<Exchange[]>([]);
   const [context, setContext] = useState<string | undefined>(undefined);

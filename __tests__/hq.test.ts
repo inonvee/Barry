@@ -64,7 +64,7 @@ describe("HQ access: founder-only, off unless explicitly configured", () => {
     expect(hqAuthError(new Request("https://x.test/api/hq", { headers: { cookie: `${HQ_COOKIE}=${value}` } }))).toBeUndefined();
   });
 
-  it("sign-in sets an httpOnly, SameSite=Strict session only for the right token", async () => {
+  it("sign-in sets an httpOnly, SameSite=Lax session only for the right token", async () => {
     process.env.BARRY_FOUNDER_TOKEN = FOUNDER;
     const form = (token: string) => {
       const body = new FormData();
@@ -81,7 +81,7 @@ describe("HQ access: founder-only, off unless explicitly configured", () => {
     const cookie = good.headers.get("set-cookie") ?? "";
     expect(cookie).toMatch(new RegExp(`^${HQ_COOKIE}=`));
     expect(cookie).toMatch(/HttpOnly/i);
-    expect(cookie).toMatch(/SameSite=Strict/i);
+    expect(cookie).toMatch(/SameSite=Lax/i);
     expect(cookie).not.toContain(FOUNDER);
 
     delete process.env.BARRY_FOUNDER_TOKEN;

@@ -12,6 +12,12 @@ import crypto from "node:crypto";
  *    owner token, so an owner credential can never open cross-tenant data.
  *  - The browser holds a short-lived signed session (HMAC of the token and
  *    an expiry), never the token itself. Rotating the token ends sessions.
+ *  - The cookie is SameSite=Lax, not Strict: Strict drops the session on
+ *    every top-level navigation that starts on another site (a link opened
+ *    from a chat app, email or the Vercel dashboard), which bounced a signed-in
+ *    founder back to login on each such open. Lax still withholds the cookie
+ *    from cross-site POSTs / iframes / fetches; every HQ mutation is a POST,
+ *    and no cookie-authenticated GET changes anything.
  */
 
 export const HQ_COOKIE = "barry_hq";
@@ -67,10 +73,23 @@ export function hqCookieOptions(maxAge: number) {
   return {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
-    sameSite: "strict" as const,
+    sameSite: "lax" as const,
     path: "/",
     maxAge,
   };
+}
+
+/**
+ * Where to land after sign-in: only an HQ page on this site. Anything else (another host, a protocol-relative
+ * URL, the login page itself, an API route) falls back to /hq — never an open redirect, never a login loop.
+ */
+export function safeHqNext(next: string | null | undefined): string {
+  const n = (next ?? "").trim();
+  if (!n || n.length > 512) return "/hq";
+  if (!n.startsWith("/hq") || n.startsWith("//") || n.includes("\\") || /[\u0000-\u001f]/.test(n)) return "/hq";
+  if (!/^\/hq(?:[/?#]|$)/.test(n)) return "/hq";
+  if (/^\/hq\/login(?:[/?#]|$)/.test(n)) return "/hq";
+  return n;
 }
 
 function cookieFrom(req: Request): string | undefined {

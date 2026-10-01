@@ -2,6 +2,7 @@ import Link from "next/link";
 import { requireFounder } from "@/lib/hq/guard";
 import { getFleet } from "@/lib/hq/fleet";
 import { founderHome } from "@/lib/founder/command-service";
+import { interpretFounder } from "@/lib/founder/command";
 import { hqShellData } from "@/lib/hq/shell-data";
 import { HqShell } from "@/components/hq/HqShell";
 import { FounderCommand } from "@/components/hq/FounderCommand";
@@ -22,11 +23,16 @@ export default async function HqAskPage({ searchParams }: { searchParams: Promis
   const now = new Date();
   const fleet = await getFleet({ now });
   const home = await founderHome(now);
+  // A link (?q=) may come from anywhere: only a READ runs by itself. Anything that could act — a control,
+  // a scan, a proposal, "handle what you can" — is put in the field for the founder to send explicitly.
+  const asked = (q ?? "").trim().slice(0, 1000);
+  const READS = new Set(["fleet_read", "business_inspect", "commercial_read", "value_read", "incident_read", "initiative_read", "release_read"]);
+  const autorun = asked && READS.has(interpretFounder(asked, { hasBusiness: true }).family) ? asked : undefined;
   return (
     <HqShell active="ask" data={hqShellData(fleet)}>
       <Page width="narrow">
         <HeroBrief eyebrow="Ask BARRY" title={home.brief.headline} lead="Ask anything about the fleet, or tell BARRY what to do. Answers come only from HQ records; pause / resume and safe mode ask you to confirm; anything bigger becomes a proposal." />
-        <FounderCommand initial={(q ?? "").trim() || undefined} suggestions={SUGGESTIONS} />
+        <FounderCommand initial={autorun} draft={autorun ? undefined : asked || undefined} suggestions={SUGGESTIONS} />
         <div className="mt-6 flex flex-col gap-5">
           <Section title="What needs you" subtitle={home.brief.quiet ? undefined : "Only what the records say matters, most important first."}>
             {home.brief.quiet ? (

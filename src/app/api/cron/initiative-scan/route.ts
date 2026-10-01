@@ -18,7 +18,10 @@ function cronAuthorized(req: Request): boolean {
 }
 
 async function handle(req: Request) {
-  const founder = !hqAuthError(req);
+  // A cookie-only founder call must be a POST: a GET is reachable from a link on another site (Lax cookie),
+  // so GET accepts only an Authorization header (the cron secret or the founder bearer token).
+  const viaHeader = Boolean(req.headers.get("authorization"));
+  const founder = (req.method !== "GET" || viaHeader) && !hqAuthError(req);
   if (!founder && !cronAuthorized(req)) return Response.json({ error: "Unauthorized" }, { status: 401 });
   const url = new URL(req.url);
   let now: Date | undefined;
