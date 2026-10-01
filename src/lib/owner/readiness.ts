@@ -5,6 +5,7 @@ import { getBackend } from "@/lib/store";
 import { getConversationStore, type ConversationState } from "@/lib/state";
 import { getLearningWorkspace } from "@/lib/learn-business/service";
 import { buildCapabilitySurface } from "@/lib/capabilities/surface";
+import { resolveCapabilityProfiles } from "@/lib/capabilities";
 import { whatsappConfig, whatsappNumbersFor } from "@/lib/channels/whatsapp";
 import { readDeliveries } from "@/lib/channels/gateway";
 import { handoffPath } from "@/lib/runtime/handoff";
@@ -90,9 +91,16 @@ export async function assessPilotReadiness(graph: BusinessGraph, opts: { convers
   const checks: ReadinessCheck[] = [];
   const add = (c: ReadinessCheck) => checks.push({ ...c, why: c.why ?? WHY.find(([re]) => re.test(c.id))?.[1] });
   const activeOffers = graph.offers.filter((o) => o.active);
+  // A store sells what its CONNECTED catalog holds (BARRY searches it live), not what the Genome lists:
+  // a connected catalog search is "BARRY knows what exists". Whether that catalog is the real system or a
+  // simulator is judged by the systems checks below — never here.
+  const profiles = await resolveCapabilityProfiles(graph).catch(() => undefined);
+  const commerce = profiles?.commerce;
+  const catalog = commerce?.used && commerce.status === "connected" && commerce.capabilities.includes("commerce.catalog.search") ? commerce : undefined;
+  const knowsOffers = activeOffers.length > 0 || Boolean(catalog);
 
   // ── Testing: BARRY knows the business ────────────────────────────────
-  add({ id: "knowledge.offers", area: "knowledge", gate: "READY_FOR_TESTING", label: "What the business offers", status: activeOffers.length > 0 ? "pass" : "fail", detail: activeOffers.length > 0 ? `${activeOffers.length} offer${activeOffers.length === 1 ? "" : "s"} with prices or quote rules.` : "No products or services are defined.", fix: "Add the products/services and their prices." });
+  add({ id: "knowledge.offers", area: "knowledge", gate: "READY_FOR_TESTING", label: "What the business offers", status: knowsOffers ? "pass" : "fail", detail: activeOffers.length > 0 ? `${activeOffers.length} offer${activeOffers.length === 1 ? "" : "s"} with prices or quote rules.` : catalog ? `Products come from the connected store catalog (${catalog.simulated ? "simulated" : catalog.provider ?? "connected"}), searched live.` : "No products or services are defined.", fix: "Add the products/services and their prices." });
   add({ id: "knowledge.goals", area: "knowledge", gate: "READY_FOR_TESTING", label: "Business goals", status: graph.goals.length > 0 ? "pass" : "fail", detail: graph.goals.length > 0 ? `BARRY works toward: ${graph.goals.join(", ")}.` : "No goals are set.", fix: "Choose what BARRY should achieve (sell, book, collect leads…)." });
   add({ id: "knowledge.policies", area: "knowledge", gate: "READY_FOR_TESTING", label: "Policies & FAQs", status: graph.knowledge.length > 0 ? "pass" : "warn", detail: graph.knowledge.length > 0 ? `${graph.knowledge.length} knowledge item${graph.knowledge.length === 1 ? "" : "s"} BARRY may quote.` : "No policies or FAQs: BARRY will say it doesn't know.", fix: "Add returns, delivery and other policies customers ask about." });
   if (activeOffers.some((o) => o.requiresScheduling)) {
@@ -114,7 +122,11 @@ export async function assessPilotReadiness(graph: BusinessGraph, opts: { convers
   if (!workspace) add({ id: "systems.unavailable", area: "systems", gate: "READY_FOR_SUPERVISED_PILOT", label: "Connected systems", status: "fail", detail: "Connection status could not be read.", fix: "Check the database connection." });
   // Learn Business requirements, except what the Business Genome already states (a learned fact is one
   // source of business knowledge; the Genome the runtime acts on is another). The handoff path is its own check.
+  // A Genome knowledge item the owner wrote on the topic also answers the question (e.g. a "returns" policy text).
+  const TOPICS: Record<string, string[]> = { "policy.returns": ["returns", "return", "exchanges", "exchange"], "policy.shipping": ["shipping", "delivery"], "policy.refunds": ["refunds", "refund"], "policy.cancellation": ["cancellation", "cancellations", "rescheduling"], "contact.phone": ["contact", "phone", "whatsapp", "email"] };
+  const statedInGenome = (key: string) => (TOPICS[key] ?? []).some((t) => graph.knowledge.some((k) => k.topic.toLowerCase() === t && k.content.trim().length > 0));
   const covered = (key: string) =>
+    statedInGenome(key) ||
     (key === "business.name" && Boolean(graph.business.name.trim())) ||
     (key === "hours.opening" && graph.business.operatingHours.length > 0) ||
     (key === "authority.discounts" && graph.policies.some((p) => p.rule.type === "max_auto_discount_pct")) ||
