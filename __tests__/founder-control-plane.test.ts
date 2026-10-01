@@ -223,7 +223,7 @@ describe("fleet: one status per business, exceptions first", () => {
 
   it("the summary lists who needs the founder, what broke, what changed, money blocked and not-ready — from statuses only", () => {
     const base: BusinessStatus = {
-      id: "a", name: "A", timezone: "Asia/Jerusalem", health: "healthy", stage: "simulator_only", controls: { ...DEFAULT_CONTROLS }, build: { commit: null, runtime: "x", environment: "test" }, model: { mode: "simulated", model: null, status: "healthy", summary: "" }, storage: "memory", channel: { whatsapp: "missing" }, providers: { commerce: "simulated", payments: "simulated", scheduling: "not used" },
+      id: "a", name: "A", timezone: "Asia/Jerusalem", health: "healthy", stage: "simulator_only", controls: { ...DEFAULT_CONTROLS }, build: { commit: null, runtime: "x", environment: "test" }, model: { mode: "simulated", model: null, status: "healthy", summary: "" }, storage: "memory", channel: { whatsapp: "missing" }, channels: [], customerChannel: "not_configured", providers: { commerce: "simulated", payments: "simulated", scheduling: "not used" },
       readiness: { level: "READY_FOR_SUPERVISED_PILOT", label: "Ready for a supervised pilot", blockers: [] }, interventions: 0, approvalsActive: 0, approvalsHeld: 0, handoffsOpen: 0, incidents: { high: 0, medium: 0, low: 0, open: [] }, obligations: { open: 0, needsOwner: 0, barryCanAct: 0, waitingOnCustomer: 0, blocked: 0 },
       money: { stuckWithOwner: {}, waitingOnCustomer: {}, atRisk: {}, simulated: {}, verifiedPayments: 0 }, conversations: { total: 0, last24h: 0, latestActivityAt: null }, recentChanges: [], unavailable: [],
     };
@@ -261,7 +261,8 @@ describe("operational obligations: derived from records, reconciled durably, clo
     expect(fresh).toHaveLength(1);
     expect(fresh[0]).toMatchObject({ key: "unpaid_payment_followup:p1", kind: "unpaid_payment_followup", customer: "Adi", nextMove: "waiting_on_customer", status: "waiting_on_customer", owner: "customer", amount: 390, currency: "ILS", simulated: false });
     const stale = deriveObligations({ graph: g, conversations: [c1()], approvals: [], payments: [payment({ id: "p1", createdAt: hoursAgo(30) })], bookings: [], now: NOW });
-    expect(stale[0]).toMatchObject({ nextMove: "needs_owner", status: "actionable", owner: "owner", dueAt: new Date(Date.parse(hoursAgo(30)) + 24 * 3600_000).toISOString() });
+    // After the delay BARRY itself can act (bounded follow-up policy); the owner is asked only once attempts are used up.
+    expect(stale[0]).toMatchObject({ nextMove: "barry_can_act", status: "actionable", owner: "barry", dueAt: new Date(Date.parse(hoursAgo(30)) + 24 * 3600_000).toISOString() });
     const withApproval = deriveObligations({ graph: g, conversations: [c1()], approvals: withLifecycle([approval({ id: "ap1", createdAt: hoursAgo(1) })], new Map([["c1", c1()]])), payments: [], bookings: [], now: NOW });
     expect(withApproval[0]).toMatchObject({ kind: "approval_blocking_transaction", approvalId: "ap1", authority: "owner_approval", nextMove: "needs_owner", amount: 500 });
   });
@@ -279,7 +280,7 @@ describe("operational obligations: derived from records, reconciled durably, clo
     // A day later: the same obligation, now actionable for the owner (updated in place).
     const later = new Date(NOW.getTime() + 30 * 3600_000);
     const aged = await reconcileObligations({ graph, conversations: [c], approvals: [], payments: [p], bookings: [], now: later });
-    expect(aged[0]).toMatchObject({ key: `unpaid_payment_followup:${p.id}`, status: "actionable", nextMove: "needs_owner", createdAt: NOW.toISOString() });
+    expect(aged[0]).toMatchObject({ key: `unpaid_payment_followup:${p.id}`, status: "actionable", nextMove: "barry_can_act", createdAt: NOW.toISOString() });
     // The provider verifies the payment: completed, with the record as evidence.
     const paidAt = new Date(later.getTime() + 60_000).toISOString();
     const done = await reconcileObligations({ graph, conversations: [c], approvals: [], payments: [{ ...p, status: "paid", verifiedAt: paidAt }], bookings: [], now: new Date(later.getTime() + 120_000) });

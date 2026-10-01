@@ -56,7 +56,7 @@ function setup() {
 
 function status(over: Partial<BusinessStatus> = {}): BusinessStatus {
   return {
-    id: "a", name: "A", timezone: TZ, health: "healthy", stage: "simulator_only", controls: { ...DEFAULT_CONTROLS }, build: { commit: null, runtime: "x", environment: "test" }, model: { mode: "simulated", model: null, status: "healthy", summary: "ok" }, storage: "memory", channel: { whatsapp: "missing" }, providers: { commerce: "simulated", payments: "simulated", scheduling: "not used" },
+    id: "a", name: "A", timezone: TZ, health: "healthy", stage: "simulator_only", controls: { ...DEFAULT_CONTROLS }, build: { commit: null, runtime: "x", environment: "test" }, model: { mode: "simulated", model: null, status: "healthy", summary: "ok" }, storage: "memory", channel: { whatsapp: "missing" }, channels: [], customerChannel: "not_configured", providers: { commerce: "simulated", payments: "simulated", scheduling: "not used" },
     readiness: { level: "READY_FOR_SUPERVISED_PILOT", label: "Ready for a supervised pilot", blockers: [] }, interventions: 0, approvalsActive: 0, approvalsHeld: 0, handoffsOpen: 0, incidents: { high: 0, medium: 0, low: 0, open: [] }, obligations: { open: 0, needsOwner: 0, barryCanAct: 0, waitingOnCustomer: 0, blocked: 0 },
     money: { stuckWithOwner: {}, waitingOnCustomer: {}, atRisk: {}, simulated: {}, verifiedPayments: 0 }, conversations: { total: 0, last24h: 0, latestActivityAt: null }, recentChanges: [], unavailable: [],
     ...over,

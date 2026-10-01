@@ -191,6 +191,15 @@ export type Goal = z.infer<typeof GoalSchema>;
  * learned and owner-approved), never inferred from an industry. An
  * explicit playbook setting always wins over BARRY's global default.
  */
+export const FollowUpRuleSchema = z.object({
+  enabled: z.boolean().default(true),
+  /** Hours after the triggering record before the first follow-up. */
+  afterHours: z.number().min(0).max(24 * 30).optional(),
+  maxAttempts: z.number().int().min(0).max(5).optional(),
+  intervalHours: z.number().min(1).max(24 * 30).optional(),
+});
+export type FollowUpRule = z.infer<typeof FollowUpRuleSchema>;
+
 export const PlaybookSchema = z.object({
   /** The owner's own words on how to sell/serve (e.g. "relaxed, no pressure, short messages"). */
   salesStyle: z.string().max(1000).optional(),
@@ -211,6 +220,20 @@ export const PlaybookSchema = z.object({
   suggestions: z.enum(["none", "one_relevant"]).default("one_relevant"),
   /** Who/how to hand off to when BARRY can't help. */
   handoff: z.string().max(500).optional(),
+  /**
+   * FOLLOW-UP RULES — whether, when and how often BARRY may follow up on its own (unpaid links,
+   * abandoned checkouts, reminders, retries). Absent = BARRY's bounded defaults; `enabled: false`
+   * turns a kind off. Never more than `maxAttempts`, never closer than `intervalHours` apart.
+   */
+  followUp: z
+    .object({
+      unpaidPayment: FollowUpRuleSchema.optional(),
+      abandonedCheckout: FollowUpRuleSchema.optional(),
+      unresolvedHandoff: FollowUpRuleSchema.optional(),
+      appointmentReminder: FollowUpRuleSchema.optional(),
+      failedAction: FollowUpRuleSchema.optional(),
+    })
+    .optional(),
 });
 export type Playbook = z.infer<typeof PlaybookSchema>;
 

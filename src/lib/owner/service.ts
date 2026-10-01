@@ -11,6 +11,8 @@ import { outcomeEvents, revenueEvidence, revenueSummary, type OutcomeEvent, type
 import { buildInterventions, type Intervention } from "./interventions";
 import { revenueOpportunities, type Opportunity, type OpportunitySummary } from "./opportunities";
 import { reconcileObligations, type Obligation } from "@/lib/operator/obligations";
+import { followUpPolicyFor } from "@/lib/operator/policy";
+import { attemptCounts, listAttempts } from "@/lib/operator/attempts";
 import { assessCapabilities, capabilitySummary } from "./capabilities";
 
 /**
@@ -231,12 +233,14 @@ export async function getOwnerWorkspace(graph: BusinessGraph, opts: { since?: st
       return fallback;
     }
   };
-  const [conversations, approvalsRaw, payments, bookings, orders] = await Promise.all([
+  const [conversations, approvalsRaw, payments, bookings, orders, carts, attempts] = await Promise.all([
     safe("conversations", () => getConversationStore().listByBusiness(businessId), [] as ConversationState[]),
     safe("approvals", () => backend.listApprovals(businessId), []),
     safe("payments", () => backend.listPaymentRequests(businessId), []),
     safe("bookings", () => backend.listBookings(businessId), []),
     safe("orders", () => backend.listCommerceOrders(businessId), []),
+    safe("carts", () => backend.listCommerceCarts(businessId), []),
+    safe("operator attempts", () => listAttempts(businessId), []),
   ]);
   const byId = new Map(conversations.map((c) => [c.id, c]));
   const approvals = withLifecycle(approvalsRaw, new Map(conversations.map((c) => [c.id, c])));
@@ -283,7 +287,7 @@ export async function getOwnerWorkspace(graph: BusinessGraph, opts: { since?: st
   const handoffs = conversations.flatMap((c) => readHandoffs(c).map((h) => ({ ...h, customer: customerLabel(c) }))).sort((a, b) => Number(b.status !== "resolved") - Number(a.status !== "resolved") || b.createdAt.localeCompare(a.createdAt));
   const interventions = buildInterventions({ graph, conversations, approvals, payments, customerLabel, now });
   const opportunities = revenueOpportunities({ graph, conversations, approvals, payments, bookings, orders, customerLabel, now });
-  const obligations = await safe("obligations", () => reconcileObligations({ graph, conversations, approvals, payments, bookings, now, customerLabel }), [] as Obligation[]);
+  const obligations = await safe("obligations", () => reconcileObligations({ graph, conversations, approvals, payments, bookings, carts, policy: followUpPolicyFor(graph), attempts: attemptCounts(attempts), now, customerLabel }), [] as Obligation[]);
   const profiles = await safe("capability profiles", () => resolveCapabilityProfiles(graph), undefined);
   const connections = await safe("connections", () => describeBusinessConnections(businessId, profiles), [] as ConnectionView[]);
   const capabilities = capabilitySummary(await safe("capabilities", () => assessCapabilities(graph, { profiles, connections }), { needs: [], steps: [], now: [], nowSimulated: [], afterSetup: [] }));

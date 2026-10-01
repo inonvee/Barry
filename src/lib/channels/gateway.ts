@@ -1,4 +1,6 @@
 import { channelDisabled, loadControls } from "@/lib/hq/controls";
+import { renderRichText } from "./rich";
+import { resolveCustomerIdentity } from "./identity";
 import { resolveBusinessGraph } from "@/lib/business-graph-repository";
 import { handleCustomerMessage } from "@/lib/runtime";
 import { getConversationStore } from "@/lib/state";
@@ -50,11 +52,8 @@ function readList<T>(value: string | undefined): T[] {
 
 /** Render BARRY's reply (text + rich parts) as plain channel text — every channel can carry this. */
 export function renderForTextChannel(out: NormalizedOutboundMessage): string {
-  const parts = [out.text];
-  // Products the reply already names aren't repeated; links are still given.
-  for (const p of out.rich?.products ?? []) if (out.text.includes(p.title)) { if (p.url) parts.push(p.url); } else parts.push(`• ${p.title}${p.price ? ` — ${p.price}` : ""}${p.url ? `\n  ${p.url}` : ""}`);
-  if (out.rich?.paymentUrl) parts.push(out.rich.paymentUrl);
-  return parts.join("\n");
+  // Provider-independent rich model → plain text (no Markdown leaks; products named in the text are not repeated).
+  return renderRichText(out);
 }
 
 export interface OutboundSender {
@@ -78,7 +77,9 @@ export async function processInbound(message: NormalizedInboundMessage & { inbou
     return { status: "failed", conversationId: message.conversationId, error: `channel ${message.identity.channel} is disabled by the founder` };
   }
   const store = getConversationStore();
-  const customerId = message.customerId ?? `${message.identity.channel}:${message.identity.channelUserId}`;
+  // Verified cross-channel identity: a linked identity resolves to its canonical customer; never by name.
+  const resolved = await resolveCustomerIdentity(graph.business.id, message.identity);
+  const customerId = resolved.linked ? resolved.customerId : message.customerId ?? resolved.customerId;
   const conversationId = message.conversationId;
   const state = await store.getOrCreate(conversationId, graph.business.id, customerId);
   const seen = readList<string>(state.knownFields[CHANNEL_SEEN_KEY]);

@@ -258,6 +258,14 @@ function TodayView({ ws, act, busyId, loading, onOpen, onIntervention, onTab }: 
   // Approvals, held requests and handoffs already have their cards above: here BARRY shows the rest it is watching.
   const watching = ws.obligations.filter((o) => isOpen(o) && !["approval_blocking_transaction", "held_request_recheck", "unresolved_handoff"].includes(o.kind));
   const due = watching.filter((o) => o.status === "actionable");
+  // The proactive operator's four buckets, from the same obligations: handling / waiting on customer / needs you / blocked.
+  const openObligations = ws.obligations.filter(isOpen);
+  const groups = {
+    handling: openObligations.filter((o) => o.nextMove === "barry_can_act" || o.nextMove === "scheduled_for_later").length,
+    waiting: openObligations.filter((o) => o.nextMove === "waiting_on_customer").length,
+    needsYou: queue.length,
+    blocked: openObligations.filter((o) => o.nextMove === "blocked_by_capability").length,
+  };
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
   return (
@@ -278,6 +286,13 @@ function TodayView({ ws, act, busyId, loading, onOpen, onIntervention, onTab }: 
           {ai.summary}
         </StateNotice>
       )}
+
+      <p className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-[13px] text-[#475467]" data-queue-groups>
+        <span>BARRY is handling <span className="font-semibold tabular-nums text-[#101828]">{groups.handling}</span></span>
+        <span>Waiting on customers <span className="font-semibold tabular-nums text-[#101828]">{groups.waiting}</span></span>
+        <span>Needs you <span className={`font-semibold tabular-nums ${groups.needsYou ? "text-[#b42318]" : "text-[#101828]"}`}>{groups.needsYou}</span></span>
+        <span>Blocked <span className={`font-semibold tabular-nums ${groups.blocked ? "text-[#b42318]" : "text-[#101828]"}`}>{groups.blocked}</span></span>
+      </p>
 
       <Section title="Needs you" subtitle={queue.length ? "In priority order. Each card says why BARRY stopped, what it already did, what you decide and what happens next." : undefined} plain>
         <InterventionQueue items={queue} busyId={busyId} onAct={act} limit={showAll ? undefined : 4} />

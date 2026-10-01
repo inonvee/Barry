@@ -1,6 +1,8 @@
 import type { BusinessGraph } from "@/lib/business-graph";
 import type { ConversationState } from "@/lib/state";
-import type { BookingRecord, OperatorRecord, PaymentRequestRecord } from "@/lib/store/types";
+import type { BookingRecord, CommerceCartRecord, OperatorRecord, PaymentRequestRecord } from "@/lib/store/types";
+import type { Cart } from "@/lib/commerce/types";
+import { DEFAULT_FOLLOW_UP_POLICY, ruleFor, type FollowUpPolicy } from "./policy";
 import { getBackend } from "@/lib/store";
 import type { ApprovalWithLifecycle } from "@/lib/runtime/owner-requests";
 import { readHandoffs } from "@/lib/runtime/handoff";
@@ -32,6 +34,11 @@ export type ObligationInput = {
   approvals: ApprovalWithLifecycle[];
   payments: PaymentRequestRecord[];
   bookings: BookingRecord[];
+  /** Carts (for abandoned-checkout recovery); absent = not derived. */
+  carts?: CommerceCartRecord[];
+  /** The business's follow-up policy (defaults when absent) and the attempts already made per obligation key. */
+  policy?: FollowUpPolicy;
+  attempts?: Record<string, { count: number; lastAt?: string }>;
   now: Date;
   /** Optional: an owner-words label for a conversation's customer (falls back to the stored name or "Customer"). */
   customerLabel?: (c: ConversationState) => string;
@@ -61,33 +68,87 @@ export function deriveObligations(input: ObligationInput): Derived[] {
   const who = (id: string) => label(byId.get(id), input.customerLabel);
   const out: Derived[] = [];
   const paidIn = (conversationId: string) => payments.some((p) => p.conversationId === conversationId && p.status === "paid" && p.verifiedAt);
+  const policy = input.policy ?? DEFAULT_FOLLOW_UP_POLICY;
+  const attemptsOf = (key: string) => input.attempts?.[key] ?? { count: 0 };
+  /** Can BARRY act on this key under the policy (enabled, attempts left, interval elapsed)? */
+  const barryCanAct = (key: string, kind: Parameters<typeof ruleFor>[1]) => {
+    const rule = ruleFor(policy, kind);
+    if (!rule || !rule.enabled) return { can: false, exhausted: false, rule };
+    const a = attemptsOf(key);
+    if (a.count >= rule.maxAttempts) return { can: false, exhausted: true, rule };
+    if (a.lastAt && t - Date.parse(a.lastAt) < rule.intervalHours * H) return { can: false, exhausted: false, rule, waiting: true };
+    return { can: true, exhausted: false, rule };
+  };
 
   // 1. Unpaid payment links.
   for (const p of payments) {
     if (p.status !== "pending" || t - Date.parse(p.createdAt) > ABANDON_AFTER_MS) continue;
-    const eligibleAt = new Date(Date.parse(p.createdAt) + FOLLOW_UP_AFTER_MS).toISOString();
+    const key = `unpaid_payment_followup:${p.id}`;
+    const act = barryCanAct(key, "unpaid_payment_followup");
+    const eligibleAt = new Date(Date.parse(p.createdAt) + (act.rule ? act.rule.afterHours * H : FOLLOW_UP_AFTER_MS)).toISOString();
     const due = t >= Date.parse(eligibleAt);
+    const a = attemptsOf(key);
+    const move: NextMove = !due ? "waiting_on_customer" : act.can ? "barry_can_act" : act.exhausted ? "needs_owner" : "waiting_on_customer";
     out.push({
-      key: `unpaid_payment_followup:${p.id}`,
+      key,
       kind: "unpaid_payment_followup",
       source: `payment request ${p.id}`,
       evidence: [`payment request ${p.id.slice(0, 12)} · pending · created ${p.createdAt}${isSimulatedPayment(p) ? " · simulated provider" : ""}`],
       conversationId: p.conversationId,
       customer: who(p.conversationId),
       subject: `${money(p.amount, p.currency)} payment link`,
-      reason: due ? "The payment link has been unpaid for more than a day." : "A payment link was sent and the provider hasn't reported a payment.",
+      reason: due ? (a.count ? `BARRY reminded the customer ${a.count} time${a.count === 1 ? "" : "s"}; the provider still hasn't reported a payment.` : "The payment link has been unpaid past the follow-up delay.") : "A payment link was sent and the provider hasn't reported a payment.",
       desiredOutcome: "The provider reports the payment as paid.",
-      nextAction: due ? "Follow up with the customer and ask whether they still want it (BARRY can't send reminders yet)." : "Wait for the customer to pay; follow up if it isn't paid within a day.",
-      nextMove: due ? "needs_owner" : "waiting_on_customer",
-      owner: due ? "owner" : "customer",
+      nextAction: move === "barry_can_act" ? "BARRY sends one reminder with the same link (bounded by your follow-up rules)." : move === "needs_owner" ? "BARRY's reminders are used up; ask the customer yourself whether they still want it." : a.count ? "Waiting for the customer after BARRY's reminder." : "Wait for the customer to pay; BARRY follows up after the delay in your rules.",
+      nextMove: move,
+      owner: move === "barry_can_act" ? "barry" : move === "needs_owner" ? "owner" : "customer",
       eligibleAt,
       dueAt: eligibleAt,
-      status: due ? "actionable" : "waiting_on_customer",
+      status: move === "barry_can_act" || move === "needs_owner" ? "actionable" : "waiting_on_customer",
       authority: "none",
       capability: "payments.create_request",
       amount: p.amount,
       currency: p.currency,
       simulated: isSimulatedPayment(p),
+      ...(a.count ? { attempts: a.count, lastAttemptAt: a.lastAt } : {}),
+    });
+  }
+
+  // 1b. Abandoned checkouts: a cart with lines that reached checkout (or sat open) with no payment after it.
+  for (const r of input.carts ?? []) {
+    const cart = r.data as Cart | undefined;
+    if (!cart || !cart.lines?.length || r.status === "ordered") continue;
+    if (t - Date.parse(r.updatedAt) > ABANDON_AFTER_MS) continue;
+    const paymentAfter = payments.some((p) => p.conversationId === r.conversationId && p.createdAt >= r.updatedAt);
+    if (paymentAfter || paidIn(r.conversationId)) continue;
+    const key = `abandoned_checkout_recovery:${r.cartId}`;
+    const act = barryCanAct(key, "abandoned_checkout_recovery");
+    if (!act.rule || !act.rule.enabled) continue;
+    const eligibleAt = new Date(Date.parse(r.updatedAt) + act.rule.afterHours * H).toISOString();
+    const due = t >= Date.parse(eligibleAt);
+    const a = attemptsOf(key);
+    const move: NextMove = !due ? "scheduled_for_later" : act.can ? "barry_can_act" : "waiting_on_customer";
+    out.push({
+      key,
+      kind: "abandoned_checkout_recovery",
+      source: `cart ${r.cartId}`,
+      evidence: [`cart ${r.cartId.slice(0, 12)} · ${r.status} · ${cart.lines.length} line${cart.lines.length === 1 ? "" : "s"} · last change ${r.updatedAt}`, "no payment request after the last cart change"],
+      conversationId: r.conversationId,
+      customer: who(r.conversationId),
+      subject: `${money(cart.total.amount, cart.total.currency)} cart left ${r.status === "checkout" ? "at checkout" : "open"}`,
+      reason: a.count ? "BARRY sent one recovery message; the customer hasn't come back." : "The customer built a cart and did not continue to payment.",
+      desiredOutcome: "The customer completes the checkout or says they don't want it.",
+      nextAction: move === "barry_can_act" ? "BARRY asks once whether they'd like to complete it (nothing is charged)." : move === "scheduled_for_later" ? "BARRY waits the delay in your rules before asking." : "Waiting for the customer after BARRY's message.",
+      nextMove: move,
+      owner: move === "barry_can_act" ? "barry" : "customer",
+      eligibleAt,
+      dueAt: eligibleAt,
+      status: move === "barry_can_act" ? "actionable" : move === "scheduled_for_later" ? "scheduled" : "waiting_on_customer",
+      authority: "none",
+      capability: "commerce.checkout.create",
+      amount: cart.total.amount,
+      currency: cart.total.currency,
+      ...(a.count ? { attempts: a.count, lastAttemptAt: a.lastAt } : {}),
     });
   }
 
@@ -219,6 +280,35 @@ export function deriveObligations(input: ObligationInput): Derived[] {
       currency: offer.currency,
     });
   }
+
+  // 7. Appointment reminders (when the business allows them): a confirmed booking within the next day.
+  for (const b of bookings) {
+    if (b.status !== "confirmed" || Date.parse(b.start) < t || Date.parse(b.start) - t > D) continue;
+    const key = `appointment_reminder:${b.id}`;
+    const act = barryCanAct(key, "appointment_reminder");
+    if (!act.rule || !act.rule.enabled) continue;
+    const a = attemptsOf(key);
+    const offer = graph.offers.find((o) => o.id === b.offerId);
+    out.push({
+      key,
+      kind: "appointment_reminder",
+      source: `booking ${b.id}`,
+      evidence: [`booking ${b.id.slice(0, 12)} · confirmed · starts ${b.start}`],
+      conversationId: b.conversationId,
+      customer: who(b.conversationId),
+      subject: `${offer?.name ?? "appointment"} reminder`,
+      reason: a.count ? "BARRY sent the reminder." : "The appointment is within a day.",
+      desiredOutcome: "The customer shows up (or reschedules in time).",
+      nextAction: act.can ? "BARRY sends one reminder with the time." : a.count ? "Reminder sent; nothing else to do." : "Reminders are off in your rules.",
+      nextMove: act.can ? "barry_can_act" : "waiting_on_customer",
+      owner: act.can ? "barry" : "customer",
+      eligibleAt: new Date(Date.parse(b.start) - D).toISOString(),
+      dueAt: b.start,
+      status: act.can ? "actionable" : "waiting_on_customer",
+      authority: "none",
+      ...(a.count ? { attempts: a.count, lastAttemptAt: a.lastAt } : {}),
+    });
+  }
   return out;
 }
 
@@ -272,6 +362,13 @@ function closure(o: Obligation, input: ObligationInput): Pick<Obligation, "statu
       if (input.now.getTime() - Date.parse(o.eligibleAt) > RECENT_MS) return { status: "cancelled", cancellation: { at, reason: "no later delivery within 7 days" } };
       return undefined;
     }
+    case "abandoned_checkout_recovery": {
+      const later = input.payments.find((p) => p.conversationId === o.conversationId && p.createdAt >= o.createdAt);
+      if (later) return { status: "completed", completion: { at, evidence: `payment request ${later.id} created after the recovery (${later.status})` } };
+      return { status: "cancelled", cancellation: { at, reason: "the cart was ordered, emptied or aged out" } };
+    }
+    case "appointment_reminder":
+      return { status: "completed", completion: { at, evidence: "the appointment time passed or the booking changed" } };
     case "booking_deposit_missing": {
       const b = input.bookings.find((x) => `booking_deposit_missing:${x.id}` === o.key);
       if (!b || b.status !== "confirmed") return { status: "cancelled", cancellation: { at, reason: "booking cancelled or gone" } };
@@ -287,7 +384,7 @@ function fromRecord(r: OperatorRecord): Obligation {
   return r.data as unknown as Obligation;
 }
 
-const LIVE_FIELDS: (keyof Derived)[] = ["status", "nextMove", "nextAction", "owner", "reason", "dueAt", "eligibleAt", "subject", "customer", "amount", "currency", "evidence"];
+const LIVE_FIELDS: (keyof Derived)[] = ["status", "nextMove", "nextAction", "owner", "reason", "dueAt", "eligibleAt", "subject", "customer", "amount", "currency", "evidence", "attempts", "lastAttemptAt"];
 
 /**
  * Reconcile the derived obligations with the stored ones: create, update (only when something changed),

@@ -1,0 +1,145 @@
+import type { BusinessGraph } from "@/lib/business-graph";
+import { getBackend } from "@/lib/store";
+import { getConversationStore, type ConversationState } from "@/lib/state";
+import { withLifecycle } from "@/lib/runtime/owner-requests";
+import { appendLedger } from "@/lib/runtime/ledger";
+import { SCRATCH_KEYS } from "@/lib/runtime/compiler";
+import { readHandoffs } from "@/lib/runtime/handoff";
+import { resolveReplyLanguage } from "@/lib/reasoner/language";
+import { money } from "@/lib/reasoner/deterministic-compose";
+import { loadControls, type BusinessControls } from "@/lib/hq/controls";
+import { CHANNEL_DELIVERY_KEY, type DeliveryRecord, type OutboundSender } from "@/lib/channels/gateway";
+import { reconcileObligations, isOpen, type Obligation } from "./obligations";
+import { followUpPolicyFor, ruleFor } from "./policy";
+import { attemptCounts, attemptId, listAttempts, recordAttempt, type ExecutionAttempt } from "./attempts";
+
+/**
+ * OBLIGATION EXECUTOR — the bounded runner for "BARRY CAN ACT" obligations. At execution time it
+ * re-reads the latest state, re-checks authority (founder controls, playbook policy), re-checks the
+ * capability (a channel to send on), cancels stale items, enforces idempotency per attempt, records
+ * evidence, bounds retries and hard-limits attempts. One pass per call; no loops, no timers. Messages
+ * are deterministic, in the conversation's language; a dry-run sender records what would be sent and
+ * sends nothing. The model never decides to follow up; the records and the policy do.
+ */
+
+export type ExecutorResult = { key: string; kind: Obligation["kind"]; outcome: "sent" | "dry_run" | "skipped" | "failed" | "cancelled"; why: string; attempt?: number };
+export type ExecutorRun = { businessId: string; at: string; considered: number; acted: number; results: ExecutorResult[]; blocked?: string };
+
+const dryRun = (channel: OutboundSender["channel"]): OutboundSender => ({ channel, mode: "dry_run", send: async () => ({}) });
+
+export type SenderResolver = (conversation: ConversationState) => OutboundSender | undefined;
+
+function channelOf(conversationId: string): OutboundSender["channel"] {
+  return conversationId.startsWith("wa:") ? "whatsapp" : conversationId.startsWith("ig:") ? "instagram" : "web";
+}
+
+/** Deterministic, locale-safe follow-up texts. */
+export function followUpText(kind: Obligation["kind"], o: Obligation, lang: string): string | null {
+  const he = lang.startsWith("he");
+  const amount = o.amount !== undefined && o.currency ? money(o.amount, o.currency, lang) : "";
+  switch (kind) {
+    case "unpaid_payment_followup":
+      return he ? `היי, רק תזכורת: קישור התשלום על ${amount} עדיין פתוח. אם זה כבר לא רלוונטי, אפשר להתעלם.` : `Hi — just a reminder that the payment link for ${amount} is still open. If it's no longer relevant, feel free to ignore this.`;
+    case "abandoned_checkout_recovery":
+      return he ? `היי, ראיתי שהשארת פריטים בעגלה (${amount}). רוצה שאשלים את ההזמנה? שום דבר לא חויב.` : `Hi — I noticed you left items in your cart (${amount}). Would you like to complete the order? Nothing has been charged.`;
+    case "appointment_reminder":
+      return he ? `תזכורת: התור שלך מתקיים ב-${o.dueAt ?? ""}. אם צריך לשנות, אפשר לכתוב לי.` : `Reminder: your appointment is at ${o.dueAt ?? ""}. If you need to change it, just reply here.`;
+    default:
+      return null;
+  }
+}
+
+export async function runObligationExecutor(graph: BusinessGraph, opts: { now?: Date; senders?: SenderResolver; limit?: number } = {}): Promise<ExecutorRun> {
+  const now = opts.now ?? new Date();
+  const at = now.toISOString();
+  const businessId = graph.business.id;
+  const backend = getBackend();
+  const results: ExecutorResult[] = [];
+  const controls: BusinessControls = await loadControls(businessId);
+  const policy = followUpPolicyFor(graph);
+  const store = getConversationStore();
+  const [conversations, approvalsRaw, payments, bookings, carts, attempts] = await Promise.all([store.listByBusiness(businessId), backend.listApprovals(businessId), backend.listPaymentRequests(businessId), backend.listBookings(businessId), backend.listCommerceCarts(businessId), listAttempts(businessId)]);
+  const approvals = withLifecycle(approvalsRaw, new Map(conversations.map((c) => [c.id, c])));
+  const counts = attemptCounts(attempts);
+  const obligations = await reconcileObligations({ graph, conversations, approvals, payments, bookings, carts, policy, attempts: counts, now });
+  const candidates = obligations.filter((o) => isOpen(o) && o.nextMove === "barry_can_act" && ruleFor(policy, o.kind)).slice(0, opts.limit ?? 10);
+
+  // Authority re-check: a paused business sends nothing proactive.
+  const blocked = controls.pauseConsequentialWrites ? "consequential actions are paused by the founder" : controls.pausedBusiness ? "the business is paused by the founder" : controls.safeMode ? "safe mode: proactive messages are off" : controls.disabledChannels.length && candidates.every((o) => controls.disabledChannels.includes(channelOf(o.conversationId))) && candidates.length ? "every channel is disabled" : undefined;
+  if (blocked) return { businessId, at, considered: candidates.length, acted: 0, results: candidates.map((o) => ({ key: o.key, kind: o.kind, outcome: "skipped", why: blocked })), blocked };
+
+  let acted = 0;
+  for (const o of candidates) {
+    const rule = ruleFor(policy, o.kind)!;
+    const prior = counts[o.key] ?? { count: 0 };
+    const n = prior.count + 1;
+    const id = attemptId(o.key, n);
+    if (attempts.some((a) => a.id === id)) {
+      results.push({ key: o.key, kind: o.kind, outcome: "skipped", why: "this attempt already ran (idempotent)" });
+      continue;
+    }
+    if (prior.count >= rule.maxAttempts) {
+      results.push({ key: o.key, kind: o.kind, outcome: "skipped", why: `attempt limit reached (${rule.maxAttempts})` });
+      continue;
+    }
+    if (prior.lastAt && now.getTime() - Date.parse(prior.lastAt) < rule.intervalHours * 3600_000) {
+      results.push({ key: o.key, kind: o.kind, outcome: "skipped", why: `too soon after the last attempt (every ${rule.intervalHours}h)` });
+      continue;
+    }
+    const conversation = conversations.find((c) => c.id === o.conversationId);
+    if (!conversation) {
+      results.push({ key: o.key, kind: o.kind, outcome: "cancelled", why: "the conversation no longer exists" });
+      continue;
+    }
+    // Stale re-check against the LATEST records (the reconcile above already re-derived, but a payment may have landed).
+    const freshPayments = await backend.listPaymentRequests(businessId);
+    if (o.kind === "unpaid_payment_followup" && freshPayments.some((p) => `unpaid_payment_followup:${p.id}` === o.key && p.status !== "pending")) {
+      results.push({ key: o.key, kind: o.kind, outcome: "cancelled", why: "the payment is no longer pending" });
+      continue;
+    }
+    const channel = channelOf(conversation.id);
+    if (controls.disabledChannels.includes(channel)) {
+      results.push({ key: o.key, kind: o.kind, outcome: "skipped", why: `channel ${channel} is disabled by the founder` });
+      continue;
+    }
+    const handoffOpen = readHandoffs(conversation).some((h) => h.status !== "resolved");
+    if (handoffOpen && o.kind !== "unresolved_handoff") {
+      results.push({ key: o.key, kind: o.kind, outcome: "skipped", why: "a person has this conversation (open handoff); BARRY stays quiet" });
+      continue;
+    }
+    const lang = resolveReplyLanguage({ customerMessages: conversation.messages.filter((m) => m.role === "customer").map((m) => m.content), stored: conversation.knownFields[SCRATCH_KEYS.conversationLanguage], businessLocale: graph.business.locale }).code;
+    const text = followUpText(o.kind, o, lang);
+    if (!text) {
+      results.push({ key: o.key, kind: o.kind, outcome: "skipped", why: "no customer-facing follow-up exists for this kind; it stays on the owner's list" });
+      continue;
+    }
+    const sender = opts.senders?.(conversation) ?? dryRun(channel);
+    const to = conversation.id.split(":").slice(2).join(":") || conversation.customerId;
+    let status: ExecutionAttempt["status"];
+    let providerMessageId: string | undefined;
+    let error: string | undefined;
+    try {
+      const sent = sender.mode === "live" ? await sender.send(to, text, { businessId }) : {};
+      status = sender.mode === "live" ? "sent" : "dry_run";
+      providerMessageId = sent.providerMessageId;
+    } catch (err) {
+      status = "failed";
+      error = err instanceof Error ? err.message.slice(0, 200) : "send failed";
+    }
+    const attempt: ExecutionAttempt = { id, businessId, obligationKey: o.key, kind: o.kind, n, at, status, what: status === "failed" ? `Follow-up could not be sent: ${error}` : `${status === "dry_run" ? "Would send" : "Sent"}: “${text}”`, evidence: [...o.evidence, `attempt ${n} of ${rule.maxAttempts} · policy ${rule.intervalHours}h apart`], channel, ...(providerMessageId ? { providerMessageId } : {}), idempotencyKey: id };
+    await recordAttempt(attempt);
+    // The conversation keeps the proof: a BARRY message, a ledger entry and a delivery record.
+    const fresh = (await store.get(conversation.id)) ?? conversation;
+    if (status !== "failed") fresh.messages.push({ role: "barry", content: text, at });
+    appendLedger(fresh, { operation: "followUp", effect: status === "failed" ? "followup.failed" : "followup.sent", status: status === "failed" ? "failed" : "effected", describes: `follow-up (${o.kind.replace(/_/g, " ")})`, terms: { attempt: n }, reference: id });
+    const delivery: DeliveryRecord = { at, channel, inboundId: id, status: status === "failed" ? "failed" : status === "sent" ? "sent" : "dry_run", ...(providerMessageId ? { providerMessageId } : {}), ...(error ? { error } : {}) };
+    const deliveries = JSON.parse(fresh.knownFields[CHANNEL_DELIVERY_KEY] ?? "[]") as DeliveryRecord[];
+    fresh.knownFields[CHANNEL_DELIVERY_KEY] = JSON.stringify([...deliveries, delivery].slice(-50));
+    await store.save(fresh);
+    acted += 1;
+    results.push({ key: o.key, kind: o.kind, outcome: status === "failed" ? "failed" : status, why: status === "failed" ? error! : `attempt ${n} of ${rule.maxAttempts}`, attempt: n });
+  }
+  // Re-reconcile so the obligations reflect the attempts (nextMove → waiting on the customer, attempts count).
+  await reconcileObligations({ graph, conversations: await store.listByBusiness(businessId), approvals, payments, bookings, carts, policy, attempts: attemptCounts(await listAttempts(businessId)), now });
+  return { businessId, at, considered: candidates.length, acted, results };
+}

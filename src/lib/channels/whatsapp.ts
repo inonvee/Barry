@@ -112,7 +112,7 @@ export function parseWebhook(body: unknown, routes = whatsappConfig().routes): P
           businessId,
           conversationId: conversationIdFor("whatsapp", businessId, m.from),
           customerId: `wa:${m.from}`,
-          identity: { channel: "whatsapp", channelUserId: m.from },
+          identity: { channel: "whatsapp", channelUserId: m.from, verifiedIdentifier: `phone:${m.from}` },
           text: m.text.body.slice(0, 4000),
           receivedAt: m.timestamp ? new Date(Number(m.timestamp) * 1000).toISOString() : new Date().toISOString(),
           ...(profileName ? { profileName } : {}),

@@ -19,8 +19,11 @@ import { environmentLabel } from "@/lib/qa/mode";
 import { deriveIncidents, loadIncidentStates, type Incident } from "./incidents";
 import { loadControls, listControlAudit, describeChange, type BusinessControls, type ControlAudit } from "./controls";
 import { businessActivity, type ActivityEvent } from "./activity";
+import { channelHealth, customerChannelState, type ChannelHealth, type ChannelHealthState } from "@/lib/channels/health";
 import { isVerifiedPaid, isSimulatedPayment } from "@/lib/owner/revenue";
 import { reconcileObligations, type Obligation } from "@/lib/operator/obligations";
+import { followUpPolicyFor } from "@/lib/operator/policy";
+import { attemptCounts, listAttempts } from "@/lib/operator/attempts";
 
 /**
  * FLEET READ MODEL — the founder's view across every business, built from records with ONE query set
@@ -44,6 +47,9 @@ export type BusinessStatus = {
   model: { mode: "live_model" | "simulated"; model: string | null; status: AiHealth["status"]; summary: string; lastFailure?: AiHealth["lastFailure"] };
   storage: "durable" | "memory";
   channel: { whatsapp: "live" | "dry_run" | "not_routed" | "missing" };
+  /** Observable per-channel health (secret-free) and the best customer channel state. */
+  channels: ChannelHealth[];
+  customerChannel: ChannelHealthState;
   providers: { commerce: string; payments: string; scheduling: string };
   readiness: { level: PilotLevel; label: string; blockers: string[] };
   interventions: number;
@@ -111,7 +117,7 @@ export async function getBusinessStatus(graph: BusinessGraph, opts: { now?: Date
       return fallback;
     }
   };
-  const [conversations, approvalsRaw, payments, bookings, orders, controls, incidentStates, profiles] = await Promise.all([
+  const [conversations, approvalsRaw, payments, bookings, orders, controls, incidentStates, profiles, carts, attempts] = await Promise.all([
     safe("conversations", () => getConversationStore().listByBusiness(id), [] as ConversationState[]),
     safe("approvals", () => backend.listApprovals(id), []),
     safe("payments", () => backend.listPaymentRequests(id), []),
@@ -120,6 +126,8 @@ export async function getBusinessStatus(graph: BusinessGraph, opts: { now?: Date
     loadControls(id),
     safe("incident states", () => loadIncidentStates(id), []),
     safe("capability profiles", () => resolveCapabilityProfiles(graph), undefined),
+    safe("carts", () => backend.listCommerceCarts(id), []),
+    safe("operator attempts", () => listAttempts(id), []),
   ]);
   const connections = await safe("connections", () => describeBusinessConnections(id, profiles), [] as ConnectionView[]);
   const approvals = withLifecycle(approvalsRaw, new Map(conversations.map((c) => [c.id, c])));
@@ -127,7 +135,7 @@ export async function getBusinessStatus(graph: BusinessGraph, opts: { now?: Date
   const incidents = deriveIncidents({ graph, conversations, approvals, payments, connections, ai, now, states: incidentStates });
   const interventions = buildInterventions({ graph, conversations, approvals, payments, customerLabel, now });
   const opportunities = revenueOpportunities({ graph, conversations, approvals, payments, bookings, orders, customerLabel, now });
-  const obligations = await safe("obligations", () => reconcileObligations({ graph, conversations, approvals, payments, bookings, now }), [] as Obligation[]);
+  const obligations = await safe("obligations", () => reconcileObligations({ graph, conversations, approvals, payments, bookings, carts, policy: followUpPolicyFor(graph), attempts: attemptCounts(attempts), now }), [] as Obligation[]);
   const readiness = await safe("readiness", () => assessPilotReadiness(graph, { conversations }), undefined);
   const audit = await safe("founder audit", () => listControlAudit(id), [] as ControlAudit[]);
   const open = incidents.filter((i) => i.status !== "resolved");
@@ -136,6 +144,7 @@ export async function getBusinessStatus(graph: BusinessGraph, opts: { now?: Date
   const low = open.filter((i) => i.severity === "low").length;
   const health: BusinessHealth = high > 0 || ai.status === "unavailable" ? "unhealthy" : medium > 0 || interventions.length > 0 ? "attention" : "healthy";
   const wa = whatsappConfig();
+  const channelsHealth = channelHealth({ businessId: id, conversations, disabledChannels: controls.disabledChannels, now });
   const channel = whatsappNumbersFor(id).length ? (wa.sendMode === "live" ? "live" : "dry_run") : wa.configured ? "not_routed" : "missing";
   const anyReal = (["commerce", "payments", "scheduling"] as const).some((d) => profiles?.[d]?.used && profiles[d].status === "connected" && !profiles[d].simulated);
   const stage: OperatingStage = controls.mode === "live" && readiness?.level === "READY_FOR_CUSTOMER_TRAFFIC" ? "live_ready" : controls.mode === "supervised" || anyReal ? "supervised" : "simulator_only";
@@ -152,6 +161,8 @@ export async function getBusinessStatus(graph: BusinessGraph, opts: { now?: Date
     model: { mode: ai.mode, model: ai.model, status: ai.status, summary: ai.summary, ...(ai.lastFailure ? { lastFailure: ai.lastFailure } : {}) },
     storage: isSupabaseConfigured() ? "durable" : "memory",
     channel: { whatsapp: channel },
+    channels: channelsHealth,
+    customerChannel: customerChannelState(channelsHealth),
     providers: { commerce: providerWords(profiles, "commerce"), payments: providerWords(profiles, "payments"), scheduling: providerWords(profiles, "scheduling") },
     readiness: readiness ? { level: readiness.level, label: readiness.label, blockers: readiness.next?.blockers.map((b) => b.label) ?? [] } : { level: "NOT_READY", label: "Readiness unavailable", blockers: [] },
     interventions: interventions.length,

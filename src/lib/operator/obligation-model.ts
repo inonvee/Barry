@@ -10,7 +10,11 @@ export type ObligationKind =
   | "unresolved_handoff"
   | "failed_action_recovery"
   | "undelivered_reply"
-  | "booking_deposit_missing";
+  | "booking_deposit_missing"
+  /** A cart reached checkout (or was built) and no payment followed: one bounded recovery follow-up. */
+  | "abandoned_checkout_recovery"
+  /** A confirmed appointment is near: a reminder, when the business allows it. */
+  | "appointment_reminder";
 
 /** watching → (scheduled | actionable | waiting_on_owner | waiting_on_customer | blocked) → completed | cancelled | superseded */
 export type ObligationStatus = "watching" | "scheduled" | "actionable" | "waiting_on_owner" | "waiting_on_customer" | "blocked" | "completed" | "cancelled" | "superseded";
@@ -47,6 +51,9 @@ export type Obligation = {
   simulated?: boolean;
   createdAt: string;
   updatedAt: string;
+  /** Proactive operator: how many bounded attempts ran and when the last one did. */
+  attempts?: number;
+  lastAttemptAt?: string;
   completion?: { at: string; evidence: string };
   cancellation?: { at: string; reason: string };
   supersededBy?: string;
