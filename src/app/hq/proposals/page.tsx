@@ -44,6 +44,20 @@ export default async function HqProposalsPage() {
                       <span className="text-[12px] text-[#667085]">{p.scope} · v{p.version} · {p.affectedBusinesses.length} business{p.affectedBusinesses.length === 1 ? "" : "es"} · {formatLocal(p.proposedAt, "UTC", now)} UTC</span>
                     </div>
                     {p.conflicts.length > 0 && <p className="text-[13px] text-[#b54708]">Conflicts: {p.conflicts.join("; ")}</p>}
+                    {p.plan && (
+                      <Disclosure summary={`${p.kind ?? "plan"} plan`} muted>
+                        <dl className="grid gap-1 text-[12px] text-[#344054]">
+                          <dt className="font-medium">Goal</dt><dd>{p.plan.goal}</dd>
+                          <dt className="font-medium">Current state</dt><dd>{p.plan.currentState.join(" · ")}</dd>
+                          <dt className="font-medium">Proposed change</dt><dd>{p.plan.proposedChange}</dd>
+                          <dt className="font-medium">Expected effect</dt><dd>{p.plan.expectedEffect}</dd>
+                          <dt className="font-medium">Risks</dt><dd>{p.plan.risks.join("; ") || "none recorded"}</dd>
+                          <dt className="font-medium">Blockers</dt><dd>{p.plan.blockers.join("; ") || "none"}</dd>
+                          <dt className="font-medium">Approval</dt><dd>{p.plan.requiredApproval}</dd>
+                          <dt className="font-medium">Rollback</dt><dd>{p.plan.rollback}</dd>
+                        </dl>
+                      </Disclosure>
+                    )}
                     <Disclosure summary="Diff" muted>
                       <ul className="space-y-1 text-[12px]">
                         {p.diff.map((d) => (
@@ -53,7 +67,7 @@ export default async function HqProposalsPage() {
                     </Disclosure>
                     <div className="flex flex-wrap gap-2">
                       {p.status === "proposed" && (<><form action="/api/hq/proposals" method="post"><input type="hidden" name="action" value="approve" /><input type="hidden" name="id" value={p.id} /><button className={button}>Approve</button></form><form action="/api/hq/proposals" method="post"><input type="hidden" name="action" value="reject" /><input type="hidden" name="id" value={p.id} /><button className={button}>Reject</button></form></>)}
-                      {p.status === "approved" && (p.activation === "available" ? <form action="/api/hq/proposals" method="post"><input type="hidden" name="action" value="activate" /><input type="hidden" name="id" value={p.id} /><input type="hidden" name="confirm" value="yes" /><button className={buttonPrimary}>Activate (audited)</button></form> : <span className="text-[13px] text-[#667085]">Approved; {p.scope} activation is gated until a fleet-wide activation model exists.</span>)}
+                      {p.status === "approved" && (p.activation === "available" ? <form action="/api/hq/proposals" method="post"><input type="hidden" name="action" value="activate" /><input type="hidden" name="id" value={p.id} /><input type="hidden" name="confirm" value="yes" /><button className={buttonPrimary}>Activate (audited)</button></form> : <span className="text-[13px] text-[#667085]">Approved; {p.kind && p.kind !== "control" ? `${p.kind} proposals are gated — no mechanism executes them from HQ yet.` : `${p.scope} activation is gated until a fleet-wide activation model exists.`}</span>)}
                       {p.status === "activated" && <form action="/api/hq/proposals" method="post"><input type="hidden" name="action" value="rollback" /><input type="hidden" name="id" value={p.id} /><input type="hidden" name="confirm" value="yes" /><button className={button}>Roll back</button></form>}
                     </div>
                   </div>

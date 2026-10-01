@@ -16,6 +16,21 @@ import { fleetTenantIds } from "./fleet";
 export type ProposalScope = "GLOBAL" | "CAPABILITY" | "BUSINESS" | "TEMPORARY";
 export type ProposalStatus = "proposed" | "approved" | "rejected" | "activated" | "rolled_back";
 export type ProposalRisk = "low" | "medium" | "high";
+/** What a proposal is about. "control" proposals change founder controls; the others are plans (no control diff) that stay gated. */
+export type ProposalKind = "control" | "rollout" | "runtime" | "capability" | "configuration";
+
+/** A plan proposal's grounded content (Founder BARRY): every line comes from records, never invented. */
+export type ProposalPlan = {
+  goal: string;
+  currentState: string[];
+  proposedChange: string;
+  expectedEffect: string;
+  risks: string[];
+  blockers: string[];
+  requiredApproval: string;
+  rollback: string;
+  evidence: string[];
+};
 
 export type ChangeProposal = {
   id: string;
@@ -40,7 +55,20 @@ export type ChangeProposal = {
   activatedAt?: string;
   rolledBackAt?: string;
   history: { at: string; by: string; status: ProposalStatus; note?: string }[];
+  /** Absent on older records = "control". */
+  kind?: ProposalKind;
+  plan?: ProposalPlan;
+  /** Idempotency: an OPEN proposal with the same key is returned instead of a second one. */
+  dedupeKey?: string;
+  source?: "hq" | "founder_barry";
 };
+
+const OPEN: ProposalStatus[] = ["proposed", "approved"];
+
+/** The open (proposed / approved) proposal carrying this dedupe key, if any. */
+export async function findOpenProposal(dedupeKey: string): Promise<ChangeProposal | undefined> {
+  return (await listProposals()).find((p) => p.dedupeKey === dedupeKey && OPEN.includes(p.status));
+}
 
 const KEYS: (keyof ControlChange)[] = ["mode", "pauseConsequentialWrites", "approvalRequiredForAll", "pausedCapabilities", "disabledChannels", "pausedBusiness", "safeMode"];
 
@@ -51,7 +79,11 @@ export function riskOf(change: ControlChange, scope: ProposalScope, affected: nu
 }
 
 /** Build the proposal from a structured instruction; never applies anything. */
-export async function proposeChange(input: { instruction: string; scope: ProposalScope; change: ControlChange; businessIds?: string[]; capability?: string; until?: string; by: string; now?: Date }): Promise<ChangeProposal> {
+export async function proposeChange(input: { instruction: string; scope: ProposalScope; change: ControlChange; businessIds?: string[]; capability?: string; until?: string; by: string; now?: Date; dedupeKey?: string; source?: ChangeProposal["source"] }): Promise<ChangeProposal> {
+  if (input.dedupeKey) {
+    const existing = await findOpenProposal(input.dedupeKey);
+    if (existing) return existing;
+  }
   const at = (input.now ?? new Date()).toISOString();
   const affected = input.scope === "GLOBAL" || input.scope === "CAPABILITY" ? fleetTenantIds() : (input.businessIds ?? []).filter((id) => fleetTenantIds().includes(id));
   if (!affected.length) throw new Error("A proposal must affect at least one known business");
@@ -85,9 +117,47 @@ export async function proposeChange(input: { instruction: string; scope: Proposa
     proposedBy: input.by,
     proposedAt: at,
     history: [{ at, by: input.by, status: "proposed" }],
+    kind: "control",
+    ...(input.dedupeKey ? { dedupeKey: input.dedupeKey } : {}),
+    ...(input.source ? { source: input.source } : {}),
   };
   await save(proposal);
   return proposal;
+}
+
+/**
+ * A PLAN proposal (rollout / runtime / capability / configuration): durable, reviewable, approvable — and
+ * always activation-gated, because no per-business mechanism exists to execute it from HQ. It carries no
+ * control diff, so activation can never change a business. Idempotent by `dedupeKey`.
+ */
+export async function proposePlan(input: { instruction: string; kind: Exclude<ProposalKind, "control">; businessIds: string[]; plan: ProposalPlan; by: string; dedupeKey: string; now?: Date }): Promise<{ proposal: ChangeProposal; created: boolean }> {
+  const existing = await findOpenProposal(input.dedupeKey);
+  if (existing) return { proposal: existing, created: false };
+  const affected = input.businessIds.filter((id) => fleetTenantIds().includes(id));
+  if (!affected.length) throw new Error("A proposal must affect at least one known business");
+  const at = (input.now ?? new Date()).toISOString();
+  const proposal: ChangeProposal = {
+    id: `prop_${Date.parse(at).toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+    version: 1,
+    instruction: input.instruction.trim().slice(0, 1000),
+    scope: "BUSINESS",
+    change: {},
+    affectedBusinesses: affected,
+    conflicts: input.plan.blockers,
+    risk: input.plan.blockers.length || affected.length > 1 ? "medium" : "low",
+    diff: [],
+    status: "proposed",
+    activation: "gated",
+    proposedBy: input.by,
+    proposedAt: at,
+    history: [{ at, by: input.by, status: "proposed" }],
+    kind: input.kind,
+    plan: input.plan,
+    dedupeKey: input.dedupeKey,
+    source: "founder_barry",
+  };
+  await save(proposal);
+  return { proposal, created: true };
 }
 
 async function save(p: ChangeProposal): Promise<void> {
@@ -113,6 +183,7 @@ export async function activateProposal(input: { id: string; by: string; now?: Da
   const p = (await listProposals()).find((x) => x.id === input.id);
   if (!p) return { proposal: undefined, applied: [] };
   if (p.status !== "approved") return { proposal: p, applied: [], refused: `proposal is ${p.status}, not approved` };
+  if (p.kind && p.kind !== "control") return { proposal: p, applied: [], refused: `${p.kind} proposals are gated: no mechanism executes them from HQ yet` };
   if (p.activation !== "available") return { proposal: p, applied: [], refused: `${p.scope} activation is gated: no fleet-wide activation model yet` };
   const at = (input.now ?? new Date()).toISOString();
   const applied: string[] = [];

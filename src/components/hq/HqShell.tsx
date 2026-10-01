@@ -37,7 +37,7 @@ export function HqShell({ active, data, children }: { active: HqSurface; data: H
   const commands: CommandResult[] = [
     ...data.businesses.map((b) => ({ id: `business:${b.id}`, kind: "business" as const, title: b.name, subtitle: "Business focus", href: `/hq/${encodeURIComponent(b.id)}`, status: b.status, keywords: [b.id] })),
     ...HQ_NAV.map((n) => ({ id: `surface:${n.id}`, kind: "surface" as const, title: n.label, href: n.href })),
-    { id: "surface:ask", kind: "surface", title: "Ask HQ BARRY", href: "/hq/ask" },
+    { id: "surface:ask", kind: "surface", title: "Ask BARRY", subtitle: "Founder BARRY", href: "/hq/ask" },
     { id: "surface:console", kind: "surface", title: "Conversation console", subtitle: "Every business, filtered", href: "/hq/console" },
     { id: "surface:transactions", kind: "surface", title: "Transactions", subtitle: "Carts, payments, orders, bookings", href: "/hq/transactions" },
     { id: "surface:approvals", kind: "surface", title: "Global approvals", href: "/hq/approvals" },
@@ -55,7 +55,7 @@ export function HqShell({ active, data, children }: { active: HqSurface; data: H
       commands={commands}
       search={search}
       askHref={(q) => `/hq/ask?q=${encodeURIComponent(q)}`}
-      askLabel="Ask HQ"
+      askLabel="Ask BARRY"
       right={
         <form action="/api/hq/logout" method="post" className="hidden md:block">
           <button className="rounded-lg px-2 py-1.5 text-[12px] text-[#667085] hover:bg-[#f2f4f7]">Sign out</button>
@@ -65,7 +65,7 @@ export function HqShell({ active, data, children }: { active: HqSurface; data: H
         <footer className="mt-6 flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#98a2b3]">
           <span>{data.build}</span>
           <span className="flex gap-3">
-            <Link href="/hq/ask" className="hover:text-[#475467]">Ask HQ</Link>
+            <Link href="/hq/ask" className="hover:text-[#475467]">Ask BARRY</Link>
             <Link href="/qa" className="hover:text-[#475467]">QA tools</Link>
             <Link href="/simulator" className="hover:text-[#475467]">Simulator</Link>
             <form action="/api/hq/logout" method="post" className="md:hidden">

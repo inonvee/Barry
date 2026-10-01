@@ -240,7 +240,9 @@ export type OperatorRecordKind =
   | "owner_brief"
   // Initiative engine (0017)
   | "initiative"
-  | "initiative_scan";
+  | "initiative_scan"
+  // Founder BARRY (0018)
+  | "founder_command";
 
 export type OperatorRecord = {
   id: string;
