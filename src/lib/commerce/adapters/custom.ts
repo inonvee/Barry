@@ -108,6 +108,18 @@ export class CustomCommerceAdapter implements CommerceAdapter {
     return this.request(`/carts/${encodeURIComponent(cartId)}`);
   }
 
+  /** GET /orders/{id}/status — optional on the client's side; a 404 means "not exposed", never a guess. */
+  async getOrderStatus(orderId: string): Promise<{ status: string; fulfillment?: "pickup" | "shipping" | "unknown"; trackingNumber?: string; eta?: string; updatedAt?: string } | undefined> {
+    try {
+      const raw = await this.request<unknown>(`/orders/${encodeURIComponent(orderId)}/status`);
+      const parsed = z.object({ status: z.string().max(64), fulfillment: z.enum(["pickup", "shipping", "unknown"]).optional(), trackingNumber: z.string().max(64).optional(), eta: z.string().max(64).optional(), updatedAt: z.string().max(64).optional() }).safeParse(raw);
+      return parsed.success ? parsed.data : undefined;
+    } catch (err) {
+      if (err instanceof Error && /returned 404/.test(err.message)) return undefined;
+      throw err;
+    }
+  }
+
   addToCart(input: { cartId: string; productId: string; variantId: string; quantity: number }): Promise<Cart> {
     return this.request(`/carts/${encodeURIComponent(input.cartId)}/lines`, {
       method: "POST",

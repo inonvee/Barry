@@ -27,7 +27,9 @@ export type IncidentKind =
   | "undelivered_reply"
   | "connection_unhealthy"
   | "blocked_write"
-  | "stale_unpaid_link";
+  | "stale_unpaid_link"
+  /** A real, active connection has not been verified for too long, its manifest drifted or its credential expires. */
+  | "reverification_due";
 
 export type IncidentStatus = "current" | "acknowledged" | "resolved";
 
@@ -86,6 +88,7 @@ export function incidentSeverity(kind: IncidentKind, ageMs: number): IncidentSev
       return "medium";
     case "blocked_write":
     case "stale_unpaid_link":
+    case "reverification_due":
       return "low";
   }
 }
@@ -242,6 +245,25 @@ export function deriveIncidents(input: IncidentInput): Incident[] {
         links: { capability: v.capability, ...(v.provider ? { provider: v.provider } : {}) },
       });
     }
+  }
+
+  // Re-verification due: a real, active connection never verified or verified too long ago.
+  for (const v of connections) {
+    if (v.status !== "connected" || v.simulated || v.origin === "none" || v.missing.length > 0) continue;
+    const age = v.lastVerifiedAt ? t - Date.parse(v.lastVerifiedAt) : null;
+    if (age !== null && age <= 30 * D) continue;
+    add({
+      key: `reverification_due:${v.capability}`,
+      kind: "reverification_due",
+      title: `${v.capability} connection${v.provider ? ` (${v.provider})` : ""} needs re-verification${age === null ? " (never verified)" : ""}`,
+      firstSeen: v.lastVerifiedAt ?? nowIso,
+      lastSeen: nowIso,
+      evidence: [`connection ${v.capability} · connected · ${age === null ? "never verified" : `last verified ${Math.round(age / D)} days ago`}`],
+      capability: v.capability,
+      impact: "Nothing fails yet; an unverified real connection can break without warning.",
+      nextAction: "BARRY team: run the connection test / conformance for this system.",
+      links: { capability: v.capability, ...(v.provider ? { provider: v.provider } : {}) },
+    });
   }
 
   // Stale unpaid links (money signal, low)

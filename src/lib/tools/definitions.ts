@@ -1,5 +1,8 @@
 import { z } from "zod";
 import { defineTool } from "./types";
+import type { BusinessGraph } from "@/lib/business-graph";
+import type { Product } from "@/lib/commerce/types";
+import { alternativesFor } from "@/lib/commerce/discovery";
 import { findOffer, inventoryFor } from "@/lib/business-graph";
 import { getBackend } from "@/lib/store";
 import { bookingIdempotencyKey, checkSchedulingAvailability, createSchedulingBooking } from "@/lib/scheduling/capability";
@@ -187,12 +190,25 @@ const cartSchema = z.object({
   revision: z.number().int().optional(),
 });
 /** A selection that could not be executed as asked — reported with REAL alternatives; nothing is substituted. */
+/** Real alternatives for an unavailable variant: the same product's other in-stock options, then same-category items in stock. */
+async function alternativesFromCatalog(graph: BusinessGraph, product: Product, options: Record<string, string> | undefined, quantity: number) {
+  try {
+    const { products } = await searchCommerceProducts(graph, { category: product.category });
+    const pool = products.some((p) => p.id === product.id) ? products : [product, ...products];
+    return alternativesFor(pool, { productId: product.id, options, quantity });
+  } catch {
+    return alternativesFor([product], { productId: product.id, options, quantity });
+  }
+}
+
 const notAddedSchema = z.object({
   reason: z.enum(["unavailable", "needs_variant", "unknown_option"]),
   productId: z.string(),
   productTitle: z.string(),
   requested: optionsSchema.optional(),
   availableOptions: z.array(optionsSchema),
+  /** Real alternatives from the current catalog (same item in another in-stock option, or a same-category item), with grounded reasons. */
+  alternatives: z.array(z.object({ productId: z.string(), title: z.string(), variant: optionsSchema.optional(), price: z.object({ amount: z.number(), currency: z.string() }), reason: z.string() })).optional(),
   /** Set when this was a swap: the line that should be replaced once a variant is chosen. */
   replacesLineId: z.string().optional(),
 });
@@ -250,6 +266,8 @@ export const addToCart = defineTool({
     if (!product) throw new Error("That item is no longer available");
     const resolution = resolveVariant(product, input.options, input.quantity);
     if (!resolution.ok) {
+      // Alternatives come from the live catalog of the same category — never invented.
+      const alternatives = resolution.reason === "unavailable" ? await alternativesFromCatalog(ctx.graph, product, input.options, input.quantity) : [];
       return {
         added: false,
         notAdded: {
@@ -258,6 +276,7 @@ export const addToCart = defineTool({
           productTitle: product.title,
           requested: input.options,
           availableOptions: resolution.availableOptions,
+          ...(alternatives.length ? { alternatives } : {}),
           ...(input.replaceLine ? { replacesLineId: input.replaceLine.lineId } : {}),
         },
       };

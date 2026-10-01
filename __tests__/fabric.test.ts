@@ -338,7 +338,10 @@ describe("mapping proposals: inference is never authority", () => {
 
   it("the deterministic mapper finds the obvious pairing, and never pairs a write with a GET", async () => {
     const { proposals } = await proposeMappings(importOpenApi(openapi), ["support"]);
-    expect(proposals).toEqual([expect.objectContaining({ capability: "support.ticket.create", operationRef: "POST /tickets", classification: "inference" })]);
+    // The ontology now also knows a ticket-status READ, so a GET may pair with it — never with the write.
+    expect(proposals).toEqual(expect.arrayContaining([expect.objectContaining({ capability: "support.ticket.create", operationRef: "POST /tickets", classification: "inference" })]));
+    for (const p of proposals) if (p.capability === "support.ticket.create") expect(p.operationRef).toMatch(/^POST /);
+    expect(proposals.some((p) => p.capability === "support.ticket.create" && !p.operationRef.startsWith("POST"))).toBe(false);
   });
 
   it("from evidence to execution only through every gate: draft -> validate -> conformance -> owner activation", async () => {

@@ -39,6 +39,14 @@ export type CostEvidence = {
   /** For exposures (inventory carrying, deposit / no-show): the exposure window, not a cost already paid. */
   exposure?: boolean;
   note?: string;
+  /** Normalized cost model: a category the owner recognises, the counterparty, the item / plan, a unit price and the order it belongs to (when the system states them). */
+  category?: string;
+  counterparty?: string;
+  item?: string;
+  unitPrice?: number;
+  quantity?: number;
+  orderId?: string;
+  period?: { start: string; end: string };
 };
 
 export type ProfitOpportunity = {
@@ -159,6 +167,92 @@ export function profitOpportunities(businessId: string, evidence: CostEvidence[]
       authority: "none",
       state: "POTENTIAL",
     });
+  }
+
+  // Supplier price increase: the same supplier item costs more per unit in a later verified record.
+  const supplier = by("supplier_cost").filter((e) => e.item && e.unitPrice);
+  const byItem = new Map<string, CostEvidence[]>();
+  for (const e of supplier) byItem.set(`${e.counterparty ?? "?"}|${e.item}`, [...(byItem.get(`${e.counterparty ?? "?"}|${e.item}`) ?? []), e]);
+  for (const [key, xs] of byItem) {
+    const sorted = [...xs].sort((a, b) => a.at.localeCompare(b.at));
+    const first = sorted[0];
+    const last = sorted[sorted.length - 1];
+    if (sorted.length < 2 || !first.unitPrice || !last.unitPrice || last.unitPrice <= first.unitPrice * 1.05) continue;
+    const pct = Math.round(((last.unitPrice - first.unitPrice) / first.unitPrice) * 100);
+    const qty = sorted.reduce((n, e) => n + (e.quantity ?? 1), 0);
+    out.push({
+      id: `supplier_increase:${businessId}:${key}`,
+      businessId,
+      problem: `${last.counterparty ?? "A supplier"} charges ${pct}% more per unit for ${last.item} than in ${first.at.slice(0, 10)} (${first.unitPrice} → ${last.unitPrice} ${last.currency}).`,
+      evidence: sorted,
+      estimatedImpact: { amount: Math.round((last.unitPrice - first.unitPrice) * qty * 100) / 100, currency: last.currency, per: "period" },
+      confidence: "medium",
+      assumptions: ["Volumes stay as recorded; the earlier unit price is attainable again — a negotiation target, not a quote."],
+      recommendedAction: "Prepare a negotiation with the purchase history and the earlier price as the target.",
+      authority: "owner_approval",
+      state: "POTENTIAL",
+    });
+  }
+
+  // Subscription duplication: two or more subscriptions in the same category.
+  const subs = by("saas_subscription");
+  const byCategory = new Map<string, CostEvidence[]>();
+  for (const e of subs) if (e.category) byCategory.set(e.category.toLowerCase(), [...(byCategory.get(e.category.toLowerCase()) ?? []), e]);
+  for (const [category, xs] of byCategory) {
+    const distinct = new Set(xs.map((e) => (e.item ?? e.counterparty ?? e.source.reference).toLowerCase()));
+    if (distinct.size < 2) continue;
+    const cheapest = Math.min(...xs.map((e) => e.amount));
+    out.push({
+      id: `subscription_duplication:${businessId}:${category}`,
+      businessId,
+      problem: `${distinct.size} subscriptions in the “${category}” category (${[...distinct].join(", ")}).`,
+      evidence: xs,
+      estimatedImpact: { amount: Math.round((sum(xs) - cheapest) * 100) / 100, currency: currency(xs), per: "month" },
+      confidence: "low",
+      assumptions: ["One tool could cover the category — the owner decides which; the saving is everything but the cheapest."],
+      recommendedAction: "Review which subscription in this category the business really uses; cancel the rest (owner decision).",
+      authority: "owner_approval",
+      state: "POTENTIAL",
+    });
+  }
+
+  // Slow-moving inventory: carrying exposure older than 60 days.
+  const slow = by("inventory_carrying").filter((e) => e.exposure && Date.now() - Date.parse(e.at) > 60 * 24 * 3600_000);
+  if (slow.length) {
+    out.push({
+      id: `slow_inventory:${businessId}`,
+      businessId,
+      problem: `${sum(slow)} ${currency(slow)} of stock has been carried for more than 60 days (${slow.length} record${slow.length === 1 ? "" : "s"}).`,
+      evidence: slow,
+      estimatedImpact: { amount: sum(slow), currency: currency(slow), per: "period" },
+      confidence: "low",
+      assumptions: ["The exposure is the stock value, not a realised loss; a promotion or reorder change frees part of it."],
+      recommendedAction: "Consider a targeted offer on slow items and a lower reorder cadence (owner decision).",
+      authority: "owner_approval",
+      state: "POTENTIAL",
+    });
+  }
+
+  // Shipping inefficiency: per-order shipping cost well above the median.
+  const ship = by("shipping_fulfillment").filter((e) => e.orderId);
+  if (ship.length >= 4) {
+    const amounts = ship.map((e) => e.amount).sort((a, b) => a - b);
+    const median = amounts[Math.floor(amounts.length / 2)];
+    const high = ship.filter((e) => e.amount > median * 1.5);
+    if (high.length) {
+      out.push({
+        id: `shipping_inefficiency:${businessId}`,
+        businessId,
+        problem: `${high.length} of ${ship.length} shipments cost more than 1.5× the median (${median} ${currency(ship)}).`,
+        evidence: high,
+        estimatedImpact: { amount: Math.round(high.reduce((s, e) => s + (e.amount - median), 0) * 100) / 100, currency: currency(ship), per: "period" },
+        confidence: "low",
+        assumptions: ["The median rate was attainable for the expensive shipments — an assumption about carrier or packaging choice."],
+        recommendedAction: "Check carrier and packaging on the expensive shipments; compare a second carrier's rates.",
+        authority: "none",
+        state: "POTENTIAL",
+      });
+    }
   }
   return out;
 }

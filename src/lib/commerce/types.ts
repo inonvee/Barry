@@ -103,6 +103,8 @@ export type CommerceAdapter = {
   createCheckout(input: { cartId: string }): Promise<Checkout>;
   createOrder(input: { cartId: string; idempotencyKey: string }): Promise<Order>;
   getOrder(orderId: string): Promise<Order | undefined>;
+  /** Provider-grounded fulfilment status (shipping / pickup, tracking, ETA). Optional: absent = not exposed. */
+  getOrderStatus?(orderId: string): Promise<{ status: string; fulfillment?: "pickup" | "shipping" | "unknown"; trackingNumber?: string; eta?: string; updatedAt?: string } | undefined>;
   /**
    * Only for a process-local SIMULATED provider: reinstate a cart from BARRY's durable snapshot when
    * this process doesn't hold it (or holds an older revision). A real provider is its own source of truth.

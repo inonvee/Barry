@@ -202,6 +202,12 @@ export class MemoryCommerceAdapter implements CommerceAdapter {
     return clone(order);
   }
 
+  /** The simulator exposes a plain status: created orders await fulfilment; nothing is shipped for real. */
+  async getOrderStatus(orderId: string): Promise<{ status: string; fulfillment?: "pickup" | "shipping" | "unknown"; updatedAt?: string } | undefined> {
+    const order = await this.getOrder(orderId);
+    return order ? { status: order.status === "created" ? "processing" : order.status, fulfillment: "unknown", updatedAt: order.verifiedAt } : undefined;
+  }
+
   async getOrder(orderId: string): Promise<Order | undefined> {
     return this.orders.get(orderId);
   }
