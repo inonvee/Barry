@@ -8,6 +8,8 @@ import { safeFetchSource, validateSourceUrl, type HostResolver, type SafeFetchLi
 import { buildCapabilityReport, buildOperatingStrategy, buildReadiness, enabledCapabilities } from "./strategy";
 import { detectStack, stackFactKey } from "./stack";
 import { resolveCapabilityProfiles } from "@/lib/capabilities";
+import { approveSource, recordSourceRead } from "./sources";
+import { classifyChange, recordLearningChanges, type LearningChange } from "./relearn";
 
 /**
  * Learn Business: owner-approved URL -> bounded safe fetch -> parse ->
@@ -65,9 +67,12 @@ export async function runLearning(input: {
 
   const existing = new Map((await backend.listLearnedFacts(businessId)).map((f) => [f.key, f]));
   const sources: Record<string, unknown>[] = [];
+  const changes: LearningChange[] = [];
   let stored = 0;
 
   for (const url of urls) {
+    // Every approved URL is a durable source record (approval, freshness, status, provenance).
+    const sourceRecord = await approveSource({ businessId, type: "website", ref: url, approvedBy: input.approvedBy });
     try {
       const fetched = await safeFetchSource(url, input.fetch);
       const doc = parseSourceDocument(fetched.finalUrl, fetched.body, fetched.contentType, fetched.truncated);
@@ -90,8 +95,11 @@ export async function runLearning(input: {
       const skipped: { key: string; reason: string }[] = [];
       for (const fact of facts) {
         const prior = existing.get(fact.key);
+        // RE-LEARNING DIFF: every difference is a classified change; a conflict with an approved value is recorded, never applied.
+        const change = classifyChange(prior, fact, sourceRecord.id, new Date().toISOString(), run.id);
+        if (change) changes.push({ ...change, businessId });
         if (prior && ownerApproved(prior)) {
-          skipped.push({ key: fact.key, reason: "owner already decided this" });
+          skipped.push({ key: fact.key, reason: prior.value === fact.value ? "owner already decided this" : "conflicts with the owner's approved value (recorded for review)" });
           continue;
         }
         if (prior && prior.status === "rejected" && prior.value === fact.value) {
@@ -116,10 +124,14 @@ export async function runLearning(input: {
         stored += 1;
       }
       sources.push({ url, finalUrl: fetched.finalUrl, ok: true, truncated: fetched.truncated, redirects: fetched.redirects, candidates: candidates.length, stored: facts.length - skipped.length, rejected, skipped });
+      await recordSourceRead({ businessId, id: sourceRecord.id, ok: true, facts: facts.length - skipped.length, rejected: rejected.length });
     } catch (err) {
-      sources.push({ url, ok: false, error: (err as Error).message });
+      const message = (err as Error).message;
+      sources.push({ url, ok: false, error: message });
+      await recordSourceRead({ businessId, id: sourceRecord.id, ok: false, error: message, disappeared: /\b(404|410|not found|gone)\b/i.test(message) });
     }
   }
+  await recordLearningChanges(businessId, changes);
 
   const connections = await backend.listBusinessConnections(businessId);
   const profiles = await resolveCapabilityProfiles(input.graph);

@@ -95,7 +95,13 @@ export type LearnedFactClassification = "fact" | "inference" | "recommendation" 
 export type LearnedFactStatus = "candidate" | "verified" | "corrected" | "rejected";
 export type LearnedFactSource =
   | { kind: "web"; url: string; title?: string; quote: string }
-  | { kind: "owner" };
+  | { kind: "owner" }
+  /** A document the owner supplied (policy file, price list); `quote` is the exact supporting text. */
+  | { kind: "document"; name: string; quote: string; sourceId?: string }
+  /** Metadata a connected system reported (its own key / reference), never a model's guess. */
+  | { kind: "system"; system: string; reference: string; sourceId?: string }
+  /** The connected catalog (schema facts: categories, currency, option names). */
+  | { kind: "catalog"; provider: string; sourceId?: string };
 
 export type LearnedFactRecord = {
   id: string;
@@ -203,7 +209,22 @@ export type FollowUpRecord = {
  * incident acknowledgements, operational obligations, release verdicts, QA scenario runs): each has a
  * `kind`, a stable `key` per (business, kind) and a JSON `data` body. Never customer data.
  */
-export type OperatorRecordKind = "controls" | "audit" | "incident" | "obligation" | "release" | "qa_scenario" | "founder_state";
+export type OperatorRecordKind =
+  | "controls"
+  | "audit"
+  | "incident"
+  | "obligation"
+  | "release"
+  | "qa_scenario"
+  | "founder_state"
+  | "learning_source"
+  | "learning_change"
+  | "cost_evidence"
+  | "customer_memory"
+  | "runtime_assignment"
+  | "hq_proposal"
+  | "execution_attempt"
+  | "channel_identity";
 
 export type OperatorRecord = {
   id: string;
