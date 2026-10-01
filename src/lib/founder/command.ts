@@ -11,6 +11,7 @@ import { z } from "zod";
  *   value_read        who is not getting value — verified MADE / SAVED semantics only
  *   incident_read     open incidents, broken integrations
  *   initiative_read   what BARRY noticed across the fleet (persisted initiatives only)
+ *   initiative_scan   run ONE bounded scan of ONE business through the Initiative Engine (force = explicit QA wording only)
  *   release_read      the release candidate, build and runtime
  *   founder_action    an EXISTING founder control: pause / resume a business, safe mode on / off
  *   proposal          rollout / runtime / capability / configuration → a durable, gated proposal
@@ -32,6 +33,7 @@ export type FounderIntent =
   | { family: "value_read" }
   | { family: "incident_read"; topic: IncidentTopic }
   | { family: "initiative_read" }
+  | { family: "initiative_scan"; force: boolean }
   | { family: "release_read" }
   | { family: "founder_action"; action: FounderActionKind }
   | { family: "proposal"; kind: ProposalKindIntent }
@@ -67,6 +69,9 @@ const CHANGED = /\b(what changed|changes? since|since yesterday|what(?:'s| is) n
 const COST = /\b(cost\w* (?:us )?(?:the )?most|cost to serve|cost-to-serve|most expensive|expensive to serve|spend\w*|margin\w*|unit economics)\b/i;
 const PLANS = /\b(plans?|mrr|recurring revenue|subscriptions?|free month|trial|billing|setup fee)\b/i;
 const VALUE = /\b(value|getting enough|worth it|benefit\w*|roi)\b/i;
+/** Asks to RUN a scan (an action), as opposed to asking what was already noticed (a read). */
+const SCAN = /\b(?:run|start|do|kick off|trigger|fire|force)\b[^.?!]*\b(?:scan|initiative scan)\b|\bscan\b[^.?!]*\b(?:for|at|of)\b[^.?!]*\binitiatives?\b|^(?:please\s+)?scan\b|\bsee if (?:barry )?notices?\b|\bcheck (?:if|whether) (?:barry )?notices?\b|\blook for (?:new )?initiatives\b/i;
+const FORCE_SCAN = /\bforce[d]?\b|\bbypass (?:the )?(?:daily )?(?:scan )?limit\b|\bfor qa\b/i;
 const NOTICED = /\b(notice[d]?|initiatives?|spotted|opportunit\w+|ideas)\b/i;
 const INTEGRATIONS = /\b(integrations?|connections?|providers?|connectors?|webhooks?)\b.*\b(broken|failing|down|unhealthy|degraded|issues?|problems?)\b|\b(broken|failing|down|unhealthy|degraded)\b.*\b(integrations?|connections?|providers?|connectors?)\b/i;
 const INCIDENTS = /\b(incidents?|what broke|broken|failures?|errors?)\b/i;
@@ -91,6 +96,7 @@ export function interpretFounder(text: string, opts: { hasBusiness?: boolean } =
   }
   if (RESUME.test(t)) return { family: "founder_action", action: "resume_business" };
   if (PAUSE.test(t) && !/\?\s*$/.test(t)) return { family: "founder_action", action: "pause_business" };
+  if (SCAN.test(t) && !/\b(what|which)\b.*\b(did|has|have)\b/i.test(t)) return { family: "initiative_scan", force: FORCE_SCAN.test(t) };
   if (opts.hasBusiness) {
     if (SHOW_INCIDENT.test(t)) return { family: "business_inspect", followUp: "incidents" };
     if (OPTIONS.test(t)) return { family: "business_inspect", followUp: "options" };
@@ -158,7 +164,7 @@ export function resolveBusinesses(text: string, directory: DirectoryEntry[]): Bu
  * business hint is grounded against the directory like the founder's own words.
  */
 export const ModelIntentSchema = z.object({
-  family: z.enum(["fleet_read", "business_inspect", "commercial_read", "value_read", "incident_read", "initiative_read", "release_read", "founder_action", "proposal", "handle_safe", "unsupported"]),
+  family: z.enum(["fleet_read", "business_inspect", "commercial_read", "value_read", "incident_read", "initiative_read", "initiative_scan", "release_read", "founder_action", "proposal", "handle_safe", "unsupported"]),
   topic: z.string().max(40).optional(),
   action: z.enum(["pause_business", "resume_business", "safe_mode_on", "safe_mode_off"]).optional(),
   kind: z.enum(["rollout", "runtime", "capability", "configuration"]).optional(),
@@ -186,6 +192,9 @@ export function intentFromModel(raw: unknown): { intent: FounderIntent; business
         return d.action ? { family: "founder_action", action: d.action } : undefined;
       case "proposal":
         return { family: "proposal", kind: d.kind ?? "configuration" };
+      case "initiative_scan":
+        // A model can ask for a scan but never for a forced one: force needs the founder's own explicit words.
+        return { family: "initiative_scan", force: false };
       case "unsupported":
         return { family: "unsupported", reason: "That isn't something Founder BARRY can do." };
       default:

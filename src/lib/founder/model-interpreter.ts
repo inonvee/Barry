@@ -8,7 +8,7 @@ import type { FounderInterpreter } from "./command";
  * sees secrets, never answers, and nothing it returns carries authority. Absent without a configured model.
  */
 const PROMPT = `Classify the founder's message for BARRY HQ. Reply with JSON only:
-{"family": one of fleet_read|business_inspect|commercial_read|value_read|incident_read|initiative_read|release_read|founder_action|proposal|handle_safe|unsupported,
+{"family": one of fleet_read|business_inspect|commercial_read|value_read|incident_read|initiative_read|initiative_scan|release_read|founder_action|proposal|handle_safe|unsupported,
  "topic": optional (brief|attention|changed|why|incidents|options|cost_to_serve|plans|integrations),
  "action": optional (pause_business|resume_business|safe_mode_on|safe_mode_off),
  "kind": optional (rollout|runtime|capability|configuration),

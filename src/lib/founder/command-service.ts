@@ -13,6 +13,7 @@ import { STAGE_WORDS } from "@/lib/commercial/account";
 import { hasMoney, moneyWords } from "@/lib/format/money";
 import type { Money } from "@/lib/owner/revenue";
 import { intentFromModel, interpretFounder, resolveBusinesses, UNSUPPORTED_HELP, type BusinessResolution, type DirectoryEntry, type FounderActionKind, type FounderInterpreter, type FounderIntent } from "./command";
+import { runInitiativeScan } from "@/lib/initiative/engine";
 import { businessDrilldown, founderBrief, loadFounderFleet, HEALTH_PHRASE, HEALTH_WORDS, type BriefItem } from "./read-model";
 
 /**
@@ -53,6 +54,8 @@ export type FounderCommandRecord = {
   followUps: string[];
   action?: { kind: FounderActionKind; businessId: string; businessName: string; change: ControlChange; title: string; effect: string; before: Partial<BusinessControls>; confirmedAt?: string; auditId?: string; verified?: boolean };
   proposalIds: string[];
+  /** initiative_scan: what the existing Initiative Engine reported (counts and reasons only — no evidence, no customer text). */
+  scan?: { scanId: string; businessId: string; trigger: string; forced: boolean; skipped: string | null; candidates: number; verified: number; rejected: number; created: number; updated: number; surfaced: number; suppressed: number; resolved: number; open: number };
   handled?: { done: string[]; proposed: string[]; leftForYou: string[] };
   verification?: string;
   stopReason?: string;
@@ -197,7 +200,7 @@ export async function executeFounderCommand(input: FounderCommandInput): Promise
   record.intent = intent;
   record.resolution = { matched: resolution.matched, ambiguous: resolution.ambiguous.map((a) => ({ word: a.word, candidates: a.candidates.map((c) => c.name) })) };
   step("interpretation", intent.family === "unsupported" ? "blocked" : "ok", `${intent.family}${"topic" in intent ? `:${intent.topic}` : ""}${"action" in intent ? `:${intent.action}` : ""}${"kind" in intent ? `:${intent.kind}` : ""}${"followUp" in intent ? `:${intent.followUp}` : ""} (${record.interpretedBy})`);
-  const businessScoped = intent.family === "business_inspect" || intent.family === "founder_action" || intent.family === "proposal" || (intent.family === "initiative_read" && resolution.matched.length > 0);
+  const businessScoped = intent.family === "business_inspect" || intent.family === "initiative_scan" || intent.family === "founder_action" || intent.family === "proposal" || (intent.family === "initiative_read" && resolution.matched.length > 0);
   record.scope = businessScoped ? { kind: "business", businessIds: resolution.matched.map((b) => b.id) } : { kind: "fleet", businessIds: [] };
   step("scope", "ok", record.scope.kind === "fleet" ? "fleet" : `business: ${resolution.matched.map((b) => b.name).join(", ") || "none named"}`);
 
@@ -205,7 +208,7 @@ export async function executeFounderCommand(input: FounderCommandInput): Promise
     await dispatch(record, intent, resolution, { now, step });
   } catch (err) {
     record.status = "failed";
-    record.answer = "I couldn't complete that — nothing was changed.";
+    record.answer = intent.family === "initiative_scan" ? "The initiative scan failed — no scan was recorded and nothing was changed. Try again; this is not the same as a scan that found nothing." : "I couldn't complete that — nothing was changed.";
     record.stopReason = err instanceof Error ? redact(err.message).slice(0, 300) : "unknown error";
     step("reply", "failed", record.stopReason);
   }
@@ -265,6 +268,11 @@ async function dispatch(r: FounderCommandRecord, intent: FounderIntent, res: Bus
       return incidentRead(r, intent.topic, ctx);
     case "initiative_read":
       return initiativeRead(r, res, ctx);
+    case "initiative_scan": {
+      const b = needOne("scanned");
+      if (!b) return;
+      return initiativeScan(r, b, intent.force, ctx);
+    }
     case "release_read":
       return releaseRead(r, ctx);
     case "founder_action": {
@@ -450,6 +458,46 @@ async function initiativeRead(r: FounderCommandRecord, res: BusinessResolution, 
   const rows = scoped.flatMap((b) => b.openInitiatives.map((i) => ({ b, i })));
   r.items = rows.map(({ b, i }) => ({ title: `${b.name}: ${i.title}`, detail: `${i.category.replace(/_/g, " ")} · ${i.importance} · ${i.state}`, href: bizHref(b.id), severity: i.importance === "high" ? "medium" : "info" }));
   r.answer = rows.length ? [`BARRY has ${plural(rows.length, "open initiative")} ${res.matched.length ? `at ${scoped.map((b) => b.name).join(", ")}` : `across ${plural(new Set(rows.map((x) => x.b.id)).size, "business")}`} (from persisted initiatives; the owner decides each):`, ...rows.slice(0, 8).map(({ b, i }) => `• ${b.name}: ${i.title} (${i.importance})`)].join("\n") : `BARRY hasn't noticed anything open ${res.matched.length ? `at ${scoped.map((b) => b.name).join(", ")}` : "across the fleet"} — no persisted initiative is open.`;
+}
+
+/**
+ * Run ONE scan of ONE resolved business through the existing Initiative Engine (runInitiativeScan) — the same
+ * path as POST /api/owner/initiatives/scan. Detection, verification, dedupe, fatigue, ranking and the daily
+ * scan limit all stay inside the engine; this only passes the founder's explicit "force" wording (the
+ * engine's existing founder-only QA bypass of the daily limit). A scan reads records and sends nothing.
+ */
+async function initiativeScan(r: FounderCommandRecord, b: DirectoryEntry, force: boolean, ctx: Ctx): Promise<void> {
+  const graph = fleetTenant(b.id);
+  if (!graph) throw new Error("business not in the fleet");
+  r.authority = force ? "founder initiative scan, FORCED (explicit QA wording; bypasses only the daily scan limit)" : "founder initiative scan (bounded: daily scan limit applies)";
+  ctx.step("authority", "ok", r.authority);
+  const { scan, initiatives } = await runInitiativeScan(graph, { now: ctx.now, trigger: "manual", force });
+  const open = initiatives.filter((i) => ["verified", "surfaced", "reviewed", "accepted", "acting"].includes(i.state));
+  r.scan = { scanId: scan.id, businessId: b.id, trigger: scan.trigger, forced: force, skipped: scan.skipped ?? null, candidates: scan.candidates, verified: scan.verified, rejected: scan.rejected.length, created: scan.created, updated: scan.updated, surfaced: scan.surfaced, suppressed: scan.suppressed, resolved: scan.resolved, open: open.length };
+  r.grounded.push(`initiative scan ${scan.id} (${b.id}, ${scan.localDate})`);
+  ctx.step("grounding", "ok", r.grounded[r.grounded.length - 1]);
+  const href = bizHref(b.id);
+  if (scan.skipped) {
+    r.status = "no_change";
+    r.stopReason = "daily scan limit";
+    r.answer = `Scan skipped for ${b.name}: ${scan.skipped}. Nothing was detected or changed. The limit resets with the business's next local day; say "Force an initiative scan for ${b.name} for QA" to bypass it for diagnosis.`;
+    r.items = [{ title: `${b.name}: scan skipped`, detail: scan.skipped, href, severity: "low" }];
+    ctx.step("execution", "info", `skipped: ${scan.skipped}`);
+    return;
+  }
+  ctx.step("execution", "ok", `scan ${scan.id}: ${scan.candidates} detected, ${scan.verified} verified, ${scan.rejected.length} rejected, ${scan.created} new, ${scan.updated} updated, ${scan.surfaced} surfaced`);
+  r.verification = `Scan ${scan.id} recorded for ${b.name} (${scan.localDate}); ${plural(open.length, "initiative")} open now.`;
+  ctx.step("verification", "ok", r.verification);
+  r.status = "executed";
+  const prefix = force ? "Forced scan (QA) of" : "Scanned";
+  if (scan.verified === 0 && open.length === 0) {
+    r.answer = `${prefix} ${b.name}: scan completed and found nothing to act on — ${plural(scan.candidates, "candidate")} detected, none verified against the records. That is a normal result, not a failure.${scan.rejected.length ? ` ${plural(scan.rejected.length, "candidate")} didn't hold up against the records and ${scan.rejected.length === 1 ? "was" : "were"} dropped.` : ""}`;
+  } else {
+    r.answer = [`${prefix} ${b.name}: ${plural(scan.verified, "verified finding")} from ${plural(scan.candidates, "candidate")} — ${scan.created} new, ${scan.updated} updated in place, ${scan.surfaced} newly shown to the owner${scan.suppressed ? `, ${scan.suppressed} held back (daily cap / quiet period)` : ""}.`, `${plural(open.length, "initiative")} open at ${b.name}:`, ...open.slice(0, 5).map((i) => `• ${i.title} (${i.importance}, ${i.state})`), "The owner decides each one; nothing was sent to anyone."].join("\n");
+    r.items = open.slice(0, 8).map((i) => ({ title: `${b.name}: ${i.title}`, detail: `${i.category.replace(/_/g, " ")} · ${i.importance} · ${i.state}`, href, severity: i.importance === "high" ? ("medium" as const) : ("info" as const) }));
+  }
+  if (scan.rejected.length) r.items.push({ title: `${plural(scan.rejected.length, "candidate")} rejected on verification`, detail: [...new Set(scan.rejected.map((x) => x.detector))].join(", "), severity: "low" });
+  r.followUps = [`What's going on with ${b.name}?`, `What did BARRY notice at ${b.name}?`];
 }
 
 async function releaseRead(r: FounderCommandRecord, ctx: Ctx): Promise<void> {

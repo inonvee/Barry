@@ -27,6 +27,7 @@ The same key returns the recorded result. A second confirmation executes nothing
 | value_read | Which businesses aren't getting enough value? | value accounts: verified MADE, realized SAVED, completed outcomes; simulated money never counts |
 | incident_read | Which businesses have broken integrations? | open incidents (connection / re-verification / delivery), channel health |
 | initiative_read | What did BARRY notice across the fleet? | persisted initiatives: titles and categories only, never evidence ids or customer text |
+| initiative_scan | Run an initiative scan for Rina Studio · Scan Rina for initiatives · Force an initiative scan for Rina for QA | `runInitiativeScan` (the Initiative Engine, one business, trigger `manual`); normal runs keep the daily limit; only explicit "force" wording uses the engine's founder-only bypass; a model can never request force; reply says ran / found nothing / skipped (limit) / failed |
 | release_read | What's the release state? | acceptance manifest, gates, Work verdict |
 | founder_action | Pause BARRY for Spa · Resume Spa · Put Rina in safe mode | existing founder controls |
 | proposal | Prepare a rollout to Rina and Spa | `proposePlan` (HQ proposals) |
