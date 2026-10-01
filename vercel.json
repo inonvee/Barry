@@ -1,0 +1,3 @@
+{
+  "crons": [{ "path": "/api/cron/initiative-scan", "schedule": "0 * * * *" }]
+}

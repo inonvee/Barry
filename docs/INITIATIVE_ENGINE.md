@@ -43,3 +43,15 @@ through the owner command service (plan → authority → grounding → executor
 - Ask BARRY: "What did you notice?", "What would you improve?", "Where am I losing money?" — from persisted initiatives only.
 - WhatsApp: `initiativeMessage()` renders the same initiative ("I noticed something worth looking at…"); not wired to sending.
 - HQ: `GET /api/hq/initiatives?businessId=` — initiatives, scans (with rejected candidates), quality metrics.
+
+## Scheduler (autonomous scans)
+
+`src/lib/initiative/scheduler.ts` + `GET|POST /api/cron/initiative-scan` decide **which business is due and when**; `runInitiativeScan` still decides everything else (never forced; the daily limit wins; nothing is sent).
+
+- **Slots** (business-local, from the business's own timezone via Intl): morning 08–13, afternoon 13–18, evening 18–22; nothing 22–08. A missed window is not made up.
+- **Idempotency:** one `founder_state` record per (business, local date, slot) — `claimed` before the scan, then `ran` / `failed`. A repeated tick skips a `ran` slot; a `claimed` record under 10 min old means a run is in flight; a failed slot retries at most twice.
+- **Audit:** each tick writes a fleet-scope `founder_state` record (`initiative_tick:<iso>`): evaluated / due / ran / skipped / failed with a reason per business.
+- **Failure isolation:** every business is evaluated in its own try/catch.
+- **Skips:** demo businesses, paused businesses ("nothing proactive runs").
+- **Auth:** `Authorization: Bearer $CRON_SECRET` (Vercel Cron) or a founder session/token. Founder-only: `?businessId=` and `?at=<ISO>`.
+- **Cron:** `vercel.json` runs the route hourly (`0 * * * *`). Vercel runs crons only on the Production deployment; hourly needs a plan that allows it.
