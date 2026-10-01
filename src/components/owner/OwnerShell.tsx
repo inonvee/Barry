@@ -178,6 +178,13 @@ export function WhatsAppCard({ channels, wide }: { channels?: OwnerChannels; wid
     not_routed: { live: "off", text: "Customer WhatsApp not routed to this business yet" },
     not_configured: { live: "off", text: "Customer WhatsApp not set up yet" },
   };
+  const status = owner === "connected" ? `Owner commands: connected ${channels?.ownerNumbers?.join(", ") ?? ""}${channels?.ownerSendMode === "dry_run" ? " (test mode)" : ""}` : owner === "not_linked" ? "Owner commands: ready — link your number" : "Owner commands: not connected yet";
+  const lead =
+    owner === "connected"
+      ? "Message BARRY like your best operator — ask what's happening, start a recovery, approve a request. Everything shows up here too."
+      : owner === "not_linked"
+        ? "BARRY's owner line is ready. Link your WhatsApp number in Settings and run the business by message."
+        : "Soon you'll run BARRY by message. Until the owner channel is connected, ask BARRY here — same records, same rules.";
   return (
     <div className={`rounded-2xl bg-gradient-to-b from-o-accent/12 to-o-violet/8 p-4 ring-1 ring-inset ring-o-accent/20 ${wide ? "h-full" : ""}`}>
       <div className="flex items-center gap-2.5">
@@ -186,22 +193,32 @@ export function WhatsAppCard({ channels, wide }: { channels?: OwnerChannels; wid
         </span>
         <div className="min-w-0">
           <p className="text-[14px] font-semibold leading-5 text-o-ink">Message BARRY on WhatsApp</p>
-          <p className="text-[12px] text-o-muted">{owner === "connected" ? "Your command line to BARRY" : "Owner commands: not connected yet"}</p>
+          <p className="text-[12px] text-o-muted">{status}</p>
         </div>
       </div>
-      <p className="mt-2.5 text-[12.5px] leading-5 text-o-ink-2">
-        {owner === "connected" ? "You don't have to live in this dashboard — tell BARRY what to do and it works within your rules." : "Soon you'll run BARRY by message. Until the owner channel is connected, ask BARRY here — same records, same rules."}
-      </p>
+      <p className="mt-2.5 text-[12.5px] leading-5 text-o-ink-2">{lead}</p>
       {customer && (
         <p className="mt-2 flex items-center gap-2 text-[12px] text-o-muted">
           <LiveDot state={customerWords[customer].live} />
           {customerWords[customer].text}
         </p>
       )}
-      <Link href="/owner?tab=ask" className={`${owner === "connected" ? primary : btn} mt-3 w-full`}>
-        {owner === "connected" ? "Open BARRY in WhatsApp" : "Ask BARRY here"}
-        <Icon name="arrow" size={15} />
-      </Link>
+      {owner === "connected" && channels?.ownerLine ? (
+        <a href={`https://wa.me/${channels.ownerLine}`} target="_blank" rel="noreferrer" className={`${primary} mt-3 w-full`}>
+          Open BARRY in WhatsApp
+          <Icon name="arrow" size={15} />
+        </a>
+      ) : owner === "not_linked" ? (
+        <Link href="/owner/settings#whatsapp" className={`${btn} mt-3 w-full`}>
+          Link WhatsApp
+          <Icon name="arrow" size={15} />
+        </Link>
+      ) : (
+        <Link href="/owner?tab=ask" className={`${btn} mt-3 w-full`}>
+          Ask BARRY here
+          <Icon name="arrow" size={15} />
+        </Link>
+      )}
     </div>
   );
 }

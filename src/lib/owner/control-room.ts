@@ -42,8 +42,10 @@ export function nowWorking(ws: Pick<OwnerWorkspace, "obligations" | "interventio
     return m;
   };
   for (const [kind, n] of byKind((o) => o.nextMove === "barry_can_act")) lines.push({ id: `act:${kind}`, icon: ICON[kind] ?? "bolt", tone: "accent", text: `Following up ${n} ${word(kind, n)}`, count: n, state: "working" });
-  for (const [kind, n] of byKind((o) => o.nextMove === "scheduled_for_later")) lines.push({ id: `sched:${kind}`, icon: "clock", tone: "violet", text: `${n} ${word(kind, n)} scheduled`, count: n, state: "working" });
-  const waiting = open.filter((o) => o.nextMove === "waiting_on_customer");
+  // Already followed up (e.g. at the owner's request before the rule's delay) = waiting on the customer, not "scheduled".
+  const contacted = (o: Obligation) => (o.attempts ?? 0) > 0;
+  for (const [kind, n] of byKind((o) => o.nextMove === "scheduled_for_later" && !contacted(o))) lines.push({ id: `sched:${kind}`, icon: "clock", tone: "violet", text: `${n} ${word(kind, n)} scheduled`, count: n, state: "working" });
+  const waiting = open.filter((o) => o.nextMove === "waiting_on_customer" || (o.nextMove === "scheduled_for_later" && contacted(o)));
   const customers = new Set(waiting.map((o) => o.conversationId)).size;
   if (customers) lines.push({ id: "waiting", icon: "users", tone: "neutral", text: `Waiting on ${customers} customer${customers === 1 ? "" : "s"}`, count: customers, state: "waiting" });
   if (ws.interventions.length) lines.push({ id: "needs_you", icon: "shield", tone: "warn", text: `${ws.interventions.length} decision${ws.interventions.length === 1 ? "" : "s"} waiting for you`, count: ws.interventions.length, state: "attention" });

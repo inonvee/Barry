@@ -14,6 +14,10 @@ import { CHANNEL_DELIVERY_KEY, type DeliveryRecord, type OutboundSender } from "
 import { reconcileObligations, isOpen, type Obligation } from "./obligations";
 import { followUpPolicyFor, ruleFor } from "./policy";
 import { attemptCounts, attemptId, listAttempts, recordAttempt, type ExecutionAttempt } from "./attempts";
+import { ownerHeldKeys } from "./holds";
+
+/** WhatsApp only lets a business message a customer freely within 24 hours of the customer's last message. */
+export const WHATSAPP_WINDOW_MS = 24 * 3600_000;
 
 /**
  * OBLIGATION EXECUTOR — the bounded runner for "BARRY CAN ACT" obligations. At execution time it
@@ -51,7 +55,13 @@ export function followUpText(kind: Obligation["kind"], o: Obligation, lang: stri
   }
 }
 
-export async function runObligationExecutor(graph: BusinessGraph, opts: { now?: Date; senders?: SenderResolver; limit?: number } = {}): Promise<ExecutorRun> {
+/**
+ * `only` restricts the pass to an exact, grounded cohort (an owner operation); `dueNow` lets those
+ * obligations run before the rule's delay because the owner asked now. Every other check — plan,
+ * founder controls, the rule being on, attempt limits and intervals, idempotency, stale state, handoffs,
+ * disabled channels, owner holds, the WhatsApp 24-hour window — applies exactly as for scheduled work.
+ */
+export async function runObligationExecutor(graph: BusinessGraph, opts: { now?: Date; senders?: SenderResolver; limit?: number; only?: string[]; dueNow?: boolean } = {}): Promise<ExecutorRun> {
   const now = opts.now ?? new Date();
   const at = now.toISOString();
   const businessId = graph.business.id;
@@ -64,7 +74,10 @@ export async function runObligationExecutor(graph: BusinessGraph, opts: { now?: 
   const approvals = withLifecycle(approvalsRaw, new Map(conversations.map((c) => [c.id, c])));
   const counts = attemptCounts(attempts);
   const obligations = await reconcileObligations({ graph, conversations, approvals, payments, bookings, carts, policy, attempts: counts, now });
-  const candidates = obligations.filter((o) => isOpen(o) && o.nextMove === "barry_can_act" && ruleFor(policy, o.kind)).slice(0, opts.limit ?? 10);
+  const only = opts.only ? new Set(opts.only) : undefined;
+  const due = (o: Obligation) => o.nextMove === "barry_can_act" || (Boolean(opts.dueNow && only) && (o.nextMove === "scheduled_for_later" || o.nextMove === "waiting_on_customer"));
+  const candidates = obligations.filter((o) => isOpen(o) && (!only || only.has(o.key)) && due(o) && ruleFor(policy, o.kind)?.enabled !== false && ruleFor(policy, o.kind)).slice(0, opts.limit ?? 10);
+  const held = await ownerHeldKeys(businessId);
 
   // Authority re-check: a paused business sends nothing proactive.
   // The plan: proactive follow-ups are an Operator feature — a plan without them sends nothing proactive.
@@ -84,6 +97,10 @@ export async function runObligationExecutor(graph: BusinessGraph, opts: { now?: 
     }
     if (prior.count >= rule.maxAttempts) {
       results.push({ key: o.key, kind: o.kind, outcome: "skipped", why: `attempt limit reached (${rule.maxAttempts})` });
+      continue;
+    }
+    if (held.has(o.key) && !only) {
+      results.push({ key: o.key, kind: o.kind, outcome: "skipped", why: "the owner stopped outreach to this customer" });
       continue;
     }
     if (prior.lastAt && now.getTime() - Date.parse(prior.lastAt) < rule.intervalHours * 3600_000) {
@@ -118,6 +135,12 @@ export async function runObligationExecutor(graph: BusinessGraph, opts: { now?: 
       continue;
     }
     const sender = opts.senders?.(conversation) ?? dryRun(channel);
+    // WhatsApp's customer-service window: a free-form message only within 24h of the customer's last message.
+    const lastCustomer = [...conversation.messages].reverse().find((m) => m.role === "customer")?.at;
+    if (channel === "whatsapp" && sender.mode === "live" && (!lastCustomer || now.getTime() - Date.parse(lastCustomer) > WHATSAPP_WINDOW_MS)) {
+      results.push({ key: o.key, kind: o.kind, outcome: "skipped", why: "outside WhatsApp's 24-hour window — an approved message template is needed" });
+      continue;
+    }
     const to = conversation.id.split(":").slice(2).join(":") || conversation.customerId;
     let status: ExecutionAttempt["status"];
     let providerMessageId: string | undefined;

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getBusinessGraph } from "@/lib/fixtures";
 import { handleCustomerMessage } from "@/lib/runtime";
 import { ConversationScopeError } from "@/lib/state";
+import { notifyOwnerDecisions } from "@/lib/owner/briefs";
 
 const BodySchema = z.object({
   businessId: z.string(),
@@ -27,6 +28,8 @@ export async function POST(req: NextRequest) {
 
   try {
     const outcome = await handleCustomerMessage(graph, conversationId, customerId, message);
+    // A request for the owner is announced once on the owner line (no-op without a linked owner).
+    await notifyOwnerDecisions(graph).catch((err) => console.warn("[barry:owner-brief] decision notice failed", err instanceof Error ? err.message : err));
     return NextResponse.json(outcome);
   } catch (err) {
     // A conversation id that belongs to another business is never continued under this one.

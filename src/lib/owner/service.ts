@@ -20,6 +20,10 @@ import { followUpPolicyFor, OBLIGATION_FOLLOW_UP } from "@/lib/operator/policy";
 import type { ObligationKind } from "@/lib/operator/obligation-model";
 import { attemptCounts, listAttempts } from "@/lib/operator/attempts";
 import { assessCapabilities, capabilitySummary } from "./capabilities";
+import { listOperations, operationView } from "./operations";
+import type { OwnerOperationView } from "./operation-model";
+import { whatsappOwnerConfig } from "@/lib/channels/whatsapp";
+import { linkActive, listOwnerIdentities, maskedIdentity } from "@/lib/owner-channel/identity";
 
 /**
  * THE OWNER'S VIEW OF THEIR BUSINESS — read model for the owner dashboard (and for Owner Barry).
@@ -101,21 +105,33 @@ export type OwnerApproval = {
  */
 export type OwnerChannels = {
   customerWhatsapp: "live" | "dry_run" | "not_routed" | "not_configured";
-  ownerCommands: "connected" | "not_connected";
+  /** connected = BARRY's owner line is configured AND this business has an active owner link; not_linked = line ready, no link yet. */
+  ownerCommands: "connected" | "not_linked" | "not_connected";
+  /** The linked owner number(s), masked. */
+  ownerNumbers?: string[];
+  /** wa.me number for "Open BARRY in WhatsApp" (only when connected). */
+  ownerLine?: string;
+  ownerSendMode?: "live" | "dry_run";
 };
 
-export function ownerChannels(businessId: string): OwnerChannels {
+export function ownerChannels(businessId: string, activeOwnerLinks: string[] = []): OwnerChannels {
   const wa = whatsappConfig();
+  const owner = whatsappOwnerConfig();
   const routed = whatsappNumbersFor(businessId).length > 0;
+  const ownerCommands = !owner.configured ? "not_connected" : activeOwnerLinks.length ? "connected" : "not_linked";
   return {
     customerWhatsapp: !wa.configured ? "not_configured" : !routed ? "not_routed" : wa.sendMode === "live" ? "live" : "dry_run",
-    ownerCommands: "not_connected",
+    ownerCommands,
+    ...(ownerCommands === "connected" ? { ownerNumbers: activeOwnerLinks, ownerSendMode: owner.sendMode, ...(owner.display ? { ownerLine: owner.display } : {}) } : {}),
   };
 }
 
+/** A recent owner command, as the Control Room shows it (same record the WhatsApp channel wrote). */
+export type OwnerCommandSummary = { id: string; at: string; source: "web" | "whatsapp" | "voice"; text: string; intent: string; operationId?: string; reply: string };
+
 export type OwnerOperator = {
   included: boolean;
-  rules: { kind: ObligationKind; enabled: boolean; afterHours: number; maxAttempts: number }[];
+  rules: { kind: ObligationKind; enabled: boolean; afterHours: number; maxAttempts: number; intervalHours: number }[];
 };
 
 export type OwnerTrend = {
@@ -190,6 +206,10 @@ export type OwnerWorkspace = {
   operator: OwnerOperator;
   /** Verified money per local day, last 7 days (real provider only; test money never included). */
   trend: OwnerTrend;
+  /** Operations started by owner commands (web or WhatsApp) — the same records the command service runs. */
+  ownerOperations: OwnerOperationView[];
+  /** The latest owner commands from every surface. */
+  ownerCommands: OwnerCommandSummary[];
   /** Sources that could not be read (shown, never zeroed). */
   unavailable: string[];
 };
@@ -396,11 +416,18 @@ export async function getOwnerWorkspace(staticGraph: BusinessGraph, opts: { sinc
     health: { ai: aiHealth(conversations, now), systems: connections.map(systemHealth) },
     capabilities,
     plan: { name: entitlement?.plan ? PLAN_CATALOG[entitlement.plan].name : null, marginsIncluded: entitlement ? hasFeature(entitlement, "margins") : false },
-    channels: ownerChannels(businessId),
+    channels: ownerChannels(businessId, (await safe("owner links", () => listOwnerIdentities(businessId), [])).filter((l) => linkActive(l).ok).map(maskedIdentity)),
+    ownerOperations: (await safe("owner operations", () => listOperations(businessId), [])).slice(0, 10).map((o) => operationView(o, obligations, conversations)),
+    ownerCommands: (await safe("owner commands", () => backend.listOperatorRecords(businessId, "owner_command"), []))
+      .map((r) => r.data as { id?: string; key?: string; createdAt?: string; source?: OwnerCommandSummary["source"]; text?: string; intent?: { kind?: string }; operationId?: string; reply?: { text?: string } })
+      .filter((c) => c.id && c.key && !c.key.startsWith("pending:"))
+      .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""))
+      .slice(0, 8)
+      .map((c) => ({ id: c.id!, at: c.createdAt ?? "", source: c.source ?? "web", text: (c.text ?? "").slice(0, 200), intent: c.intent?.kind ?? "query", ...(c.operationId ? { operationId: c.operationId } : {}), reply: (c.reply?.text ?? "").split("\n")[0].slice(0, 200) })),
     operator: {
       // Unreadable plan → shown as not included (the executor fails closed the same way).
       included: entitlement ? hasFeature(entitlement, "proactive_followups") : false,
-      rules: (Object.entries(OBLIGATION_FOLLOW_UP) as [ObligationKind, keyof typeof policy][]).map(([kind, k]) => ({ kind, enabled: policy[k].enabled, afterHours: policy[k].afterHours, maxAttempts: policy[k].maxAttempts })),
+      rules: (Object.entries(OBLIGATION_FOLLOW_UP) as [ObligationKind, keyof typeof policy][]).map(([kind, k]) => ({ kind, enabled: policy[k].enabled, afterHours: policy[k].afterHours, maxAttempts: policy[k].maxAttempts, intervalHours: policy[k].intervalHours })),
     },
     trend: revenueTrend(weekEvidence, graph.business.timezone, now),
     unavailable,

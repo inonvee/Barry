@@ -3,7 +3,8 @@
 import Link from "next/link";
 import type { OwnerWorkspace } from "@/lib/owner/service";
 import type { ActivityItem, Workflow } from "@/lib/owner/control-room";
-import type { OwnerCommand } from "@/lib/owner/command";
+import type { OwnerReply } from "@/lib/owner/command-service";
+import { STATE_WORDS, type OwnerOperationView } from "@/lib/owner/operation-model";
 import type { Intervention } from "@/lib/owner/interventions";
 import { hasMoney } from "@/lib/format/money";
 import type { Money } from "@/lib/owner/revenue";
@@ -136,76 +137,66 @@ export function MotionStrip({ ws, onTab, extra }: { ws: OwnerWorkspace; onTab?: 
 }
 
 /**
- * BARRY's reply to an owner command — what the command maps to in what BARRY really does. Questions
- * never reach here (they go to Ask BARRY). Nothing here executes; the only buttons are navigation to
- * the real place the owner acts.
+ * BARRY's reply to an owner command — rendered from the SERVER's reply (the same reply the WhatsApp
+ * owner channel sends): text, exact actions (resolved server-side against stored, single-use prompts),
+ * links, and the live operation when one was started. Nothing is decided in the browser.
  */
-export function CommandReply({ cmd, ws, onIntervention, onClose }: { cmd: OwnerCommand; ws: OwnerWorkspace; onIntervention: (id: string) => void; onClose: () => void }) {
-  const i = cmd.intent;
-  const body = (() => {
-    switch (i.kind) {
-      case "operation": {
-        const rule = i.rule ? `after ${i.rule.afterHours ? `${i.rule.afterHours}h` : "the moment it's due"}, up to ${plural(i.rule.maxAttempts, "attempt")} each` : "";
-        if (i.state === "not_in_plan")
-          return (
-            <>
-              <p>Proactive follow-ups aren&apos;t in your plan, so BARRY won&apos;t contact customers about this on its own. Nothing was started.</p>
-              <Link href="/owner/settings#plan" className="mt-3 inline-flex items-center gap-1 text-[13px] font-medium text-o-accent hover:underline">See your plan <Icon name="chevron" size={14} /></Link>
-            </>
-          );
-        if (i.state === "off") return <p>Your follow-up rules turn this off, so BARRY doesn&apos;t do it. Nothing was started — the BARRY team can turn the rule on with you.</p>;
-        return (
-          <>
-            <p>
-              This already runs under your follow-up rule{rule ? ` — ${rule}` : ""}. BARRY only contacts customers who are already in a conversation with you, inside your limits, and counts a result only when the records verify it.
-              {i.live ? " Here it is, live:" : ` Nothing qualifies right now — BARRY starts the moment one appears.`}
-            </p>
-            {i.live && (
-              <div className="mt-4">
-                <WorkflowFlow w={i.live} />
-              </div>
-            )}
-          </>
-        );
-      }
-      case "decide": {
-        const item = i.interventionId ? ws.interventions.find((x) => x.id === i.interventionId) : undefined;
-        return item ? (
-          <>
-            <p>Decisions are made on the card with the exact terms in front of you — BARRY never approves from a sentence.</p>
-            <button type="button" onClick={() => onIntervention(item.id)} className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-o-warn-bg px-3 py-2 text-[13px] font-medium text-o-warn ring-1 ring-inset ring-o-warn-line hover:brightness-110">
-              <Icon name="shield" size={14} /> Open the decision: {item.customer}
-            </button>
-          </>
-        ) : (
-          <p>{ws.interventions.length ? "Tell me which customer — or open Actions to see every decision waiting." : "Nothing is waiting for your decision right now."}</p>
-        );
-      }
-      case "teach":
-        return (
-          <>
-            <p>That&apos;s a rule. Rules go through Train BARRY: BARRY reads it, you see exactly how it will be applied, and only then does it take effect. Nothing changed yet.</p>
-            <Link href={`/owner/train?rule=${encodeURIComponent(cmd.text)}#teach-rule`} className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-o-violet/15 px-3 py-2 text-[13px] font-medium text-o-violet ring-1 ring-inset ring-o-violet/30 hover:brightness-110">
-              <Icon name="book" size={14} /> Teach this rule
-            </Link>
-          </>
-        );
-      case "unsupported":
-        return <p>{i.reason} Nothing was started.</p>;
-      default:
-        return null;
-    }
-  })();
+export function CommandReply({ text, reply, busy, onAction, onClose }: { text: string; reply: OwnerReply; busy?: boolean; onAction: (actionId: string) => void; onClose: () => void }) {
+  const running = reply.operation && (reply.operation.derivedState === "running" || reply.operation.derivedState === "waiting_on_customers");
   return (
     <div className="o-rise mt-4 flex gap-3" role="status" aria-live="polite">
-      <BarryOrb size={30} state={i.kind === "operation" && i.state === "running" && i.live?.open ? "working" : "idle"} />
+      <BarryOrb size={30} state={running ? "working" : "idle"} />
       <div className="min-w-0 flex-1 rounded-2xl rounded-tl-md bg-o-surface/80 px-4 py-3.5 text-[14px] leading-6 text-o-ink-2 ring-1 ring-inset ring-o-line">
         <p className="mb-1.5 flex items-center justify-between gap-2 text-[12px] text-o-faint">
-          <span className="truncate">“{cmd.text}”</span>
+          <span className="truncate">“{text}”</span>
           <button type="button" onClick={onClose} aria-label="Dismiss" className="rounded-md p-1 hover:bg-o-sunken hover:text-o-ink"><Icon name="close" size={14} /></button>
         </p>
-        {body}
+        <p className="whitespace-pre-wrap">{reply.text}</p>
+        {reply.operation && (
+          <div className="mt-4">
+            <OperationFlow op={reply.operation} />
+          </div>
+        )}
+        {(reply.actions?.length || reply.links?.length) ? (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {reply.actions?.map((a) => (
+              <button key={a.id} type="button" disabled={busy} onClick={() => onAction(a.id)} className={`inline-flex min-h-10 items-center rounded-xl px-4 text-[13.5px] font-semibold transition disabled:opacity-50 ${/approve|start/i.test(a.title) ? "bg-o-accent text-white hover:brightness-110" : "bg-o-surface text-o-ink ring-1 ring-inset ring-o-line-strong hover:ring-o-accent/50"}`}>
+                {a.title}
+              </button>
+            ))}
+            {reply.links?.map((l) => (
+              <Link key={l.href} href={l.href} className="inline-flex min-h-10 items-center gap-1 rounded-xl px-3 text-[13px] font-medium text-o-accent hover:underline">
+                {l.label} <Icon name="chevron" size={14} />
+              </Link>
+            ))}
+          </div>
+        ) : null}
       </div>
+    </div>
+  );
+}
+
+const SOURCE_WORDS = { web: "From the command bar", whatsapp: "From WhatsApp", voice: "By voice" } as const;
+
+/** An operation an owner command started, as a live flow: cohort → contacted → replied / purchased (verified). */
+export function OperationFlow({ op, text }: { op: OwnerOperationView; text?: string }) {
+  const p = op.progress;
+  const live = op.derivedState === "running" || op.derivedState === "waiting_on_customers";
+  const branches: FlowBranch[] = [
+    { label: "Purchased", value: p.purchased, tone: p.purchased ? "ok" : "muted", sub: hasMoney(p.recovered) ? `${formatMoney(p.recovered)} recovered (verified)` : undefined },
+    { label: "Replied · still talking", value: p.stillTalking, tone: p.stillTalking ? "accent" : "muted", live: live && p.stillTalking > 0 },
+    { label: "Contacted · waiting", value: p.waiting, tone: p.waiting ? "accent" : "muted", live: live && p.waiting > 0 },
+    ...(p.excluded ? [{ label: p.alreadyDone ? `Not contacted (${p.alreadyDone} already done)` : "Not contacted", value: p.excluded, tone: "muted" as const }] : []),
+    ...(p.failed ? [{ label: "Failed", value: p.failed, tone: "warn" as const }] : []),
+  ];
+  const stateChip = <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${live ? "bg-o-ok-bg text-o-ok ring-o-ok-line" : op.derivedState === "blocked" || op.derivedState === "failed" ? "bg-o-bad-bg text-o-bad ring-o-bad-line" : "bg-o-neutral-bg text-o-muted ring-o-line"}`}>{STATE_WORDS[op.derivedState]}</span>;
+  return (
+    <div id={`op-${op.id}`} className="scroll-mt-24">
+      <p className="mb-2 flex flex-wrap items-center gap-x-2 text-[11.5px] font-semibold uppercase tracking-[0.16em] text-o-violet">
+        <Icon name={op.requestedBy.source === "whatsapp" ? "chat" : "bolt"} size={13} /> Owner command · {SOURCE_WORDS[op.requestedBy.source]}
+        {text && <span className="truncate font-normal normal-case tracking-normal text-o-muted">“{text}”</span>}
+      </p>
+      <LiveFlow icon={FLOW_ICON[op.workflow] ?? "bolt"} title={op.title} state={stateChip} sub={`${op.scope.label} · ${p.contacted} contacted · ${p.replied} replied`} source={p.cohort} sourceLabel="customers found" branches={branches} note={[op.blockedReason, op.stoppedAt ? `Stopped by you — messages already sent stay sent.` : "", p.test ? `${plural(p.test, "customer")} in test mode — never counted as money.` : ""].filter(Boolean).join(" ") || undefined} />
     </div>
   );
 }

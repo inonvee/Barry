@@ -230,7 +230,14 @@ export type OperatorRecordKind =
   | "commercial_request"
   | "cost_record"
   | "model_usage"
-  | "support_time";
+  | "support_time"
+  // Owner command channel (0016)
+  | "owner_identity"
+  | "owner_link_code"
+  | "owner_command"
+  | "owner_operation"
+  | "owner_prompt"
+  | "owner_brief";
 
 export type OperatorRecord = {
   id: string;

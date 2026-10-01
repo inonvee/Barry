@@ -10,7 +10,8 @@ import type { Act } from "@/components/owner/operating";
 import type { OwnerWorkspace } from "@/lib/owner/service";
 import type { Intervention, InterventionAction } from "@/lib/owner/interventions";
 import { TABS, type Tab } from "@/components/owner/views/shared";
-import { TodayView } from "@/components/owner/views/Today";
+import { TodayView, type RunCommand } from "@/components/owner/views/Today";
+import type { OwnerReply } from "@/lib/owner/command-service";
 import { InboxView } from "@/components/owner/views/Inbox";
 import { MoneyView } from "@/components/owner/views/Money";
 import { AskView } from "@/components/owner/views/Ask";
@@ -151,6 +152,23 @@ function OwnerDashboard() {
     }
   };
 
+  // The command bar → the same owner command service the WhatsApp owner channel uses; then refresh.
+  const runCommand: RunCommand = async (body) => {
+    const res = await call<{ reply: OwnerReply }>("/api/owner/command", { body: { businessId, requestId: crypto.randomUUID(), ...body } });
+    await load();
+    return res.reply;
+  };
+
+  // Deep links from WhatsApp: ?operation=<id> scrolls to that live operation; ?intervention=<id> to that decision.
+  const wantOperation = params.get("operation");
+  const wantIntervention = params.get("intervention");
+  useEffect(() => {
+    if (!ws) return;
+    const id = wantOperation ? `op-${wantOperation}` : null;
+    const target = id ? document.getElementById(id) : wantIntervention ? document.querySelector(`[data-intervention="${CSS.escape(wantIntervention)}"]`) : null;
+    if (target) setTimeout(() => target.scrollIntoView({ behavior: "smooth", block: "center" }), 120);
+  }, [ws, wantOperation, wantIntervention]);
+
   const queue = ws?.interventions ?? [];
   const badge = { today: queue.length || undefined, actions: queue.length || undefined, inbox: ws?.conversations.filter((c) => c.status === "needs_you").length || undefined };
   const presence = ws ? ownerPresence(ws) : undefined;
@@ -195,10 +213,10 @@ function OwnerDashboard() {
         </div>
       )}
       {!authorized && api.session && <p className="mt-2 text-sm text-o-muted">Once you&apos;re signed in, this is where you see what BARRY is doing, what needs you and where money moves.</p>}
-      {ws && tab === "today" && <TodayView ws={ws} act={act} busyId={busyId} loading={loading} onOpen={goToConversation} onIntervention={goToIntervention} onTab={setTab} onAsk={(q) => setTab("ask", null, q)} />}
+      {ws && tab === "today" && <TodayView ws={ws} act={act} busyId={busyId} loading={loading} onOpen={goToConversation} onIntervention={goToIntervention} onTab={setTab} onCommand={runCommand} />}
       {ws && tab === "inbox" && <InboxView ws={ws} api={api} act={act} busyId={busyId} open={openConversation} setOpen={goToConversation} onIntervention={goToIntervention} loadedAt={loadedAt} />}
       {ws && tab === "money" && <MoneyView ws={ws} range={range} setRange={setRange} onOpen={goToConversation} onIntervention={goToIntervention} loadedAt={loadedAt} />}
-      {ws && tab === "ask" && <AskView key={params.get("q") ?? ""} api={api} ws={ws} onIntervention={goToIntervention} onOpen={goToConversation} initialQuestion={params.get("q") ?? ""} />}
+      {ws && tab === "ask" && <AskView key={params.get("q") ?? ""} onCommand={runCommand} ws={ws} onIntervention={goToIntervention} onOpen={goToConversation} initialQuestion={params.get("q") ?? ""} />}
       {ws && tab === "actions" && <ActionsView ws={ws} act={act} busyId={busyId} onOpen={goToConversation} />}
     </OwnerShell>
   );

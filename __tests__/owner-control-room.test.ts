@@ -140,30 +140,21 @@ describe("the control room renders from a real workspace", () => {
 });
 
 describe("the living interface: commands, presence and story come from records", () => {
-  const operator = (included = true, enabled = true) => ({ included, rules: [{ kind: "abandoned_checkout_recovery" as const, enabled, afterHours: 4, maxAttempts: 1 }, { kind: "unpaid_payment_followup" as const, enabled: true, afterHours: 24, maxAttempts: 2 }] });
+  const operator = (included = true, enabled = true) => ({ included, rules: [{ kind: "abandoned_checkout_recovery" as const, enabled, afterHours: 4, maxAttempts: 1, intervalHours: 72 }, { kind: "unpaid_payment_followup" as const, enabled: true, afterHours: 24, maxAttempts: 2, intervalHours: 48 }] });
   const base = { obligations: [ob({ kind: "abandoned_checkout_recovery", attempts: 1, status: "waiting_on_customer" })], interventions: [] as OwnerWorkspace["interventions"] };
 
-  it("an operation command maps to the live workflow and whether it runs — it never starts anything", () => {
-    const c = interpretCommand("Recover today's abandoned carts", { ...base, operator: operator() });
-    expect(c.intent).toMatchObject({ kind: "operation", workflow: "abandoned_checkout_recovery", state: "running", rule: { afterHours: 4, maxAttempts: 1 } });
-    expect(c.intent.kind === "operation" && c.intent.live?.waiting).toBe(1);
-    expect(interpretCommand("Recover abandoned carts", { ...base, operator: operator(false) }).intent).toMatchObject({ kind: "operation", state: "not_in_plan" });
-    expect(interpretCommand("Recover abandoned carts", { ...base, operator: operator(true, false) }).intent).toMatchObject({ kind: "operation", state: "off" });
-    expect(interpretCommand("Follow up with unpaid orders", { ...base, operator: operator() }).intent).toMatchObject({ kind: "operation", workflow: "unpaid_payment_followup" });
-  });
-
-  it("questions go to Ask, rules to Train BARRY, decisions to the card, campaigns are refused; the same object for WhatsApp", () => {
+  it("commands interpret to semantic intents; the plan / rule state is decided by the service, not the words", () => {
+    expect(interpretCommand("Recover today's abandoned carts").intent).toEqual({ kind: "operation_request", workflow: "abandoned_checkout_recovery", scope: "today" });
+    expect(interpretCommand("Follow up with unpaid orders").intent).toMatchObject({ kind: "operation_request", workflow: "unpaid_payment_followup", scope: "open" });
+    expect(interpretCommand("Tell me who needs me").intent).toEqual({ kind: "query", topic: "needs_you" });
+    expect(interpretCommand("Check customers waiting more than 2 hours").intent).toMatchObject({ kind: "query", topic: "waiting_customers" });
+    expect(interpretCommand("How many abandoned carts today?").intent).toMatchObject({ kind: "query", topic: "operation", workflow: "abandoned_checkout_recovery" });
+    expect(interpretCommand("Don't offer more than 5% today").intent).toEqual({ kind: "policy_change_request", text: "Don't offer more than 5% today" });
+    expect(interpretCommand("Approve it").intent).toEqual({ kind: "approval_response", decision: "approve" });
+    expect(interpretCommand("Run a campaign to all customers").intent.kind).toBe("unsupported");
+    expect(interpretCommand("Recover abandoned carts", "whatsapp")).toMatchObject({ source: "whatsapp", intent: interpretCommand("Recover abandoned carts", "web").intent });
     const ws = { ...base, operator: operator() };
-    expect(interpretCommand("Tell me who needs me", ws).intent.kind).toBe("ask");
-    expect(interpretCommand("Check customers waiting more than 2 hours", ws).intent.kind).toBe("ask");
-    expect(interpretCommand("How many abandoned carts today?", ws).intent.kind).toBe("ask");
-    expect(interpretCommand("Don't offer more than 5% today", ws).intent).toEqual({ kind: "teach", text: "Don't offer more than 5% today" });
-    expect(interpretCommand("Approve it", ws).intent).toEqual({ kind: "decide" });
-    expect(interpretCommand("Run a campaign to all customers", ws).intent.kind).toBe("unsupported");
-    const web = interpretCommand("Recover abandoned carts", ws, "web");
-    const wa = interpretCommand("Recover abandoned carts", ws, "whatsapp");
-    expect(wa.intent).toEqual(web.intent);
-    expect(wa.source).toBe("whatsapp");
+    expect(commandSuggestions(ws)).toContain("Recover abandoned checkouts");
     expect(commandSuggestions({ ...ws, operator: operator(false) })).not.toContain("Recover abandoned checkouts");
   });
 

@@ -1,18 +1,15 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import type { OwnerWorkspace } from "@/lib/owner/service";
-import type { OwnerAnswerLinks } from "@/lib/owner/ask";
-import type { useOwnerApi } from "../useOwnerApi";
+import type { OwnerReply } from "@/lib/owner/command-service";
+import type { RunCommand } from "./Today";
 import { Empty } from "../ui";
-import { interpretCommand, type OwnerCommand } from "@/lib/owner/command";
 import { ownerPresence } from "@/lib/owner/presence-model";
 import { CommandReply } from "./live";
 import { BarryOrb, CommandBar, Hero, Icon, IconTile, Panel, PanelHeader, type IconName } from "../kit";
 import { WhatsAppCard } from "../OwnerShell";
 
-type Api = ReturnType<typeof useOwnerApi>;
 
 const PROMPTS: { q: string; icon: IconName; hint: string }[] = [
   { q: "What should I focus on today?", icon: "flag", hint: "Priorities from your records" },
@@ -23,18 +20,17 @@ const PROMPTS: { q: string; icon: IconName; hint: string }[] = [
   { q: "What can you do right now?", icon: "barry", hint: "Capabilities and limits" },
 ];
 
-type Answer = { q: string; a: string; note?: string; source: string; links?: OwnerAnswerLinks };
+type Exchange = { q: string; reply: OwnerReply };
 
 /**
- * ASK BARRY — business intelligence that leads to action. Answers come only from this business's
- * records; each answer links to the exact decision, conversation or setup step it talks about. BARRY
- * can't change anything from here — the only actions offered are ones the runtime already supports.
+ * ASK BARRY — ask or direct BARRY in words. Every question and instruction goes through the SAME owner
+ * command service as the WhatsApp owner channel: answers come only from this business's records,
+ * operations are grounded before anything runs, decisions run only against the exact request shown.
  */
-export function AskView({ api, ws, onIntervention, onOpen, initialQuestion }: { api: Api; ws: OwnerWorkspace; onIntervention: (id: string) => void; onOpen: (id: string) => void; initialQuestion?: string }) {
+export function AskView({ onCommand, ws, initialQuestion }: { onCommand: RunCommand; ws: OwnerWorkspace; onIntervention?: (id: string) => void; onOpen?: (id: string) => void; initialQuestion?: string }) {
   const [q, setQ] = useState(initialQuestion ?? "");
   const [busy, setBusy] = useState(false);
-  const [history, setHistory] = useState<Answer[]>([]);
-  const [cmd, setCmd] = useState<OwnerCommand | null>(null);
+  const [history, setHistory] = useState<Exchange[]>([]);
   const presence = ownerPresence(ws);
   const asked = useRef(false);
   useEffect(() => {
@@ -42,20 +38,20 @@ export function AskView({ api, ws, onIntervention, onOpen, initialQuestion }: { 
     // The guard is set when the question actually fires, so a cancelled timer (StrictMode re-run) still asks once.
     const t = setTimeout(() => {
       asked.current = true;
-      void ask(initialQuestion);
+      void ask({ text: initialQuestion }, initialQuestion);
     }, 0);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialQuestion]);
-  const ask = async (question: string) => {
-    if (!question.trim()) return;
+  const ask = async (body: { text?: string; actionId?: string }, label: string) => {
+    if (!body.text?.trim() && !body.actionId) return;
     setBusy(true);
     try {
-      const res = await api.call<{ answer: string; source: string; note?: string; links?: OwnerAnswerLinks }>("/api/owner/ask", { body: { businessId: api.businessId, question } });
-      setHistory((h) => [{ q: question, a: res.answer, note: res.note, source: res.source, links: res.links }, ...h]);
+      const reply = await onCommand(body);
+      setHistory((h) => [{ q: label, reply }, ...h]);
       setQ("");
     } catch (e) {
-      setHistory((h) => [{ q: question, a: e instanceof Error ? e.message : "Something went wrong", source: "error" }, ...h]);
+      setHistory((h) => [{ q: label, reply: { text: e instanceof Error ? e.message : "Something went wrong", intent: "unsupported" } }, ...h]);
     } finally {
       setBusy(false);
     }
@@ -67,29 +63,12 @@ export function AskView({ api, ws, onIntervention, onOpen, initialQuestion }: { 
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
         <div className="flex flex-col gap-4">
-          <CommandBar
-            value={q}
-            onChange={setQ}
-            busy={busy}
-            state={presence.state}
-            placeholder="Ask BARRY, or tell him what to do…"
-            onSubmit={(v) => {
-              const c = interpretCommand(v, ws, "web");
-              if (c.intent.kind === "ask") {
-                setCmd(null);
-                void ask(c.text);
-              } else {
-                setCmd(c);
-                setQ("");
-              }
-            }}
-          />
-          {cmd && <CommandReply cmd={cmd} ws={ws} onIntervention={onIntervention} onClose={() => setCmd(null)} />}
+          <CommandBar value={q} onChange={setQ} busy={busy} state={presence.state} placeholder="Ask BARRY, or tell him what to do…" onSubmit={(v) => void ask({ text: v }, v)} />
 
           {history.length === 0 ? (
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               {PROMPTS.map((p) => (
-                <button key={p.q} onClick={() => void ask(p.q)} disabled={busy} className="o-panel flex items-center gap-3 rounded-2xl p-3.5 text-left transition hover:shadow-o-glow disabled:opacity-60">
+                <button key={p.q} onClick={() => void ask({ text: p.q }, p.q)} disabled={busy} className="o-panel flex items-center gap-3 rounded-2xl p-3.5 text-left transition hover:shadow-o-glow disabled:opacity-60">
                   <IconTile name={p.icon} tone="accent" size={34} />
                   <span className="min-w-0">
                     <span className="block text-[14px] font-medium text-o-ink">{p.q}</span>
@@ -101,7 +80,7 @@ export function AskView({ api, ws, onIntervention, onOpen, initialQuestion }: { 
           ) : (
             <div className="flex flex-wrap gap-1.5">
               {PROMPTS.map((p) => (
-                <button key={p.q} className="rounded-full bg-o-sunken px-3 py-1.5 text-[12.5px] text-o-ink-2 ring-1 ring-inset ring-o-line transition hover:text-o-ink" onClick={() => void ask(p.q)} disabled={busy}>
+                <button key={p.q} className="rounded-full bg-o-sunken px-3 py-1.5 text-[12.5px] text-o-ink-2 ring-1 ring-inset ring-o-line transition hover:text-o-ink" onClick={() => void ask({ text: p.q }, p.q)} disabled={busy}>
                   {p.q}
                 </button>
               ))}
@@ -116,37 +95,11 @@ export function AskView({ api, ws, onIntervention, onOpen, initialQuestion }: { 
             </Panel>
           )}
 
-          <ul className="flex flex-col gap-3">
+          <ul className="flex flex-col gap-1">
             {history.map((h, i) => (
-              <Panel key={i} as="li" className="p-4 md:p-5">
-                <p className="flex items-center gap-2 text-[12.5px] font-medium text-o-muted">
-                  <Icon name="chat" size={14} /> {h.q}
-                </p>
-                <p className="mt-2.5 whitespace-pre-wrap text-[15px] leading-7 text-o-ink">{h.a}</p>
-                {h.note && <p className="mt-2 text-[12px] text-o-faint">{h.note}</p>}
-                {h.links && (h.links.interventions.length > 0 || h.links.opportunities.length > 0 || h.links.steps.length > 0) && (
-                  <div className="mt-4 border-t border-o-line pt-3">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-o-faint">Take it from here</p>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {h.links.interventions.map((l) => (
-                        <button key={l.id} className="inline-flex items-center gap-1.5 rounded-xl bg-o-warn-bg px-3 py-2 text-[13px] font-medium text-o-warn ring-1 ring-inset ring-o-warn-line transition hover:brightness-110" onClick={() => onIntervention(l.id)}>
-                          <Icon name="shield" size={14} /> Decide: {l.customer}
-                        </button>
-                      ))}
-                      {h.links.opportunities.map((l) => (
-                        <button key={l.id} className="inline-flex items-center gap-1.5 rounded-xl bg-o-sunken px-3 py-2 text-[13px] font-medium text-o-ink-2 ring-1 ring-inset ring-o-line transition hover:text-o-ink" onClick={() => onOpen(l.conversationId)}>
-                          <Icon name="money" size={14} /> {l.kind}: {l.customer}
-                        </button>
-                      ))}
-                      {h.links.steps.map((l) => (
-                        <Link key={l.id} href="/owner/train" className="inline-flex items-center gap-1.5 rounded-xl bg-o-violet/15 px-3 py-2 text-[13px] font-medium text-o-violet ring-1 ring-inset ring-o-violet/30 transition hover:brightness-110">
-                          <Icon name="lock" size={14} /> Unlock: {l.title}
-                        </Link>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </Panel>
+              <li key={`${history.length - i}`}>
+                <CommandReply text={h.q} reply={h.reply} busy={busy} onAction={(id) => void ask({ actionId: id }, h.q)} onClose={() => setHistory((x) => x.filter((_, j) => j !== i))} />
+              </li>
             ))}
           </ul>
           {history.length === 0 && <p className="text-[12.5px] text-o-faint">BARRY answers from the same records you see on Today, Inbox and Money — it can&apos;t change anything from here.</p>}

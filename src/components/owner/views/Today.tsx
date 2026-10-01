@@ -5,13 +5,14 @@ import { useState } from "react";
 import type { OwnerWorkspace } from "@/lib/owner/service";
 import { activityByHour, activityFeed, nowWorking, workflows } from "@/lib/owner/control-room";
 import { ownerPresence, PRESENCE_WORD } from "@/lib/owner/presence-model";
-import { commandSuggestions, interpretCommand, type OwnerCommand } from "@/lib/owner/command";
+import { commandSuggestions } from "@/lib/owner/command";
+import type { OwnerReply } from "@/lib/owner/command-service";
 import { hasMoney } from "@/lib/format/money";
 import { formatMoney, StateNotice } from "../ui";
 import type { Act } from "../operating";
 import { BarryOrb, Bars, CommandBar, HeaderLink, Icon, LiveDot, StageTitle, type IconName } from "../kit";
 import { WhatsAppCard } from "../OwnerShell";
-import { ActivityStream, CommandReply, MotionStrip, NeedsYouFloat, WorkflowFlow } from "./live";
+import { ActivityStream, CommandReply, MotionStrip, NeedsYouFloat, OperationFlow, WorkflowFlow } from "./live";
 import { greeting, plural, type Tab } from "./shared";
 
 /**
@@ -23,7 +24,10 @@ import { greeting, plural, type Tab } from "./shared";
 const WORDS = ["Nothing", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"];
 const count = (n: number) => WORDS[n] ?? String(n);
 
-const SUGGESTION_ICON: Record<string, IconName> = { "Who needs me?": "shield", "Recover abandoned checkouts": "cart", "Follow up unpaid payment links": "money", "Where is money stuck?": "receipt", "What happened today?": "pulse" };
+const SUGGESTION_ICON: Record<string, IconName> = { "Who needs me?": "shield", "Recover abandoned checkouts": "cart", "Follow up unpaid payment links": "money", "What are you working on?": "pulse", "How much did we make today?": "receipt" };
+
+/** The command bar's round trip: the SAME owner command service the WhatsApp channel uses. */
+export type RunCommand = (body: { text?: string; actionId?: string }) => Promise<OwnerReply>;
 
 /** The three story lines, from the records. */
 export function todayStory(ws: OwnerWorkspace) {
@@ -45,9 +49,10 @@ export function todayStory(ws: OwnerWorkspace) {
   return { did, working: `${working} ${needLine}`, things, needs };
 }
 
-export function TodayView({ ws, act, busyId, loading, onOpen, onIntervention, onTab, onAsk }: { ws: OwnerWorkspace; act: Act; busyId: string | null; loading: boolean; onOpen: (id: string) => void; onIntervention: (id?: string) => void; onTab: (t: Tab) => void; onAsk?: (q: string) => void }) {
+export function TodayView({ ws, act, busyId, loading, onOpen, onIntervention, onTab, onCommand }: { ws: OwnerWorkspace; act: Act; busyId: string | null; loading: boolean; onOpen: (id: string) => void; onIntervention: (id?: string) => void; onTab: (t: Tab) => void; onCommand?: RunCommand }) {
   const [text, setText] = useState("");
-  const [cmd, setCmd] = useState<OwnerCommand | null>(null);
+  const [exchange, setExchange] = useState<{ text: string; reply: OwnerReply } | null>(null);
+  const [sending, setSending] = useState(false);
   const ai = ws.health.ai;
   const presence = ownerPresence(ws);
   const story = todayStory(ws);
@@ -58,14 +63,23 @@ export function TodayView({ ws, act, busyId, loading, onOpen, onIntervention, on
   const setupSteps = ws.capabilities.steps.filter((s) => s.gate !== "customer_traffic").slice(0, 2);
   const liveState = lines.some((l) => l.state === "working") ? "live" : lines.length ? "waiting" : "off";
 
-  const submit = (value: string) => {
-    const c = interpretCommand(value, ws, "web");
-    if (c.intent.kind === "ask") {
-      if (onAsk) onAsk(c.text);
-      setCmd(null);
-    } else setCmd(c);
-    setText("");
+  const send = async (body: { text?: string; actionId?: string }, label: string) => {
+    if (!onCommand) return;
+    setSending(true);
+    try {
+      setExchange({ text: label, reply: await onCommand(body) });
+    } catch (e) {
+      setExchange({ text: label, reply: { text: e instanceof Error ? e.message : "Something went wrong — nothing was changed.", intent: "unsupported" } });
+    } finally {
+      setSending(false);
+    }
   };
+  const submit = (value: string) => {
+    setText("");
+    void send({ text: value }, value);
+  };
+  const ownerOps = ws.ownerOperations.filter((o) => o.derivedState !== "blocked" && (o.derivedState === "running" || o.derivedState === "waiting_on_customers" || o.derivedState === "proposed" || Date.parse(o.updatedAt) >= Date.parse(ws.window.since)));
+  const commandText = (id: string) => ws.ownerCommands.find((c) => c.operationId === id)?.text;
 
   return (
     <div className="flex flex-col gap-8 md:gap-10">
@@ -101,11 +115,12 @@ export function TodayView({ ws, act, busyId, loading, onOpen, onIntervention, on
           value={text}
           onChange={setText}
           onSubmit={submit}
+          busy={sending}
           state={presence.state}
           suggestions={commandSuggestions(ws).map((s) => ({ text: s, icon: SUGGESTION_ICON[s] ?? "spark" }))}
           onSuggestion={submit}
         />
-        {cmd && <CommandReply cmd={cmd} ws={ws} onIntervention={(id) => onIntervention(id)} onClose={() => setCmd(null)} />}
+        {exchange && <CommandReply text={exchange.text} reply={exchange.reply} busy={sending} onAction={(id) => void send({ actionId: id }, exchange.text)} onClose={() => setExchange(null)} />}
       </section>
 
       {(ai.status === "unavailable" || ai.status === "degraded") && (
@@ -133,6 +148,12 @@ export function TodayView({ ws, act, busyId, loading, onOpen, onIntervention, on
           )}
 
           <div className="mt-6 flex flex-col gap-8">
+            {ownerOps.map((o) => (
+              <div key={o.id}>
+                <OperationFlow op={o} text={commandText(o.id)} />
+                <div className="o-hairline mt-8" />
+              </div>
+            ))}
             {flows.length > 0 ? (
               flows.slice(0, 2).map((f, i) => (
                 <div key={f.kind}>

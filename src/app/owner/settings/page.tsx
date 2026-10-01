@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Suspense, useEffect, useState } from "react";
 import { useOwnerApi } from "@/components/owner/useOwnerApi";
 import { OwnerShell, WhatsAppCard } from "@/components/owner/OwnerShell";
+import { WhatsAppLink } from "@/components/owner/WhatsAppLink";
 import { Pill, Skeleton, StateNotice, btn, type Tone } from "@/components/owner/ui";
 import { Hero, IconTile, Panel, PanelHeader, type IconName } from "@/components/owner/kit";
 import type { ConnectionView } from "@/lib/connections/status";
@@ -85,6 +86,8 @@ function SettingsPage() {
               </Panel>
               <WhatsAppCard channels={channels} wide />
             </div>
+
+            <WhatsAppLink api={api} onChanged={() => void call<OwnerChannels>(`/api/owner/channels?businessId=${encodeURIComponent(businessId)}`).then(setChannels).catch(() => undefined)} />
 
             <div id="plan" className="flex scroll-mt-24 flex-col gap-5">
               <PlanAndValue api={api} />

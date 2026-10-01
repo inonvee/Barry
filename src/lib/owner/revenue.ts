@@ -226,7 +226,7 @@ function ledgerOutcome(e: LedgerEntry): Omit<OutcomeEvent, "at" | "conversationI
   if (e.effect === "write.blocked") return { kind: "blocked", label: `Blocked by the customer's own limits: ${e.describes}`, ...(typeof e.outcome?.total === "number" ? { amount: e.outcome.total } : {}), evidence: "final-write check" };
   if (e.status === "failed" && e.operation !== "understand") return { kind: "failed", label: `Didn't go through: ${e.describes}`, evidence: "system result" };
   // A confirmed consequential operation on the business's own system that produced a reference (a case, a ticket…).
-  if (e.status === "effected" && e.reference && !/^(booking|order|payment|cart|availability|stock|catalog|handoff)\./.test(e.effect) && !e.effect.endsWith(".read")) {
+  if (e.status === "effected" && e.reference && !/^(booking|order|payment|cart|availability|stock|catalog|handoff|followup)\./.test(e.effect) && !e.effect.endsWith(".read")) {
     return { kind: "case_created", label: `${e.describes}`, reference: e.reference, evidence: "confirmed by the business's system" };
   }
   return undefined;
