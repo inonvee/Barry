@@ -37,6 +37,11 @@ export function HqShell({ active, data, children }: { active: HqSurface; data: H
     ...data.businesses.map((b) => ({ id: `business:${b.id}`, kind: "business" as const, title: b.name, subtitle: "Business focus", href: `/hq/${encodeURIComponent(b.id)}`, status: b.status, keywords: [b.id] })),
     ...HQ_NAV.map((n) => ({ id: `surface:${n.id}`, kind: "surface" as const, title: n.label, href: n.href })),
     { id: "surface:ask", kind: "surface", title: "Ask HQ BARRY", href: "/hq/ask" },
+    { id: "surface:console", kind: "surface", title: "Conversation console", subtitle: "Every business, filtered", href: "/hq/console" },
+    { id: "surface:transactions", kind: "surface", title: "Transactions", subtitle: "Carts, payments, orders, bookings", href: "/hq/transactions" },
+    { id: "surface:approvals", kind: "surface", title: "Global approvals", href: "/hq/approvals" },
+    { id: "surface:connections", kind: "surface", title: "Connection health", href: "/hq/connections" },
+    { id: "surface:proposals", kind: "surface", title: "Change proposals", subtitle: "Ask HQ V2", href: "/hq/proposals" },
     { id: "surface:qa", kind: "surface", title: "QA tools", subtitle: "Scenario factory, test owner, reset", href: "/qa" },
   ];
   return (

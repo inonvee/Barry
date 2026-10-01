@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useOwnerApi } from "@/components/owner/useOwnerApi";
 import { OwnerShell } from "@/components/owner/OwnerShell";
+import { TrainBarry } from "@/components/owner/TrainBarry";
 import { Pill, Section, Skeleton, StateNotice, quiet, type Tone } from "@/components/owner/ui";
 import { SetupPlan } from "@/components/owner/train-plan";
 import type { getTrainingProfile } from "@/lib/owner/training";
@@ -179,6 +180,8 @@ export default function TrainBarryPage() {
             {r.next && <p className="mt-3 text-[13px] text-white/80">Next: {r.next.label} — {r.next.blockers.length} thing{r.next.blockers.length === 1 ? "" : "s"} left, all in the plan below.</p>}
           </section>
         )}
+
+        <TrainBarry api={api} />
 
         {a && (
           <>

@@ -29,6 +29,11 @@ export const HQ_SURFACES: SearchResult[] = [
   { id: "surface:barry", kind: "surface", title: "BARRY · capabilities", href: "/hq/barry" },
   { id: "surface:settings", kind: "surface", title: "Settings", href: "/hq/settings" },
   { id: "surface:ask", kind: "surface", title: "Ask HQ BARRY", href: "/hq/ask" },
+  { id: "surface:console", kind: "surface", title: "Conversation console", href: "/hq/console" },
+  { id: "surface:transactions", kind: "surface", title: "Transactions", href: "/hq/transactions" },
+  { id: "surface:approvals", kind: "surface", title: "Global approvals", href: "/hq/approvals" },
+  { id: "surface:connections", kind: "surface", title: "Connection health", href: "/hq/connections" },
+  { id: "surface:proposals", kind: "surface", title: "Change proposals", href: "/hq/proposals" },
 ];
 
 export function searchFleet(q: string, fleet: Fleet, limit = 10): SearchResult[] {

@@ -20,7 +20,7 @@ import { ActivityRow, Confirmation, Disclosure, EmptyState, FocusItem, FocusList
 export const bizHref = (id: string, view?: string) => `/hq/${encodeURIComponent(id)}${view ? `?view=${view}` : ""}`;
 
 export function healthStatus(b: Pick<BusinessStatus, "health" | "controls" | "model">): Status {
-  if (b.controls.pauseConsequentialWrites) return "blocked";
+  if (b.controls.pauseConsequentialWrites || b.controls.pausedBusiness) return "blocked";
   if (b.model.status === "unavailable" || b.model.status === "degraded") return "degraded";
   return b.health === "healthy" ? "ok" : b.health === "attention" ? "attention" : "blocked";
 }
@@ -49,7 +49,9 @@ export function MoneyLine({ money, empty = "none", status }: { money: Record<str
 
 /** One sentence that says where a business stands. */
 export function businessSentence(b: BusinessStatus): string {
+  if (b.controls.pausedBusiness) return `The business is paused${b.controls.reason ? ` — ${b.controls.reason}` : ""}.`;
   if (b.controls.pauseConsequentialWrites) return `Consequential actions are paused${b.controls.reason ? ` — ${b.controls.reason}` : ""}.`;
+  if (b.controls.safeMode) return `Safe mode: every consequential action waits for the owner${b.controls.reason ? ` — ${b.controls.reason}` : ""}.`;
   if (b.model.status === "unavailable") return "BARRY cannot understand customers right now.";
   if (b.incidents.high) return `${b.incidents.high} high incident${b.incidents.high === 1 ? "" : "s"} open; ${b.interventions} thing${b.interventions === 1 ? "" : "s"} wait on the owner.`;
   if (b.approvalsHeld) return `${b.approvalsHeld} held request${b.approvalsHeld === 1 ? "" : "s"} need a re-check by the owner.`;
@@ -152,6 +154,8 @@ export function ControlActions({ b }: { b: BusinessStatusDetail }) {
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2 text-[13px] text-[#475467]">
         <StatusPill status={c.mode === "live" ? "ok" : c.mode === "supervised" ? "info" : "simulator"}>{c.mode.toUpperCase()}</StatusPill>
+        {c.pausedBusiness && <StatusPill status="blocked">Business paused</StatusPill>}
+        {c.safeMode && <StatusPill status="attention">Safe mode</StatusPill>}
         {c.pauseConsequentialWrites ? <StatusPill status="blocked">Consequential actions paused</StatusPill> : <span>Consequential actions running</span>}
         {c.approvalRequiredForAll && <StatusPill status="attention">Approval for everything</StatusPill>}
         {c.pausedCapabilities.length > 0 && <span>Paused: {c.pausedCapabilities.join(", ")}</span>}
@@ -159,6 +163,12 @@ export function ControlActions({ b }: { b: BusinessStatusDetail }) {
       </div>
       {c.updatedAt && <p className="text-[12px] text-[#98a2b3]">Last change {formatLocal(c.updatedAt, b.timezone, new Date(Date.parse(c.updatedAt)))} by {c.updatedBy ?? "founder"} — {c.reason}</p>}
 
+      <Disclosure summary={c.pausedBusiness ? "Resume the business" : CONTROL_ACTIONS.pause_business.title}>
+        <Confirmation action={api} hidden={{ businessId: b.id, pausedBusiness: c.pausedBusiness ? "false" : "true" }} title={c.pausedBusiness ? "Resume the business" : CONTROL_ACTIONS.pause_business.title} scope={scope} effect={c.pausedBusiness ? "Channels answer again and consequential actions follow the business's own rules (and any other control still set)." : CONTROL_ACTIONS.pause_business.effect} reversibility={CONTROL_ACTIONS.pause_business.reversibility} submit={c.pausedBusiness ? "Resume the business" : "Pause the business"} danger={!c.pausedBusiness} />
+      </Disclosure>
+      <Disclosure summary={c.safeMode ? "Leave safe mode" : CONTROL_ACTIONS.safe_mode.title}>
+        <Confirmation action={api} hidden={{ businessId: b.id, safeMode: c.safeMode ? "false" : "true" }} title={c.safeMode ? "Leave safe mode" : CONTROL_ACTIONS.safe_mode.title} scope={scope} effect={c.safeMode ? "Consequential actions follow the business's own rules again; proactive messages resume under the follow-up rules." : CONTROL_ACTIONS.safe_mode.effect} reversibility={CONTROL_ACTIONS.safe_mode.reversibility} submit={c.safeMode ? "Leave safe mode" : "Enter safe mode"} />
+      </Disclosure>
       <Disclosure summary={c.pauseConsequentialWrites ? "Resume consequential actions" : CONTROL_ACTIONS.pause_writes.title}>
         <Confirmation action={api} hidden={{ businessId: b.id, pauseConsequentialWrites: c.pauseConsequentialWrites ? "false" : "true" }} title={c.pauseConsequentialWrites ? "Resume consequential actions" : CONTROL_ACTIONS.pause_writes.title} scope={scope} effect={c.pauseConsequentialWrites ? "Carts, checkouts, bookings, tickets and approval requests run again under the business's own rules." : CONTROL_ACTIONS.pause_writes.effect} reversibility={CONTROL_ACTIONS.pause_writes.reversibility} submit={c.pauseConsequentialWrites ? "Resume" : "Pause consequential actions"} danger={!c.pauseConsequentialWrites} />
       </Disclosure>

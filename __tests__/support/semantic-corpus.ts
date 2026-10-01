@@ -120,6 +120,25 @@ export const SEMANTIC_GROUPS: ParaphraseGroup[] = [
       en: ["got any black dresses?", "looking for a black dress for a wedding", "show me black dresses"],
     },
   },
+  {
+    // HEBREW COMMERCE SEMANTICS: one natural sentence carries category, colour, size, occasion and an ILS budget.
+    // The MODEL maps the words; the pipeline must keep budget (ILS), the size option and the supported facets,
+    // and reject nothing it can ground. Typo / slang variants are the same meaning.
+    id: "search_black_dress_M_wedding_under_400",
+    setup: "fresh",
+    meaning: "A black dress, size M, for a wedding, up to ₪400",
+    ir: commerce({ intent: "search", query: { text: "black dress wedding", category: "dress", attributes: { color: "black", occasion: "wedding" }, budget: { amount: 400, currency: "ILS" } }, variant: { size: "M" } }),
+    paraphrases: {
+      he: [
+        "היי אני מחפשת שמלה שחורה מידה M לחתונה עד 400 שקל",
+        "שמלה שחורה במידה M לחתונה, עד 400 ש\"ח",
+        "מחפשת שמלה שחורה M לחתונה עד 400שח",
+        "יש שמלה שחורה מידה מדיום לחתונה במקסימום 400?",
+        "שמלה שחורה בM לחתונה, לא יותר מ-400 שקל",
+      ],
+      en: ["looking for a black dress, size M, for a wedding, under 400 shekels", "black dress in M for a wedding up to ₪400", "a black wedding-guest dress, medium, max 400 ILS"],
+    },
+  },
 ];
 
 export const ALL_PARAPHRASES = SEMANTIC_GROUPS.flatMap((g) =>

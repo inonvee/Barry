@@ -4,6 +4,8 @@ import { assessPilotReadiness, type ReadinessCheck } from "@/lib/owner/readiness
 import { assessCapabilities } from "@/lib/owner/capabilities";
 import type { BusinessControls } from "./controls";
 import { currentRelease, type ReleaseState } from "@/lib/release/manifest";
+import { listSources } from "@/lib/learn-business/sources";
+import { listLearningChanges } from "@/lib/learn-business/relearn";
 
 /**
  * DESIGN-PARTNER LAUNCH CHECKLIST + GO-LIVE GATE — founder supervision of one business before broad
@@ -48,6 +50,13 @@ export async function launchChecklist(graph: BusinessGraph, input: { controls: B
     return { id, title, status: ready ? "ready" : "blocked", evidence: c.detail, ...(ready ? {} : { blocker: c.detail, nextAction: c.fix }), responsibility, requiredForSupervised };
   };
   const items: LaunchItem[] = [];
+  // Approved sources learned + facts/policies reviewed (Learn Business V1).
+  const sources = await listSources(graph.business.id).catch(() => []);
+  const changes = await listLearningChanges(graph.business.id).catch(() => []);
+  const fetched = sources.filter((s) => s.status === "fetched");
+  items.push({ id: "knowledge.sources", title: "Approved business sources learned", status: sources.length === 0 ? "unknown" : fetched.length ? "ready" : "blocked", evidence: sources.length ? `${fetched.length} of ${sources.length} approved source${sources.length === 1 ? "" : "s"} read (${sources.map((s) => s.type).join(", ")})` : "no source approved yet", ...(sources.length === 0 ? { nextAction: "The owner approves a website, catalog, document or facts in Train BARRY." } : fetched.length ? {} : { blocker: "No approved source could be read.", nextAction: "Fix or replace the source in Train BARRY." }), responsibility: "owner", requiredForSupervised: true });
+  const pendingConsequential = changes.filter((c) => c.decision === "pending" && c.impact === "consequential");
+  items.push({ id: "knowledge.reviewed", title: "Facts and policies reviewed (no consequential change waiting)", status: pendingConsequential.length ? "blocked" : "ready", evidence: pendingConsequential.length ? `${pendingConsequential.length} consequential change${pendingConsequential.length === 1 ? "" : "s"} wait for the owner` : "no consequential learned change is pending", ...(pendingConsequential.length ? { blocker: "Learned consequential changes are unreviewed.", nextAction: "The owner confirms or keeps the previous value in Train BARRY." } : {}), responsibility: "owner", requiredForSupervised: true });
   items.push(fromCheck("knowledge.offers", "Business understanding: offers / catalog", "owner", true));
   items.push(fromCheck("knowledge.policies", "Business understanding: policies & FAQs", "owner", true));
   items.push(fromCheck("platform.owner_access", "Owner access (own token, limited to this business)", "barry_team", true));
@@ -70,6 +79,10 @@ export async function launchChecklist(graph: BusinessGraph, input: { controls: B
   const verdictForThis = release.verdict && release.sha && release.verdict.sha === release.sha ? release.verdict : null;
   items.push({ id: "qa.live_proof", title: "QA / live proof for this build", status: verdictForThis ? (verdictForThis.verdict === "passed" ? "ready" : "blocked") : "unknown", evidence: verdictForThis ? `Work verdict ${verdictForThis.verdict} on ${verdictForThis.sha.slice(0, 7)} at ${verdictForThis.at}` : release.sha ? `no Work verdict recorded for ${release.sha.slice(0, 7)} (${release.nextProofRequired.length} live checks required)` : "no build sha in this environment", ...(verdictForThis?.verdict === "passed" ? {} : { nextAction: "Work runs the manifest's live checks; the founder records the verdict in HQ." }), responsibility: "founder", requiredForSupervised: true });
   items.push({ id: "founder.supervision", title: "Founder supervision mode set", status: input.controls.mode === "supervised" || input.controls.mode === "live" ? "ready" : "blocked", evidence: `mode ${input.controls.mode}${input.controls.updatedAt ? ` · set ${input.controls.updatedAt} by ${input.controls.updatedBy ?? "founder"} — ${input.controls.reason}` : " (default)"}`, ...(input.controls.mode === "simulator" ? { blocker: "Still in SIMULATOR mode.", nextAction: "Set the mode to SUPERVISED in Founder controls (with a reason)." } : {}), responsibility: "founder", requiredForSupervised: true });
+
+  // Blockers must be explicitly zero (or accepted): any OPEN blocker from the readiness assessment counts.
+  const openBlockers = readiness.next?.blockers.length ?? 0;
+  items.push({ id: "blockers.zero", title: "Readiness blockers explicitly zero or accepted", status: openBlockers === 0 ? "ready" : "blocked", evidence: openBlockers === 0 ? "no open readiness blocker" : `${openBlockers} open blocker${openBlockers === 1 ? "" : "s"}: ${readiness.next?.blockers.slice(0, 3).map((b) => b.label).join("; ")}`, ...(openBlockers ? { blocker: "Open readiness blockers.", nextAction: "Clear them, or the founder accepts them explicitly in the launch review." } : {}), responsibility: "founder", requiredForSupervised: false });
 
   const required = items.filter((i) => i.requiredForSupervised);
   const unknown = required.filter((i) => i.status === "unknown").map((i) => i.title);
@@ -94,6 +107,7 @@ const GROUP_TITLES: Record<LaunchGroupId, string> = { understanding: "Business u
 
 export function launchGroupOf(itemId: string): LaunchGroupId {
   if (itemId.startsWith("knowledge.")) return "understanding";
+  if (itemId === "blockers.zero") return "supervision";
   if (itemId === "platform.owner_access" || itemId === "platform.persistence" || itemId === "capabilities.critical") return "connections";
   if (itemId.startsWith("authority.") || itemId === "handoff.path") return "authority";
   if (itemId.startsWith("channel.")) return "channel";

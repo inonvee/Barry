@@ -9,6 +9,7 @@ export type PresenceView = { state: PresenceState; text: string; href?: string }
 
 export function businessPresence(b: BusinessStatus): PresenceView {
   const href = `/hq/${encodeURIComponent(b.id)}`;
+  if (b.controls.pausedBusiness) return { state: "paused", text: `The business is paused — ${b.controls.reason || "by the founder"}`, href: `${href}?view=controls` };
   if (b.controls.pauseConsequentialWrites) return { state: "paused", text: `Consequential actions are paused — ${b.controls.reason || "by the founder"}`, href: `${href}?view=controls` };
   if (b.model.status === "unavailable") return { state: "degraded", text: "BARRY cannot understand customers right now", href: `${href}?view=capabilities` };
   if (b.incidents.high > 0 || b.model.status === "degraded") return { state: "degraded", text: b.incidents.high ? `${b.incidents.high} high incident${b.incidents.high === 1 ? "" : "s"} open` : b.model.summary, href: `${href}?view=attention` };

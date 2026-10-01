@@ -90,6 +90,15 @@ const EXPECT: Record<string, (c: Case) => Promise<void> | void> = {
     expect(out.turn.selectedAction?.name).toBe("searchProducts");
     expect(out.rich?.products?.length).toBeGreaterThan(0);
   },
+  search_black_dress_M_wedding_under_400: ({ out }) => {
+    expect(out.turn.selectedAction?.name).toBe("searchProducts");
+    const input = out.turn.selectedAction?.input as { options?: Record<string, string>; budget?: { amount: number; currency?: string }; attributes?: Record<string, string>; budgetAmount?: number } | undefined;
+    // Size reaches the provider as a variant option; the budget keeps the ILS amount; supported facets survive grounding.
+    expect(input?.options?.size).toBe("M");
+    expect(input?.budget?.amount ?? input?.budgetAmount).toBe(400);
+    expect(input?.attributes?.color).toBe("black");
+    for (const p of out.rich?.products ?? []) expect(p.price ?? "").not.toMatch(/\$/);
+  },
 };
 
 afterEach(() => {

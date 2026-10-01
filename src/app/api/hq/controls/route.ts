@@ -17,6 +17,8 @@ const Body = z.object({
   approvalRequiredForAll: z.union([z.boolean(), z.enum(["true", "false"])]).optional(),
   pausedCapabilities: z.union([z.array(z.string()), z.string()]).optional(),
   disabledChannels: z.union([z.array(z.string()), z.string()]).optional(),
+  pausedBusiness: z.union([z.boolean(), z.enum(["true", "false"])]).optional(),
+  safeMode: z.union([z.boolean(), z.enum(["true", "false"])]).optional(),
 });
 
 async function readBody(req: Request): Promise<Record<string, unknown>> {
@@ -48,6 +50,8 @@ export async function POST(req: Request) {
       ...(bool(parsed.data.approvalRequiredForAll) !== undefined ? { approvalRequiredForAll: bool(parsed.data.approvalRequiredForAll) } : {}),
       ...(list(parsed.data.pausedCapabilities) !== undefined ? { pausedCapabilities: list(parsed.data.pausedCapabilities) } : {}),
       ...(list(parsed.data.disabledChannels) !== undefined ? { disabledChannels: list(parsed.data.disabledChannels) } : {}),
+      ...(bool(parsed.data.pausedBusiness) !== undefined ? { pausedBusiness: bool(parsed.data.pausedBusiness) } : {}),
+      ...(bool(parsed.data.safeMode) !== undefined ? { safeMode: bool(parsed.data.safeMode) } : {}),
     },
     { by: "founder", reason: parsed.data.reason }
   );
