@@ -164,7 +164,7 @@ export type CommercialFleet = {
   setup: { paid: number; unpaid: number; waived: number };
   active: number;
   cancelled: number;
-  contribution: { plan: PlanId; currency: string; recurring: number; cost: number; contribution: number }[];
+  contribution: { plan: PlanId; currency: string; recurring: number; cost: number; contribution: number; /** Businesses whose cost is unavailable or a lower bound — the contribution is then "at most". */ costIncomplete: number }[];
   aboveGuardrail: string[];
   costByCategory: Record<string, number>;
   valueVsCost: { id: string; name: string; made: Money; cost: number | null }[];
@@ -178,7 +178,7 @@ export async function getCommercialFleet(graphs: BusinessGraph[], opts: { now?: 
   const period = monthPeriod(now);
   const rows: CommercialFleetRow[] = [];
   const mrr: Record<string, number> = {};
-  const contribution = new Map<string, { plan: PlanId; currency: string; recurring: number; cost: number; contribution: number }>();
+  const contribution = new Map<string, { plan: PlanId; currency: string; recurring: number; cost: number; contribution: number; costIncomplete: number }>();
   const costByCategory: Record<string, number> = {};
   const valueVsCost: CommercialFleet["valueVsCost"] = [];
   let freeMonth = 0, active = 0, cancelled = 0;
@@ -202,9 +202,11 @@ export async function getCommercialFleet(graphs: BusinessGraph[], opts: { now?: 
       else if (a.setupStatus === "waived") setup.waived++;
       else setup.unpaid++;
       const k = `${a.plan}:${a.currency}`;
-      const c = contribution.get(k) ?? { plan: a.plan, currency: a.currency, recurring: 0, cost: 0, contribution: 0 };
+      const c = contribution.get(k) ?? { plan: a.plan, currency: a.currency, recurring: 0, cost: 0, contribution: 0, costIncomplete: 0 };
       c.recurring += econ.recurringRevenue;
+      // An unavailable (or lower-bound) cost is never silently 0: it is counted so the contribution reads "at most".
       c.cost += econ.costToServe ?? 0;
+      if (econ.costToServe === null || !econ.costComplete) c.costIncomplete += 1;
       c.contribution = Math.round((c.recurring - c.cost) * 100) / 100;
       contribution.set(k, c);
     }

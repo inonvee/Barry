@@ -89,7 +89,9 @@ export function unitEconomics(input: { account: CommercialAccount | null; events
   if (otherCurrencies.length) notes.push(`Costs in ${otherCurrencies.join(", ")} are not converted into ${currency}; contribution covers ${currency} costs only.`);
   const known = cost.lines.filter((l) => l.amount !== null);
   const costBasis: UnitEconomics["costBasis"] = known.length === 0 ? "unavailable" : known.every((l) => l.basis === "measured") ? "measured" : known.every((l) => l.basis === "estimated") ? "estimated" : "mixed";
-  const costToServe = costInCurrency ?? (known.length ? 0 : null);
+  // Cost in the ACCOUNT'S currency only. Costs recorded only in another currency make this cost UNAVAILABLE
+  // (null), never 0 — otherwise gross contribution would silently treat an unconverted cost as free.
+  const costToServe = costInCurrency ?? null;
   if (cost.missing.length) notes.push(`Cost is a lower bound: no data for ${cost.missing.length} categor${cost.missing.length === 1 ? "y" : "ies"}.`);
 
   const grossContribution = costToServe === null ? null : r2(recurringRevenue - costToServe);

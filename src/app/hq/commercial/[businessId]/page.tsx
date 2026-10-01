@@ -154,8 +154,9 @@ export default async function HqCommercialBusinessPage({ params, searchParams }:
               items={[
                 { label: "Recurring revenue (contracted)", value: formatAmount(e.recurringRevenue, e.currency) },
                 { label: "Setup revenue (apart)", value: formatAmount(e.setupRevenue, e.currency) },
-                { label: `Cost to serve · ${e.costBasis.toUpperCase()}`, value: e.costToServe === null ? "UNAVAILABLE" : `${formatAmount(e.costToServe, "USD")}${e.costComplete ? "" : " (lower bound)"}`, status: e.aboveGuardrail ? "blocked" : undefined },
-                { label: "Gross contribution", value: e.grossContribution === null ? "—" : formatAmount(e.grossContribution, e.currency), status: e.grossContribution !== null && e.grossContribution < 0 ? "attention" : undefined },
+                { label: `Cost to serve · ${e.costBasis.toUpperCase()}`, value: e.costToServe === null ? `UNAVAILABLE in ${e.currency}` : `${formatAmount(e.costToServe, e.currency)}${e.costComplete ? "" : " (lower bound)"}`, status: e.aboveGuardrail ? "blocked" : undefined },
+                // A lower-bound cost makes contribution an UPPER bound — say so, never present it as final.
+                { label: e.costComplete ? "Gross contribution" : "Gross contribution (at most)", value: e.grossContribution === null ? "— (cost unavailable)" : formatAmount(e.grossContribution, e.currency), status: e.grossContribution !== null && e.grossContribution < 0 ? "attention" : undefined },
                 { label: "Gross margin", value: e.grossMarginPct === null ? "— (no recurring revenue)" : `${e.grossMarginPct}%`, status: e.belowMarginTarget ? "attention" : e.grossMarginPct !== null ? "ok" : undefined },
               ]}
             />
@@ -163,7 +164,7 @@ export default async function HqCommercialBusinessPage({ params, searchParams }:
               {c.cost.lines.map((l) => (
                 <Kv key={`${l.category}:${l.currency}`} k={<span className="flex items-center gap-2">{l.label} <StatusPill status={l.basis === "measured" ? "ok" : l.basis === "estimated" ? "info" : "neutral"}>{l.basis.toUpperCase()}</StatusPill></span>} v={<span>{l.amount === null ? "—" : formatAmount(l.amount, l.currency)} <span className="text-[12px] text-[#667085]">· {l.detail}</span></span>} />
               ))}
-              <Kv k="AI usage this month" v={`${c.cost.model.calls} calls · ${c.cost.model.inputTokens.toLocaleString()} in / ${c.cost.model.outputTokens.toLocaleString()} out tokens (provider-reported) · ≈ ${formatAmount(c.cost.model.estimatedUsd, "USD")} ESTIMATED (${c.cost.model.rateCardVersion})`} />
+              <Kv k="AI usage this month" v={`${c.cost.model.calls} calls · ${c.cost.model.inputTokens.toLocaleString()} in / ${c.cost.model.outputTokens.toLocaleString()} out tokens (provider-reported) · ≈ ${formatAmount(c.cost.model.estimatedUsd, "USD")} ESTIMATED (${c.cost.model.rateCardVersion})${c.cost.model.unpricedCalls ? ` · ${c.cost.model.unpricedCalls} call${c.cost.model.unpricedCalls === 1 ? "" : "s"} UNPRICED (no rate when recorded) — not included, so this is a lower bound` : ""}`} />
               {e.freePeriodCoverage !== null && <Kv k="Setup covers the free month" v={`${formatAmount(e.freePeriodCoverage, e.currency)} left after the free days' cost`} />}
               {e.notes.map((n) => <p key={n} className="mt-1 text-[12px] text-[#667085]">{n}</p>)}
             </div>

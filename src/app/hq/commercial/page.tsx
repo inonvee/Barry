@@ -66,8 +66,8 @@ export default async function HqCommercialPage() {
                         {r.monthlyPrice !== null ? ` · ${formatAmount(r.monthlyPrice, r.currency)}/month` : ""} · setup {r.setupStatus.replace(/_/g, " ")}
                       </span>
                       <span>
-                        Cost to serve {r.costToServe === null ? "UNAVAILABLE" : `${formatAmount(r.costToServe, "USD")} ${r.costBasis.toUpperCase()}${r.costComplete ? "" : " (lower bound)"}`}
-                        {r.grossContribution !== null && r.plan ? ` · contribution ${formatAmount(r.grossContribution, r.currency)}` : ""}
+                        Cost to serve {r.costToServe === null ? "UNAVAILABLE" : `${formatAmount(r.costToServe, r.currency)} ${r.costBasis.toUpperCase()}${r.costComplete ? "" : " (lower bound)"}`}
+                        {r.grossContribution !== null && r.plan ? ` · contribution ${r.costComplete ? "" : "at most "}${formatAmount(r.grossContribution, r.currency)}` : ""}
                         {r.grossMarginPct !== null ? ` · margin ${r.grossMarginPct}%` : ""}
                       </span>
                     </span>
@@ -82,7 +82,7 @@ export default async function HqCommercialPage() {
             {c.contribution.length === 0 ? <EmptyState>No plan has recurring revenue or cost yet.</EmptyState> : (
               <FocusList>
                 {c.contribution.map((g) => (
-                  <FocusItem key={`${g.plan}:${g.currency}`} status={g.contribution < 0 ? "attention" : "ok"} title={`${PLAN_CATALOG[g.plan].name} · ${g.currency}`} why={`Recurring ${formatAmount(g.recurring, g.currency)} − cost ${formatAmount(g.cost, g.currency)} = ${formatAmount(g.contribution, g.currency)}`} />
+                  <FocusItem key={`${g.plan}:${g.currency}`} status={g.contribution < 0 ? "attention" : "ok"} title={`${PLAN_CATALOG[g.plan].name} · ${g.currency}`} why={`Recurring ${formatAmount(g.recurring, g.currency)} − cost ${formatAmount(g.cost, g.currency)} = ${g.costIncomplete ? "at most " : ""}${formatAmount(g.contribution, g.currency)}${g.costIncomplete ? ` (cost incomplete for ${g.costIncomplete} business${g.costIncomplete === 1 ? "" : "es"})` : ""}`} />
                 ))}
               </FocusList>
             )}
