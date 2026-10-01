@@ -69,7 +69,8 @@ describe("the bridge", () => {
     const r = await ask("Run an initiative scan for Rina Studio.");
     expect(r.intent).toBe("initiative_scan");
     expect(r.status).toBe("executed");
-    expect(r.answer).toMatch(/found nothing to act on/);
+    expect(r.answer).toMatch(/^Nothing new at Rina Studio/);
+    expect(r.answer).toMatch(/I haven't contacted anyone/);
     expect(r.answer).toMatch(/not a failure/);
     const scans = await listScans(D);
     expect(scans).toHaveLength(1);
@@ -99,8 +100,8 @@ describe("the bridge", () => {
     const first = await ask("Run an initiative scan for Rina Studio.", 1);
     const after1 = await listInitiatives(D);
     expect(after1.length).toBeGreaterThan(0);
-    expect(first.answer).toMatch(/verified finding/);
-    expect(first.answer).toMatch(/nothing was sent to anyone/);
+    expect(first.answer).toMatch(/^I found (?:one thing|\d+ things) worth attention at Rina Studio\. The biggest: /);
+    expect(first.answer).toMatch(/I haven't contacted anyone/);
     const second = await ask("Scan Rina Studio for initiatives.", 1);
     const after2 = await listInitiatives(D);
     expect(after2).toHaveLength(after1.length);
@@ -124,7 +125,7 @@ describe("the bridge", () => {
     // Explicit force: runs, once, through the engine.
     const forced = await ask("Force an initiative scan for Rina Studio for QA.", 2);
     expect(forced.status).toBe("executed");
-    expect(forced.answer).toMatch(/^Forced scan \(QA\) of Rina Studio/);
+    expect(forced.answer).toMatch(/^Forced QA scan done\. /);
     expect((await listScans(D)).filter((s) => !s.skipped).length).toBe(scansBefore + 1);
     // Force bypassed only the limit: dedupe still holds.
     expect(await listInitiatives(D)).toHaveLength(initiativesBefore.length);

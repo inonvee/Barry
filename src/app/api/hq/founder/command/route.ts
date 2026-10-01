@@ -3,12 +3,15 @@ import { z } from "zod";
 import { hqAuthError } from "@/lib/hq/auth";
 import { executeFounderCommand, founderHome, listFounderCommands } from "@/lib/founder/command-service";
 import { modelFounderInterpreter } from "@/lib/founder/model-interpreter";
+import { modelFounderComposer } from "@/lib/founder/voice";
 
 const Body = z.object({
   text: z.string().max(1000).optional(),
   key: z.string().min(8).max(120).optional(),
   confirmKey: z.string().min(1).max(120).optional(),
   context: z.object({ businessId: z.string().max(120).optional() }).optional(),
+  /** The previous command of this conversation (context for follow-ups only). */
+  previousKey: z.string().min(1).max(120).optional(),
 });
 
 /**
@@ -28,7 +31,9 @@ export async function POST(req: Request) {
     text: parsed.data.text,
     confirmKey: parsed.data.confirmKey,
     context: parsed.data.context,
+    previousKey: parsed.data.previousKey,
     interpreter: modelFounderInterpreter(),
+    composer: modelFounderComposer(),
   });
   return Response.json(out);
 }

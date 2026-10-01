@@ -14,6 +14,7 @@ import { hasMoney, moneyWords } from "@/lib/format/money";
 import type { Money } from "@/lib/owner/revenue";
 import { intentFromModel, interpretFounder, resolveBusinesses, UNSUPPORTED_HELP, type BusinessResolution, type DirectoryEntry, type FounderActionKind, type FounderInterpreter, type FounderIntent } from "./command";
 import { runInitiativeScan } from "@/lib/initiative/engine";
+import { languageOf, voice, type FounderComposer, type FounderEnvelope } from "./voice";
 import { businessDrilldown, founderBrief, loadFounderFleet, HEALTH_PHRASE, HEALTH_WORDS, type BriefItem } from "./read-model";
 
 /**
@@ -59,12 +60,18 @@ export type FounderCommandRecord = {
   handled?: { done: string[]; proposed: string[]; leftForYou: string[] };
   verification?: string;
   stopReason?: string;
+  /** The deterministic grounded reply (the truth `answer` was voiced from; equal to `answer` when not composed). */
+  groundedAnswer?: string;
+  /** Who worded `answer`: the conversation composer (checked against the envelope) or the grounded text. */
+  voice?: { source: "composer" | "grounded"; reason?: string };
+  /** A follow-up that leaned on the previous command (context only — every fact was re-grounded). */
+  followUpOf?: string;
   trace: FounderTraceStep[];
   createdAt: string;
   updatedAt: string;
 };
 
-export type FounderReply = Pick<FounderCommandRecord, "key" | "status" | "answer" | "items" | "followUps" | "proposalIds" | "verification" | "stopReason"> & { intent: FounderIntent["family"]; scope: FounderCommandRecord["scope"]; confirmation?: { key: string; title: string; effect: string }; duplicate: boolean };
+export type FounderReply = Pick<FounderCommandRecord, "key" | "status" | "answer" | "items" | "followUps" | "proposalIds" | "verification" | "stopReason"> & { intent: FounderIntent["family"]; scope: FounderCommandRecord["scope"]; confirmation?: { key: string; title: string; effect: string }; duplicate: boolean; voice?: "composer" | "grounded" };
 
 const KIND = "founder_command";
 
@@ -112,7 +119,54 @@ function reply(r: FounderCommandRecord, duplicate: boolean): FounderReply {
     scope: r.scope,
     ...(r.status === "needs_confirmation" && r.action ? { confirmation: { key: r.key, title: r.action.title, effect: r.action.effect } } : {}),
     duplicate,
+    ...(r.voice ? { voice: r.voice.source } : {}),
   };
+}
+
+/** The immutable truth of a turn, for the conversation layer. */
+function envelopeOf(r: FounderCommandRecord, question: string): FounderEnvelope {
+  return {
+    question: question.slice(0, 500),
+    language: languageOf(question),
+    intent: r.intent.family,
+    status: r.status,
+    grounded: r.answer,
+    items: r.items.slice(0, 10).map((i) => ({ title: i.title, ...(i.detail ? { detail: i.detail } : {}) })),
+    done: r.status === "executed" ? [r.verification ?? r.answer].filter(Boolean) : [],
+    notDone: [r.stopReason ?? "", r.status === "proposed" ? "the proposal is only prepared — nothing changes until the founder approves it" : "", r.status === "needs_confirmation" ? "nothing has changed yet" : ""].filter(Boolean),
+    confirmationRequired: r.status === "needs_confirmation" && r.action ? r.action.title : null,
+    nothingSent: true,
+    proposals: r.proposalIds,
+    businessesInScope: r.resolution.matched.map((b) => b.name),
+    followUps: r.followUps,
+  };
+}
+
+const MIN = 60_000;
+/** A short yes to a pending control ("yes", "do it", "כן") — only ever against the exact pending command. */
+const CONFIRM_WORDS = /^(?:yes|yep|yeah|ok(?:ay)?|sure|do (?:it|that)|go ahead|confirm(?:ed)?|please do|כן|תעשה(?: את זה)?|סבבה|אשר|תאשר|יאללה)[\s.!]*$/i;
+/** "and Rina?" / "what about Midtown?" / "ומה עם רינה?" — the previous question, about another business. */
+const ELLIPSIS = /^(?:and|what about|how about|same for|also)\s+(.+?)[?.!]*$|^(?:ו?מה עם|וגם)\s+(.+?)[?.!]*$/i;
+const OTHER_ONE = /\b(?:the other one|the other)\b|השני(?:ה)?\b/i;
+const REAL_MONEY = /\b(?:is (?:that|this|it) (?:actually |really )?real(?: money)?|are (?:these|those) real|real money|is that verified)\b|כסף אמיתי|זה אמיתי/i;
+const BUSINESS_SCOPED = new Set(["business_inspect", "initiative_scan", "founder_action", "proposal", "initiative_read"]);
+
+/** What a figure in the previous answer is made of — so "is that real money?" gets a grounded answer. */
+function basisOf(prev: FounderCommandRecord): string {
+  switch (prev.intent.family) {
+    case "commercial_read":
+      return "No — those are costs, not money in. They're ESTIMATED from provider-reported token usage priced on the versioned rate card (MEASURED only where an invoice was recorded), and categories with no record are left out, so they're a lower bound.";
+    case "value_read":
+      return "Only provider-verified payments count as money BARRY made; simulated / test money is excluded and shown apart, and savings count only once realized.";
+    case "initiative_scan":
+    case "initiative_read":
+      return "The amounts in those findings are what the business's own records hold (open payment links, carts, orders) — money at stake, not money collected. Nothing counts as recovered until the payment provider verifies it.";
+    case "fleet_read":
+    case "business_inspect":
+      return "Money in that answer is either waiting on an owner decision or at risk on open records — it isn't revenue. Revenue counts only provider-verified payments; simulated money never counts.";
+    default:
+      return `That answer came only from these records: ${prev.grounded.slice(0, 4).join(" · ") || "none"}.`;
+  }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────────────────────────
@@ -141,8 +195,12 @@ export type FounderCommandInput = {
   confirmKey?: string;
   /** The business the conversation is about (follow-ups like "Why?"). Only a hint: grounded like any other. */
   context?: { businessId?: string };
+  /** The previous command in this conversation: context for follow-ups, never truth or authority. */
+  previousKey?: string;
   now?: Date;
   interpreter?: FounderInterpreter;
+  /** Optional conversation composer (wording only; checked against the envelope, falls back to the grounded text). */
+  composer?: FounderComposer;
 };
 
 export async function executeFounderCommand(input: FounderCommandInput): Promise<FounderReply> {
@@ -156,6 +214,15 @@ export async function executeFounderCommand(input: FounderCommandInput): Promise
 
   const text = redact((input.text ?? "").trim().replace(/\s+/g, " ").slice(0, 1000));
   const directory = fleetDirectory();
+  // Conversation context: the previous command, only while it is fresh. It shapes interpretation; every fact
+  // is still re-grounded and every action still needs its own authority.
+  const prevRecord = input.previousKey ? await getFounderCommand(input.previousKey).catch(() => undefined) : undefined;
+  const prevAge = prevRecord ? now.getTime() - Date.parse(prevRecord.updatedAt) : Infinity;
+  const previous = prevRecord && prevAge < 30 * MIN ? prevRecord : undefined;
+  // "yes" / "do it" → confirm EXACTLY the pending control of the previous turn (fresh, still pending), nothing else.
+  if (CONFIRM_WORDS.test(text) && previous?.status === "needs_confirmation" && prevAge < 10 * MIN) {
+    return confirmFounderAction({ actor: input.actor, key: previous.key, now });
+  }
   const record: FounderCommandRecord = {
     key,
     founder: `founder (${input.actor.via})`,
@@ -185,6 +252,34 @@ export async function executeFounderCommand(input: FounderCommandInput): Promise
     if (ctx) resolution = { matched: [ctx], ambiguous: [] };
   }
   let intent = interpretFounder(text, { hasBusiness: resolution.matched.length > 0 });
+  let followUpBasis: string | undefined;
+  let usedContext = false;
+  if (CONFIRM_WORDS.test(text)) {
+    intent = { family: "unsupported", reason: "There's nothing waiting for your confirmation right now — say exactly what you want done." };
+  } else if (previous) {
+    const ellipsis = text.match(ELLIPSIS);
+    if (REAL_MONEY.test(text)) {
+      followUpBasis = basisOf(previous);
+      intent = previous.intent;
+      usedContext = true;
+    } else if (OTHER_ONE.test(text)) {
+      // "the other one": the previous turn named exactly two businesses; the one not currently in focus.
+      const named = [...previous.resolution.matched.map((b) => b.id), ...previous.resolution.ambiguous.flatMap((a) => a.candidates.map((n) => directory.find((d) => d.name === n)?.id ?? ""))].filter(Boolean);
+      const two = [...new Set(named)];
+      const focus = input.context?.businessId ?? previous.scope.businessIds[0];
+      const other = two.length === 2 ? directory.find((d) => d.id === two.find((id) => id !== focus)) : undefined;
+      if (other) {
+        resolution = { matched: [other], ambiguous: [] };
+        intent = BUSINESS_SCOPED.has(previous.intent.family) ? previous.intent : { family: "business_inspect", followUp: "overview" };
+        usedContext = true;
+      }
+    } else if (ellipsis && resolution.matched.length && (intent.family === "business_inspect" || intent.family === "unsupported")) {
+      // "and Rina?": the previous question, now about the named business (an action still needs its own confirmation).
+      intent = BUSINESS_SCOPED.has(previous.intent.family) ? previous.intent : { family: "business_inspect", followUp: "overview" };
+      usedContext = true;
+    }
+    if (usedContext) record.followUpOf = previous.key;
+  }
   if (intent.family === "unsupported" && intent.reason === UNSUPPORTED_HELP && input.interpreter) {
     const raw = await input.interpreter(text).catch(() => undefined);
     const fromModel = intentFromModel(raw);
@@ -205,12 +300,30 @@ export async function executeFounderCommand(input: FounderCommandInput): Promise
   step("scope", "ok", record.scope.kind === "fleet" ? "fleet" : `business: ${resolution.matched.map((b) => b.name).join(", ") || "none named"}`);
 
   try {
-    await dispatch(record, intent, resolution, { now, step });
+    if (followUpBasis !== undefined && previous) {
+      // "Is that real money?" — answered from what the previous answer was made of; nothing is re-run.
+      record.status = "answered";
+      record.answer = followUpBasis;
+      record.grounded.push(`follow-up on ${previous.key}`, ...previous.grounded.slice(0, 4));
+      record.scope = previous.scope;
+      step("grounding", "ok", `basis of ${previous.key}`);
+    } else {
+      await dispatch(record, intent, resolution, { now, step });
+    }
   } catch (err) {
     record.status = "failed";
     record.answer = intent.family === "initiative_scan" ? "The initiative scan failed — no scan was recorded and nothing was changed. Try again; this is not the same as a scan that found nothing." : "I couldn't complete that — nothing was changed.";
     record.stopReason = err instanceof Error ? redact(err.message).slice(0, 300) : "unknown error";
     step("reply", "failed", record.stopReason);
+  }
+  // The conversation layer: the grounded answer is kept as the record of truth; the shown wording may be the
+  // composer's only if it passes every check against the envelope.
+  record.groundedAnswer = record.answer;
+  if (record.status !== "failed") {
+    const v = await voice(envelopeOf(record, text), input.composer, directory.map((d) => d.name));
+    record.answer = v.text;
+    record.voice = { source: v.source, ...(v.reason ? { reason: v.reason } : {}) };
+    if (v.reason) step("reply", "info", v.reason);
   }
   record.updatedAt = at();
   step("reply", record.status === "failed" || record.status === "refused" ? "blocked" : "ok", record.status);
@@ -489,12 +602,22 @@ async function initiativeScan(r: FounderCommandRecord, b: DirectoryEntry, force:
   r.verification = `Scan ${scan.id} recorded for ${b.name} (${scan.localDate}); ${plural(open.length, "initiative")} open now.`;
   ctx.step("verification", "ok", r.verification);
   r.status = "executed";
-  const prefix = force ? "Forced scan (QA) of" : "Scanned";
+  // Spoken like an operator, not a log line. Every count stays exact in r.scan / the trace / the items.
+  const lead = force ? "Forced QA scan done. " : "";
+  const IMPORTANCE = { high: 0, medium: 1, low: 2 } as const;
+  const ranked = [...open].sort((x, y) => IMPORTANCE[x.importance] - IMPORTANCE[y.importance]);
+  const things = (n: number) => (n === 1 ? "one thing" : `${n} things`);
   if (scan.verified === 0 && open.length === 0) {
-    r.answer = `${prefix} ${b.name}: scan completed and found nothing to act on — ${plural(scan.candidates, "candidate")} detected, none verified against the records. That is a normal result, not a failure.${scan.rejected.length ? ` ${plural(scan.rejected.length, "candidate")} didn't hold up against the records and ${scan.rejected.length === 1 ? "was" : "were"} dropped.` : ""}`;
+    r.answer = `${lead}Nothing new at ${b.name} — ${scan.candidates ? `I checked ${plural(scan.candidates, "signal")} against the records and none held up` : "nothing in the records is worth raising right now"}. That's a normal result, not a failure. I haven't contacted anyone.`;
   } else {
-    r.answer = [`${prefix} ${b.name}: ${plural(scan.verified, "verified finding")} from ${plural(scan.candidates, "candidate")} — ${scan.created} new, ${scan.updated} updated in place, ${scan.surfaced} newly shown to the owner${scan.suppressed ? `, ${scan.suppressed} held back (daily cap / quiet period)` : ""}.`, `${plural(open.length, "initiative")} open at ${b.name}:`, ...open.slice(0, 5).map((i) => `• ${i.title} (${i.importance}, ${i.state})`), "The owner decides each one; nothing was sent to anyone."].join("\n");
-    r.items = open.slice(0, 8).map((i) => ({ title: `${b.name}: ${i.title}`, detail: `${i.category.replace(/_/g, " ")} · ${i.importance} · ${i.state}`, href, severity: i.importance === "high" ? ("medium" as const) : ("info" as const) }));
+    const [top, ...rest] = ranked;
+    const others = rest.slice(0, 3).map((i) => i.title);
+    r.answer = [
+      `${lead}I found ${things(open.length)} worth attention at ${b.name}.${top ? ` The biggest: ${top.title}.` : ""}${others.length ? ` Also: ${others.join("; ")}${rest.length > 3 ? ` (+${rest.length - 3} more)` : ""}.` : ""}`,
+      [scan.created === 0 ? "Nothing new since the last scan — these were already open." : scan.created < open.length ? `${scan.created} of these ${scan.created === 1 ? "is" : "are"} new since the last scan.` : "", scan.surfaced ? `${scan.surfaced === 1 ? "One is" : `${scan.surfaced} are`} now in front of the owner.` : "", scan.suppressed ? `I held ${scan.suppressed} back for now (daily limit / quiet period).` : ""].filter(Boolean).join(" "),
+      "I haven't contacted anyone — the owner decides each one.",
+    ].filter(Boolean).join("\n");
+    r.items = ranked.slice(0, 8).map((i) => ({ title: `${b.name}: ${i.title}`, detail: `${i.category.replace(/_/g, " ")} · ${i.importance} · ${i.state}`, href, severity: i.importance === "high" ? ("medium" as const) : ("info" as const) }));
   }
   if (scan.rejected.length) r.items.push({ title: `${plural(scan.rejected.length, "candidate")} rejected on verification`, detail: [...new Set(scan.rejected.map((x) => x.detector))].join(", "), severity: "low" });
   r.followUps = [`What's going on with ${b.name}?`, `What did BARRY notice at ${b.name}?`];

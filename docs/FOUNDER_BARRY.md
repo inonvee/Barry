@@ -66,3 +66,36 @@ It never changes a business's behaviour, an owner rule or a customer policy.
 ## Storage
 
 Migration `0018_founder_command.sql` adds the `founder_command` kind. It is **not applied**.
+
+## Conversation layer (`src/lib/founder/voice.ts`)
+
+**The runtime decides what is true; the conversation layer decides how to say it.**
+
+Every turn produces an immutable envelope:
+- the grounded reply and items;
+- `done`: only actions that were executed and verified;
+- `notDone`;
+- `confirmationRequired`;
+- `nothingSent: true`;
+- proposals, businesses in scope, follow-ups;
+- the founder's language (`he` / `en`).
+
+A composer (the configured model, when `BARRY_REASONER=openai`) may reword the envelope in the founder's language. `checkComposed` rejects the result when it:
+- states a number not in the envelope ("5,000" is a value, so it can't pass as "5");
+- names a fleet business outside the envelope;
+- claims an action that wasn't executed;
+- implies anything was sent;
+- drops a required confirmation;
+- presents a proposal as applied.
+
+On rejection, or with no composer or a composer failure, the grounded text is shown. The record keeps `groundedAnswer` plus `voice.source` and `voice.reason`.
+
+**Multi-turn.** The client sends `previousKey`. Within 30 minutes:
+- **"and Rina?" / "what about Spa?"**: repeats the previous question for the newly named business. The name is resolved against the directory, and an action still needs its own confirmation.
+- **"the other one"**: picks the other of exactly two businesses named in the previous turn.
+- **"yes" / "do it" / "כן"**: confirms exactly the previous turn's pending control, only if it is still pending and less than 10 minutes old. Otherwise nothing happens.
+- **"is that real money?"**: explains what the previous figure is made of, from that turn's intent. Nothing is re-run.
+
+History is context, never truth or authority.
+
+**Hebrew.** The same closed intents are recognised in Hebrew, including code-switched English business names. Hebrew requests for secrets, environment settings, data deletion or deploys are refused.

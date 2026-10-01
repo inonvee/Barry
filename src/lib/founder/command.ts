@@ -81,11 +81,51 @@ const OPTIONS = /\bwhat can i do\b|\bwhat are my options\b|\bhow do i fix\b/i;
 const SHOW_INCIDENT = /\bshow (?:me )?(?:the )?incidents?\b/i;
 const OVERVIEW = /\b(what'?s going on|how is|how'?s|status of|tell me about|look at|inspect|drill)\b/i;
 
+// Hebrew (and code-switched Hebrew + English names): the same closed intent set, recognised by meaning.
+const HE_FORBIDDEN = /סיסמ|טוקן|מפתח(?:ות)? API|מפתח סודי|סוד(?:ות)?\b|משתני סביבה|תמחק את ה(?:נתונים|טבלה)|תעשה deploy|תעלה לפרודקשן/;
+const HE: { re: RegExp; needs?: "business"; intent: (t: string) => FounderIntent | undefined }[] = [
+  { re: /תטפל במה ש(?:אתה )?(?:יכול|אפשר)|תטפל בכל מה ש/, intent: () => ({ family: "handle_safe" }) },
+  { re: /(?:תכין|הכן|תנסח)\s+(?:פריסה|rollout|רולאאוט)/i, intent: () => ({ family: "proposal", kind: "rollout" }) },
+  { re: /מצב בטוח/, intent: (t) => (/\?\s*$/.test(t) ? undefined : /(?:תכבה|כבה|תוציא|הוצא|צא|בטל|תבטל)/.test(t) ? { family: "founder_action", action: "safe_mode_off" } : /(?:תפעיל|הפעל|תכניס|הכנס|תשים|שים|תעביר)/.test(t) ? { family: "founder_action", action: "safe_mode_on" } : undefined) },
+  { re: /^(?:בבקשה\s+)?(?:תחזיר|החזר|תחדש|חדש|תפעיל מחדש|הפעל מחדש)/, intent: () => ({ family: "founder_action", action: "resume_business" }) },
+  { re: /^(?:בבקשה\s+)?(?:תשהה|השהה|תעצור|עצור|תקפיא|הקפא)/, intent: (t) => (/\?\s*$/.test(t) ? undefined : { family: "founder_action", action: "pause_business" }) },
+  { re: /(?:תריץ|הרץ|תעשה|תבצע|תפעיל)\s+(?:סריקה|סריקת|(?:an?\s+)?(?:initiative\s+)?scan)|^(?:תסרוק|סרוק)|(?:תבדוק|בדוק) אם (?:BARRY|בארי|ברי) (?:שם לב|מזהה|רואה)/i, intent: (t) => ({ family: "initiative_scan", force: /בכפייה|תכפה|כפה|לבדיקה|\bQA\b|תעקוף/.test(t) }) },
+  { re: /^ו?למה(?:\s|\?|$)/, needs: "business", intent: () => ({ family: "business_inspect", followUp: "why" }) },
+  { re: /מה אני יכול לעשות|מה האפשרויות/, needs: "business", intent: () => ({ family: "business_inspect", followUp: "options" }) },
+  { re: /(?:תראה|הראה)(?: לי)? (?:את )?(?:ה)?תקל/, needs: "business", intent: () => ({ family: "business_inspect", followUp: "incidents" }) },
+  { re: /(?:עולה|עולים|עלו)\s+(?:לנו\s+)?הכי הרבה|עלות (?:ה)?שירות|הכי יקר/, intent: () => ({ family: "commercial_read", topic: "cost_to_serve" }) },
+  { re: /מספיק ערך|לא מקבלים ערך/, intent: () => ({ family: "value_read" }) },
+  { re: /(?:מה|מי)\s+(?:BARRY|בארי|ברי)\s+(?:שם לב|זיהה|גילה|מצא)|יוזמות|מה (?:שמת|שמת לב|מצאת)/i, intent: () => ({ family: "initiative_read" }) },
+  { re: /(?:אינטגרציות|חיבורים|ספקים|חיבור).*(?:שבור|לא עובד|תקול|נפל)/, intent: () => ({ family: "incident_read", topic: "integrations" }) },
+  { re: /מה קורה עם|מה המצב (?:של|עם|ב)|ספר לי על|איך הולך (?:ל|עם|ב)/, needs: "business", intent: () => ({ family: "business_inspect", followUp: "overview" }) },
+  { re: /^מה השתנה\??$/, needs: "business", intent: () => ({ family: "business_inspect", followUp: "changed" }) },
+  { re: /מה השתנה|מאתמול|מה חדש/, intent: () => ({ family: "fleet_read", topic: "changed" }) },
+  { re: /מה (?:אני )?צריך לדעת|תדריך|תעדכן אותי|מה המצב(?:\?|$)|מה קורה היום/, intent: () => ({ family: "fleet_read", topic: "brief" }) },
+  { re: /צריכ(?:ים|ה)? (?:תשומת לב|אותי)|(?:אילו|איזה) עסקים (?:בבעיה|צריכים)/, intent: () => ({ family: "fleet_read", topic: "attention" }) },
+  { re: /תקלות|מה נשבר|אירועים פתוחים/, intent: () => ({ family: "incident_read", topic: "incidents" }) },
+  { re: /גרסה|ריליס|שחרור|בילד/, intent: () => ({ family: "release_read" }) },
+];
+
+function interpretHebrew(t: string, hasBusiness: boolean): FounderIntent | undefined {
+  if (HE_FORBIDDEN.test(t)) return { family: "unsupported", reason: "Founder BARRY never touches secrets, environment settings, data deletion or deploys." };
+  for (const h of HE) {
+    if (h.needs === "business" && !hasBusiness) continue;
+    if (!h.re.test(t)) continue;
+    const i = h.intent(t);
+    if (i) return i;
+  }
+  return hasBusiness ? { family: "business_inspect", followUp: "overview" } : undefined;
+}
+
 /** Interpret founder text. `hasBusiness` = a business is named or carried from context. Pure. */
 export function interpretFounder(text: string, opts: { hasBusiness?: boolean } = {}): FounderIntent {
   const t = text.trim().replace(/\s+/g, " ").slice(0, 1000);
   if (!t) return { family: "unsupported", reason: "Say what you want to know or do." };
   for (const f of FORBIDDEN) if (f.about.test(t)) return { family: "unsupported", reason: f.reason };
+  if (/[֐-׿]/.test(t)) {
+    const he = interpretHebrew(t, Boolean(opts.hasBusiness));
+    if (he) return he;
+  }
   if (HANDLE.test(t)) return { family: "handle_safe" };
   if (PROPOSE.test(t) && (ROLLOUT.test(t) || RUNTIME.test(t) || CAPABILITY.test(t) || CONFIG.test(t))) {
     return { family: "proposal", kind: ROLLOUT.test(t) ? "rollout" : RUNTIME.test(t) ? "runtime" : CAPABILITY.test(t) ? "capability" : "configuration" };

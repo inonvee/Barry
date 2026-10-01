@@ -46,8 +46,10 @@ export function FounderCommand({ initial, draft, suggestions }: { initial?: stri
     const q = t.trim();
     if (!q) return;
     setText("");
-    void post({ text: q, key: newKey(), ...(context ? { context: { businessId: context } } : {}) }, q);
-  }, [post, context]);
+    // The previous reply is conversation context ("and Rina?", "yes", "is that real money?") — never authority.
+    const previousKey = log.find((e) => e.reply)?.reply?.key;
+    void post({ text: q, key: newKey(), ...(context ? { context: { businessId: context } } : {}), ...(previousKey ? { previousKey } : {}) }, q);
+  }, [post, context, log]);
 
   useEffect(() => {
     if (!initial) return;
@@ -62,7 +64,7 @@ export function FounderCommand({ initial, draft, suggestions }: { initial?: stri
   return (
     <div className="flex flex-col gap-3">
       <form onSubmit={(e) => { e.preventDefault(); send(text); }} className="flex flex-col gap-2 sm:flex-row">
-        <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Tell BARRY what you need — “What do I need to know today?”" className={`${input} min-h-12 text-[15px]`} aria-label="Ask BARRY" autoFocus />
+        <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Tell BARRY what you need — “What do I need to know today?”" className={`${input} min-h-12 text-[15px]`} aria-label="Ask BARRY" dir="auto" autoFocus />
         <button className={`${buttonPrimary} min-h-12 sm:shrink-0`} disabled={busy || !text.trim()}>{busy ? "Working…" : "Ask BARRY"}</button>
       </form>
       <div className="flex flex-wrap gap-1.5">
@@ -78,7 +80,7 @@ export function FounderCommand({ initial, draft, suggestions }: { initial?: stri
           {e.reply && (
             <div className="mt-2 flex flex-col gap-2">
               {STATUS_WORDS[e.reply.status] && <span className="w-fit rounded-full bg-[#f2f4f7] px-2 py-0.5 text-[11px] font-medium text-[#344054]">{STATUS_WORDS[e.reply.status]}{e.reply.duplicate ? " · already recorded" : ""}</span>}
-              <pre className="whitespace-pre-wrap break-words font-sans text-[14px] leading-relaxed text-[#101828]">{e.reply.answer}</pre>
+              <pre dir="auto" className="whitespace-pre-wrap break-words font-sans text-[14px] leading-relaxed text-[#101828]">{e.reply.answer}</pre>
               {e.reply.verification && <p className="text-[12px] text-[#067647]">✓ {e.reply.verification}</p>}
               {e.reply.items.length > 0 && e.reply.status !== "needs_confirmation" && (
                 <ul className="flex flex-col gap-1.5">
