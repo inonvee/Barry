@@ -156,7 +156,7 @@ export default async function HqCommercialBusinessPage({ params, searchParams }:
                 { label: "Setup revenue (apart)", value: formatAmount(e.setupRevenue, e.currency) },
                 { label: `Cost to serve · ${e.costBasis.toUpperCase()}`, value: e.costToServe === null ? `UNAVAILABLE in ${e.currency}` : `${formatAmount(e.costToServe, e.currency)}${e.costComplete ? "" : " (lower bound)"}`, status: e.aboveGuardrail ? "blocked" : undefined },
                 // A lower-bound cost makes contribution an UPPER bound — say so, never present it as final.
-                { label: e.costComplete ? "Gross contribution" : "Gross contribution (at most)", value: e.grossContribution === null ? "— (cost unavailable)" : formatAmount(e.grossContribution, e.currency), status: e.grossContribution !== null && e.grossContribution < 0 ? "attention" : undefined },
+                { label: e.costComplete || e.grossContribution === null ? "Gross contribution" : "Gross contribution (at most)", value: e.grossContribution === null ? "— (cost unavailable)" : formatAmount(e.grossContribution, e.currency), status: e.grossContribution !== null && e.grossContribution < 0 ? "attention" : undefined },
                 { label: "Gross margin", value: e.grossMarginPct === null ? "— (no recurring revenue)" : `${e.grossMarginPct}%`, status: e.belowMarginTarget ? "attention" : e.grossMarginPct !== null ? "ok" : undefined },
               ]}
             />
