@@ -116,6 +116,14 @@ function nameMatches(label: string, subject: string): boolean {
 
 async function answerQuery(intent: Extract<CommandIntent, { kind: "query" }>, ws: OwnerWorkspace, ops: OwnerOperationView[], ctx: { graph: BusinessGraph; source: CommandSource; actor: OwnerActor; text: string; now: Date }): Promise<OwnerOutbound> {
   switch (intent.topic) {
+    case "initiatives": {
+      // Only what scans persisted with evidence — never a new "insight" made up on demand.
+      const money = intent.subject === "money";
+      const list = ws.initiatives.filter((i) => !money || i.category === "money_leakage" || i.category === "abandoned_demand" || i.category === "cost_margin");
+      if (!list.length) return { text: money ? "I don't see money slipping away in your records right now — nothing at risk or left without a follow-up that I can prove." : "Nothing stood out in my last look at your records. I'll tell you when something does — I won't make things up to fill the space.", links: links(ctx.source, [{ label: "Today", path: "/owner?tab=today" }]) };
+      const lines = list.slice(0, 3).map((i) => `• ${i.title}\n  ${i.observation}\n  → ${i.recommendation.text}`);
+      return { text: `What I noticed${money ? " about money" : ""}:\n${lines.join("\n")}${list.length > 3 ? `\n…and ${list.length - 3} more on Today.` : ""}`, links: links(ctx.source, [{ label: "See it on Today", path: "/owner?tab=today" }]) };
+    }
     case "needs_you": {
       if (!ws.interventions.length) return { text: "Nothing needs you right now. I'm handling everything inside your rules." };
       const lines = ws.interventions.slice(0, 5).map((i, n) => `${n + 1}. ${i.customer} — ${i.title}`);

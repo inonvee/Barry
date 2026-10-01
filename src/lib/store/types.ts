@@ -237,7 +237,10 @@ export type OperatorRecordKind =
   | "owner_command"
   | "owner_operation"
   | "owner_prompt"
-  | "owner_brief";
+  | "owner_brief"
+  // Initiative engine (0017)
+  | "initiative"
+  | "initiative_scan";
 
 export type OperatorRecord = {
   id: string;

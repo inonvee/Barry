@@ -24,6 +24,8 @@ import { listOperations, operationView } from "./operations";
 import type { OwnerOperationView } from "./operation-model";
 import { whatsappOwnerConfig } from "@/lib/channels/whatsapp";
 import { linkActive, listOwnerIdentities, maskedIdentity } from "@/lib/owner-channel/identity";
+import { visibleInitiatives } from "@/lib/initiative/store";
+import type { InitiativeView } from "@/lib/initiative/model";
 
 /**
  * THE OWNER'S VIEW OF THEIR BUSINESS — read model for the owner dashboard (and for Owner Barry).
@@ -210,6 +212,8 @@ export type OwnerWorkspace = {
   ownerOperations: OwnerOperationView[];
   /** The latest owner commands from every surface. */
   ownerCommands: OwnerCommandSummary[];
+  /** What BARRY noticed (persisted by scans; never detected on read). Best first. */
+  initiatives: InitiativeView[];
   /** Sources that could not be read (shown, never zeroed). */
   unavailable: string[];
 };
@@ -424,6 +428,7 @@ export async function getOwnerWorkspace(staticGraph: BusinessGraph, opts: { sinc
       .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""))
       .slice(0, 8)
       .map((c) => ({ id: c.id!, at: c.createdAt ?? "", source: c.source ?? "web", text: (c.text ?? "").slice(0, 200), intent: c.intent?.kind ?? "query", ...(c.operationId ? { operationId: c.operationId } : {}), reply: (c.reply?.text ?? "").split("\n")[0].slice(0, 200) })),
+    initiatives: await safe("initiatives", () => visibleInitiatives(businessId), []),
     operator: {
       // Unreadable plan → shown as not included (the executor fails closed the same way).
       included: entitlement ? hasFeature(entitlement, "proactive_followups") : false,

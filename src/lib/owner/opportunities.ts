@@ -68,6 +68,11 @@ const ABANDON_AFTER_H = 24;
 const MAX_AGE_DAYS = 30;
 const AT_RISK: OpportunityKind[] = ["payment_failed", "stalled_purchase"];
 
+/** Money likely lost unless someone acts (the same rule the At risk figure uses). */
+export function isAtRisk(i: Pick<Opportunity, "kind" | "recoverable">): boolean {
+  return AT_RISK.includes(i.kind) || (i.kind === "unpaid_link" && i.recoverable);
+}
+
 const add = (m: Money, currency: string, amount: number) => {
   m[currency] = Math.round(((m[currency] ?? 0) + amount) * 100) / 100;
 };
@@ -257,7 +262,7 @@ export function revenueOpportunities(input: OpportunityInput): { items: Opportun
     }
     if (i.next.who === "you") add(summary.stuckWithYou, i.currency, i.amount);
     if (i.next.who === "customer") add(summary.waitingOnCustomer, i.currency, i.amount);
-    if (AT_RISK.includes(i.kind) || (i.kind === "unpaid_link" && i.recoverable)) add(summary.atRisk, i.currency, i.amount);
+    if (isAtRisk(i)) add(summary.atRisk, i.currency, i.amount);
   }
   return { items, summary };
 }

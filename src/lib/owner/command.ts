@@ -25,7 +25,7 @@ import { PROACTIVE, workflowState, workflows } from "./control-room";
 
 export type CommandSource = "web" | "whatsapp" | "voice";
 
-export type QueryTopic = "needs_you" | "working" | "money" | "waiting_customers" | "customer" | "operation" | "capabilities" | "general";
+export type QueryTopic = "initiatives" | "needs_you" | "working" | "money" | "waiting_customers" | "customer" | "operation" | "capabilities" | "general";
 
 export type CommandIntent =
   | { kind: "query"; topic: QueryTopic; subject?: string; workflow?: ObligationKind }
@@ -56,6 +56,8 @@ const OUTBOUND = /\b(campaign|broadcast|blast|newsletter|(?:message|text|email) 
 const SCOPE_TODAY = /\btoday\b|\bthis morning\b|היום/i;
 
 const TOPICS: { topic: QueryTopic; about: RegExp }[] = [
+  // What BARRY noticed on his own (answered only from persisted initiatives).
+  { topic: "initiatives", about: /\b(notice[d]?|would you improve|should i (?:look at|improve|change|fix)|losing money|leak\w*|what can i improve|any (?:ideas|suggestions)|spot(?:ted)? anything)\b|מה שמת לב|איפה אני מפסיד/i },
   { topic: "needs_you", about: /\b(needs? me|need(?:s)? my|waiting (?:on|for) me|my (?:approval|decision)|for me to decide|approvals?)\b|צריך אותי/i },
   { topic: "operation", about: /\b(recovery|operation|campaign|follow[\s-]?ups?) (?:i|you) (?:started|ran|asked)|\bhappened with the (?:recovery|follow[\s-]?ups?|carts?|abandoned)|\bhow (?:is|did) the (?:recovery|follow[\s-]?ups?)\b/i },
   { topic: "working", about: /\b(working on|are you doing|busy with|in progress|status|what'?s happening|what'?s going on)\b|על מה אתה עובד/i },
@@ -92,6 +94,7 @@ export function interpretCommand(text: string, source: CommandSource = "web"): O
     const subject = customerHint(t);
     if (topic === "operation" || (work && (QUESTION.test(t) || /\bhappened\b|\bstatus\b/i.test(t)) && topic !== "money" && topic !== "needs_you")) return { kind: "query", topic: "operation", ...(work ? { workflow: work } : {}) };
     if (subject && !topic) return { kind: "query", topic: "customer", subject };
+    if (topic === "initiatives") return { kind: "query", topic, ...(/\b(money|losing|leak\w*|cost\w*|revenue)\b/i.test(t) ? { subject: "money" } : {}) };
     if (topic) return { kind: "query", topic, ...(subject && topic !== "money" ? { subject } : {}) };
     return { kind: "query", topic: "general" };
   })();

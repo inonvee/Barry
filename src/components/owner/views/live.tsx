@@ -1,10 +1,13 @@
 "use client";
 
+import { useState } from "react";
+
 import Link from "next/link";
 import type { OwnerWorkspace } from "@/lib/owner/service";
 import type { ActivityItem, Workflow } from "@/lib/owner/control-room";
 import type { OwnerReply } from "@/lib/owner/command-service";
 import { STATE_WORDS, type OwnerOperationView } from "@/lib/owner/operation-model";
+import type { InitiativeView } from "@/lib/initiative/model";
 import type { Intervention } from "@/lib/owner/interventions";
 import { hasMoney } from "@/lib/format/money";
 import type { Money } from "@/lib/owner/revenue";
@@ -232,5 +235,79 @@ export function ActivityStream({ items, onOpen, empty }: { items: ActivityItem[]
         );
       })}
     </ol>
+  );
+}
+
+/**
+ * BARRY NOTICED — one high-signal initiative at a time, only when a scan persisted one with evidence.
+ * Nothing renders when there is nothing (the interface stays quiet). "Do this" runs the recommended
+ * command through the normal owner command service; it is never a shortcut.
+ */
+export type InitiativeAct = (id: string, action: "review" | "dismiss" | "snooze" | "act") => Promise<OwnerReply | void>;
+
+export function NoticedCard({ items, onAct, onAsk }: { items: InitiativeView[]; onAct: InitiativeAct; onAsk: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [reply, setReply] = useState<string | null>(null);
+  const i = items[0];
+  if (!i) return null;
+  const run = async (action: Parameters<InitiativeAct>[1]) => {
+    setBusy(true);
+    try {
+      const r = await onAct(i.id, action);
+      if (r) setReply(r.text);
+    } catch (e) {
+      setReply(e instanceof Error ? e.message : "Something went wrong — nothing was changed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const a = i.recommendation.action;
+  return (
+    <section className="o-panel o-rise rounded-[22px] p-5 ring-1 ring-inset ring-o-violet/25" aria-labelledby="noticed" data-initiative={i.id}>
+      <h2 id="noticed" className="flex items-center gap-2 text-[11.5px] font-semibold uppercase tracking-[0.18em] text-o-violet">
+        <Icon name="spark" size={14} /> BARRY noticed
+        <span className="ml-auto text-[11px] font-medium normal-case tracking-normal text-o-faint">{i.importanceWords}</span>
+      </h2>
+      <p className="mt-2.5 text-[15px] font-semibold leading-6 text-o-ink">{i.title}</p>
+      <p className="mt-1 text-[13.5px] leading-6 text-o-ink-2">{i.observation}</p>
+      <p className="mt-1.5 text-[11.5px] text-o-faint">{i.basis}{i.testData ? " · test data" : ""}</p>
+      {open && (
+        <div className="mt-3 rounded-xl bg-o-sunken/70 p-3 text-[13px] leading-6 text-o-ink-2 ring-1 ring-inset ring-o-line">
+          <p>{i.recommendation.text}</p>
+          {i.impact.note && <p className="mt-1 text-[12px] text-o-faint">{i.impact.note}</p>}
+          {i.entitlement === "not_included" && <p className="mt-1 text-[12px] text-o-faint">BARRY can&apos;t do this on your current plan — it&apos;s a recommendation only.</p>}
+        </div>
+      )}
+      {reply && <p className="mt-3 whitespace-pre-wrap rounded-xl bg-o-surface/80 p-3 text-[13px] leading-6 text-o-ink-2 ring-1 ring-inset ring-o-line">{reply}</p>}
+      <div className="mt-3.5 flex flex-wrap gap-2">
+        {i.canAct && a?.kind === "command" ? (
+          <button type="button" disabled={busy} onClick={() => void run("act")} className="inline-flex min-h-9 items-center rounded-xl bg-o-accent px-3.5 text-[13px] font-semibold text-white transition hover:brightness-110 disabled:opacity-50">
+            {a.label}
+          </button>
+        ) : a?.kind === "link" ? (
+          <Link href={a.href} className="inline-flex min-h-9 items-center rounded-xl bg-o-surface px-3.5 text-[13px] font-semibold text-o-ink ring-1 ring-inset ring-o-line-strong hover:ring-o-accent/50">
+            {a.label}
+          </Link>
+        ) : null}
+        {!open && (
+          <button type="button" disabled={busy} onClick={() => { setOpen(true); void run("review"); }} className="inline-flex min-h-9 items-center rounded-xl px-3 text-[13px] font-medium text-o-ink-2 hover:text-o-ink">
+            Review
+          </button>
+        )}
+        <button type="button" onClick={onAsk} className="inline-flex min-h-9 items-center rounded-xl px-3 text-[13px] font-medium text-o-ink-2 hover:text-o-ink">
+          Ask BARRY
+        </button>
+        <span className="ml-auto flex gap-1">
+          <button type="button" disabled={busy} onClick={() => void run("snooze")} className="rounded-lg px-2 py-1.5 text-[12.5px] text-o-faint hover:text-o-ink">Snooze</button>
+          <button type="button" disabled={busy} onClick={() => void run("dismiss")} className="rounded-lg px-2 py-1.5 text-[12.5px] text-o-faint hover:text-o-ink">Dismiss</button>
+        </span>
+      </div>
+      {items.length > 1 && (
+        <button type="button" onClick={onAsk} className="mt-2 text-[12.5px] font-medium text-o-violet hover:underline">
+          +{items.length - 1} more BARRY noticed
+        </button>
+      )}
+    </section>
   );
 }

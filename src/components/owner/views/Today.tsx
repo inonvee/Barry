@@ -12,7 +12,7 @@ import { formatMoney, StateNotice } from "../ui";
 import type { Act } from "../operating";
 import { BarryOrb, Bars, CommandBar, HeaderLink, Icon, LiveDot, StageTitle, type IconName } from "../kit";
 import { WhatsAppCard } from "../OwnerShell";
-import { ActivityStream, CommandReply, MotionStrip, NeedsYouFloat, OperationFlow, WorkflowFlow } from "./live";
+import { ActivityStream, CommandReply, MotionStrip, NeedsYouFloat, NoticedCard, OperationFlow, WorkflowFlow, type InitiativeAct } from "./live";
 import { greeting, plural, type Tab } from "./shared";
 
 /**
@@ -49,7 +49,7 @@ export function todayStory(ws: OwnerWorkspace) {
   return { did, working: `${working} ${needLine}`, things, needs };
 }
 
-export function TodayView({ ws, act, busyId, loading, onOpen, onIntervention, onTab, onCommand }: { ws: OwnerWorkspace; act: Act; busyId: string | null; loading: boolean; onOpen: (id: string) => void; onIntervention: (id?: string) => void; onTab: (t: Tab) => void; onCommand?: RunCommand }) {
+export function TodayView({ ws, act, busyId, loading, onOpen, onIntervention, onTab, onCommand, onInitiative, onAsk }: { ws: OwnerWorkspace; act: Act; busyId: string | null; loading: boolean; onOpen: (id: string) => void; onIntervention: (id?: string) => void; onTab: (t: Tab) => void; onCommand?: RunCommand; onInitiative?: InitiativeAct; onAsk?: (q: string) => void }) {
   const [text, setText] = useState("");
   const [exchange, setExchange] = useState<{ text: string; reply: OwnerReply } | null>(null);
   const [sending, setSending] = useState(false);
@@ -183,6 +183,7 @@ export function TodayView({ ws, act, busyId, loading, onOpen, onIntervention, on
 
         <aside className="order-1 flex flex-col gap-6 lg:sticky lg:top-20 lg:order-2">
           <NeedsYouFloat ws={ws} act={act} busyId={busyId} onReview={(id) => onIntervention(id)} />
+          {onInitiative && <NoticedCard items={ws.initiatives} onAct={onInitiative} onAsk={() => onAsk?.("What did you notice?")} />}
           <section aria-labelledby="happened" className="px-1">
             <StageTitle>
               <span id="happened">Just happened</span>
