@@ -3,6 +3,8 @@ import type { BusinessGraph } from "@/lib/business-graph";
 import { getPolicy, isActionAvailable } from "@/lib/business-graph";
 import { decideCapability } from "./authority";
 import { discountPolicyOf } from "./effective-rules";
+import { currentEntitlement, entitlementFor, PLAN_POLICY_ID } from "@/lib/commercial/entitlements";
+import type { Feature, PlanId } from "@/lib/commercial/plans";
 
 export type PolicyStatus = "allowed" | "requires_approval" | "denied";
 
@@ -26,6 +28,8 @@ export type PolicyDecision = {
   reason: string;
   policyId?: string;
   authority?: DiscountAuthorityTrace;
+  /** Set when the customer's plan does not include this action (status is then "denied" → UNAVAILABLE). */
+  entitlement?: { plan: PlanId; feature: Feature; unlockedBy: PlanId | null };
 };
 
 /**
@@ -59,6 +63,16 @@ export type ActionRequest =
  * availableActions, never by business type.
  */
 export function decide(graph: BusinessGraph, request: ActionRequest): PolicyDecision {
+  const authority = decideByAuthority(graph, request);
+  // AUTHORITY denies → denied, whatever the plan says. Otherwise the PLAN may only take availability
+  // away: an action the customer didn't buy is unavailable — never an owner request.
+  if (authority.status === "denied") return authority;
+  const plan = entitlementFor(currentEntitlement(graph.business.id), request.action, request.params as Record<string, unknown>);
+  if (plan.included) return authority;
+  return { status: "denied", reason: plan.reason, policyId: PLAN_POLICY_ID, entitlement: { plan: plan.plan, feature: plan.feature, unlockedBy: plan.unlockedBy } };
+}
+
+function decideByAuthority(graph: BusinessGraph, request: ActionRequest): PolicyDecision {
   const base = decideByBusinessRules(graph, request);
   // The founder's controls run AFTER the business's own rules and only ever tighten them.
   const founder = applyFounderControls(currentControls(graph.business.id), request.action, request.params as Record<string, unknown>, base);

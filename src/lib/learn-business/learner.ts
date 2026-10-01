@@ -190,7 +190,7 @@ export class OpenAIBusinessLearner implements BusinessLearner {
       ],
       response_format: { type: "json_schema", json_schema: learnJsonSchema() },
       ...samplingParams(this.model, "reasoner", 0),
-    });
+    }, "learner");
     const raw = completion.choices[0]?.message?.content;
     if (!raw) return [];
     try {

@@ -224,7 +224,13 @@ export type OperatorRecordKind =
   | "runtime_assignment"
   | "hq_proposal"
   | "execution_attempt"
-  | "channel_identity";
+  | "channel_identity"
+  | "commercial_account"
+  | "commercial_event"
+  | "commercial_request"
+  | "cost_record"
+  | "model_usage"
+  | "support_time";
 
 export type OperatorRecord = {
   id: string;

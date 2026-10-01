@@ -21,6 +21,9 @@ import { checkInfoRequest, infoRequestFields } from "@/lib/reasoner/reply-contra
 import { composeDeterministic, handoffText, understandingUnavailableText, intentHeldText, revalidatedChangeText } from "@/lib/reasoner/deterministic-compose";
 import { createHandoff, handoffPath } from "./handoff";
 import { loadControls } from "@/lib/hq/controls";
+import { loadEntitlement } from "@/lib/commercial/account";
+import { withUsageMeter } from "@/lib/commercial/usage-meter";
+import { recordModelUsage } from "@/lib/commercial/cost";
 import { QA_FORCE_UNDERSTANDING_FAILURE, qaEnabled } from "@/lib/qa/mode";
 import { findInternalLeak, internalVocabulary } from "@/lib/reasoner/reply-hygiene";
 import { claimEvidence, findMisattributedReferences, findUnsupportedClaims, languageMismatch, trimClosers } from "@/lib/reasoner/claim-grounding";
@@ -345,6 +348,22 @@ export async function handleCustomerMessage(
   customerId: string,
   message: string
 ): Promise<TurnOutcome> {
+  // Cost-to-serve: every model call this turn makes is metered (provider-reported tokens) and recorded.
+  return meteredTurn(staticGraph.business.id, conversationId, () => handleCustomerMessageUnmetered(staticGraph, conversationId, customerId, message));
+}
+
+async function meteredTurn(businessId: string, conversationId: string, run: () => Promise<TurnOutcome>): Promise<TurnOutcome> {
+  const { result, calls } = await withUsageMeter(run);
+  if (calls.length) await recordModelUsage(businessId, { conversationId: result.state?.id ?? conversationId, turnId: result.turn?.id }, calls);
+  return result;
+}
+
+async function handleCustomerMessageUnmetered(
+  staticGraph: BusinessGraph,
+  conversationId: string,
+  customerId: string,
+  message: string
+): Promise<TurnOutcome> {
   // THE effective runtime contract: the static profile + the owner's approved, compiled teaching. The
   // same graph feeds the reasoner context, the policy engine and the trace — never the static one alone.
   const graph = await effectiveGraph(staticGraph);
@@ -378,6 +397,8 @@ export async function handleCustomerMessage(
   // The founder's controls for this business (pause, supervision, paused capabilities) are read before
   // any authority decision this turn.
   await loadControls(graph.business.id);
+  // The plan the customer bought (commercial entitlement) — it can only take availability away.
+  await loadEntitlement(graph.business.id);
   const grounded: GroundedContext = (await buildGroundedContext(graph, state, ctx, profiles)) ?? {};
   // The business's OWN capability surface (beyond the typed flows) and what earlier calls returned:
   // the model reasons over these; it never selects a system and never grants itself authority.
@@ -1588,6 +1609,16 @@ export async function resumeAfterApproval(
   decidedBy: string,
   alternateValue?: unknown
 ): Promise<TurnOutcome> {
+  return meteredTurn(staticGraph.business.id, `approval:${approvalId}`, () => resumeAfterApprovalUnmetered(staticGraph, approvalId, decision, decidedBy, alternateValue));
+}
+
+async function resumeAfterApprovalUnmetered(
+  staticGraph: BusinessGraph,
+  approvalId: string,
+  decision: "approved" | "declined",
+  decidedBy: string,
+  alternateValue?: unknown
+): Promise<TurnOutcome> {
   const graph = await effectiveGraph(staticGraph);
   const backend = getBackend();
 
@@ -1602,6 +1633,8 @@ export async function resumeAfterApproval(
   const existing = await backend.getApproval(approvalId);
   if (!existing) throw new Error(`Approval ${approvalId} not found`);
   await loadControls(graph.business.id);
+  // The plan the customer bought (commercial entitlement) — it can only take availability away.
+  await loadEntitlement(graph.business.id);
   const alreadyResolved = async (): Promise<TurnOutcome> => {
     const current = (await backend.getApproval(approvalId)) ?? existing;
     const store = getConversationStore();

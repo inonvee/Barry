@@ -1,3 +1,5 @@
+import { loadEntitlement } from "@/lib/commercial/account";
+import { hasFeature } from "@/lib/commercial/entitlements";
 import type { BusinessGraph } from "@/lib/business-graph";
 import { getBackend } from "@/lib/store";
 import { getConversationStore, type ConversationState } from "@/lib/state";
@@ -65,7 +67,9 @@ export async function runObligationExecutor(graph: BusinessGraph, opts: { now?: 
   const candidates = obligations.filter((o) => isOpen(o) && o.nextMove === "barry_can_act" && ruleFor(policy, o.kind)).slice(0, opts.limit ?? 10);
 
   // Authority re-check: a paused business sends nothing proactive.
-  const blocked = controls.pauseConsequentialWrites ? "consequential actions are paused by the founder" : controls.pausedBusiness ? "the business is paused by the founder" : controls.safeMode ? "safe mode: proactive messages are off" : controls.disabledChannels.length && candidates.every((o) => controls.disabledChannels.includes(channelOf(o.conversationId))) && candidates.length ? "every channel is disabled" : undefined;
+  // The plan: proactive follow-ups are an Operator feature — a plan without them sends nothing proactive.
+  const planBlocked = !hasFeature(await loadEntitlement(businessId), "proactive_followups") ? "proactive follow-ups are not included in this business's plan" : undefined;
+  const blocked = planBlocked ?? (controls.pauseConsequentialWrites ? "consequential actions are paused by the founder" : controls.pausedBusiness ? "the business is paused by the founder" : controls.safeMode ? "safe mode: proactive messages are off" : controls.disabledChannels.length && candidates.every((o) => controls.disabledChannels.includes(channelOf(o.conversationId))) && candidates.length ? "every channel is disabled" : undefined);
   if (blocked) return { businessId, at, considered: candidates.length, acted: 0, results: candidates.map((o) => ({ key: o.key, kind: o.kind, outcome: "skipped", why: blocked })), blocked };
 
   let acted = 0;

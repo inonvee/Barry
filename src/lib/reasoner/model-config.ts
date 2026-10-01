@@ -1,4 +1,5 @@
 import type OpenAI from "openai";
+import { meterModelCall, type ModelCallRole } from "@/lib/commercial/usage-meter";
 
 /**
  * Which model does which job. Understanding (customer conversation ->
@@ -70,7 +71,23 @@ type ChatParams = OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming
  * (models differ; a new model id should not take BARRY down), retry ONCE
  * without those parameters — the request itself is otherwise unchanged.
  */
-export async function createCompletion(client: OpenAI, params: ChatParams): Promise<OpenAI.Chat.Completions.ChatCompletion> {
+export async function createCompletion(client: OpenAI, params: ChatParams, role: ModelCallRole = "composer"): Promise<OpenAI.Chat.Completions.ChatCompletion> {
+  const completion = await createCompletionRaw(client, params);
+  // Cost-to-serve: what the provider reported for this call (counted only inside a metered turn).
+  const u = completion.usage;
+  meterModelCall({
+    model: completion.model ?? params.model,
+    role,
+    inputTokens: u?.prompt_tokens ?? 0,
+    outputTokens: u?.completion_tokens ?? 0,
+    cachedTokens: u?.prompt_tokens_details?.cached_tokens ?? 0,
+    reasoningTokens: u?.completion_tokens_details?.reasoning_tokens ?? 0,
+    providerReported: Boolean(u),
+  });
+  return completion;
+}
+
+async function createCompletionRaw(client: OpenAI, params: ChatParams): Promise<OpenAI.Chat.Completions.ChatCompletion> {
   try {
     return await client.chat.completions.create(params);
   } catch (err) {

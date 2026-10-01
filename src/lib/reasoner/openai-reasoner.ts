@@ -932,7 +932,7 @@ export class OpenAIReasoner implements Reasoner {
           ],
           response_format: { type: "json_schema", json_schema: irJsonSchema() },
           ...samplingParams(this.model, "reasoner", 0.2, this.reasoningEffort),
-        });
+        }, "reasoner");
         usage.promptTokens += completion.usage?.prompt_tokens ?? 0;
         usage.completionTokens += completion.usage?.completion_tokens ?? 0;
         usage.reasoningTokens += completion.usage?.completion_tokens_details?.reasoning_tokens ?? 0;
@@ -996,7 +996,7 @@ export class OpenAIReasoner implements Reasoner {
         ],
         response_format: { type: "json_schema", json_schema: POLICY_CHECK_SCHEMA },
         ...samplingParams(this.composerModel, "composer", 0, this.composerReasoningEffort),
-      });
+      }, "checker");
       const raw = completion.choices[0]?.message?.content;
       if (!raw) return undefined;
       const parsed = JSON.parse(raw) as { contradictions?: PolicyContradiction[] };
@@ -1019,7 +1019,7 @@ export class OpenAIReasoner implements Reasoner {
         ],
         response_format: { type: "json_schema", json_schema: ASK_COVERAGE_SCHEMA },
         ...samplingParams(this.composerModel, "composer", 0, this.composerReasoningEffort),
-      });
+      }, "checker");
       const raw = completion.choices[0]?.message?.content;
       if (!raw) return undefined;
       const parsed = JSON.parse(raw) as { missing?: unknown };
