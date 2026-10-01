@@ -113,6 +113,18 @@ export function acceptConversation<State extends { id: string; businessId: strin
   return next.updatedAt >= held.updatedAt;
 }
 
+/**
+ * Out-of-band changes (an owner approving on WhatsApp or the web, a background continuation) persist new
+ * messages / state on a conversation the open page does not know about. The page re-reads it on a short,
+ * bounded poll: fast while the conversation waits on something outside the page (an owner decision), slow
+ * otherwise. Reading never writes, so the poll cannot cause an effect.
+ */
+export const POLL_WAITING_MS = 3_000;
+export const POLL_IDLE_MS = 15_000;
+export function pollIntervalMs(state: { pendingApprovalId?: string | null } | null): number {
+  return state?.pendingApprovalId ? POLL_WAITING_MS : POLL_IDLE_MS;
+}
+
 /** Key for remounting business-scoped components (drafts, selected Inspector turn) when the scope changes. */
 export function scopeKey(scope: SimulatorScope | null): string {
   return scope ? `${scope.businessId}/${scope.conversationId}` : "none";

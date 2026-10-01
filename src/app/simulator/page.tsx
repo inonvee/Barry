@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { TestShell } from "@/components/shell/TestShell";
 import { useBusiness } from "@/components/shell/useBusiness";
@@ -15,6 +15,7 @@ import {
   createConversationId,
   getOrCreateCustomerId,
   getStoredConversationId,
+  pollIntervalMs,
   scopeKey,
   setStoredConversationId,
   simulatorView,
@@ -84,6 +85,43 @@ export default function SimulatorPage() {
       cancelled = true;
     };
   }, [scope, setConversation]);
+
+  // Observe persisted changes made outside this page (owner approval on WhatsApp / web, background
+  // continuation): re-read the scoped conversation on a bounded poll. It pauses while a send is in flight
+  // (the send response is authoritative and the optimistic message is on screen), while the tab is hidden,
+  // and stops on unmount or scope change. acceptConversation drops anything stale or foreign, and replacing
+  // the state in place keeps the chat draft and avoids duplicate messages (they come from one persisted list).
+  const sendingRef = useRef(false);
+  useEffect(() => {
+    sendingRef.current = sending;
+  }, [sending]);
+  const hasConversation = state !== null;
+  const waiting = Boolean(state?.pendingApprovalId);
+  useEffect(() => {
+    if (!scope || !hasConversation) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      if (!cancelled && !sendingRef.current && document.visibilityState === "visible") {
+        try {
+          const r = await fetch(`/api/simulator/conversation?businessId=${encodeURIComponent(scope.businessId)}&conversationId=${encodeURIComponent(scope.conversationId)}`, { cache: "no-store" });
+          const d = await r.json().catch(() => ({}));
+          if (!cancelled && !sendingRef.current && d.state) {
+            setConversation(scope, d.state);
+            refreshApprovals(scope.businessId);
+          }
+        } catch {
+          /* transient: try again on the next tick */
+        }
+      }
+      if (!cancelled) timer = setTimeout(tick, pollIntervalMs(waiting ? { pendingApprovalId: "x" } : null));
+    };
+    timer = setTimeout(tick, pollIntervalMs(waiting ? { pendingApprovalId: "x" } : null));
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [scope, hasConversation, waiting, setConversation, refreshApprovals]);
 
   useEffect(() => {
     if (!businessId) return;
