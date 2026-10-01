@@ -1,6 +1,7 @@
 import type { BusinessGraph } from "@/lib/business-graph";
 import { getBackend } from "@/lib/store";
 import { effectiveGraph } from "@/lib/policy/effective";
+import { whatsappConfig, whatsappNumbersFor } from "@/lib/channels/whatsapp";
 import { loadEntitlement } from "@/lib/commercial/account";
 import { hasFeature } from "@/lib/commercial/entitlements";
 import { PLAN_CATALOG } from "@/lib/commercial/plans";
@@ -92,6 +93,25 @@ export type OwnerApproval = {
   resultReference?: string;
 };
 
+/**
+ * Channels, owner-safe: how customers reach BARRY on WhatsApp for this business (from the real routing
+ * configuration), and whether the owner can command BARRY by WhatsApp — not built in this version, so
+ * always "not_connected" until the Owner Command Channel ships.
+ */
+export type OwnerChannels = {
+  customerWhatsapp: "live" | "dry_run" | "not_routed" | "not_configured";
+  ownerCommands: "connected" | "not_connected";
+};
+
+export function ownerChannels(businessId: string): OwnerChannels {
+  const wa = whatsappConfig();
+  const routed = whatsappNumbersFor(businessId).length > 0;
+  return {
+    customerWhatsapp: !wa.configured ? "not_configured" : !routed ? "not_routed" : wa.sendMode === "live" ? "live" : "dry_run",
+    ownerCommands: "not_connected",
+  };
+}
+
 export type OwnerWorkspace = {
   business: { id: string; name: string; timezone: string; locale: string };
   window: { since: string; label: string };
@@ -124,6 +144,7 @@ export type OwnerWorkspace = {
   capabilities: ReturnType<typeof capabilitySummary>;
   /** The plan (owner-safe): its name and whether BARRY Margins is included. Never economics. */
   plan: { name: string | null; marginsIncluded: boolean };
+  channels: OwnerChannels;
   /** Sources that could not be read (shown, never zeroed). */
   unavailable: string[];
 };
@@ -330,6 +351,7 @@ export async function getOwnerWorkspace(staticGraph: BusinessGraph, opts: { sinc
       const e = await loadEntitlement(businessId);
       return { name: e.plan ? PLAN_CATALOG[e.plan].name : null, marginsIncluded: hasFeature(e, "margins") };
     }, { name: null, marginsIncluded: false }),
+    channels: ownerChannels(businessId),
     unavailable,
   };
 }

@@ -6,6 +6,7 @@ import { OwnerShell } from "@/components/owner/OwnerShell";
 import { TrainBarry } from "@/components/owner/TrainBarry";
 import { Pill, Section, Skeleton, StateNotice, quiet, type Tone } from "@/components/owner/ui";
 import { SetupPlan } from "@/components/owner/train-plan";
+import { Hero, Panel } from "@/components/owner/kit";
 import type { getTrainingProfile } from "@/lib/owner/training";
 import type { PilotLevel, ReadinessCheck } from "@/lib/owner/readiness";
 import type { BusinessNeed, NeedArea, SetupStep } from "@/lib/owner/capabilities";
@@ -40,19 +41,19 @@ function AreaCard({ area, needs, steps }: { area: NeedArea; needs: BusinessNeed[
   const label = tone === "good" ? "Ready" : missing.length && !real.length && !sim.length ? "Not set up" : sim.length && !missing.length ? "Simulator only" : "Partly ready";
   const unlockSteps = [...new Set(needs.flatMap((n) => n.blockedBy))].map((id) => steps.find((s) => s.id === id)).filter((s): s is SetupStep => Boolean(s));
   return (
-    <div className="rounded-2xl bg-white p-4 md:p-5">
+    <div className="o-panel rounded-2xl p-4 md:p-5">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-[15px] font-semibold">{AREA[area]}</h3>
         <Pill tone={tone}>{label}</Pill>
       </div>
       {real.length > 0 && (
         <div className="mt-3">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#667085]">BARRY can</p>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-o-muted">BARRY can</p>
           <ul className="mt-1 space-y-1.5">
             {real.map((n) => (
               <li key={n.id} className="text-[14px]">
-                <span className="text-[#101828]">{n.title}</span>
-                <span className="block text-[12px] text-[#667085]">{authorityWords(n)}{n.provider ? ` · via ${n.provider}` : ""}</span>
+                <span className="text-o-ink">{n.title}</span>
+                <span className="block text-[12px] text-o-muted">{authorityWords(n)}{n.provider ? ` · via ${n.provider}` : ""}</span>
               </li>
             ))}
           </ul>
@@ -60,12 +61,12 @@ function AreaCard({ area, needs, steps }: { area: NeedArea; needs: BusinessNeed[
       )}
       {sim.length > 0 && (
         <div className="mt-3">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#b54708]">On a simulator only — nothing real happens yet</p>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-o-warn">On a simulator only — nothing real happens yet</p>
           <ul className="mt-1 space-y-1.5">
             {sim.map((n) => (
               <li key={n.id} className="text-[14px]">
-                <span className="text-[#101828]">{n.title}</span>
-                <span className="block text-[12px] text-[#667085]">{authorityWords(n)}</span>
+                <span className="text-o-ink">{n.title}</span>
+                <span className="block text-[12px] text-o-muted">{authorityWords(n)}</span>
               </li>
             ))}
           </ul>
@@ -73,27 +74,27 @@ function AreaCard({ area, needs, steps }: { area: NeedArea; needs: BusinessNeed[
       )}
       {missing.length > 0 && (
         <div className="mt-3">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#b42318]">Can&apos;t yet</p>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-o-bad">Can&apos;t yet</p>
           <ul className="mt-1 space-y-1.5">
             {missing.map((n) => (
               <li key={n.id} className="text-[14px]">
-                <span className="text-[#101828]">{n.title}</span>
-                <span className="block text-[12px] text-[#667085]">{n.detail}</span>
+                <span className="text-o-ink">{n.title}</span>
+                <span className="block text-[12px] text-o-muted">{n.detail}</span>
               </li>
             ))}
           </ul>
         </div>
       )}
       {unlockSteps.length > 0 && (
-        <div className="mt-3 rounded-xl bg-[#f9fafb] px-3 py-2.5">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#667085]">To unlock</p>
+        <div className="mt-3 rounded-xl bg-o-sunken/60 px-3 py-2.5 ring-1 ring-inset ring-o-line">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-o-muted">To unlock</p>
           <ul className="mt-1 space-y-1">
             {unlockSteps.map((s) => (
               <li key={s.id} className="text-[13px]">
-                <a href={`#step-${s.id}`} className="font-medium text-[#101828] underline-offset-2 hover:underline">
+                <a href={`#step-${s.id}`} className="font-medium text-o-ink underline-offset-2 hover:underline">
                   {s.title}
                 </a>
-                <span className="text-[#667085]"> → then BARRY can {s.unlocks.slice(0, 3).map((u) => u.toLowerCase()).join(", ")}</span>
+                <span className="text-o-muted"> → then BARRY can {s.unlocks.slice(0, 3).map((u) => u.toLowerCase()).join(", ")}</span>
               </li>
             ))}
           </ul>
@@ -109,8 +110,8 @@ function Rows({ rows }: { rows: [string, string][] }) {
     <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-[10rem_1fr]">
       {rows.map(([k, v]) => (
         <div key={k} className="contents">
-          <dt className="text-[#667085]">{k}</dt>
-          <dd className="break-words text-[#101828]">{v}</dd>
+          <dt className="text-o-muted">{k}</dt>
+          <dd className="break-words text-o-ink">{v}</dd>
         </div>
       ))}
     </dl>
@@ -150,35 +151,31 @@ export default function TrainBarryPage() {
   return (
     <OwnerShell api={api} active="train">
       <div className="flex flex-col gap-5">
-        <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#667085]">Train BARRY · {api.business?.name ?? "—"}</p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight md:text-3xl">{a ? (a.afterSetup.length === 0 ? "BARRY is fully trained for your business" : `${a.now.length} thing${a.now.length === 1 ? "" : "s"} BARRY does for real · ${a.afterSetup.length} to unlock`) : "What BARRY knows and can do"}</h1>
-          <p className="mt-1 text-sm text-[#667085]">You are teaching an operator, not filling in a form: what BARRY knows, what it may do on its own, and what it should ask you first — all from what it actually runs on.</p>
-        </div>
+        <Hero eyebrow={`Train BARRY · ${api.business?.name ?? "—"}`} title={a ? (a.afterSetup.length === 0 ? <>BARRY is <span className="o-hero-type">fully trained.</span></> : <><span className="o-hero-type">{a.now.length} thing{a.now.length === 1 ? "" : "s"}</span> BARRY does for real · {a.afterSetup.length} to unlock</>) : "What BARRY knows and can do"} lead="Like teaching a new employee: the rules BARRY follows, what it knows, what it's unsure about, and where that knowledge came from." />
         {error && <StateNotice tone="bad" title="Couldn't load BARRY's training profile">{error}</StateNotice>}
         {authorized && !p && !error && (
-          <div className="rounded-2xl bg-white p-5">
+          <Panel className="p-5">
             <Skeleton lines={4} />
-          </div>
+          </Panel>
         )}
 
         {r && (
-          <section className="rounded-2xl bg-[#1d2939] p-4 text-white md:p-5">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-white/60">Where BARRY stands</p>
-            <p className="mt-1 text-xl font-semibold">{r.label}</p>
-            <ol className="mt-3 grid grid-cols-2 gap-1.5 sm:grid-cols-4" aria-label="Readiness levels">
+          <Panel className="p-4 md:p-5">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-o-muted">Where BARRY stands</p>
+            <p className="mt-1 text-xl font-semibold text-o-ink">{r.label}</p>
+            <ol className="mt-4 grid grid-cols-4 gap-1.5" aria-label="Readiness levels">
               {LEVELS.map((l) => {
                 const reached = LEVELS.indexOf(l) <= LEVELS.indexOf(r.level);
                 return (
-                  <li key={l} className={`rounded-lg px-2.5 py-1.5 text-[13px] ${reached ? "bg-white text-[#101828]" : "bg-white/10 text-white/70"}`}>
-                    {reached ? "✓ " : ""}
-                    {LEVEL_SHORT[l]}
+                  <li key={l} className="min-w-0">
+                    <span className={`block h-1.5 rounded-full ${reached ? "bg-gradient-to-r from-o-accent to-o-violet" : "bg-o-sunken"}`} />
+                    <span className={`mt-1.5 block truncate text-[11.5px] ${reached ? "font-medium text-o-ink" : "text-o-faint"}`}>{LEVEL_SHORT[l]}</span>
                   </li>
                 );
               })}
             </ol>
-            {r.next && <p className="mt-3 text-[13px] text-white/80">Next: {r.next.label} — {r.next.blockers.length} thing{r.next.blockers.length === 1 ? "" : "s"} left, all in the plan below.</p>}
-          </section>
+            {r.next && <p className="mt-3 text-[13px] text-o-ink-2">Next: {r.next.label} — {r.next.blockers.length} thing{r.next.blockers.length === 1 ? "" : "s"} left, all in the plan below.</p>}
+          </Panel>
         )}
 
         <TrainBarry api={api} />
@@ -202,10 +199,10 @@ export default function TrainBarryPage() {
           <Section title="What BARRY knows" subtitle="From your business profile." right={<button className={quiet} onClick={() => setShowDetails((v) => !v)}>{showDetails ? "Less" : "Details"}</button>}>
             <Rows rows={[["Business", `${s.identity.data.name} — ${s.identity.data.description}`], ["Goals", s.goals.data.join(", ") || "—"], ["Offers", s.offers.data.offers.length ? s.offers.data.offers.map((o) => `${o.name} (${o.price})`).join(", ") : "none yet"], ["Policies it quotes", s.offers.data.knowledge.map((k) => k.topic).join(", ") || "none yet"], ["Your limits", s.authority.data.policies.join(" ") || "no limits set yet"], ["How it sells", s.personality.data.salesStyle], ["Handing off to you", s.personality.data.handoff]]} />
             {showDetails && (
-              <div className="mt-4 space-y-4 border-t border-[#f2f4f7] pt-4">
+              <div className="mt-4 space-y-4 border-t border-o-line pt-4">
                 <Rows rows={[["Language", s.identity.data.language], ["Time zone", s.identity.data.timezone], ["Opening hours", s.identity.data.hours], ["Tone", s.personality.data.tone], ["Suggestions", s.personality.data.suggestions], ["Checkout", s.personality.data.checkout], ["Checkout needs", s.personality.data.checkoutDetails]]} />
                 {s.authority.data.rules.length > 0 && (
-                  <ul className="divide-y divide-[#f2f4f7] text-sm">
+                  <ul className="divide-y divide-o-line text-sm">
                     {s.authority.data.rules.map((rule, i) => (
                       <li key={i} className="flex flex-wrap items-center justify-between gap-2 py-2">
                         <span>{rule.capability}</span>
@@ -217,12 +214,12 @@ export default function TrainBarryPage() {
                   </ul>
                 )}
                 <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#667085]">Systems</p>
-                  <ul className="mt-1 divide-y divide-[#f2f4f7] text-sm">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-o-muted">Systems</p>
+                  <ul className="mt-1 divide-y divide-o-line text-sm">
                     {s.stack.data.map((c) => (
                       <li key={c.domain} className="flex items-center justify-between gap-2 py-2">
                         <span className="capitalize">{c.domain}</span>
-                        <span className="flex items-center gap-2 text-[12px] text-[#667085]">
+                        <span className="flex items-center gap-2 text-[12px] text-o-muted">
                           {c.provider ?? "none"}
                           <Pill tone={c.state === "connected" ? "good" : c.state === "simulated" || c.state === "dry run" ? "warn" : "neutral"}>{c.state.replace(/_/g, " ")}</Pill>
                         </span>
@@ -232,16 +229,16 @@ export default function TrainBarryPage() {
                 </div>
                 {r && (
                   <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#667085]">Readiness test (every requirement, checked against the running system)</p>
-                    <ul className="mt-1 divide-y divide-[#f2f4f7]">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-o-muted">Readiness test (every requirement, checked against the running system)</p>
+                    <ul className="mt-1 divide-y divide-o-line">
                       {r.checks.map((c) => (
                         <li key={c.id} className="flex flex-col gap-1 py-2 sm:flex-row sm:items-start sm:justify-between">
                           <div className="min-w-0">
                             <p className="text-sm font-medium">{c.label}</p>
-                            <p className="text-[13px] text-[#475467]">{c.detail}</p>
+                            <p className="text-[13px] text-o-ink-2">{c.detail}</p>
                           </div>
                           <div className="flex shrink-0 items-center gap-2">
-                            <span className="text-[12px] text-[#98a2b3]">{LEVEL_SHORT[c.gate]}</span>
+                            <span className="text-[12px] text-o-faint">{LEVEL_SHORT[c.gate]}</span>
                             <Pill tone={CHECK_TONE[c.status].tone}>{CHECK_TONE[c.status].label}</Pill>
                           </div>
                         </li>

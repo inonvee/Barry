@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import type { useOwnerApi } from "./useOwnerApi";
 import { Section, Skeleton, StateNotice, btn } from "./ui";
-import { StatusPill } from "@/components/ds/primitives";
+import { Pill } from "./ui";
+import { BigMetric } from "./kit";
 import { moneyWords } from "@/lib/format/money";
 import type { OwnerPlanView } from "@/lib/commercial/service";
 
@@ -45,46 +46,50 @@ export function PlanAndValue({ api }: { api: Api }) {
     <>
       <Section title={v ? `This month BARRY · ${v.period}` : "This month"} subtitle="Counted only from verified records — test money, pending payments and estimates never count.">
         {v ? (
-          <ul className="flex flex-col gap-1.5 text-[14px] text-[#101828]">
-            <li>Handled <b>{v.handled}</b> conversation{v.handled === 1 ? "" : "s"} on its own{v.outcomes ? `, and completed ${v.outcomes} verified payment / booking / order${v.outcomes === 1 ? "" : "s"}` : ""}.</li>
-            <li>Generated <b>{moneyWords(v.generated, { empty: "nothing verified yet" })}</b>; recovered <b>{moneyWords(v.recovered, { empty: "nothing yet" })}</b>.</li>
-            <li>Saved <b>{moneyWords(v.savedRealized, { empty: "nothing realised yet" })}</b>{v.savedNote ? <span className="text-[#667085]"> — {v.savedNote}</span> : null}</li>
-            <li>Needed you <b>{v.needsYou}</b> time{v.needsYou === 1 ? "" : "s"}.</li>
-            {v.workingOn.length > 0 && <li className="text-[#344054]">Working on: {v.workingOn.join(" · ")}</li>}
-            {v.blocked.length > 0 && <li className="text-[#b42318]">Blocked: {v.blocked.join(" · ")}</li>}
-            {v.unlockNext.length > 0 && <li className="text-[#344054]">Unlock next: {v.unlockNext.join(" · ")}</li>}
-          </ul>
+          <div className="flex flex-col gap-4">
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <BigMetric label="Handled" icon="barry" iconTone="accent" value={v.handled} sub={v.outcomes ? `${v.outcomes} verified outcome${v.outcomes === 1 ? "" : "s"}` : "conversations on its own"} />
+              <BigMetric label="Generated" icon="money" iconTone="ok" tone={Object.keys(v.generated).length ? "ok" : "ink"} value={moneyWords(v.generated, { empty: "—" })} sub={`Recovered ${moneyWords(v.recovered, { empty: "nothing yet" })}`} />
+              <BigMetric label="Saved (realised)" icon="spark" iconTone="violet" value={moneyWords(v.savedRealized, { empty: "—" })} sub={v.savedNote ?? "Only evidence-backed savings"} />
+              <BigMetric label="Needed you" icon="shield" iconTone={v.needsYou ? "warn" : "neutral"} value={v.needsYou} sub={v.needsYou === 1 ? "time" : "times"} />
+            </div>
+            <ul className="flex flex-col gap-1.5 text-[13.5px]">
+              {v.workingOn.length > 0 && <li className="text-o-ink-2"><span className="text-o-muted">Working on:</span> {v.workingOn.join(" · ")}</li>}
+              {v.blocked.length > 0 && <li className="text-o-bad"><span className="text-o-muted">Blocked:</span> {v.blocked.join(" · ")}</li>}
+              {v.unlockNext.length > 0 && <li className="text-o-ink-2"><span className="text-o-muted">Unlock next:</span> {v.unlockNext.join(" · ")}</li>}
+            </ul>
+          </div>
         ) : (
-          <p className="text-[13px] text-[#667085]">Not available right now.</p>
+          <p className="text-[13px] text-o-muted">Not available right now.</p>
         )}
       </Section>
       <Section title="Your plan" subtitle="A fixed monthly price — no share of your revenue or savings.">
         {view.plan ? (
           <div className="flex flex-col gap-3 text-[14px]">
             <p className="flex flex-wrap items-center gap-2">
-              <StatusPill status="info">{view.plan.name}</StatusPill>
+              <Pill tone="info">{view.plan.name}</Pill>
               <span className="font-medium">{view.plan.promise}</span>
-              <span className="text-[#667085]">{moneyWords({ [view.plan.currency]: view.plan.monthlyPrice })}/month{view.plan.priceLockedUntil ? ` · founding price until ${view.plan.priceLockedUntil.slice(0, 10)}` : ""}</span>
+              <span className="text-o-muted">{moneyWords({ [view.plan.currency]: view.plan.monthlyPrice })}/month{view.plan.priceLockedUntil ? ` · founding price until ${view.plan.priceLockedUntil.slice(0, 10)}` : ""}</span>
             </p>
-            <p className="text-[13px] text-[#667085]">
+            <p className="text-[13px] text-o-muted">
               Subscription: {view.subscription.state}
               {view.subscription.freeMonth ? ` · free month day ${view.subscription.freeMonth.day} of 30 (ends ${view.subscription.freeMonth.endsAt.slice(0, 10)})` : ""}
               {view.subscription.recurringStartsAt && !view.subscription.freeMonth ? ` · monthly since ${view.subscription.recurringStartsAt.slice(0, 10)}` : ""}
             </p>
             <div>
-              <p className="text-[12px] font-semibold uppercase tracking-wide text-[#667085]">BARRY can do</p>
+              <p className="text-[12px] font-semibold uppercase tracking-wide text-o-muted">BARRY can do</p>
               <ul className="mt-1 grid gap-1 text-[13px] sm:grid-cols-2">{view.canDo.map((c) => <li key={c}>✓ {c}</li>)}</ul>
             </div>
             {view.planLocked.length > 0 && (
               <div>
-                <p className="text-[12px] font-semibold uppercase tracking-wide text-[#667085]">Not in your plan</p>
-                <ul className="mt-1 grid gap-1 text-[13px] text-[#667085] sm:grid-cols-2">{view.planLocked.map((p) => <li key={p.feature}>{p.feature} — with {p.unlockedBy}</li>)}</ul>
+                <p className="text-[12px] font-semibold uppercase tracking-wide text-o-muted">Not in your plan</p>
+                <ul className="mt-1 grid gap-1 text-[13px] text-o-muted sm:grid-cols-2">{view.planLocked.map((p) => <li key={p.feature}>{p.feature} — with {p.unlockedBy}</li>)}</ul>
               </div>
             )}
             {view.upgrades.length > 0 && (
               <div className="flex flex-col gap-2">
                 {view.upgrades.map((u) => (
-                  <div key={u.id} className="flex flex-col gap-1 rounded-xl bg-[#f9fafb] p-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div key={u.id} className="flex flex-col gap-1 rounded-xl bg-o-raised p-3 sm:flex-row sm:items-center sm:justify-between">
                     <span className="text-[13px]"><b>{u.name}</b> — {u.promise} {moneyWords({ [u.currency]: u.monthlyPrice })}/month · unlocks {u.unlocks.join(", ")}</span>
                     <button className={btn} onClick={() => void ask(u.id)}>Ask about {u.name}</button>
                   </div>
@@ -93,12 +98,12 @@ export function PlanAndValue({ api }: { api: Api }) {
             )}
           </div>
         ) : (
-          <div className="flex flex-col gap-2 text-[13px] text-[#667085]">
+          <div className="flex flex-col gap-2 text-[13px] text-o-muted">
             <p>No plan is set up for this business yet. The BARRY team sets it up with you.</p>
             <button className={btn} onClick={() => void ask()}>Talk to the BARRY team</button>
           </div>
         )}
-        {sent && <p className="mt-3 text-[13px] text-[#067647]">{sent}</p>}
+        {sent && <p className="mt-3 text-[13px] text-o-ok">{sent}</p>}
       </Section>
     </>
   );

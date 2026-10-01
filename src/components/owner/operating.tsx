@@ -14,13 +14,13 @@ import { Empty, Pill, btn, danger, formatMoney, primary, quiet, timeAgo, type To
  */
 
 export const KIND: Record<InterventionKind, { tone: Tone; label: string; accent: string }> = {
-  approval: { tone: "warn", label: "Your decision", accent: "border-l-[#f79009]" },
-  held_approval: { tone: "bad", label: "Re-check first", accent: "border-l-[#b42318]" },
-  handoff: { tone: "info", label: "Needs a person", accent: "border-l-[#2e90fa]" },
-  failed_action: { tone: "bad", label: "Didn't go through", accent: "border-l-[#b42318]" },
-  blocked_write: { tone: "neutral", label: "Stopped by the customer's limit", accent: "border-l-[#98a2b3]" },
-  not_understood: { tone: "bad", label: "Not understood", accent: "border-l-[#b42318]" },
-  delivery_failed: { tone: "bad", label: "Reply not delivered", accent: "border-l-[#b42318]" },
+  approval: { tone: "warn", label: "Your decision", accent: "border-l-o-warn" },
+  held_approval: { tone: "bad", label: "Re-check first", accent: "border-l-o-bad" },
+  handoff: { tone: "info", label: "Needs a person", accent: "border-l-o-info" },
+  failed_action: { tone: "bad", label: "Didn't go through", accent: "border-l-o-bad" },
+  blocked_write: { tone: "neutral", label: "Stopped by the customer's limit", accent: "border-l-o-faint" },
+  not_understood: { tone: "bad", label: "Not understood", accent: "border-l-o-bad" },
+  delivery_failed: { tone: "bad", label: "Reply not delivered", accent: "border-l-o-bad" },
 };
 
 export type Act = (item: Intervention, action: InterventionAction) => Promise<void> | void;
@@ -28,25 +28,35 @@ export type Act = (item: Intervention, action: InterventionAction) => Promise<vo
 function Row({ k, children }: { k: string; children: React.ReactNode }) {
   return (
     <div className="grid grid-cols-1 gap-x-4 gap-y-0.5 sm:grid-cols-[9.5rem_minmax(0,1fr)]">
-      <dt className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#98a2b3] sm:pt-0.5">{k}</dt>
-      <dd className="text-[14px] leading-6 text-[#344054]">{children}</dd>
+      <dt className="text-[11px] font-semibold uppercase tracking-[0.1em] text-o-faint sm:pt-0.5">{k}</dt>
+      <dd className="text-[14px] leading-6 text-o-ink-2">{children}</dd>
     </div>
   );
 }
 
+/** Owner words for the known term keys; anything else is de-camel-cased, never shown as a raw key. */
+const TERM_LABEL: Record<string, string> = { discountPct: "Discount", listAmount: "List price", item: "Item", items: "Items", quantity: "Quantity", reference: "Reference", reason: "Reason", discountItem: "Discount on" };
+
+function termValue(k: string, v: string | number, currency?: string): string {
+  if (k === "discountPct") return `${v}%`;
+  if ((k === "listAmount" || /Amount$/.test(k)) && typeof v === "number" && currency) return formatMoney({ [currency]: v });
+  return String(v);
+}
+
 function Terms({ terms, amount }: { terms: Record<string, string | number>; amount?: string }) {
+  const currency = typeof terms.currency === "string" ? terms.currency : undefined;
   const entries = Object.entries(terms).filter(([k]) => k !== "currency" && k !== "amount");
   if (entries.length === 0 && !amount) return null;
   return (
-    <ul className="flex flex-wrap gap-x-4 gap-y-1 text-[13px] text-[#344054]">
+    <ul className="flex flex-wrap gap-x-5 gap-y-1.5 text-[13.5px] text-o-ink">
       {amount && (
         <li>
-          <span className="text-[#98a2b3]">amount</span> <span className="font-semibold tabular-nums">{amount}</span>
+          <span className="text-o-muted">Amount</span> <span className="font-semibold tabular-nums">{amount}</span>
         </li>
       )}
       {entries.map(([k, v]) => (
         <li key={k}>
-          <span className="text-[#98a2b3]">{k.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/_/g, " ")}</span> {String(v)}
+          <span className="text-o-muted">{TERM_LABEL[k] ?? k.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase())}</span> <span className="font-semibold tabular-nums">{termValue(k, v, currency)}</span>
         </li>
       ))}
     </ul>
@@ -58,45 +68,52 @@ export function InterventionCard({ item, busy, onAct, compact }: { item: Interve
   const [showDetails, setShowDetails] = useState(false);
   const kind = KIND[item.kind];
   const held = item.kind === "held_approval";
+  const hasTerms = item.terms && Object.keys(item.terms).length > 0;
   return (
-    <li className={`rounded-2xl border-l-4 bg-white p-4 shadow-[0_1px_2px_rgba(16,24,40,0.06),0_0_0_1px_rgba(16,24,40,0.04)] md:p-5 ${kind.accent}`} data-intervention={item.id}>
+    <li className={`o-panel o-rise relative overflow-hidden rounded-2xl border-l-[3px] p-4 md:p-5 ${kind.accent}`} data-intervention={item.id}>
       <div className="flex flex-wrap items-center gap-2">
         <Pill tone={kind.tone}>{kind.label}</Pill>
-        {item.amount && <span className="text-[13px] font-semibold tabular-nums text-[#101828]">{item.amount}</span>}
-        <span className="ml-auto text-[12px] text-[#98a2b3]" title={item.since}>
+        <span className="text-[12.5px] text-o-muted">{item.customer}</span>
+        <span className="ml-auto text-[12px] text-o-faint" title={item.since}>
           {timeAgo(item.since)}
         </span>
       </div>
-      <h3 className="mt-2 text-[16px] font-semibold leading-6 text-[#101828]">{item.title}</h3>
+      <div className="mt-2.5 flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
+        <h3 className="min-w-0 flex-1 text-[17px] font-semibold leading-6 tracking-tight text-o-ink">{item.title}</h3>
+        {item.amount && <span className="text-[20px] font-semibold tabular-nums tracking-tight text-o-ink">{item.amount}</span>}
+      </div>
+      {hasTerms && (
+        <div className="mt-3 rounded-xl bg-o-sunken/70 px-3.5 py-2.5 ring-1 ring-inset ring-o-line">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-o-faint">Exact terms</p>
+          <div className="mt-1">
+            <Terms terms={item.terms ?? {}} amount={item.amount} />
+          </div>
+        </div>
+      )}
       <dl className="mt-3 space-y-2">
         <Row k="Why you">{item.why}</Row>
-        {item.terms && Object.keys(item.terms).length > 0 && (
-          <Row k="Exact terms">
-            <Terms terms={item.terms} amount={item.amount} />
-          </Row>
-        )}
         <Row k="You decide">{item.decision}</Row>
         {!compact && <Row k="Then">{item.then}</Row>}
       </dl>
       <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px]">
-        <span className={held ? "font-medium text-[#b42318]" : "text-[#667085]"}>{item.freshness}</span>
+        <span className={held ? "font-medium text-o-bad" : "text-o-muted"}>{item.freshness}</span>
         {item.tried.length > 0 && (
-          <button type="button" className="font-medium text-[#475467] underline-offset-2 hover:underline" onClick={() => setShowTried((v) => !v)} aria-expanded={showTried}>
+          <button type="button" className="font-medium text-o-ink-2 underline-offset-2 hover:underline" onClick={() => setShowTried((v) => !v)} aria-expanded={showTried}>
             {showTried ? "Hide" : "What BARRY already did"} ({item.tried.length})
           </button>
         )}
-        <button type="button" className="text-[#98a2b3] underline-offset-2 hover:underline" onClick={() => setShowDetails((v) => !v)} aria-expanded={showDetails}>
+        <button type="button" className="text-o-faint underline-offset-2 hover:underline" onClick={() => setShowDetails((v) => !v)} aria-expanded={showDetails}>
           {showDetails ? "Hide evidence" : "Evidence"}
         </button>
       </div>
       {showTried && (
-        <ol className="mt-2 list-decimal space-y-0.5 rounded-xl bg-[#f9fafb] px-4 py-2 pl-8 text-[13px] text-[#475467]">
+        <ol className="mt-2 list-decimal space-y-0.5 rounded-xl bg-o-sunken/70 px-4 py-2 pl-8 text-[13px] text-o-ink-2">
           {item.tried.map((t, i) => (
             <li key={i}>{t}</li>
           ))}
         </ol>
       )}
-      {showDetails && <p className="mt-2 rounded-xl bg-[#f9fafb] px-3 py-2 text-[12px] text-[#667085]">{item.evidence.join(" · ")}</p>}
+      {showDetails && <p className="mt-2 rounded-xl bg-o-sunken/70 px-3 py-2 text-[12px] text-o-muted">{item.evidence.join(" · ")}</p>}
       <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
         {item.options.map((o) => (
           <button key={o.action} type="button" className={`${o.destructive ? danger : o.primary ? primary : btn} w-full sm:w-auto`} disabled={busy} onClick={() => void onAct(item, o.action)} title={o.consequence}>
@@ -104,18 +121,18 @@ export function InterventionCard({ item, busy, onAct, compact }: { item: Interve
           </button>
         ))}
         {!item.options.some((o) => o.action === "open_conversation") && (
-          <button type="button" className={`${quiet} w-full sm:w-auto`} disabled={busy} onClick={() => void onAct(item, "open_conversation")}>
+          <button type="button" className={`${quiet} w-full justify-center sm:w-auto`} disabled={busy} onClick={() => void onAct(item, "open_conversation")}>
             Open conversation
           </button>
         )}
       </div>
       {!compact && item.options.length > 1 && (
-        <ul className="mt-2 space-y-0.5 text-[12px] text-[#667085]">
+        <ul className="mt-3 space-y-0.5 border-t border-o-line pt-3 text-[12px] text-o-muted">
           {item.options
             .filter((o) => o.action !== "open_conversation")
             .map((o) => (
               <li key={o.action}>
-                <span className="font-medium text-[#475467]">{o.label}:</span> {o.consequence}
+                <span className="font-medium text-o-ink-2">{o.label}:</span> {o.consequence}
               </li>
             ))}
         </ul>
@@ -162,15 +179,15 @@ export function OpportunityRow({ o, onOpen, onIntervention, inConversation }: { 
                 test · not counted
               </Pill>
             )}
-            <span className="text-[14px] font-medium text-[#101828]">{o.customer}</span>
-            <span className="text-[12px] text-[#98a2b3]">{timeAgo(o.since)}</span>
+            <span className="text-[14px] font-medium text-o-ink">{o.customer}</span>
+            <span className="text-[12px] text-o-faint">{timeAgo(o.since)}</span>
           </div>
-          <p className="mt-1 text-[13px] text-[#475467]">{o.reasoning}</p>
+          <p className="mt-1 text-[13px] text-o-ink-2">{o.reasoning}</p>
           <p className="mt-1 text-[13px]">
-            <span className="font-semibold text-[#101828]">{WHO[o.next.who]}:</span> <span className="text-[#344054]">{o.next.action}</span>
+            <span className="font-semibold text-o-ink">{WHO[o.next.who]}:</span> <span className="text-o-ink-2">{o.next.action}</span>
           </p>
         </div>
-        {o.amount !== undefined && o.currency && <p className="shrink-0 text-[15px] font-semibold tabular-nums text-[#101828]">{formatMoney({ [o.currency]: o.amount })}</p>}
+        {o.amount !== undefined && o.currency && <p className="shrink-0 text-[15px] font-semibold tabular-nums text-o-ink">{formatMoney({ [o.currency]: o.amount })}</p>}
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         {o.next.interventionId ? (
@@ -183,11 +200,11 @@ export function OpportunityRow({ o, onOpen, onIntervention, inConversation }: { 
             Open conversation
           </button>
         )}
-        <button type="button" className="text-[12px] text-[#98a2b3] underline-offset-2 hover:underline" onClick={() => setShowEvidence((v) => !v)}>
+        <button type="button" className="text-[12px] text-o-faint underline-offset-2 hover:underline" onClick={() => setShowEvidence((v) => !v)}>
           {showEvidence ? "Hide evidence" : "Evidence"}
         </button>
       </div>
-      {showEvidence && <p className="mt-1 text-[12px] text-[#667085]">{o.evidence.join(" · ")}</p>}
+      {showEvidence && <p className="mt-1 text-[12px] text-o-muted">{o.evidence.join(" · ")}</p>}
     </li>
   );
 }
@@ -196,13 +213,13 @@ export function MoneyInMotion({ items, summary, onOpen, onIntervention, limit }:
   const shown = limit ? items.slice(0, limit) : items;
   return (
     <>
-      <p className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-[13px] text-[#475467]">
-        <span>Waits on you <span className="font-semibold tabular-nums text-[#101828]">{formatMoney(summary.stuckWithYou)}</span></span>
-        <span>On customers <span className="font-semibold tabular-nums text-[#101828]">{formatMoney(summary.waitingOnCustomer)}</span></span>
-        <span>At risk <span className={`font-semibold tabular-nums ${Object.keys(summary.atRisk).length ? "text-[#b42318]" : "text-[#101828]"}`}>{formatMoney(summary.atRisk)}</span></span>
+      <p className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-[13px] text-o-ink-2">
+        <span>Waits on you <span className="font-semibold tabular-nums text-o-ink">{formatMoney(summary.stuckWithYou)}</span></span>
+        <span>On customers <span className="font-semibold tabular-nums text-o-ink">{formatMoney(summary.waitingOnCustomer)}</span></span>
+        <span>At risk <span className={`font-semibold tabular-nums ${Object.keys(summary.atRisk).length ? "text-o-bad" : "text-o-ink"}`}>{formatMoney(summary.atRisk)}</span></span>
       </p>
       {Object.keys(summary.simulated).length > 0 && (
-        <p className="mt-2 text-[12px] text-[#667085]">
+        <p className="mt-2 text-[12px] text-o-muted">
           Plus {formatMoney(summary.simulated)} pending on a simulated provider — test money, shown apart and never counted above.
         </p>
       )}
@@ -211,7 +228,7 @@ export function MoneyInMotion({ items, summary, onOpen, onIntervention, limit }:
           <Empty title="No money is stuck">When a payment link goes unpaid, a sale waits on your approval, a purchase goes quiet or a deposit is missing, it shows here with what to do about it.</Empty>
         </div>
       ) : (
-        <ul className="mt-3 divide-y divide-[#f2f4f7]">
+        <ul className="mt-3 divide-y divide-o-line">
           {shown.map((o) => (
             <OpportunityRow key={o.id} o={o} onOpen={onOpen} onIntervention={onIntervention} />
           ))}
@@ -237,29 +254,29 @@ export function StoryView({ story, compact }: { story: ConversationStory; compac
   if (story.steps.length === 0) return null;
   const steps = compact ? story.steps.slice(-4) : story.steps;
   return (
-    <ol className="relative space-y-3 border-l border-[#e4e7ec] pl-4">
+    <ol className="relative space-y-3 border-l border-o-line pl-4">
       {steps.map((s) => (
         <li key={s.turnId} className="relative">
-          <span className={`absolute -left-[21px] top-1.5 h-2.5 w-2.5 rounded-full ring-2 ring-white ${OUTCOME_WORDS[s.outcome].tone === "good" ? "bg-[#12b76a]" : OUTCOME_WORDS[s.outcome].tone === "bad" ? "bg-[#f04438]" : OUTCOME_WORDS[s.outcome].tone === "warn" ? "bg-[#f79009]" : OUTCOME_WORDS[s.outcome].tone === "info" ? "bg-[#2e90fa]" : "bg-[#98a2b3]"}`} />
+          <span className={`absolute -left-[21px] top-1.5 h-2.5 w-2.5 rounded-full ring-2 ring-o-surface ${OUTCOME_WORDS[s.outcome].tone === "good" ? "bg-o-ok" : OUTCOME_WORDS[s.outcome].tone === "bad" ? "bg-o-bad" : OUTCOME_WORDS[s.outcome].tone === "warn" ? "bg-o-warn" : OUTCOME_WORDS[s.outcome].tone === "info" ? "bg-o-info" : "bg-o-faint"}`} />
           <div className="flex flex-wrap items-center gap-2">
             <Pill tone={OUTCOME_WORDS[s.outcome].tone} icon={false}>
               {OUTCOME_WORDS[s.outcome].label}
             </Pill>
-            <span className="text-[12px] text-[#98a2b3]">{timeAgo(s.at)}</span>
+            <span className="text-[12px] text-o-faint">{timeAgo(s.at)}</span>
           </div>
-          <p className="mt-1 text-[14px] text-[#101828]">
-            <span className="text-[#98a2b3]">Customer:</span> {s.customer}
+          <p className="mt-1 text-[14px] text-o-ink">
+            <span className="text-o-faint">Customer:</span> {s.customer}
           </p>
           {s.barry.length > 0 && (
-            <ul className="mt-0.5 space-y-0.5 text-[13px] text-[#344054]">
+            <ul className="mt-0.5 space-y-0.5 text-[13px] text-o-ink-2">
               {s.barry.map((b, i) => (
                 <li key={i}>
-                  <span className="text-[#98a2b3]">BARRY:</span> {b}
+                  <span className="text-o-faint">BARRY:</span> {b}
                 </li>
               ))}
             </ul>
           )}
-          {s.stopped && <p className="mt-0.5 text-[12px] font-medium text-[#b54708]">Stopped: {s.stopped}</p>}
+          {s.stopped && <p className="mt-0.5 text-[12px] font-medium text-o-warn">Stopped: {s.stopped}</p>}
         </li>
       ))}
     </ol>
@@ -286,22 +303,22 @@ export function WatchingList({ items, onOpen, limit, empty }: { items: Obligatio
   const shown = limit ? open.slice(0, limit) : open;
   if (shown.length === 0) return <Empty title="Nothing to watch">{empty ?? "When a payment link goes unpaid, a reply fails to arrive, a deposit is missing or an action needs a retry, BARRY keeps it here until the records show it's done."}</Empty>;
   return (
-    <ul className="divide-y divide-[#f2f4f7]">
+    <ul className="divide-y divide-o-line">
       {shown.map((o) => (
         <li key={o.key} className="flex flex-col gap-0.5 py-2.5 text-sm">
           <div className="flex flex-wrap items-center gap-2">
             <Pill tone={MOVE_TONE[o.nextMove]}>{NEXT_MOVE_WORDS[o.nextMove]}</Pill>
             {onOpen ? (
-              <button className="text-left font-medium text-[#101828] hover:underline" onClick={() => onOpen(o.conversationId)}>
+              <button className="text-left font-medium text-o-ink hover:underline" onClick={() => onOpen(o.conversationId)}>
                 {`${o.customer}: ${o.subject}`}
               </button>
             ) : (
-              <span className="font-medium text-[#101828]">{`${o.customer}: ${o.subject}`}</span>
+              <span className="font-medium text-o-ink">{`${o.customer}: ${o.subject}`}</span>
             )}
             {o.simulated && <Pill tone="neutral" icon={false}>test</Pill>}
-            {o.dueAt && <span className="text-[12px] text-[#98a2b3]">{`due ${dueWords(o.dueAt)}`}</span>}
+            {o.dueAt && <span className="text-[12px] text-o-faint">{`due ${dueWords(o.dueAt)}`}</span>}
           </div>
-          <p className="text-[13px] text-[#475467]">{`${o.reason} `}<span className="text-[#101828]">{`Next: ${o.nextAction}`}</span></p>
+          <p className="text-[13px] text-o-ink-2">{`${o.reason} `}<span className="text-o-ink">{`Next: ${o.nextAction}`}</span></p>
         </li>
       ))}
     </ul>
@@ -314,12 +331,12 @@ export function NextExpectedAction({ items, conversationId }: { items: Obligatio
   if (mine.length === 0) return null;
   const o = mine[0];
   return (
-    <div className="rounded-xl bg-[#f9fafb] px-3 py-2.5 text-sm">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#667085]">Next expected action</p>
+    <div className="rounded-xl bg-o-raised px-3 py-2.5 text-sm">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-o-muted">Next expected action</p>
       <p className="mt-0.5">
         <Pill tone={MOVE_TONE[o.nextMove]}>{NEXT_MOVE_WORDS[o.nextMove]}</Pill> <span className="font-medium">{o.nextAction}</span>
       </p>
-      <p className="text-[12px] text-[#667085]">{`${o.subject} · ${o.reason}${o.dueAt ? ` · due ${dueWords(o.dueAt)}` : ""}${mine.length > 1 ? ` · +${mine.length - 1} more` : ""}`}</p>
+      <p className="text-[12px] text-o-muted">{`${o.subject} · ${o.reason}${o.dueAt ? ` · due ${dueWords(o.dueAt)}` : ""}${mine.length > 1 ? ` · +${mine.length - 1} more` : ""}`}</p>
     </div>
   );
 }

@@ -18,6 +18,83 @@
   --ds-faint: #98a2b3;
   --ds-accent: #1d2939;
   --ds-accent-strong: #101828;
+
+  /*
+   * OWNER PRODUCT TOKENS (o-*) — semantic, theme-able. Light by default (QA / testing surfaces keep
+   * their look); the owner control room (.barry-owner) redefines them dark. Components use ONLY these.
+   */
+  --o-canvas: #f4f5f7;
+  --o-surface: #ffffff;
+  --o-raised: #f9fafb;
+  --o-sunken: #f2f4f7;
+  --o-line: #eaecf0;
+  --o-line-strong: #d0d5dd;
+  --o-ink: #101828;
+  --o-ink-2: #344054;
+  --o-muted: #667085;
+  --o-faint: #98a2b3;
+  --o-primary: #1d2939;
+  --o-on-primary: #ffffff;
+  --o-accent: #175cd3;
+  --o-violet: #6941c6;
+  --o-ok: #067647;
+  --o-ok-bg: #ecfdf3;
+  --o-ok-line: #abefc6;
+  --o-warn: #b54708;
+  --o-warn-bg: #fffaeb;
+  --o-warn-line: #fedf89;
+  --o-bad: #b42318;
+  --o-bad-bg: #fef3f2;
+  --o-bad-line: #fecdca;
+  --o-info: #175cd3;
+  --o-info-bg: #eff8ff;
+  --o-info-line: #b2ddff;
+  --o-neutral: #344054;
+  --o-neutral-bg: #f2f4f7;
+  --o-neutral-line: #e4e7ec;
+  --o-shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 0 0 1px rgba(16, 24, 40, 0.04);
+  --o-glow: 0 0 0 transparent;
+}
+
+/* THE OWNER CONTROL ROOM — deep navy, dimensional surfaces, restrained electric blue / violet. */
+.barry-owner {
+  --o-canvas: #060914;
+  --o-surface: #0c1224;
+  --o-raised: #121a31;
+  --o-sunken: #080d1b;
+  --o-line: #1b2440;
+  --o-line-strong: #2a3558;
+  --o-ink: #eef1fb;
+  --o-ink-2: #c4cae0;
+  --o-muted: #8c94b0;
+  --o-faint: #5f6884;
+  --o-primary: #f3f5ff;
+  --o-on-primary: #0a0f1e;
+  --o-accent: #5b8cff;
+  --o-violet: #9b7bff;
+  --o-ok: #3ddc97;
+  --o-ok-bg: #0e2a22;
+  --o-ok-line: #1c4d3c;
+  --o-warn: #f6b54a;
+  --o-warn-bg: #2b2112;
+  --o-warn-line: #574019;
+  --o-bad: #ff7a7a;
+  --o-bad-bg: #2d1418;
+  --o-bad-line: #5a2229;
+  --o-info: #86a8ff;
+  --o-info-bg: #131f42;
+  --o-info-line: #263a78;
+  --o-neutral: #c4cae0;
+  --o-neutral-bg: #151d35;
+  --o-neutral-line: #232d4c;
+  --o-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 12px 32px -18px rgba(0, 0, 0, 0.8);
+  --o-glow: 0 0 0 1px rgba(91, 140, 255, 0.28), 0 10px 40px -12px rgba(91, 140, 255, 0.45);
+  color-scheme: dark;
+  background:
+    radial-gradient(1200px 520px at 78% -10%, rgba(91, 140, 255, 0.16), transparent 60%),
+    radial-gradient(900px 480px at -10% 30%, rgba(155, 123, 255, 0.1), transparent 60%),
+    var(--o-canvas);
+  color: var(--o-ink);
 }
 
 @theme inline {
@@ -33,6 +110,37 @@
   --color-faint: var(--ds-faint);
   --color-accent: var(--ds-accent);
   --color-accent-strong: var(--ds-accent-strong);
+  --color-o-canvas: var(--o-canvas);
+  --color-o-surface: var(--o-surface);
+  --color-o-raised: var(--o-raised);
+  --color-o-sunken: var(--o-sunken);
+  --color-o-line: var(--o-line);
+  --color-o-line-strong: var(--o-line-strong);
+  --color-o-ink: var(--o-ink);
+  --color-o-ink-2: var(--o-ink-2);
+  --color-o-muted: var(--o-muted);
+  --color-o-faint: var(--o-faint);
+  --color-o-primary: var(--o-primary);
+  --color-o-on-primary: var(--o-on-primary);
+  --color-o-accent: var(--o-accent);
+  --color-o-violet: var(--o-violet);
+  --color-o-ok: var(--o-ok);
+  --color-o-ok-bg: var(--o-ok-bg);
+  --color-o-ok-line: var(--o-ok-line);
+  --color-o-warn: var(--o-warn);
+  --color-o-warn-bg: var(--o-warn-bg);
+  --color-o-warn-line: var(--o-warn-line);
+  --color-o-bad: var(--o-bad);
+  --color-o-bad-bg: var(--o-bad-bg);
+  --color-o-bad-line: var(--o-bad-line);
+  --color-o-info: var(--o-info);
+  --color-o-info-bg: var(--o-info-bg);
+  --color-o-info-line: var(--o-info-line);
+  --color-o-neutral: var(--o-neutral);
+  --color-o-neutral-bg: var(--o-neutral-bg);
+  --color-o-neutral-line: var(--o-neutral-line);
+  --shadow-o: var(--o-shadow);
+  --shadow-o-glow: var(--o-glow);
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, monospace;
 }
@@ -49,4 +157,45 @@ body {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* Owner control room motion — calm, purposeful, always honest (driven by real state). */
+@keyframes o-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.82); }
+}
+@keyframes o-ring {
+  0% { box-shadow: 0 0 0 0 color-mix(in oklab, currentColor 45%, transparent); }
+  100% { box-shadow: 0 0 0 7px transparent; }
+}
+@keyframes o-shimmer {
+  0% { background-position: -320px 0; }
+  100% { background-position: 320px 0; }
+}
+@keyframes o-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes o-orb {
+  0%, 100% { box-shadow: 0 0 18px 2px rgba(91, 140, 255, 0.45), inset 0 0 10px rgba(155, 123, 255, 0.5); }
+  50% { box-shadow: 0 0 26px 5px rgba(155, 123, 255, 0.5), inset 0 0 14px rgba(91, 140, 255, 0.6); }
+}
+.o-live-dot { animation: o-pulse 1.8s ease-in-out infinite, o-ring 1.8s ease-out infinite; }
+.o-rise { animation: o-rise 0.35s ease-out both; }
+.o-orb { animation: o-orb 5s ease-in-out infinite; }
+.o-shimmer {
+  background: linear-gradient(90deg, var(--o-sunken) 0, var(--o-raised) 40%, var(--o-sunken) 80%);
+  background-size: 640px 100%;
+  animation: o-shimmer 1.4s linear infinite;
+}
+/* A dimensional panel: soft top light, hairline edge, depth below. */
+.o-panel {
+  background: linear-gradient(180deg, color-mix(in oklab, var(--o-raised) 70%, transparent), var(--o-surface));
+  box-shadow: var(--o-shadow), 0 0 0 1px var(--o-line);
+}
+.o-hero-type {
+  background: linear-gradient(90deg, var(--o-accent), var(--o-violet));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }

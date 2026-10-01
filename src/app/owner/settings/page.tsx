@@ -3,21 +3,33 @@
 import Link from "next/link";
 import { Suspense, useEffect, useState } from "react";
 import { useOwnerApi } from "@/components/owner/useOwnerApi";
-import { OwnerShell } from "@/components/owner/OwnerShell";
-import { Section, Skeleton, StateNotice, btn } from "@/components/owner/ui";
-import { Disclosure, StatusPill } from "@/components/ds/primitives";
+import { OwnerShell, WhatsAppCard } from "@/components/owner/OwnerShell";
+import { Pill, Skeleton, StateNotice, btn, type Tone } from "@/components/owner/ui";
+import { Hero, IconTile, Panel, PanelHeader, type IconName } from "@/components/owner/kit";
 import type { ConnectionView } from "@/lib/connections/status";
+import type { OwnerChannels } from "@/lib/owner/service";
 import { PlanAndValue } from "@/components/owner/PlanAndValue";
 
 /**
- * OWNER SETTINGS — two halves kept apart: the BUSINESS SETUP the owner owns (identity, how BARRY
- * behaves, who may approve) and the TECHNICAL configuration the BARRY team owns (connections,
- * credentials, environment), folded away in the team's words. Credentials are never shown.
+ * OWNER SETTINGS — configuration, not another dashboard: the business, who approves, channels,
+ * connected systems, and the plan. What the BARRY team configures stays in the team's words, folded.
+ * Credentials are never shown.
  */
+function connectionState(c: ConnectionView): { tone: Tone; word: string } {
+  if (c.status === "not_configured") return { tone: "neutral", word: "Not configured" };
+  if (c.status !== "connected") return { tone: "bad", word: c.status };
+  if (c.missing.length) return { tone: "warn", word: "Setup incomplete" };
+  if (c.simulated) return { tone: "info", word: "Simulated" };
+  return { tone: "good", word: "Connected" };
+}
+
+const DOMAIN_ICON: Record<string, IconName> = { commerce: "cart", payments: "money", scheduling: "clock", messaging: "chat" };
+
 function SettingsPage() {
   const api = useOwnerApi();
   const { businessId, call, authorized } = api;
   const [connections, setConnections] = useState<ConnectionView[] | null>(null);
+  const [channels, setChannels] = useState<OwnerChannels | undefined>(undefined);
   const [error, setError] = useState("");
   useEffect(() => {
     if (!businessId || !authorized) return;
@@ -29,55 +41,77 @@ function SettingsPage() {
       .catch((e: Error) => {
         if (!cancelled) setError(e.message);
       });
+    call<OwnerChannels>(`/api/owner/channels?businessId=${encodeURIComponent(businessId)}`)
+      .then((c) => {
+        if (!cancelled) setChannels(c);
+      })
+      .catch(() => undefined);
     return () => {
       cancelled = true;
     };
   }, [businessId, call, authorized]);
   const b = api.business;
   return (
-    <OwnerShell api={api} active="settings">
-      <div className="flex flex-col gap-5">
-        <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#667085]">Settings · {b?.name ?? "—"}</p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight md:text-3xl">Your business, and the technical side</h1>
-          <p className="mt-1 text-sm text-[#667085]">What you own is on top. What the BARRY team configures for you is folded below, in their words.</p>
-        </div>
+    <OwnerShell api={api} active="settings" channels={channels}>
+      <div className="flex flex-col gap-6">
+        <Hero eyebrow={`Settings · ${b?.name ?? "—"}`} title="Your business, your plan, your systems." lead="Configuration lives here. Running the business happens in Today, Inbox and Money — or by message." />
         {authorized && (
           <>
-            <PlanAndValue api={api} />
-            <Section title="Business setup" subtitle="What BARRY knows about you and how it behaves.">
-              <dl className="grid gap-x-6 gap-y-2 text-[14px] sm:grid-cols-[12rem_1fr]">
-                <dt className="text-[#667085]">Business</dt>
-                <dd>{b?.name}</dd>
-                <dt className="text-[#667085]">What BARRY may do</dt>
-                <dd>
-                  Your rules decide what BARRY does on its own and what it asks you first. <Link href="/owner/train" className="underline">Train BARRY ›</Link>
-                </dd>
-                <dt className="text-[#667085]">Who approves</dt>
-                <dd>{api.session?.scope === "operator" ? "The shared operator sign-in (the BARRY team can issue you your own)." : "You, with your own owner sign-in for this business only."}</dd>
-                <dt className="text-[#667085]">Testing tools</dt>
-                <dd>
-                  <Link href="/simulator" className="underline">Customer simulator ›</Link>
-                </dd>
-              </dl>
-            </Section>
-            <Section title="BARRY team · technical" subtitle="Connections and configuration the team manages. Nothing here changes how BARRY treats your customers without your rules.">
-              <Disclosure summary={connections ? `${connections.length} connected system${connections.length === 1 ? "" : "s"} · open the technical view` : "Connections"} muted>
-                {error && <StateNotice tone="bad" title="Couldn't read connections">{error}</StateNotice>}
-                {!connections && !error && <Skeleton lines={3} />}
-                {connections && (
-                  <ul className="divide-y divide-[#f2f4f7]">
-                    {connections.map((c) => (
-                      <li key={c.capability} className="flex flex-wrap items-center justify-between gap-2 py-2 text-[13px]">
-                        <span className="capitalize">{c.capability}{c.provider ? <span className="text-[#667085]"> · {c.provider}</span> : null}</span>
-                        <StatusPill status={c.status !== "connected" && c.status !== "not_configured" ? "blocked" : c.status === "not_configured" ? "not_ready" : c.missing.length ? "attention" : c.simulated ? "simulator" : "ok"}>{c.status === "not_configured" ? "Not configured" : c.status !== "connected" ? c.status : c.missing.length ? "Setup incomplete" : c.simulated ? "Simulated" : "Connected"}</StatusPill>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <Panel className="p-4 md:p-5">
+                <PanelHeader icon="settings" title="Business & access" />
+                <dl className="mt-3 space-y-3 text-[14px]">
+                  <div>
+                    <dt className="text-[12px] text-o-muted">Business</dt>
+                    <dd className="font-medium text-o-ink">{b?.name}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-[12px] text-o-muted">Who approves</dt>
+                    <dd className="text-o-ink-2">{api.session?.scope === "operator" ? "The shared operator sign-in (the BARRY team can issue you your own)." : "You, with your own owner sign-in for this business only."}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-[12px] text-o-muted">What BARRY may do</dt>
+                    <dd className="text-o-ink-2">
+                      Your rules decide what BARRY does on its own and what it asks you first. <Link href="/owner/train" className="font-medium text-o-accent hover:underline">Train BARRY ›</Link>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-[12px] text-o-muted">Testing tools</dt>
+                    <dd>
+                      <Link href="/simulator" className="font-medium text-o-accent hover:underline">Customer simulator ›</Link>
+                    </dd>
+                  </div>
+                </dl>
+              </Panel>
+              <WhatsAppCard channels={channels} wide />
+            </div>
+
+            <div id="plan" className="flex scroll-mt-24 flex-col gap-5">
+              <PlanAndValue api={api} />
+            </div>
+
+            <Panel className="p-4 md:p-5">
+              <PanelHeader icon="plug" title="Connected systems" sub="What BARRY works through. The BARRY team configures these; nothing here changes how BARRY treats your customers without your rules." right={<Link href="/connections" className={btn}>Technical view</Link>} />
+              {error && <div className="mt-3"><StateNotice tone="bad" title="Couldn't read connections">{error}</StateNotice></div>}
+              {!connections && !error && <div className="mt-3"><Skeleton lines={3} /></div>}
+              {connections && (
+                <ul className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {connections.map((c) => {
+                    const st = connectionState(c);
+                    return (
+                      <li key={c.capability} className="flex items-center gap-3 rounded-xl bg-o-sunken/60 px-3 py-2.5 ring-1 ring-inset ring-o-line">
+                        <IconTile name={DOMAIN_ICON[c.capability] ?? "plug"} tone={st.tone === "good" ? "ok" : st.tone === "bad" ? "bad" : st.tone === "warn" ? "warn" : "neutral"} size={30} />
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-[14px] font-medium capitalize text-o-ink">{c.capability}</span>
+                          <span className="block truncate text-[12px] text-o-muted">{c.provider ?? "No provider"}</span>
+                        </span>
+                        <Pill tone={st.tone}>{st.word}</Pill>
                       </li>
-                    ))}
-                  </ul>
-                )}
-                <Link href="/connections" className={`${btn} mt-3`}>Full technical view ›</Link>
-              </Disclosure>
-            </Section>
+                    );
+                  })}
+                </ul>
+              )}
+            </Panel>
           </>
         )}
       </div>
