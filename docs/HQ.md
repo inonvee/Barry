@@ -182,3 +182,26 @@ Founder controls, audit, incident states, obligations, release verdicts and
 scenario runs live in `operator_records` (migration 0012): one JSON record
 per (business, kind, key), server-only. Founder cross-business reads use
 `listOperatorRecordsAcrossBusinesses`; owner routes never do.
+
+
+## Design Language V1 and the HQ information architecture (this pass)
+
+HQ is no longer one stacked page. The default landing is **Focus**: one sentence ("BARRY is running 7
+businesses. 2 things need you."), the top 1–5 items, **since you were here** (derived from a durable
+last-visit snapshot, operator record kind `founder_state`, fleet scope — migration `0013`), money
+blocked per currency, the activity pulse, pinned businesses and Ask HQ. **Fleet** is one row per
+business (stacked on phones, never a table); tapping a row opens **business focus mode** with its own
+sub-navigation: Overview · Needs attention · Activity · Money · Capabilities · Launch · Controls ·
+Technical (the only place raw ids and traces live). **Incidents**, **Activity**, **Money**,
+**Releases** (the build lane, apart from business operation), **BARRY** (capabilities and model
+health) and **Settings** (pins, recents, environment) are dedicated surfaces.
+
+- Presence: the shell shows BARRY's state (working / waiting / needs you / degraded / paused) with one sentence, from `src/lib/hq/presence.ts`.
+- Command bar (⌘K / Ctrl+K; a sheet on phones): businesses, surfaces, incidents, conversations, approvals, payments and Ask — `/api/hq/search` (founder only) over the fleet read models. Nothing else is pretended searchable.
+- Activity read model (`src/lib/hq/activity.ts`): effects, approvals, payments, handoffs, obligations, incidents and founder changes, each with what / for whom / who / verified / still needed and its evidence.
+- Founder controls are focused actions (`CONTROL_ACTIONS`), each stating scope, effect, reversibility and audit; an identical state writes nothing (`isNoop`), and the Controls view says "Nothing changed".
+- QA: a scenario refused by a founder control reports `outcome: "expectedly_blocked"` and the QA page shows EXPECTEDLY BLOCKED · PASS.
+- Launch: `groupLaunch` groups the checklist by concern with ready / blocked / unknown counts and one primary blocker on top.
+- Time and money: `formatLocal` (business timezone, words) and `moneyParts` / `MoneyLine` (per currency, never summed) everywhere in the product; raw ISO only under Technical.
+
+The language itself is in `docs/DESIGN_LANGUAGE_V1.md`; the primitives in `src/components/ds/`.

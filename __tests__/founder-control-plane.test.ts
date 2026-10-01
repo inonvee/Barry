@@ -223,9 +223,9 @@ describe("fleet: one status per business, exceptions first", () => {
 
   it("the summary lists who needs the founder, what broke, what changed, money blocked and not-ready — from statuses only", () => {
     const base: BusinessStatus = {
-      id: "a", name: "A", health: "healthy", stage: "simulator_only", controls: { ...DEFAULT_CONTROLS }, build: { commit: null, runtime: "x", environment: "test" }, model: { mode: "simulated", model: null, status: "healthy", summary: "" }, storage: "memory", channel: { whatsapp: "missing" }, providers: { commerce: "simulated", payments: "simulated", scheduling: "not used" },
+      id: "a", name: "A", timezone: "Asia/Jerusalem", health: "healthy", stage: "simulator_only", controls: { ...DEFAULT_CONTROLS }, build: { commit: null, runtime: "x", environment: "test" }, model: { mode: "simulated", model: null, status: "healthy", summary: "" }, storage: "memory", channel: { whatsapp: "missing" }, providers: { commerce: "simulated", payments: "simulated", scheduling: "not used" },
       readiness: { level: "READY_FOR_SUPERVISED_PILOT", label: "Ready for a supervised pilot", blockers: [] }, interventions: 0, approvalsActive: 0, approvalsHeld: 0, handoffsOpen: 0, incidents: { high: 0, medium: 0, low: 0, open: [] }, obligations: { open: 0, needsOwner: 0, barryCanAct: 0, waitingOnCustomer: 0, blocked: 0 },
-      money: { stuckWithOwner: {}, waitingOnCustomer: {}, atRisk: {}, simulated: {} }, conversations: { total: 0, last24h: 0, latestActivityAt: null }, recentChanges: [], unavailable: [],
+      money: { stuckWithOwner: {}, waitingOnCustomer: {}, atRisk: {}, simulated: {}, verifiedPayments: 0 }, conversations: { total: 0, last24h: 0, latestActivityAt: null }, recentChanges: [], unavailable: [],
     };
     const inc = { key: "k", businessId: "b", kind: "ai_unavailable" as const, severity: "high" as const, title: "AI down", firstSeen: "2026-01-01", lastSeen: "2026-01-01", occurrences: 1, status: "current" as const, evidence: [], impact: "", nextAction: "", links: {} };
     const s = summarizeFleet([

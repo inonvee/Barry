@@ -48,10 +48,10 @@ describe("profit / margin foundation: strict semantics, zero without evidence", 
 
 describe("supervised mode surfaces incidents aggressively", () => {
   const base: BusinessStatus = {
-    id: "a", name: "A", health: "attention", stage: "simulator_only", controls: { ...DEFAULT_CONTROLS }, build: { commit: null, runtime: "x", environment: "test" }, model: { mode: "simulated", model: null, status: "healthy", summary: "" }, storage: "memory", channel: { whatsapp: "missing" }, providers: { commerce: "simulated", payments: "simulated", scheduling: "not used" },
+    id: "a", name: "A", timezone: "Asia/Jerusalem", health: "attention", stage: "simulator_only", controls: { ...DEFAULT_CONTROLS }, build: { commit: null, runtime: "x", environment: "test" }, model: { mode: "simulated", model: null, status: "healthy", summary: "" }, storage: "memory", channel: { whatsapp: "missing" }, providers: { commerce: "simulated", payments: "simulated", scheduling: "not used" },
     readiness: { level: "READY_FOR_SUPERVISED_PILOT", label: "Ready for a supervised pilot", blockers: [] }, interventions: 0, approvalsActive: 0, approvalsHeld: 0, handoffsOpen: 0,
     incidents: { high: 0, medium: 0, low: 1, open: [{ key: "k", businessId: "a", kind: "stale_unpaid_link", severity: "low", title: "Unpaid link", firstSeen: "2026-01-01", lastSeen: "2026-01-01", occurrences: 1, status: "current", evidence: [], impact: "", nextAction: "", links: {} }] },
-    obligations: { open: 0, needsOwner: 0, barryCanAct: 0, waitingOnCustomer: 0, blocked: 0 }, money: { stuckWithOwner: {}, waitingOnCustomer: {}, atRisk: {}, simulated: {} }, conversations: { total: 0, last24h: 0, latestActivityAt: null }, recentChanges: [], unavailable: [],
+    obligations: { open: 0, needsOwner: 0, barryCanAct: 0, waitingOnCustomer: 0, blocked: 0 }, money: { stuckWithOwner: {}, waitingOnCustomer: {}, atRisk: {}, simulated: {}, verifiedPayments: 0 }, conversations: { total: 0, last24h: 0, latestActivityAt: null }, recentChanges: [], unavailable: [],
   };
   it("a low incident is silent on a simulator-only business but needs the founder and is listed as broken on a supervised one", () => {
     const sim = summarizeFleet([base]);
