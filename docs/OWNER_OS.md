@@ -40,12 +40,25 @@ BARRY's simulators (no real provider).
 ## Information architecture
 
 Daily: **Today · Ask BARRY · Work · Money** (phone bottom bar: the same four + More).
-More (the OS): **Customers · Rules BARRY follows · What BARRY knows · Connected systems · Activity · BARRY setup ·
-Plan & billing · Settings**.
+More (the OS index), grouped the way an owner thinks:
+- **Business** — Customers · What BARRY knows
+- **BARRY** — Rules BARRY follows · BARRY setup · Activity
+- **Systems** — Connected systems · Plan & billing (`/owner/plan`) · Settings
 
 Older links keep working: `?tab=inbox` → Customers, `?tab=actions` → Work, `/owner/train` → BARRY setup,
-`/owner/train?rule=…` → Rules BARRY follows (teach a rule). WhatsApp deep links (`?intervention=`,
-`?operation=`, `?conversation=`) still scroll to their record.
+`/owner/train?rule=…` → Rules BARRY follows (opens "Teach BARRY a rule" prefilled — nothing is taught until
+the owner sends it). WhatsApp deep links open their record as a sheet over the page: `?intervention=` (the
+decision), `?conversation=` (the conversation), `?operation=` (the live work, in Work → In progress).
+
+Every surface is English and Hebrew (Pass 1). The owner's choice is the `barry_owner_lang` cookie, read
+server-side in `src/app/owner/layout.tsx` so the first paint is already in the right language and direction;
+a business whose profile is Hebrew starts in Hebrew until the owner chooses. Server read models (workspace,
+OS, conversation, plan, command replies) take `lang` and are Hebrew at the source — the browser never
+translates records. The language is presentation only: it never changes what BARRY does or counts.
+
+**One definition of active work** (`activeWork` in `control-room.ts`): running / waiting owner operations plus
+follow-up rules with open items. Today's "BARRY is working on N things" and Work → In progress read the same
+list; decisions waiting on the owner and "BARRY noticed" items are never counted as active work.
 
 ## Owner-language mapping
 
@@ -59,7 +72,8 @@ Older links keep working: `?tab=inbox` → Customers, `?tab=actions` → Work, `
 | integration fabric | Connected systems (REAL · SIMULATED · READ-ONLY · SUPERVISED · TEST MODE · UNAVAILABLE · NOT CONNECTED) |
 | audit | Activity |
 | readiness | BARRY setup ("Ready to start supervised" / "N things left before a supervised start") |
-| controls / mode | How autonomous is BARRY? (Practice · Supervised · On its own, within your rules) |
+| controls / mode | How independent BARRY is (Practice · Supervised · On its own, within your rules) |
+| rule value vs. connected system | Rules sheet: "What the rule allows" and "What your systems can do", never merged |
 
 ## Honesty rules the OS keeps
 
@@ -71,7 +85,12 @@ Older links keep working: `?tab=inbox` → Customers, `?tab=actions` → Work, `
   are shown apart.
 - "BARRY noticed" money is *at risk / could be recovered (not revenue)*; only a measured, provider-verified result
   is called verified.
-- Reading the OS sends nothing and writes nothing (tested).
+- Reading the OS sends nothing and writes nothing, in either language (tested).
+- A rule's permission is never presented as a capability: "BARRY may book on its own" sits next to "No
+  scheduling system is connected yet" — Knowledge and Rules read the same rule value (`policyWords`).
+- Knowledge never shows internal keys, engine names or raw time zones; owner-written text is quoted as written.
+- Anything consequential (approve, decline, start work from "BARRY noticed", an Ask reply's action) takes two
+  taps with the consequence spelled out; a stop instruction is prefilled in Ask, never sent for the owner.
 
 ## Phase 17 — design-partner checklist (Rina Studio)
 
