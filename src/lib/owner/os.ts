@@ -795,7 +795,15 @@ export function activityTimeline(ws: Pick<OwnerWorkspace, "outcomes" | "approval
   const SOURCE = { web: T("on the site", "באתר"), whatsapp: T("on WhatsApp", "בוואטסאפ"), voice: T("by voice", "בקול") } as const;
   for (const c of ws.ownerCommands) {
     if (!c.at) continue;
-    out.push({ id: `cmd:${c.id}`, at: c.at, icon: "chat", tone: "violet", text: T(`You asked BARRY ${SOURCE[c.source] ?? ""}: “${c.text}”`, `שאלת את BARRY ${SOURCE[c.source] ?? ""}: “${c.text}”`), sub: lang === "he" ? undefined : c.reply || undefined, ...(c.operationId ? { href: `/owner?tab=work&operation=${encodeURIComponent(c.operationId)}` } : {}) });
+    // A button pressed in a reply is recorded by its action id ("d:<request>:approve") — say what the owner did, never the id.
+    const button = c.text.match(/^([a-z]):[^\s]+:([a-z_]+)$/);
+    const text = button
+      ? button[2] === "approve" ? T(`You approved a request ${SOURCE[c.source] ?? ""}`, `אישרת בקשה ${SOURCE[c.source] ?? ""}`)
+        : button[2] === "decline" ? T(`You declined a request ${SOURCE[c.source] ?? ""}`, `דחית בקשה ${SOURCE[c.source] ?? ""}`)
+        : button[2] === "stop" ? T(`You stopped work ${SOURCE[c.source] ?? ""}`, `עצרת עבודה ${SOURCE[c.source] ?? ""}`)
+        : T(`You answered BARRY ${SOURCE[c.source] ?? ""}`, `ענית ל־BARRY ${SOURCE[c.source] ?? ""}`)
+      : T(`You asked BARRY ${SOURCE[c.source] ?? ""}: “${c.text}”`, `שאלת את BARRY ${SOURCE[c.source] ?? ""}: “${c.text}”`);
+    out.push({ id: `cmd:${c.id}`, at: c.at, icon: "chat", tone: "violet", text: text.trim(), sub: lang === "he" ? undefined : c.reply || undefined, ...(c.operationId ? { href: `/owner?tab=work&operation=${encodeURIComponent(c.operationId)}` } : {}) });
   }
   for (const o of ws.ownerOperations) {
     if (o.stoppedAt) out.push({ id: `op-stop:${o.id}`, at: o.stoppedAt, icon: "shield", tone: "neutral", text: T(`You stopped: ${o.title}`, `עצרת: ${proactiveWords(o.workflow, "he").title}`), href: `/owner?tab=work&operation=${encodeURIComponent(o.id)}` });
