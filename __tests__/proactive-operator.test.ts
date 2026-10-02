@@ -8,7 +8,7 @@ import { getBackend } from "@/lib/store";
 import { getOwnerWorkspace } from "@/lib/owner/service";
 import { askOwnerBarry } from "@/lib/owner/ask";
 import { isOpen } from "@/lib/operator/obligations";
-import { NextExpectedAction, WatchingList } from "@/components/owner/operating";
+import { WorkView } from "@/components/owner/views/Work";
 import { resetControlsCacheForTests } from "@/lib/hq/controls";
 import { ScriptedModel, conv, isolatedRetailer } from "./support/scripted-model";
 
@@ -49,16 +49,10 @@ describe("an unpaid link is watched, shown everywhere from one model, and comple
     expect(ob).toMatchObject({ kind: "unpaid_payment_followup", status: "waiting_on_customer", nextMove: "waiting_on_customer", customer: "Adi", amount: 420, currency: "ILS", simulated: true });
     expect(ob.evidence[0]).toMatch(/payment request .* pending/);
 
-    // Today: the watching list (owner words, whose move, next action).
-    const list = renderToString(createElement(WatchingList, { items: ws.obligations, onOpen: () => undefined }));
-    expect(list).toMatch(/Waiting on the customer/);
-    expect(list).toMatch(/Adi: 420 ILS payment link/);
-    expect(list).toMatch(/Next: Wait for the customer to pay/);
-    expect(list).toMatch(/>test</);
-    // Conversation: the next expected action.
-    const next = renderToString(createElement(NextExpectedAction, { items: ws.obligations, conversationId: id }));
-    expect(next).toMatch(/Next expected action/);
-    expect(next).toMatch(/Wait for the customer to pay/);
+    // Work: the follow-up shows as BARRY's active work, under the owner's follow-up rule.
+    const work = (w: typeof ws) => renderToString(createElement(WorkView, { ws: w, onDecision: () => undefined, onOpen: () => undefined, onInitiative: async () => undefined, onAsk: () => undefined }));
+    expect(work(ws)).toMatch(/Following up unpaid payment links/);
+    expect(work(ws)).toMatch(/Your follow-up rule · 1 open/);
     // Ask BARRY: the briefing carries it, from the same records.
     const ask = await askOwnerBarry(r.g, "What are you watching?");
     expect(ask.briefing.watching).toEqual([expect.objectContaining({ customer: "Adi", kind: "unpaid payment followup", whoseMove: "Waiting on the customer", amount: "₪420", simulated: true })]);
@@ -71,8 +65,7 @@ describe("an unpaid link is watched, shown everywhere from one model, and comple
     const done = after.obligations.find((o) => o.key === ob.key)!;
     expect(done).toMatchObject({ status: "completed", completion: { evidence: expect.stringMatching(/verified paid/) } });
     expect(after.obligations.filter(isOpen).some((o) => o.conversationId === id)).toBe(false);
-    expect(renderToString(createElement(WatchingList, { items: after.obligations }))).toMatch(/Nothing to watch/);
-    expect(renderToString(createElement(NextExpectedAction, { items: after.obligations, conversationId: id }))).toBe("");
+    expect(work(after)).not.toMatch(/Following up unpaid payment links/);
     expect((await askOwnerBarry(r.g, "What are you watching?")).briefing.watching).toEqual([]);
   });
 });

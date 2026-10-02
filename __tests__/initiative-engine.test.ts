@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToString } from "react-dom/server";
 import "@/lib/fabric";
+import { noticedCard } from "@/lib/owner/os";
 import { handleCustomerMessage, resumeAfterApproval } from "@/lib/runtime";
 import { setReasonerForTests } from "@/lib/reasoner";
 import { getBackend } from "@/lib/store";
@@ -81,7 +82,7 @@ describe("scans: evidence or nothing", () => {
     expect(scan).toMatchObject({ created: 0, surfaced: 0 });
     expect(await listInitiatives(t.g.business.id)).toEqual([]);
     const ws = await getOwnerWorkspace(t.g);
-    const html = renderToString(createElement(TodayView, { ws, act: () => undefined, busyId: null, loading: false, onOpen: () => undefined, onIntervention: () => undefined, onTab: () => undefined, onInitiative: async () => undefined }));
+    const html = renderToString(createElement(TodayView, { ws, onDecision: () => undefined, onOpen: () => undefined, onTab: () => undefined, onAsk: () => undefined }));
     expect(html).not.toContain("BARRY noticed");
   });
 
@@ -103,9 +104,10 @@ describe("scans: evidence or nothing", () => {
     // The Living Interface shows exactly the persisted initiative — nothing invented around it.
     const ws = await getOwnerWorkspace(t.g);
     expect(ws.initiatives.map((x) => x.id)).toEqual([all[0].id]);
-    const html = renderToString(createElement(TodayView, { ws, act: () => undefined, busyId: null, loading: false, onOpen: () => undefined, onIntervention: () => undefined, onTab: () => undefined, onInitiative: async () => undefined }));
+    const html = renderToString(createElement(TodayView, { ws, onDecision: () => undefined, onOpen: () => undefined, onTab: () => undefined, onAsk: () => undefined }));
     expect(html).toContain("BARRY noticed");
-    expect(html).toContain("6 customers asked about shipping");
+    expect(html).toContain(noticedCard(ws.initiatives[0]).what);
+    expect(noticedCard(ws.initiatives[0]).observation).toContain("6 customers asked about shipping");
   });
 
   it("asking then dropping after the cart turns a question into conversion friction (counted, not guessed)", async () => {

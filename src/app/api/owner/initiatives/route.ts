@@ -23,6 +23,7 @@ const Body = z.object({
   days: z.number().int().min(1).max(30).optional(),
   reason: z.string().max(200).optional(),
   requestId: z.string().min(8).max(80).optional(),
+  lang: z.enum(["en", "he"]).optional(),
 });
 
 /**
@@ -42,7 +43,7 @@ export async function POST(req: Request) {
       const i = await applyInitiativeAction(businessId, id, action === "snooze" ? { kind: "snooze", days: parsed.data.days ?? 7 } : action === "invalid" ? { kind: "invalid", reason: parsed.data.reason ?? "owner said it isn't right" } : { kind: action });
       return i ? Response.json({ initiative: toView(i) }) : Response.json({ error: "Not found" }, { status: 404 });
     }
-    const r = await actOnInitiative(g.graph, id, parsed.data.requestId ?? new Date().toISOString());
+    const r = await actOnInitiative(g.graph, id, parsed.data.requestId ?? new Date().toISOString(), parsed.data.lang ?? "en");
     if (!r.ok) return Response.json({ error: r.reason === "not_found" ? "Not found" : r.reason }, { status: r.reason === "not_found" ? 404 : 409 });
     return Response.json({ reply: r.reply });
   } catch (err) {

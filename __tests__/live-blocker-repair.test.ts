@@ -1,6 +1,4 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { createElement } from "react";
-import { renderToString } from "react-dom/server";
 import "@/lib/fabric";
 import { handleCustomerMessage, resumeAfterApproval } from "@/lib/runtime";
 import { readLedger } from "@/lib/runtime/ledger";
@@ -18,7 +16,7 @@ import { getOwnerWorkspace } from "@/lib/owner/service";
 import { askOwnerBarry, briefingText } from "@/lib/owner/ask";
 import { assessCapabilities, deriveCapabilities, type CapabilityInput } from "@/lib/owner/capabilities";
 import { assessPilotReadiness } from "@/lib/owner/readiness";
-import { SetupPlan } from "@/components/owner/train-plan";
+import { getOwnerOs } from "@/lib/owner/os-service";
 import { ScriptedModel, approvalsOf, conv, isolatedRetailer } from "./support/scripted-model";
 
 /**
@@ -496,15 +494,14 @@ describe("MEDIUM 3 — Train BARRY owner copy vs the BARRY team's technical step
     expect(a.needs.find((n) => n.id === "channel.whatsapp")!.detail).toMatch(/3 settings for the BARRY team to add/);
   });
 
-  it("render: the owner's setup plan shows no raw setting key outside the folded 'For the BARRY team' technical block", async () => {
+  it("the owner's setup (EN and HE) shows no raw setting key — technical steps stay with the BARRY team", async () => {
     for (const k of ENV) delete process.env[k];
     const a = await assessCapabilities(getBusinessGraph("fashion-retailer"));
-    const html = renderToString(createElement(SetupPlan, { steps: a.steps }));
-    expect(html).toMatch(/For the BARRY team \(technical step/);
-    const ownerHtml = html.replace(/<details[\s\S]*?<\/details>/g, "");
-    expect(ownerHtml).not.toMatch(RAW_SETTING);
-    expect(ownerHtml).toMatch(/With the BARRY team/);
-    const teamBlocks = html.match(/<details[\s\S]*?<\/details>/g) ?? [];
-    expect(teamBlocks.some((b) => RAW_SETTING.test(b))).toBe(true);
+    expect(a.steps.some((s) => s.technical && RAW_SETTING.test(s.technical))).toBe(true); // the team's steps do carry keys…
+    for (const lang of ["en", "he"] as const) {
+      const os = await getOwnerOs(getBusinessGraph("fashion-retailer"), lang);
+      const owner = JSON.stringify({ setup: { ...os.setup, level: undefined }, systems: os.systems, knowledge: os.knowledge, rules: os.rules });
+      expect(owner).not.toMatch(RAW_SETTING); // …the owner's surfaces never do
+    }
   });
 });

@@ -1,14 +1,15 @@
 "use client";
 
+import type { Intervention, InterventionAction } from "@/lib/owner/interventions";
 import type { OwnerConversationRow, OwnerWorkspace } from "@/lib/owner/service";
-import type { OutcomeEvent } from "@/lib/owner/revenue";
-import type { Tone } from "../ui";
-import type { LiveState } from "../kit";
+import type { OwnerLang } from "@/lib/owner/lang";
+import type { IconName } from "../kit";
+import type { Tone } from "../os-ui";
 
-/** Owner-facing words and tones shared by the control-room views. */
+/** Owner-facing words, tones and navigation shared by the Owner OS views (English + Hebrew). */
 
-export type Tab = "today" | "ask" | "work" | "money" | "customers" | "activity";
-export const TABS: Tab[] = ["today", "ask", "work", "money", "customers", "activity"];
+export type Tab = "today" | "ask" | "work" | "money" | "more" | "customers" | "activity";
+export const TABS: Tab[] = ["today", "ask", "work", "money", "more", "customers", "activity"];
 /** Earlier tab names stay valid: WhatsApp messages and briefs already sent link to them. */
 export const TAB_ALIASES: Record<string, Tab> = { inbox: "customers", actions: "work" };
 export function tabOf(raw: string | null): Tab {
@@ -16,58 +17,53 @@ export function tabOf(raw: string | null): Tab {
   return (TABS as string[]).includes(t) ? (t as Tab) : "today";
 }
 
-/** The five conversation states the owner scans for. */
-export type ConversationState = "barry" | "customer" | "you" | "review" | "resolved";
+/** One action handler for every decision: the owner endpoints re-check everything before an effect. */
+export type Act = (item: Intervention, action: InterventionAction) => Promise<void> | void;
 
-export const CONVERSATION_STATE: Record<ConversationState, { label: string; tone: Tone; live: LiveState }> = {
-  barry: { label: "BARRY handling", tone: "info", live: "working" },
-  customer: { label: "Waiting on customer", tone: "neutral", live: "waiting" },
-  you: { label: "Waiting on you", tone: "warn", live: "attention" },
-  review: { label: "Needs review", tone: "bad", live: "attention" },
-  resolved: { label: "Resolved", tone: "good", live: "off" },
+/** The conversation states the owner scans for. */
+export type ConversationState = "you" | "customer" | "barry" | "resolved";
+export const CONVERSATION_STATE: Record<ConversationState, { tone: Tone; label: Record<OwnerLang, string> }> = {
+  you: { tone: "warn", label: { en: "Needs you", he: "צריך אותך" } },
+  customer: { tone: "neutral", label: { en: "Waiting on customer", he: "מחכה ללקוח" } },
+  barry: { tone: "info", label: { en: "BARRY is handling", he: "BARRY מטפל" } },
+  resolved: { tone: "ok", label: { en: "Resolved", he: "הסתיים" } },
 };
-
 export function conversationState(c: OwnerConversationRow): ConversationState {
-  if (c.attention.some((a) => a === "ai_unavailable" || a === "action_failed" || a === "blocked")) return "review";
   if (c.status === "needs_you") return "you";
   if (c.status === "waiting_on_customer") return "customer";
   if (c.status === "completed" || c.status === "lost") return "resolved";
   return "barry";
 }
 
-export const OUTCOME: Record<OutcomeEvent["kind"], { tone: Tone; label: string }> = {
-  paid: { tone: "good", label: "Paid" },
-  booked: { tone: "good", label: "Booked" },
-  order_created: { tone: "good", label: "Order" },
-  case_created: { tone: "info", label: "Case opened" },
-  checkout_abandoned: { tone: "warn", label: "Checkout not completed" },
-  blocked: { tone: "warn", label: "Stopped" },
-  failed: { tone: "bad", label: "Didn't go through" },
-  handoff: { tone: "info", label: "Handed to you" },
-  declined_by_owner: { tone: "neutral", label: "You declined" },
+export const INTERVENTION_KIND: Record<Intervention["kind"], { icon: IconName; tone: Tone; label: Record<OwnerLang, string> }> = {
+  approval: { icon: "shield", tone: "warn", label: { en: "Your approval", he: "אישור שלך" } },
+  held_approval: { icon: "clock", tone: "warn", label: { en: "Held — re-check", he: "מוחזק — לבדוק שוב" } },
+  handoff: { icon: "users", tone: "info", label: { en: "Needs a person", he: "צריך אדם" } },
+  failed_action: { icon: "alert", tone: "bad", label: { en: "Didn't go through", he: "לא הצליח" } },
+  blocked_write: { icon: "cart", tone: "neutral", label: { en: "Stopped by their limits", he: "נעצר לפי המגבלות" } },
+  not_understood: { icon: "chat", tone: "bad", label: { en: "Not understood", he: "לא הובן" } },
+  delivery_failed: { icon: "alert", tone: "bad", label: { en: "Not delivered", he: "לא נמסר" } },
 };
 
-export const LIFECYCLE: Record<string, { tone: Tone; label: string }> = {
-  active: { tone: "warn", label: "Waiting for you" },
-  held: { tone: "bad", label: "Held" },
-  executed: { tone: "good", label: "Done" },
-  executed_unconfirmed: { tone: "warn", label: "Done · unconfirmed" },
-  failed: { tone: "bad", label: "Didn't go through" },
-  declined: { tone: "neutral", label: "Declined" },
-  withdrawn: { tone: "neutral", label: "Withdrawn" },
-  superseded: { tone: "neutral", label: "Replaced" },
-  approved: { tone: "info", label: "Approved" },
+export const LIFECYCLE: Record<string, { tone: Tone; label: Record<OwnerLang, string> }> = {
+  active: { tone: "warn", label: { en: "Waiting for you", he: "מחכה לך" } },
+  held: { tone: "bad", label: { en: "Held", he: "מוחזק" } },
+  executed: { tone: "ok", label: { en: "Done", he: "בוצע" } },
+  executed_unconfirmed: { tone: "warn", label: { en: "Done · unconfirmed", he: "בוצע · לא אושר" } },
+  failed: { tone: "bad", label: { en: "Didn't go through", he: "לא הצליח" } },
+  declined: { tone: "neutral", label: { en: "Declined", he: "נדחה" } },
+  withdrawn: { tone: "neutral", label: { en: "Withdrawn", he: "בוטל" } },
+  superseded: { tone: "neutral", label: { en: "Replaced", he: "הוחלף" } },
+  approved: { tone: "info", label: { en: "Approved", he: "אושר" } },
 };
 
-export const CHANNEL: Record<OwnerConversationRow["channel"], string> = { whatsapp: "WhatsApp", web: "Web chat", instagram: "Instagram", simulator: "Simulator" };
-
-export function greeting(now = new Date()): string {
+export function greeting(lang: OwnerLang, now = new Date()): string {
   const h = now.getHours();
+  if (lang === "he") return h < 5 ? "ערב טוב" : h < 12 ? "בוקר טוב" : h < 18 ? "צהריים טובים" : "ערב טוב";
   return h < 5 ? "Good evening" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
 }
 
-export function plural(n: number, one: string, many = `${one}s`): string {
-  return `${n} ${n === 1 ? one : many}`;
-}
+export const initial = (name: string) => name.replace(/[^\p{L}]/gu, "").slice(0, 1).toUpperCase() || "?";
 
 export type Workspace = OwnerWorkspace;
+export type { InterventionAction };

@@ -1,3 +1,5 @@
+import type { OwnerLang } from "./lang";
+import { actionWords } from "./interventions";
 import type { BusinessGraph } from "@/lib/business-graph";
 import { getConversationStore } from "@/lib/state";
 import { getBackend } from "@/lib/store";
@@ -14,7 +16,7 @@ import { conversationStory } from "./story";
  * opt-in ("advanced") — never the default view. Tenant-checked: a conversation of another business
  * is "not found".
  */
-export async function getOwnerConversation(graph: BusinessGraph, conversationId: string, advanced = false) {
+export async function getOwnerConversation(graph: BusinessGraph, conversationId: string, advanced = false, lang: OwnerLang = "en") {
   const state = await getConversationStore().get(conversationId);
   if (!state || state.businessId !== graph.business.id) return undefined;
   const backend = getBackend();
@@ -26,14 +28,14 @@ export async function getOwnerConversation(graph: BusinessGraph, conversationId:
   ]);
   return {
     id: state.id,
-    customer: customerLabel(state),
+    customer: customerLabel(state, lang),
     channel: channelOf(state),
     messages: state.messages.map((m) => ({ from: m.role, text: m.content, at: m.at })),
     outcomes: outcomeEvents({ graph, conversations: [state], payments, bookings, orders, approvals }),
-    transaction: transactionSnapshot(state),
+    transaction: lang === "he" ? conversationStory(state, "he").standing : transactionSnapshot(state),
     /** What the customer asked, what BARRY did, and what became of it — turn by turn, from records. */
-    story: conversationStory(state),
-    requests: withLifecycle(approvals, new Map([[state.id, state]])).map((a) => ({ id: a.id, what: a.summary, lifecycle: a.lifecycle, createdAt: a.createdAt, ...(a.hold ? { hold: a.hold } : {}) })),
+    story: conversationStory(state, lang),
+    requests: withLifecycle(approvals, new Map([[state.id, state]])).map((a) => ({ id: a.id, what: lang === "he" ? actionWords(graph, a, "he") : a.summary, lifecycle: a.lifecycle, createdAt: a.createdAt, ...(a.hold ? { hold: a.hold } : {}) })),
     handoffs: readHandoffs(state),
     deliveries: readDeliveries(state.knownFields),
     ...(advanced

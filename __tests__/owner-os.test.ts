@@ -19,6 +19,7 @@ import type { PilotReadiness, ReadinessCheck } from "@/lib/owner/readiness";
 import { OWNER_MORE, OWNER_NAV } from "@/components/owner/OwnerShell";
 import { tabOf } from "@/components/owner/views/shared";
 import { WorkView } from "@/components/owner/views/Work";
+import { TodayView } from "@/components/owner/views/Today";
 import { GET as osRoute } from "@/app/api/owner/os/route";
 import { ScriptedModel, conv, isolatedRetailer } from "./support/scripted-model";
 
@@ -80,7 +81,7 @@ function initiative(businessId: string, o: Partial<Initiative> = {}): Initiative
 describe("information architecture", () => {
   it("four daily surfaces + MORE for the OS; earlier tab links still land", () => {
     expect(OWNER_NAV.map((n) => n.id)).toEqual(["today", "ask", "work", "money"]);
-    expect(OWNER_MORE.map((n) => n.id)).toEqual(["customers", "rules", "knowledge", "systems", "activity", "setup", "plan", "settings"]);
+    expect(OWNER_MORE.map((n) => n.id)).toEqual(["customers", "knowledge", "rules", "setup", "activity", "systems", "plan", "settings"]);
     // Owner-facing words only — no internal system names in the navigation.
     expect(JSON.stringify([...OWNER_NAV, ...OWNER_MORE].map((n) => n.label))).not.toMatch(/initiative|fabric|genome|authority|operator|capabilit|founder|commercial/i);
     expect(tabOf("inbox")).toBe("customers"); // links in WhatsApp replies already sent
@@ -99,10 +100,13 @@ describe("Work: Needs you, BARRY is working, BARRY noticed — from real records
     expect(ws.interventions.length).toBeGreaterThan(0);
     expect(ws.initiatives.map((i) => i.title)).toEqual(["Customers asked what BARRY couldn't answer"]);
     expect(ws.initiativeHistory.map((i) => i.title)).toEqual(["An old dismissed item"]);
-    const html = renderToString(createElement(WorkView, { ws, act: async () => undefined, busyId: null, onOpen: noop, onInitiative: async () => undefined, onAsk: noop }));
-    expect(html).toContain(ws.interventions[0].title.replace(/&/g, "&amp;").slice(0, 20));
-    expect(html).toMatch(/BARRY noticed/);
-    expect(html).toContain("Customers asked what BARRY couldn&#x27;t answer");
+    const html = renderToString(createElement(WorkView, { ws, onDecision: noop, onOpen: noop, onInitiative: async () => undefined, onAsk: noop }));
+    expect(html).toContain(ws.interventions[0].title.replace(/&/g, "&amp;").replace(/'/g, "&#x27;").slice(0, 20)); // Needs you opens first
+    expect(html).toMatch(/Noticed/);
+    const today = renderToString(createElement(TodayView, { ws, onDecision: noop, onOpen: noop, onTab: noop, onAsk: noop }));
+    expect(today).toMatch(/BARRY noticed/);
+    expect(today).toContain(noticedCard(ws.initiatives[0]).what.replace(/'/g, "&#x27;"));
+    expect(html).not.toContain("An old dismissed item"); // history is behind its own filter in Work
     expect(html).not.toContain("An old dismissed item"); // history is behind its own filter
   });
 

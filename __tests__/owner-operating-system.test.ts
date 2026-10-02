@@ -19,7 +19,9 @@ import { revenueOpportunities } from "@/lib/owner/opportunities";
 import { getOwnerWorkspace, customerLabel } from "@/lib/owner/service";
 import { getOwnerConversation } from "@/lib/owner/conversation";
 import { askOwnerBarry } from "@/lib/owner/ask";
-import { InterventionQueue, MoneyInMotion, StoryView } from "@/components/owner/operating";
+import { DecisionSheet } from "@/components/owner/views/decision";
+import { WorkView } from "@/components/owner/views/Work";
+import { MoneyView } from "@/components/owner/views/Money";
 import { ScriptedModel, approvalsOf, conv, isolatedRetailer, ticket } from "./support/scripted-model";
 
 /**
@@ -287,28 +289,30 @@ describe("the owner surfaces read the same models", () => {
 
 // ── The components render what the models say ─────────────────────────────
 
-describe("the operating components render the models (server render)", () => {
+describe("the Owner OS views render the models (server render)", () => {
   it("queue cards show why / you decide / then / options with consequences; money in motion shows whose move; the story shows each step", async () => {
     const g = buildLogisticsDemoGraph();
     setReasonerForTests(new ScriptedModel((ctx) => (ctx.customerMessage.startsWith("Parcel") ? ticket("Q4-C301") : { advancesTransaction: false })));
     const id = conv("render");
     await handleCustomerMessage(g, id, "c", "Parcel Q4-C301 is delayed, open a delay case");
     const ws = await getOwnerWorkspace(g);
-    const queue = renderToString(createElement(InterventionQueue, { items: ws.interventions.filter((i) => i.conversationId === id), busyId: null, onAct: () => undefined }));
-    expect(queue).toMatch(/Your decision/);
-    expect(queue).toMatch(/Approve open a support case/i);
-    expect(queue).toMatch(/Why you/);
-    expect(queue).toMatch(/Every support case is approved by the owner/);
-    expect(queue).toMatch(/Decline<\/button>/);
-    expect(queue).toMatch(/Current: nothing the customer said since/);
-    const empty = renderToString(createElement(InterventionQueue, { items: [], busyId: null, onAct: () => undefined }));
-    expect(empty).toMatch(/Nothing needs you right now/);
-    const money = renderToString(createElement(MoneyInMotion, { items: [{ id: "o1", kind: "unpaid_link", customer: "Adi", conversationId: "c", since: hoursAgo(30), ageHours: 30, amount: 390, currency: "ILS", simulated: false, evidence: ["payment request x"], reasoning: "Unpaid for a day.", next: { who: "you", action: "Follow up." }, recoverable: true }], summary: { stuckWithYou: { ILS: 390 }, waitingOnCustomer: {}, atRisk: { ILS: 390 }, items: 1, simulatedItems: 0, simulated: {} }, onOpen: () => undefined, onIntervention: () => undefined }));
-    expect(money).toMatch(/Unpaid link/);
+    const item = ws.interventions.find((i) => i.conversationId === id)!;
+    const sheet = renderToString(createElement(DecisionSheet, { item, onClose: () => undefined, act: () => undefined, busy: false, onConversation: () => undefined }));
+    expect(sheet).toMatch(/Your approval/);
+    expect(sheet).toMatch(/Approve open a support case/i);
+    expect(sheet).toMatch(/Why it&#x27;s with you/);
+    expect(sheet).toMatch(/Every support case is approved by the owner/);
+    expect(sheet).toMatch(/Decline/);
+    expect(sheet).toMatch(/Current: nothing the customer said since/);
+    const empty = renderToString(createElement(WorkView, { ws: { ...ws, interventions: [], ownerOperations: [], obligations: [], initiatives: [] }, onDecision: () => undefined, onOpen: () => undefined, onInitiative: async () => undefined, onAsk: () => undefined }));
+    expect(empty).toMatch(/Nothing needs you/);
+    const opp = { id: "o1", kind: "unpaid_link" as const, customer: "Adi", conversationId: "c", since: hoursAgo(30), ageHours: 30, amount: 390, currency: "ILS", simulated: false, evidence: ["payment request x"], reasoning: "Unpaid for a day.", next: { who: "you" as const, action: "Follow up." }, recoverable: true };
+    const money = renderToString(createElement(MoneyView, { ws: { ...ws, opportunities: { items: [opp], summary: { stuckWithYou: { ILS: 390 }, waitingOnCustomer: {}, atRisk: { ILS: 390 }, items: 1, simulatedItems: 0, simulated: {} } } } as typeof ws, range: "today", setRange: () => undefined, onOpen: () => undefined }));
+    expect(money).toMatch(/Payment link not paid/);
     expect(money).toMatch(/Your move/);
-    expect(money).toMatch(/Follow up\./);
-    const story = renderToString(createElement(StoryView, { story: conversationStory((await getConversationStore().get(id))!) }));
-    expect(story).toMatch(/Waiting for you/);
+    expect(money).toMatch(/At risk/);
+    const story = JSON.stringify(conversationStory((await getConversationStore().get(id))!));
+    expect(story).toMatch(/needs your approval/);
     expect(story).toMatch(/Asked you to approve/);
   });
 });

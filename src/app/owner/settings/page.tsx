@@ -1,85 +1,48 @@
 "use client";
 
-import Link from "next/link";
-import { Suspense, useEffect, useState } from "react";
+import { Suspense } from "react";
 import { useOwnerApi } from "@/components/owner/useOwnerApi";
-import { OwnerShell, WhatsAppCard } from "@/components/owner/OwnerShell";
+import { LanguageSwitch, OwnerShell } from "@/components/owner/OwnerShell";
+import { useOwnerLang } from "@/components/owner/lang";
 import { WhatsAppLink } from "@/components/owner/WhatsAppLink";
-import { Hero, Panel, PanelHeader } from "@/components/owner/kit";
-import type { OwnerChannels } from "@/lib/owner/service";
-import { PlanAndValue } from "@/components/owner/PlanAndValue";
+import { Button, Group, Lead, PageHeader, Row, SectionLabel } from "@/components/owner/os-ui";
 
 /**
- * OWNER SETTINGS — configuration, not another dashboard: the business, who approves, the WhatsApp link
- * and the plan (connected systems have their own page). What the BARRY team configures stays in the team's words, folded.
- * Credentials are never shown.
+ * SETTINGS — configuration, not another dashboard: language, your WhatsApp link to BARRY, and access.
+ * What BARRY may do lives in Rules; systems in Connected systems; the plan in Plan & billing. Credentials
+ * are never shown.
  */
 function SettingsPage() {
   const api = useOwnerApi();
-  const { businessId, call, authorized } = api;
-  const [channels, setChannels] = useState<OwnerChannels | undefined>(undefined);
-  useEffect(() => {
-    if (!businessId || !authorized) return;
-    let cancelled = false;
-    call<OwnerChannels>(`/api/owner/channels?businessId=${encodeURIComponent(businessId)}`)
-      .then((c) => {
-        if (!cancelled) setChannels(c);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [businessId, call, authorized]);
-  const b = api.business;
+  const { t } = useOwnerLang();
+  const s = api.session;
   return (
-    <OwnerShell api={api} active="settings" channels={channels}>
+    <OwnerShell api={api} active="settings">
       <div className="flex flex-col gap-6">
-        <Hero eyebrow={`Settings · ${b?.name ?? "—"}`} title="Your business, your plan, your access." lead="Your WhatsApp link, plan and access. Running the business happens in Today, Work and Money — or by message." />
-        {authorized && (
-          <>
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <Panel className="p-4 md:p-5">
-                <PanelHeader icon="settings" title="Business & access" />
-                <dl className="mt-3 space-y-3 text-[14px]">
-                  <div>
-                    <dt className="text-[12px] text-o-muted">Business</dt>
-                    <dd className="font-medium text-o-ink">{b?.name}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-[12px] text-o-muted">Who approves</dt>
-                    <dd className="text-o-ink-2">{api.session?.scope === "operator" ? "The shared operator sign-in (the BARRY team can issue you your own)." : "You, with your own owner sign-in for this business only."}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-[12px] text-o-muted">What BARRY may do</dt>
-                    <dd className="text-o-ink-2">
-                      Your rules decide what BARRY does on its own and what it asks you first. <Link href="/owner/rules" className="font-medium text-o-accent hover:underline">Rules BARRY follows ›</Link>
-                    </dd>
-                  </div>
-                  <div>
-                    <dt className="text-[12px] text-o-muted">Systems</dt>
-                    <dd>
-                      <Link href="/owner/systems" className="font-medium text-o-accent hover:underline">Connected systems ›</Link>
-                    </dd>
-                  </div>
-                  <div>
-                    <dt className="text-[12px] text-o-muted">Testing tools</dt>
-                    <dd>
-                      <Link href="/simulator" className="font-medium text-o-accent hover:underline">Customer simulator ›</Link>
-                    </dd>
-                  </div>
-                </dl>
-              </Panel>
-              <WhatsAppCard channels={channels} wide />
-            </div>
+        <PageHeader back={{ href: "/owner?tab=more", label: t("More", "עוד") }} title={t("Settings", "הגדרות")} sub={<bdi>{api.business?.name}</bdi>} />
 
-            <WhatsAppLink api={api} onChanged={() => void call<OwnerChannels>(`/api/owner/channels?businessId=${encodeURIComponent(businessId)}`).then(setChannels).catch(() => undefined)} />
+        <section className="flex flex-col gap-2">
+          <SectionLabel>{t("Language", "שפה")}</SectionLabel>
+          <LanguageSwitch />
+          <p className="px-1 text-[12.5px] text-o-muted">{t("Saved on this device. BARRY's WhatsApp replies to you follow the language you write in.", "נשמר במכשיר הזה. התשובות של BARRY אליך בוואטסאפ הן בשפה שבה אתה כותב.")}</p>
+        </section>
 
-            <div id="plan" className="flex scroll-mt-24 flex-col gap-5">
-              <PlanAndValue api={api} />
-            </div>
+        <section id="whatsapp" className="flex scroll-mt-24 flex-col gap-2">
+          <SectionLabel>{t("BARRY on your WhatsApp", "BARRY בוואטסאפ שלך")}</SectionLabel>
+          <p className="px-1 text-[13.5px] leading-5 text-o-muted">{t("Your own number, linked to this business only. Ask, approve and stop work from WhatsApp — same records and rules as here.", "המספר שלך, מקושר רק לעסק הזה. לשאול, לאשר ולעצור עבודה מוואטסאפ — אותן רשומות ואותם כללים כמו כאן.")}</p>
+          <WhatsAppLink api={api} />
+        </section>
 
-          </>
-        )}
+        <section className="flex flex-col gap-2">
+          <SectionLabel>{t("Access", "גישה")}</SectionLabel>
+          <Group>
+            <Row lead={<Lead icon="lock" />} title={t("Who approves", "מי מאשר")} sub={s?.scope === "operator" ? t("The shared operator sign-in — the BARRY team can issue you your own.", "כניסת מפעיל משותפת — צוות BARRY יכול להנפיק לך כניסה משלך.") : t("You, with your own sign-in for this business only.", "אתה, עם כניסה משלך לעסק הזה בלבד.")} />
+            <Row lead={<Lead icon="shield" />} title={t("What BARRY may do", "מה BARRY רשאי לעשות")} sub={t("Your rules decide what BARRY does on its own", "הכללים שלך קובעים מה BARRY עושה לבד")} href="/owner/rules" />
+            <Row lead={<Lead icon="plug" />} title={t("Connected systems", "מערכות מחוברות")} href="/owner/systems" />
+            <Row lead={<Lead icon="chat" />} title={t("Customer simulator", "סימולטור לקוחות")} sub={t("Try BARRY as a customer — nothing real happens", "לנסות את BARRY כלקוח — שום דבר אמיתי לא קורה")} href="/simulator" />
+          </Group>
+          {s?.signedIn && <Button kind="quiet" onClick={() => void api.signOut()}>{t("Sign out", "יציאה")}</Button>}
+        </section>
       </div>
     </OwnerShell>
   );
@@ -87,7 +50,7 @@ function SettingsPage() {
 
 export default function OwnerSettingsPage() {
   return (
-    <Suspense>
+    <Suspense fallback={<div className="barry-owner min-h-screen" />}>
       <SettingsPage />
     </Suspense>
   );

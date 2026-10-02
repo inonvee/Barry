@@ -90,13 +90,41 @@
   --o-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 12px 32px -18px rgba(0, 0, 0, 0.8);
   --o-glow: 0 0 0 1px rgba(91, 140, 255, 0.28), 0 10px 40px -12px rgba(91, 140, 255, 0.45);
   color-scheme: dark;
+  /* Calm: one quiet light source at the top, then a flat canvas. */
   background:
-    radial-gradient(1200px 560px at 72% -12%, rgba(91, 140, 255, 0.2), transparent 62%),
-    radial-gradient(900px 520px at -10% 30%, rgba(155, 123, 255, 0.11), transparent 60%),
-    radial-gradient(1400px 600px at 50% 115%, rgba(60, 80, 220, 0.12), transparent 65%),
+    radial-gradient(900px 420px at 50% -180px, rgba(91, 140, 255, 0.12), transparent 70%),
     var(--o-canvas);
   color: var(--o-ink);
+  font-family: var(--font-geist-sans), var(--font-heebo), ui-sans-serif, system-ui, sans-serif;
 }
+/* Hebrew: Heebo carries Hebrew and Latin with one rhythm (business and product names stay legible). */
+.barry-owner[dir="rtl"] { font-family: var(--font-heebo), var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif; }
+
+/*
+ * OWNER OS SURFACES (Pass 1 design language) — fewer containers, more rhythm:
+ *  .o-group   one grouped list (rows separated by hairlines) — the default container for anything listy
+ *  .o-sheet   the detail sheet: bottom sheet on phones, side panel on desktop
+ *  .o-scrim   what dims behind a sheet
+ */
+.o-group {
+  background: var(--o-surface);
+  border-radius: 18px;
+  box-shadow: 0 0 0 1px var(--o-line);
+  overflow: hidden;
+}
+.o-group > * + * { border-top: 1px solid var(--o-line); }
+.o-scrim { background: rgba(3, 6, 14, 0.62); }
+.o-sheet {
+  background: var(--o-surface);
+  box-shadow: 0 -1px 0 var(--o-line), 0 -24px 60px -20px rgba(0, 0, 0, 0.8);
+}
+@keyframes o-sheet-up { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes o-sheet-side { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+.o-sheet-in { animation: o-sheet-up 0.22s ease-out both; }
+@media (min-width: 1024px) { .o-sheet-in { animation-name: o-sheet-side; } }
+[dir="rtl"] .o-sheet-in { animation-name: o-sheet-up; }
+@media (min-width: 1024px) { [dir="rtl"] .o-sheet-in { animation-name: o-sheet-side; } }
+.o-tabular { font-variant-numeric: tabular-nums; }
 
 @theme inline {
   --color-background: var(--background);
@@ -178,8 +206,8 @@ body {
   to { opacity: 1; transform: none; }
 }
 @keyframes o-orb {
-  0%, 100% { box-shadow: 0 0 18px 2px rgba(91, 140, 255, 0.45), inset 0 0 10px rgba(155, 123, 255, 0.5); }
-  50% { box-shadow: 0 0 26px 5px rgba(155, 123, 255, 0.5), inset 0 0 14px rgba(91, 140, 255, 0.6); }
+  0%, 100% { box-shadow: 0 0 10px 1px rgba(91, 140, 255, 0.28), inset 0 0 8px rgba(155, 123, 255, 0.35); }
+  50% { box-shadow: 0 0 14px 2px rgba(155, 123, 255, 0.3), inset 0 0 10px rgba(91, 140, 255, 0.4); }
 }
 .o-live-dot { animation: o-pulse 1.8s ease-in-out infinite, o-ring 1.8s ease-out infinite; }
 .o-rise { animation: o-rise 0.35s ease-out both; }

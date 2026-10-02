@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import type { OwnerLang } from "@/lib/owner/lang";
 import type { BusinessGraph } from "@/lib/business-graph";
 import { getBackend } from "@/lib/store";
 import { getConversationStore } from "@/lib/state";
@@ -269,14 +270,14 @@ export async function applyInitiativeAction(businessId: string, id: string, acti
  * command bar and WhatsApp (plan → authority → grounding → bounded execution → verification →
  * idempotency). An initiative is never permission; if BARRY can't act on it, nothing runs.
  */
-export async function actOnInitiative(graph: BusinessGraph, id: string, requestId: string): Promise<{ ok: true; reply: OwnerReply } | { ok: false; reason: string }> {
+export async function actOnInitiative(graph: BusinessGraph, id: string, requestId: string, lang: OwnerLang = "en"): Promise<{ ok: true; reply: OwnerReply } | { ok: false; reason: string }> {
   const businessId = graph.business.id;
   const i = (await listInitiatives(businessId)).find((x) => x.id === id);
   if (!i) return { ok: false, reason: "not_found" };
   const a = i.recommendation.action;
   if (!i.canAct || a?.kind !== "command" || !isOpenInitiative(i)) return { ok: false, reason: "BARRY can't do this one for you — the recommendation says who does." };
   const at = new Date().toISOString();
-  const result = await executeOwnerCommand({ graph, source: "web", actor: { kind: "web" }, key: `initiative:${id}:${requestId}`, text: a.command, trace: [{ step: "identity", outcome: "ok", detail: `signed-in owner session · from initiative ${id}`, at }] });
+  const result = await executeOwnerCommand({ graph, source: "web", actor: { kind: "web" }, key: `initiative:${id}:${requestId}`, text: a.command, lang, trace: [{ step: "identity", outcome: "ok", detail: `signed-in owner session · from initiative ${id}`, at }] });
   if (result.reply.operation && !result.duplicate) await applyInitiativeAction(businessId, id, { kind: "acting", commandId: result.record.id, operationId: result.reply.operation.id });
   return { ok: true, reply: result.reply };
 }

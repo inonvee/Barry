@@ -159,7 +159,7 @@ export async function getOwnerOs(staticGraph: BusinessGraph, lang: OwnerLang = "
   );
 
   return {
-    business: { id: businessId, name: graph.business.name },
+    business: { id: businessId, name: graph.business.name, locale: graph.business.locale },
     mode: controls.mode,
     rules,
     systems: [...channelRows, ...systems],

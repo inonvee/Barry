@@ -14,6 +14,10 @@ export const dirOf = (lang: OwnerLang) => (lang === "he" ? "rtl" : "ltr");
 /** The language a request asked for (query `lang`), English when absent or unknown. */
 export const langFrom = (raw: string | null | undefined): OwnerLang => (raw === "he" ? "he" : "en");
 
+/** The cookie that keeps the owner's choice (read by the server so the first render is already right). */
+export const LANG_COOKIE = "barry_owner_lang";
+export const parseLangCookie = (v: string | undefined): OwnerLang | null => (isOwnerLang(v) ? v : null);
+
 /** Bilingual inline text for text producers: L(lang, "English", "עברית"). */
 export const L = (lang: OwnerLang, en: string, he: string) => (lang === "he" ? he : en);
 

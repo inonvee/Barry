@@ -1,218 +1,123 @@
 "use client";
 
-import Link from "next/link";
-import type { OwnerApproval, OwnerWorkspace } from "@/lib/owner/service";
+import { useState } from "react";
+import type { OwnerWorkspace } from "@/lib/owner/service";
+import type { Opportunity } from "@/lib/owner/opportunities";
+import { isAtRisk } from "@/lib/owner/opportunity-risk";
 import { financialImpact } from "@/lib/finance/impact";
-import { workflows } from "@/lib/owner/control-room";
-import { formatLocal } from "@/lib/format/time";
 import { hasMoney } from "@/lib/format/money";
-import { Empty, MoneyFigures, Pill, formatMoney, timeAgo, type Tone } from "../ui";
-import { MoneyInMotion, WatchingList } from "../operating";
-import { HeaderLink, Hero, Icon, MotionStat, Panel, PanelHeader, Segmented, StageTitle } from "../kit";
-import { MotionStrip, WorkflowFlow } from "./live";
-import { LIFECYCLE } from "./shared";
-
-type Range = "today" | "7d" | "30d";
-
-const REVENUE_CATEGORIES: { id: OwnerWorkspace["revenueEvidence"][number]["category"]; label: string; explain: string; tone: Tone }[] = [
-  { id: "collected", label: "Made", explain: "Paid and verified by your payment provider — the only real revenue.", tone: "good" },
-  { id: "recovered", label: "Recovered", explain: "Collected after an earlier failed or cancelled attempt (already inside Made).", tone: "good" },
-  { id: "booked_not_collected", label: "Booked, not collected", explain: "Value of bookings BARRY made; not cash.", tone: "info" },
-  { id: "open_opportunity", label: "Pending", explain: "Unpaid links and requests — not revenue. Simulated ones are marked as test money.", tone: "warn" },
-  { id: "simulated", label: "Test money", explain: "Simulated providers — never counted.", tone: "neutral" },
-  { id: "excluded_unverified", label: "Not counted", explain: "Marked paid without provider verification.", tone: "neutral" },
-];
+import { ago, amount, money, type OwnerLang } from "@/lib/owner/lang";
+import { useOwnerLang } from "../lang";
+import { Chip, Empty, Group, Lead, PageHeader, Row, Segments, SectionLabel, Sheet, type Tone } from "../os-ui";
 
 /**
- * MONEY — what money is moving because of BARRY. Five states that never blur: MADE (verified),
- * RECOVERED (verified, inside Made), PENDING, AT RISK, SAVED (realised only; Intelligence). Each amount
- * stays in its own currency and carries the record that proves it.
+ * MONEY — four states that never blur, scannable in seconds:
+ *   MADE        paid and verified by your payment provider (the only revenue)
+ *   IN MOTION   unpaid links and requests — not revenue yet
+ *   AT RISK     likely lost unless someone acts (the same rule as the figure)
+ *   SAVED       realised savings only, from connected cost records (never estimated)
+ * Each amount stays in its own currency; test money is shown apart and never counted. Every figure opens
+ * the records behind it.
  */
-export function MoneyView({ ws, range, setRange, onOpen, onIntervention, loadedAt }: { ws: OwnerWorkspace; range: Range; setRange: (r: Range) => void; onOpen: (id: string) => void; onIntervention: (id: string) => void; loadedAt: Date | null }) {
+
+type Range = "today" | "7d" | "30d";
+type Open = "made" | "motion" | "risk" | null;
+
+const OPP: Record<Opportunity["kind"], Record<OwnerLang, string>> = {
+  unpaid_link: { en: "Payment link not paid", he: "קישור תשלום שלא שולם" },
+  approval_blocking_sale: { en: "Sale waiting on your approval", he: "מכירה שמחכה לאישורך" },
+  held_blocking_sale: { en: "Sale held — re-check", he: "מכירה מוחזקת — לבדוק" },
+  stalled_purchase: { en: "Purchase stalled", he: "רכישה נתקעה" },
+  payment_failed: { en: "Payment failed", he: "תשלום נכשל" },
+  unpaid_deposit: { en: "Deposit not paid", he: "מקדמה לא שולמה" },
+  enquiry_open: { en: "Open enquiry", he: "פנייה פתוחה" },
+  blocked_by_limit: { en: "Stopped by the customer's limits", he: "נעצר לפי מגבלות הלקוח" },
+};
+const WHO: Record<Opportunity["next"]["who"], { tone: Tone; label: Record<OwnerLang, string> }> = {
+  you: { tone: "warn", label: { en: "Your move", he: "התור שלך" } },
+  customer: { tone: "neutral", label: { en: "Customer's move", he: "התור של הלקוח" } },
+  barry: { tone: "info", label: { en: "BARRY's move", he: "התור של BARRY" } },
+};
+
+export function MoneyView({ ws, range, setRange, onOpen }: { ws: OwnerWorkspace; range: Range; setRange: (r: Range) => void; onOpen: (conversationId: string) => void }) {
+  const { lang, t } = useOwnerLang();
+  const [open, setOpen] = useState<Open>(null);
   const r = ws.revenue;
-  const items = ws.revenueEvidence;
-  const impact = financialImpact(r, []);
-  const flows = workflows(ws).filter((f) => f.kind === "unpaid_payment_followup" || f.kind === "abandoned_checkout_recovery" || f.kind === "booking_deposit_missing");
+  const s = ws.opportunities.summary;
+  const real = ws.opportunities.items.filter((o) => !o.simulated);
   const margins = !ws.plan?.name || ws.plan.marginsIncluded;
-  const title = hasMoney(r.direct) ? (
-    <>
-      BARRY made <span className="o-hero-type">{formatMoney(r.direct)}</span> {ws.window.label}.
-    </>
-  ) : (
-    <>Nothing collected {ws.window.label} yet.</>
-  );
-  const saved = margins ? (
-    <MotionStat icon="spark" tone="violet" label="Saved (realised)" value={hasMoney(impact.saved.realized) ? formatMoney(impact.saved.realized) : "—"} sub={impact.evidenceCount === 0 ? "Needs connected cost evidence" : "Only evidence-backed savings"} />
-  ) : (
-    <Link href="/owner/settings#plan" className="flex items-center gap-3 rounded-2xl px-1 py-3 transition hover:bg-o-sunken/40">
-      <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-o-violet/10 text-o-violet ring-1 ring-inset ring-o-violet/30"><Icon name="lock" size={18} /></span>
-      <span className="min-w-0">
-        <span className="block text-[13px] text-o-muted">Saved</span>
-        <span className="block text-[12.5px] leading-5 text-o-ink-2">BARRY Margins is part of BARRY Intelligence — not in your {ws.plan.name} plan. <span className="text-o-violet">See plan ›</span></span>
-      </span>
-    </Link>
-  );
+  const impact = financialImpact(r, []);
+  const testMoney = hasMoney(r.simulatedPaid) || r.potentialSimulatedItems > 0;
+  const evidence = (cats: OwnerWorkspace["revenueEvidence"][number]["category"][]) => ws.revenueEvidence.filter((e) => cats.includes(e.category) && !e.simulated);
+  const motion = { ...s.waitingOnCustomer };
+  for (const [c, v] of Object.entries(s.stuckWithYou)) motion[c] = Math.round(((motion[c] ?? 0) + v) * 100) / 100;
+
   return (
-    <div className="flex flex-col gap-8 md:gap-10">
-      <Hero
-        eyebrow={`Money · ${ws.business.name}${loadedAt ? ` · ${formatLocal(loadedAt.toISOString(), ws.business.timezone, loadedAt)}` : ""}`}
-        title={title}
-        lead="Only provider-verified payments count as made. Everything else is shown apart, each currency on its own — never added together."
-        right={<Segmented<Range> ariaLabel="Time range" value={range} onChange={setRange} options={[{ id: "today", label: "Today" }, { id: "7d", label: "7 days" }, { id: "30d", label: "30 days" }]} />}
-      />
+    <div className="flex flex-col gap-5">
+      <PageHeader title={t("Money", "כסף")} sub={t("Only payments your provider verified count as made. Each currency stays on its own.", "רק תשלום שהספק אימת נחשב שנגבה. כל מטבע מוצג בנפרד.")} />
+      <Segments<Range> ariaLabel={t("Period", "תקופה")} value={range} onChange={setRange} options={[{ id: "today", label: t("Today", "היום") }, { id: "7d", label: t("7 days", "7 ימים") }, { id: "30d", label: t("30 days", "30 ימים") }]} />
 
-      <section aria-labelledby="in-motion">
-        <StageTitle>
-          <span id="in-motion" className="text-[17px] normal-case tracking-normal text-o-ink">Your business, in motion</span>
-        </StageTitle>
-        <div className="o-stage mt-3 px-4 py-1 md:px-6">
-          <MotionStrip ws={ws} extra={saved} />
-        </div>
-        {ws.trend.currency && ws.trend.made.some((v) => v > 0) && <p className="mt-2 text-[12px] text-o-faint">Trend lines: verified {ws.trend.currency} per day, last 7 days. Test money never appears in them.</p>}
+      <section className="flex flex-col gap-1 px-1" aria-label={t("Made", "נגבה")}>
+        <p className="text-[13px] font-medium text-o-muted">{t(`Made ${ws.window.label}`, `נגבה ${ws.window.label}`)}</p>
+        <p className="o-tabular text-[38px] font-semibold leading-none tracking-tight text-o-ink" data-testid="money-made"><bdi>{money(lang, r.direct)}</bdi></p>
+        <p className="text-[13.5px] text-o-muted">{r.directPayments ? t(`${r.directPayments} payment${r.directPayments === 1 ? "" : "s"} verified by your provider`, r.directPayments === 1 ? "תשלום אחד אומת מול הספק" : `${r.directPayments} תשלומים אומתו מול הספק`) : t("No verified payments in this period yet.", "עוד אין תשלומים מאומתים בתקופה הזאת.")}</p>
       </section>
 
-      {flows.length > 0 && (
-        <section className="o-stage p-5 md:p-7" aria-labelledby="work-to-money">
-          <StageTitle live={flows.some((f) => f.open && f.state === "running") ? "live" : "off"} liveLabel={flows.some((f) => f.open && f.state === "running") ? "Live now" : undefined}>
-            <span id="work-to-money">From BARRY&apos;s work to money</span>
-          </StageTitle>
-          <p className="mt-1.5 text-[13px] text-o-muted">Your follow-up rules, who BARRY reached, and what the payment provider verified. Money appears only once it is verified.</p>
-          <div className="mt-6 flex flex-col gap-8">
-            {flows.map((f, i) => (
-              <div key={f.kind}>
-                {i > 0 && <div className="o-hairline mb-8" />}
-                <WorkflowFlow w={f} />
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {margins && (
-        <section aria-labelledby="margins">
-          <StageTitle>
-            <span id="margins">BARRY Margins</span>
-          </StageTitle>
-          <p className="mt-1.5 text-[13px] text-o-muted">Savings move through four states; only REALISED counts as saved.</p>
-          <ol className="relative mt-5 grid grid-cols-2 gap-x-3 gap-y-5 md:grid-cols-4">
-            <span aria-hidden className="o-hairline absolute left-[6%] right-[6%] top-[7px] hidden md:block" />
-            {([["Potential", impact.saved.potential, "Spotted in your cost evidence"], ["Proposed", impact.saved.proposed, "A concrete change is suggested"], ["Negotiated", impact.saved.negotiated, "Agreed, not yet in your books"], ["Realised", impact.saved.realized, "Proven by a later cost record"]] as const).map(([label, m, hint], i) => (
-              <li key={label} className="relative">
-                <span aria-hidden className={`relative z-10 block h-[15px] w-[15px] rounded-full ring-[3px] ring-o-canvas ${i === 3 ? "bg-o-ok shadow-[0_0_12px_rgba(61,220,151,0.7)]" : "bg-o-line-strong"}`} />
-                <p className={`mt-3 text-[11px] font-semibold uppercase tracking-[0.14em] ${i === 3 ? "text-o-ok" : "text-o-faint"}`}>{label}</p>
-                <p className={`mt-1 text-[20px] font-semibold tabular-nums ${i === 3 ? "text-o-ok" : "text-o-ink"}`}>{hasMoney(m) ? formatMoney(m) : "—"}</p>
-                <p className="text-[12px] text-o-muted">{hint}</p>
-              </li>
-            ))}
-          </ol>
-          {impact.evidenceCount === 0 && <p className="mt-4 text-[12.5px] text-o-muted">BARRY Margins needs connected cost evidence — nothing is connected yet, so there is nothing to save from. BARRY will not invent a saving.</p>}
-        </section>
-      )}
-
-      <section>
-        <PanelHeader icon="money" tone="ok" title="Money in motion" sub="What can be done about it — each line says whose move it is." />
-        <div className="mt-4">
-          <MoneyInMotion items={ws.opportunities.items} summary={ws.opportunities.summary} onOpen={onOpen} onIntervention={onIntervention} />
-        </div>
-      </section>
-
-      <div className="o-hairline" />
-
-      <section>
-        <PanelHeader icon="clock" title="Unpaid follow-ups" sub="Every unpaid link BARRY is watching, with whose move it is now." />
-        <div className="mt-3">
-          <WatchingList items={ws.obligations.filter((o) => o.kind === "unpaid_payment_followup" || o.kind === "booking_deposit_missing")} onOpen={onOpen} empty="No unpaid link or missing deposit is being watched." />
-        </div>
-      </section>
-
-      <div className="o-hairline" />
-
-      <section>
-        <PanelHeader icon="receipt" title="Every amount, explained" sub="The state each amount is in, and the record that puts it there." />
-        <div className="mt-3">
-          {items.length === 0 ? (
-            <Empty>No money records in this period yet.</Empty>
-          ) : (
-            <div className="flex flex-col gap-2">
-              {REVENUE_CATEGORIES.filter((c) => items.some((i) => i.category === c.id)).map((c) => {
-                const rows = items.filter((i) => i.category === c.id);
-                const totals: Record<string, number> = {};
-                for (const x of rows) totals[x.currency] = Math.round(((totals[x.currency] ?? 0) + x.amount) * 100) / 100;
-                return (
-                  <details key={c.id} className="group rounded-xl bg-o-sunken/60 p-3 ring-1 ring-inset ring-o-line">
-                    <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-2">
-                      <span className="flex flex-wrap items-center gap-2">
-                        <Pill tone={c.tone}>{c.label}</Pill>
-                        <span className="text-[12px] text-o-muted">{c.explain}</span>
-                      </span>
-                      <span className="flex items-center gap-1.5 font-semibold tabular-nums text-o-ink">
-                        {formatMoney(totals)}
-                        <Icon name="chevron" size={14} className="text-o-faint transition group-open:rotate-90" />
-                      </span>
-                    </summary>
-                    <ul className="mt-2 divide-y divide-o-line text-[13px]">
-                      {rows.map((x, i) => (
-                        <li key={i} className="flex flex-col gap-0.5 py-2 sm:flex-row sm:justify-between">
-                          <button className="min-w-0 break-words text-left text-o-ink-2 hover:text-o-ink" onClick={() => onOpen(x.conversationId)}>
-                            {x.customer} — <span className="text-o-muted">{x.record}</span>
-                            {x.simulated && (
-                              <>
-                                {" "}
-                                <Pill tone="neutral">Test money</Pill>
-                              </>
-                            )}
-                          </button>
-                          <span className="shrink-0 tabular-nums text-o-ink">{formatMoney({ [x.currency]: x.amount })}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </details>
-                );
-              })}
-            </div>
-          )}
-        </div>
-        {(hasMoney(r.simulatedPaid) || r.potentialSimulatedItems > 0) && (
-          <p className="mt-3 text-[12px] text-o-faint">
-            Test money (apart): <MoneyFigures money={r.simulatedPaid} empty="none paid" />
-            {r.potentialSimulatedItems ? ` · ${formatMoney(r.potentialSimulated)} pending on a simulated provider` : ""} — never counted as made.
-          </p>
+      <Group label={t("Money states", "מצבי הכסף")}>
+        <Row testId="money-row-made" lead={<Lead icon="check" tone="ok" />} title={t("Made", "נגבה")} sub={t("Paid and verified by your provider", "שולם ואומת מול הספק")} end={<bdi>{money(lang, r.direct)}</bdi>} endSub={hasMoney(r.recovered) ? t(`${money(lang, r.recovered)} recovered`, `${money(lang, r.recovered)} הוחזרו`) : undefined} onClick={() => setOpen("made")} />
+        <Row testId="money-row-motion" lead={<Lead icon="clock" tone="info" />} title={t("In motion", "בתנועה")} sub={t("Unpaid links and requests — not revenue yet", "קישורים ובקשות שלא שולמו — עוד לא הכנסה")} end={<bdi>{money(lang, motion)}</bdi>} endSub={hasMoney(s.stuckWithYou) ? t(`${money(lang, s.stuckWithYou)} waits on you`, `${money(lang, s.stuckWithYou)} מחכה לך`) : undefined} onClick={() => setOpen("motion")} />
+        <Row testId="money-row-risk" lead={<Lead icon="alert" tone={hasMoney(s.atRisk) ? "bad" : "neutral"} />} title={t("At risk", "בסיכון")} sub={hasMoney(s.atRisk) ? t("Likely lost unless someone acts", "עלול ללכת לאיבוד אם אף אחד לא יפעל") : t("Nothing at risk", "אין כסף בסיכון")} end={<bdi>{money(lang, s.atRisk)}</bdi>} onClick={() => setOpen("risk")} />
+        {margins ? (
+          <Row testId="money-row-saved" lead={<Lead icon="spark" tone="violet" />} title={t("Saved", "נחסך")} sub={impact.evidenceCount === 0 ? t("Needs connected cost records — BARRY never estimates a saving", "צריך רשומות עלות מחוברות — BARRY לא מעריך חיסכון") : t("Realised savings only", "רק חיסכון שמומש בפועל")} end={<bdi>{money(lang, impact.saved.realized)}</bdi>} />
+        ) : (
+          <Row testId="money-row-saved" lead={<Lead icon="lock" tone="neutral" />} title={t("Saved", "נחסך")} sub={t(`Cost savings aren't in your ${ws.plan.name} plan`, `חיסכון בעלויות לא כלול בתוכנית ${ws.plan.name}`)} href="/owner/plan" />
         )}
-        <p className="mt-1 text-[12px] text-o-faint">Converted: {r.purchaseIntentConversations ? `${r.convertedConversations} of ${r.purchaseIntentConversations}` : "—"} conversations with buying intent · {r.lostOpportunities} lost</p>
+      </Group>
+
+      {testMoney && (
+        <p className="px-1 text-[13px] leading-5 text-o-muted" data-testid="money-test">
+          {t("Test money (simulator, never counted):", "כסף של בדיקות (סימולטור, לא נספר):")} <bdi>{money(lang, r.simulatedPaid, t("none paid", "לא שולם"))}</bdi>
+          {r.potentialSimulatedItems ? t(` · ${money(lang, r.potentialSimulated)} pending`, ` · ${money(lang, r.potentialSimulated)} ממתין`) : ""}
+        </p>
+      )}
+
+      <section className="flex flex-col gap-2">
+        <SectionLabel>{t("Where money is moving", "איפה הכסף זז")}</SectionLabel>
+        {real.length ? (
+          <Group>
+            {real.slice(0, 6).map((o) => <OppRow key={o.id} o={o} onOpen={onOpen} lang={lang} />)}
+          </Group>
+        ) : (
+          <Empty title={t("Nothing waiting", "שום דבר לא מחכה")}>{t("Unpaid links, stalled purchases and sales waiting on you show up here, with whose move it is.", "קישורים שלא שולמו, רכישות שנתקעו ומכירות שמחכות לך יופיעו כאן — עם מי שהתור שלו.")}</Empty>
+        )}
       </section>
 
-      {ws.approvals.some((a) => !(a.actionable || a.lifecycle === "held")) && (
-        <Panel className="p-4 md:p-5">
-          <PanelHeader icon="shield" title="Decisions you made" right={<HeaderLink href="/owner?tab=actions">All actions</HeaderLink>} />
-          <ul className="mt-2 divide-y divide-o-line">
-            {ws.approvals
-              .filter((a) => !(a.actionable || a.lifecycle === "held"))
-              .slice(0, 8)
-              .map((a) => (
-                <DecisionRow key={a.id} a={a} onOpen={onOpen} />
-              ))}
-          </ul>
-        </Panel>
-      )}
+      <Sheet open={open === "made"} onClose={() => setOpen(null)} title={t("Made — verified payments", "נגבה — תשלומים מאומתים")}>
+        <EvidenceList rows={evidence(["collected", "recovered"])} onOpen={onOpen} empty={t("No verified payments in this period.", "אין תשלומים מאומתים בתקופה הזאת.")} />
+        <p className="mt-3 text-[13px] text-o-muted">{t("Recovered payments are already inside Made — never added twice.", "תשלומים שהוחזרו כבר כלולים בנגבה — אף פעם לא נספרים פעמיים.")}</p>
+      </Sheet>
+      <Sheet open={open === "motion"} onClose={() => setOpen(null)} title={t("In motion — not revenue yet", "בתנועה — עוד לא הכנסה")}>
+        {real.length ? <div className="o-group">{real.map((o) => <OppRow key={o.id} o={o} onOpen={onOpen} lang={lang} />)}</div> : <p className="text-[14px] text-o-muted">{t("Nothing in motion.", "אין כסף בתנועה.")}</p>}
+      </Sheet>
+      <Sheet open={open === "risk"} onClose={() => setOpen(null)} title={t("At risk", "בסיכון")}>
+        {real.filter(isAtRisk).length ? <div className="o-group">{real.filter(isAtRisk).map((o) => <OppRow key={o.id} o={o} onOpen={onOpen} lang={lang} />)}</div> : <p className="text-[14px] text-o-muted">{t("Nothing at risk right now.", "אין כרגע כסף בסיכון.")}</p>}
+        <p className="mt-3 text-[13px] text-o-muted">{t("Failed payments, stalled purchases and unpaid links that can still be won back. Not lost yet — and never counted as revenue.", "תשלומים שנכשלו, רכישות שנתקעו וקישורים שלא שולמו ושעוד אפשר להחזיר. עוד לא אבודים — ואף פעם לא נספרים כהכנסה.")}</p>
+      </Sheet>
     </div>
   );
 }
 
-export function DecisionRow({ a, onOpen }: { a: OwnerApproval; onOpen: (id: string) => void }) {
-  const l = LIFECYCLE[a.lifecycle] ?? LIFECYCLE.approved;
+function OppRow({ o, onOpen, lang }: { o: Opportunity; onOpen: (id: string) => void; lang: OwnerLang }) {
+  const w = WHO[o.next.who];
+  return <Row title={o.customer} sub={`${OPP[o.kind][lang]} · ${ago(lang, o.since)}`} end={o.amount !== undefined && o.currency ? <bdi>{amount(lang, o.amount, o.currency)}</bdi> : undefined} chip={<Chip tone={w.tone}>{w.label[lang]}</Chip>} onClick={() => onOpen(o.conversationId)} />;
+}
+
+function EvidenceList({ rows, onOpen, empty }: { rows: OwnerWorkspace["revenueEvidence"]; onOpen: (id: string) => void; empty: string }) {
+  const { lang } = useOwnerLang();
+  if (!rows.length) return <p className="text-[14px] text-o-muted">{empty}</p>;
   return (
-    <li className="flex items-center justify-between gap-3 py-2.5">
-      <button className="min-w-0 text-left" onClick={() => onOpen(a.conversationId)}>
-        <div className="flex flex-wrap items-center gap-2">
-          <Pill tone={l.tone}>{l.label}</Pill>
-          <span className="text-[14px] font-medium text-o-ink">{a.customer}</span>
-        </div>
-        <p className="mt-0.5 text-[13px] text-o-ink-2">
-          {a.what}
-          {a.resultReference ? ` · ${a.resultReference}` : ""}
-        </p>
-      </button>
-      <span className="shrink-0 text-[12px] text-o-faint">{timeAgo(a.createdAt)}</span>
-    </li>
+    <div className="o-group">
+      {rows.map((x, i) => <Row key={i} title={x.customer ?? "—"} sub={ago(lang, x.at)} end={<bdi>{amount(lang, x.amount, x.currency)}</bdi>} onClick={() => onOpen(x.conversationId)} />)}
+    </div>
   );
 }

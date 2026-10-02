@@ -1,54 +1,53 @@
 "use client";
 
-import Link from "next/link";
+import { useState } from "react";
 import type { OwnerWorkspace } from "@/lib/owner/service";
-import { activityTimeline } from "@/lib/owner/os";
-import { formatLocal } from "@/lib/format/time";
-import { Empty } from "../ui";
-import { Hero, Icon } from "../kit";
+import { activityTimeline, type TimelineItem } from "@/lib/owner/os";
+import { ago, type OwnerLang } from "@/lib/owner/lang";
+import type { IconName } from "../kit";
+import { useOwnerLang } from "../lang";
+import { Empty, Group, Lead, PageHeader, Row, SectionLabel, type Tone } from "../os-ui";
 
 /**
- * ACTIVITY — what happened, in human words, newest first: payments the provider verified, bookings,
- * follow-ups, requests BARRY brought to you and what you decided, what you asked BARRY (here or on
- * WhatsApp), what BARRY noticed. Every row opens its record (the conversation, the operation, the item).
+ * ACTIVITY — a trustworthy business timeline, not a log: what BARRY asked you, what you decided, what
+ * BARRY did, which payments your provider verified, what BARRY noticed, what you asked BARRY (here or on
+ * WhatsApp). Grouped by day; every row opens its record.
  */
+
+const TONE: Record<TimelineItem["tone"], Tone> = { accent: "info", violet: "violet", ok: "ok", warn: "warn", bad: "bad", neutral: "neutral" };
+
+export function ActivityRow({ item, onOpen, lang }: { item: TimelineItem; onOpen: (conversationId: string) => void; lang: OwnerLang }) {
+  const sub = [item.sub, ago(lang, item.at)].filter(Boolean).join(" · ");
+  return <Row lead={<Lead icon={item.icon as IconName} tone={TONE[item.tone]} />} title={item.text} sub={sub} {...(item.conversationId ? { onClick: () => onOpen(item.conversationId!) } : item.href ? { href: item.href } : {})} />;
+}
+
+function dayKey(iso: string, timeZone: string) {
+  return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(iso));
+}
+
 export function ActivityView({ ws, onOpen }: { ws: OwnerWorkspace; onOpen: (conversationId: string) => void }) {
-  const items = activityTimeline(ws);
-  const dot = { ok: "bg-o-ok", accent: "bg-o-accent", violet: "bg-o-violet", warn: "bg-o-warn", bad: "bg-o-bad", neutral: "bg-o-faint" } as const;
+  const { lang, t } = useOwnerLang();
+  const items = activityTimeline(ws, 80, lang);
+  const tz = ws.business.timezone;
+  const [now] = useState(() => Date.now());
+  const today = dayKey(new Date(now).toISOString(), tz);
+  const yesterday = dayKey(new Date(now - 864e5).toISOString(), tz);
+  const days = [...new Set(items.map((i) => dayKey(i.at, tz)))];
+  const dayLabel = (d: string) => (d === today ? t("Today", "היום") : d === yesterday ? t("Yesterday", "אתמול") : new Intl.DateTimeFormat(lang === "he" ? "he-IL" : "en", { timeZone: tz, weekday: "long", day: "numeric", month: "long" }).format(new Date(`${d}T12:00:00Z`)));
   return (
-    <div className="flex flex-col gap-6">
-      <Hero eyebrow={`Activity · ${ws.business.name}`} title="Everything that happened." lead="From BARRY's records only — payments count only once your provider verifies them, and test activity is marked." />
+    <div className="flex flex-col gap-5">
+      <PageHeader title={t("Activity", "פעילות")} sub={t("What happened, from BARRY's records. Payments count only once your provider verifies them.", "מה קרה, מתוך הרשומות של BARRY. תשלום נספר רק אחרי שהספק מאמת אותו.")} back={{ href: "/owner?tab=more", label: t("More", "עוד") }} />
       {items.length === 0 ? (
-        <Empty>Nothing recorded yet. Payments, follow-ups, decisions and what you ask BARRY appear here as they happen.</Empty>
+        <Empty title={t("Nothing yet", "עוד אין כלום")}>{t("Payments, follow-ups, decisions and what you ask BARRY appear here as they happen.", "תשלומים, מעקבים, החלטות ומה ששאלת את BARRY יופיעו כאן ברגע שיקרו.")}</Empty>
       ) : (
-        <ol className="relative flex flex-col">
-          <span aria-hidden className="o-vline absolute bottom-2 left-[5px] top-2" />
-          {items.map((f) => {
-            const inner = (
-              <>
-                <span aria-hidden className={`absolute left-0 top-[13px] h-[11px] w-[11px] rounded-full ring-[3px] ring-o-canvas ${dot[f.tone]}`} />
-                <span className="block break-words text-[14px] leading-6 text-o-ink">{f.text}</span>
-                <span className="mt-0.5 flex flex-wrap gap-x-2 text-[12px] text-o-faint">
-                  <span className="tabular-nums">{formatLocal(f.at, ws.business.timezone)}</span>
-                  {f.sub && <span className="min-w-0 break-words">· {f.sub}</span>}
-                </span>
-              </>
-            );
-            const cls = "relative flex min-h-12 w-full flex-col justify-center rounded-xl py-2 pl-6 pr-8 text-left transition hover:bg-o-sunken/50";
-            const chevron = <Icon name="chevron" size={14} className="absolute right-2 top-1/2 -translate-y-1/2 text-o-faint" />;
-            return (
-              <li key={f.id} className="relative">
-                {f.conversationId ? (
-                  <button type="button" onClick={() => onOpen(f.conversationId!)} className={cls}>{inner}{chevron}</button>
-                ) : f.href ? (
-                  <Link href={f.href} className={cls}>{inner}{chevron}</Link>
-                ) : (
-                  <div className="relative py-2 pl-6 pr-2">{inner}</div>
-                )}
-              </li>
-            );
-          })}
-        </ol>
+        days.map((d) => (
+          <section key={d} className="flex flex-col gap-2">
+            <SectionLabel>{dayLabel(d)}</SectionLabel>
+            <Group>
+              {items.filter((i) => dayKey(i.at, tz) === d).map((i) => <ActivityRow key={i.id} item={i} onOpen={onOpen} lang={lang} />)}
+            </Group>
+          </section>
+        ))
       )}
     </div>
   );

@@ -9,7 +9,7 @@ export async function GET(req: NextRequest) {
   const id = req.nextUrl.searchParams.get("conversationId");
   if (!id) return Response.json({ error: "conversationId is required" }, { status: 400 });
   try {
-    const view = await getOwnerConversation(g.graph, id, req.nextUrl.searchParams.get("advanced") === "1");
+    const view = await getOwnerConversation(g.graph, id, req.nextUrl.searchParams.get("advanced") === "1", req.nextUrl.searchParams.get("lang") === "he" ? "he" : "en");
     return view ? Response.json(view) : Response.json({ error: "Conversation not found" }, { status: 404 });
   } catch (err) {
     return ownerFailure("conversation", err);

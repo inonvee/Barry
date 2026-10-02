@@ -4,26 +4,30 @@ import { Suspense, useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useOwnerApi } from "@/components/owner/useOwnerApi";
 import { OwnerShell, type OwnerSection } from "@/components/owner/OwnerShell";
-import { Skeleton, StateNotice, btn, quiet, type Tone } from "@/components/owner/ui";
+import { useOwnerLang } from "@/components/owner/lang";
+import { Button, ErrorState, LoadingRows, Notice, type Tone } from "@/components/owner/os-ui";
 import { ownerPresence } from "@/lib/owner/presence-model";
-import type { Act } from "@/components/owner/operating";
 import type { OwnerWorkspace } from "@/lib/owner/service";
-import type { Intervention, InterventionAction } from "@/lib/owner/interventions";
-import { TABS, tabOf, type Tab } from "@/components/owner/views/shared";
-import { TodayView, type RunCommand } from "@/components/owner/views/Today";
+import type { OwnerOs } from "@/lib/owner/os-service";
 import type { OwnerReply } from "@/lib/owner/command-service";
-import { InboxView } from "@/components/owner/views/Inbox";
+import type { Intervention } from "@/lib/owner/interventions";
+import { TABS, tabOf, type Act, type Tab } from "@/components/owner/views/shared";
+import { TodayView, type RunCommand } from "@/components/owner/views/Today";
 import { MoneyView } from "@/components/owner/views/Money";
 import { AskView } from "@/components/owner/views/Ask";
 import { WorkView } from "@/components/owner/views/Work";
 import { ActivityView } from "@/components/owner/views/Activity";
+import { ConversationSheet, CustomersView } from "@/components/owner/views/Customers";
+import { MoreView } from "@/components/owner/views/More";
+import { DecisionSheet } from "@/components/owner/views/decision";
 
 /**
  * THE OWNER BUSINESS OS — BARRY runs the business; this is where the owner sees and directs it.
- * Today (the living story), Ask BARRY, Work (needs you · BARRY is working · BARRY noticed), Money,
- * and from More: Customers and Activity. Everything renders from the owner read model — the same
- * records the Owner WhatsApp channel reads; every action goes through the owner endpoints, which
- * re-check authority before any effect. Older links (?tab=inbox, ?tab=actions) still land correctly.
+ * Today · Ask · Work · Money, and More (the index: Customers, Activity and the deep pages). Everything
+ * renders from the owner read model — the same records the Owner WhatsApp channel reads — and every
+ * action goes through the owner endpoints, which re-check authority before any effect. Decisions and
+ * conversations open as sheets over whatever page you're on. Links already sent on WhatsApp still land:
+ * ?tab=inbox / ?tab=actions, ?conversation=, ?intervention=, ?operation=.
  */
 
 export default function OwnerPage() {
@@ -38,32 +42,29 @@ function OwnerDashboard() {
   const api = useOwnerApi();
   const router = useRouter();
   const params = useSearchParams();
+  const { lang, t, adopt } = useOwnerLang();
   const tab: Tab = tabOf(params.get("tab"));
   const [range, setRange] = useState<"today" | "7d" | "30d">("today");
   const [loaded, setWs] = useState<OwnerWorkspace | null>(null);
+  const [os, setOs] = useState<OwnerOs | null>(null);
   const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [openConversation, setOpenConversation] = useState<string | null>(params.get("conversation"));
-  const [loadedAt, setLoadedAt] = useState<Date | null>(null);
-  const wantBusiness = params.get("business");
-  const [busyId, setBusyId] = useState<string | null>(null);
+  const [conversation, setConversation] = useState<string | null>(params.get("conversation"));
+  const [decisionId, setDecisionId] = useState<string | null>(params.get("intervention"));
+  const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ tone: Tone; text: string } | null>(null);
+  const wantBusiness = params.get("business");
 
   const { businessId, call, authorized } = api;
   const ws = authorized && loaded?.business.id === businessId ? loaded : null;
-  const fetchWorkspace = useCallback(() => call<OwnerWorkspace>(`/api/owner/workspace?businessId=${encodeURIComponent(businessId)}&window=${range}`), [businessId, call, range]);
+  const fetchWorkspace = useCallback(() => call<OwnerWorkspace>(`/api/owner/workspace?businessId=${encodeURIComponent(businessId)}&window=${range}&lang=${lang}`), [businessId, call, range, lang]);
 
   const load = useCallback(async () => {
     if (!businessId) return;
-    setLoading(true);
     try {
       setWs(await fetchWorkspace());
       setError("");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not load");
-      setWs(null);
-    } finally {
-      setLoading(false);
+      setError(e instanceof Error ? e.message : "load failed");
     }
   }, [businessId, fetchWorkspace]);
 
@@ -74,21 +75,30 @@ function OwnerDashboard() {
       .then((data) => {
         if (cancelled) return;
         setWs(data);
-        setLoadedAt(new Date());
         setError("");
+        adopt(data.business.locale);
       })
       .catch((e: Error) => {
         if (cancelled) return;
         setWs(null);
         setError(e.message);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [businessId, authorized, fetchWorkspace]);
+  }, [businessId, authorized, fetchWorkspace, adopt]);
+
+  // The setup line on Today reads the same server readiness the Setup page shows (never a fake percentage).
+  useEffect(() => {
+    if (!businessId || !authorized) return;
+    let cancelled = false;
+    call<OwnerOs>(`/api/owner/os?businessId=${encodeURIComponent(businessId)}&lang=${lang}`)
+      .then((d) => !cancelled && setOs(d))
+      .catch(() => !cancelled && setOs(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [businessId, authorized, call, lang]);
 
   // The command bar switches business through the URL (?business=); honour it once, then clean the URL.
   useEffect(() => {
@@ -98,20 +108,12 @@ function OwnerDashboard() {
     }
   }, [wantBusiness, businessId, api, router]);
 
-  const setTab = (t: Tab, conversation?: string | null, question?: string) => {
+  const setTab = (next: Tab, question?: string) => {
     const q = new URLSearchParams();
-    q.set("tab", t);
-    if (conversation) q.set("conversation", conversation);
+    q.set("tab", next);
     if (question) q.set("q", question);
     router.replace(`/owner?${q.toString()}`, { scroll: false });
-  };
-  const goToConversation = (conversationId: string) => {
-    setOpenConversation(conversationId);
-    setTab("customers", conversationId);
-  };
-  const goToIntervention = (id?: string) => {
-    setTab("work");
-    if (id && typeof document !== "undefined") setTimeout(() => document.querySelector(`[data-intervention="${CSS.escape(id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 80);
+    window.scrollTo({ top: 0 });
   };
   const onNavigate = (section: OwnerSection) => {
     if ((TABS as string[]).includes(section)) {
@@ -120,11 +122,19 @@ function OwnerDashboard() {
     }
     return false;
   };
+  const openConversation = (id: string) => {
+    setDecisionId(null);
+    setConversation(id);
+  };
+  const openDecision = (item: Intervention) => {
+    setConversation(null);
+    setDecisionId(item.id);
+  };
 
-  // One action handler for every queue item: the owner endpoints re-check everything before an effect.
-  const act: Act = async (item: Intervention, action: InterventionAction) => {
-    if (action === "open_conversation") return goToConversation(item.conversationId);
-    setBusyId(item.id);
+  // One action handler for every decision: the owner endpoints re-check everything before an effect.
+  const act: Act = async (item, action) => {
+    if (action === "open_conversation") return openConversation(item.conversationId);
+    setBusy(true);
     setNotice(null);
     try {
       if (action === "approve" || action === "decline" || action === "recheck") {
@@ -133,102 +143,83 @@ function OwnerDashboard() {
           const recovered = res.recheck.recovered?.find((r) => r.outcome !== "unrelated");
           setNotice(
             res.recheck.revalidated === 0
-              ? { tone: "warn", text: "BARRY still can't read the customer's later message — the request stays held." }
+              ? { tone: "warn", text: t("BARRY still can't read the customer's later message — the request stays held.", "BARRY עדיין לא מצליח לקרוא את ההודעה המאוחרת של הלקוח — הבקשה נשארת מוחזקת.") }
               : recovered?.outcome === "proposed" || recovered?.outcome === "reused"
-                ? { tone: "good", text: "The customer's later message changed this request: the old one was replaced and the corrected request is now waiting for you." }
+                ? { tone: "ok", text: t("The customer's later message changed this request: the old one was replaced and the corrected request is waiting for you.", "ההודעה המאוחרת של הלקוח שינתה את הבקשה: הישנה הוחלפה, והבקשה המתוקנת מחכה לך.") }
                 : res.recheck.changedRequests > 0
-                  ? { tone: "neutral", text: "The customer's later message changed this request — it was cancelled and won't run." }
-                  : { tone: "good", text: "Re-checked: the customer's later message didn't change this request. You can decide it now." }
+                  ? { tone: "neutral", text: t("The customer's later message changed this request — it was cancelled and won't run.", "ההודעה המאוחרת של הלקוח שינתה את הבקשה — היא בוטלה ולא תתבצע.") }
+                  : { tone: "ok", text: t("Re-checked: the customer's later message didn't change this request. You can decide it now.", "נבדק שוב: ההודעה המאוחרת לא שינתה את הבקשה. אפשר להחליט עכשיו.") },
           );
-        } else if (res.held) setNotice({ tone: "warn", text: `Not carried out: ${res.held.reason}. The customer was asked to confirm.` });
-        else setNotice(action === "approve" ? { tone: "good", text: res.message ? `Approved. BARRY told the customer: “${res.message.slice(0, 180)}”` : "Approved — BARRY carried it out and told the customer." } : { tone: "neutral", text: "Declined — BARRY told the customer; nothing was sent or changed." });
+        } else if (res.held) setNotice({ tone: "warn", text: t(`Not carried out: ${res.held.reason}. The customer was asked to confirm.`, "לא בוצע — הלקוח התבקש לאשר קודם.") });
+        else
+          setNotice(
+            action === "approve"
+              ? { tone: "ok", text: res.message ? t(`Approved. BARRY told the customer: “${res.message.slice(0, 180)}”`, `אושר. BARRY כתב ללקוח: “${res.message.slice(0, 180)}”`) : t("Approved — BARRY carried it out and told the customer.", "אושר — BARRY ביצע ועדכן את הלקוח.") }
+              : { tone: "neutral", text: t("Declined — BARRY told the customer; nothing was sent or changed.", "נדחה — BARRY עדכן את הלקוח; שום דבר לא נשלח או השתנה.") },
+          );
       } else {
         await call("/api/owner/handoffs", { body: { businessId, conversationId: item.conversationId, handoffId: item.refs.handoffId, action } });
-        setNotice(action === "acknowledge" ? { tone: "neutral", text: "Acknowledged — marked as seen by your team. The customer was not messaged." } : { tone: "good", text: "Resolved — closed in your inbox. BARRY continues the conversation as usual." });
+        setNotice(action === "acknowledge" ? { tone: "neutral", text: t("Marked as seen by your team. The customer was not messaged.", "סומן שהצוות ראה. לא נשלחה הודעה ללקוח.") } : { tone: "ok", text: t("Resolved. BARRY continues the conversation as usual.", "טופל. BARRY ממשיך את השיחה כרגיל.") });
       }
       await load();
     } catch (e) {
-      setNotice({ tone: "bad", text: e instanceof Error ? e.message : "Something went wrong" });
+      setNotice({ tone: "bad", text: t(`That didn't go through — nothing was changed. (${e instanceof Error ? e.message : "error"})`, `זה לא עבר — שום דבר לא השתנה. (${e instanceof Error ? e.message : "error"})`) });
     } finally {
-      setBusyId(null);
+      setBusy(false);
     }
   };
 
-  // The command bar → the same owner command service the WhatsApp owner channel uses; then refresh.
+  // Ask → the same owner command service the WhatsApp owner channel uses; then refresh.
   const runCommand: RunCommand = async (body) => {
-    const res = await call<{ reply: OwnerReply }>("/api/owner/command", { body: { businessId, requestId: crypto.randomUUID(), ...body } });
+    const res = await call<{ reply: OwnerReply }>("/api/owner/command", { body: { businessId, requestId: crypto.randomUUID(), lang, ...body } });
     await load();
     return res.reply;
   };
 
   // What BARRY noticed: review / snooze / dismiss, or "Do this" through the owner command service.
   const runInitiative = async (id: string, action: "review" | "dismiss" | "snooze" | "act") => {
-    const res = await call<{ reply?: OwnerReply }>("/api/owner/initiatives", { body: { businessId, id, action, ...(action === "snooze" ? { days: 7 } : {}), ...(action === "act" ? { requestId: crypto.randomUUID() } : {}) } });
+    const res = await call<{ reply?: OwnerReply }>("/api/owner/initiatives", { body: { businessId, id, action, lang, ...(action === "snooze" ? { days: 7 } : {}), ...(action === "act" ? { requestId: crypto.randomUUID() } : {}) } });
     if (action !== "review") await load();
     return res.reply;
   };
 
-  // Deep links from WhatsApp: ?operation=<id> scrolls to that live operation; ?intervention=<id> to that decision.
-  const wantOperation = params.get("operation");
-  const wantIntervention = params.get("intervention");
-  useEffect(() => {
-    if (!ws) return;
-    const id = wantOperation ? `op-${wantOperation}` : null;
-    const target = id ? document.getElementById(id) : wantIntervention ? document.querySelector(`[data-intervention="${CSS.escape(wantIntervention)}"]`) : null;
-    if (target) setTimeout(() => target.scrollIntoView({ behavior: "smooth", block: "center" }), 120);
-  }, [ws, wantOperation, wantIntervention]);
-
   const queue = ws?.interventions ?? [];
-  const badge = { work: queue.length || undefined, customers: ws?.conversations.filter((c) => c.status === "needs_you").length || undefined };
-  const presence = ws ? ownerPresence(ws) : undefined;
+  const decision = decisionId ? (queue.find((i) => i.id === decisionId) ?? null) : null;
+  const badge = { work: queue.length || undefined };
+  const presence = ws ? ownerPresence(ws, new Date(), lang) : undefined;
+  const ask = (q?: string) => setTab("ask", q);
+  const active: OwnerSection = tab;
+
   return (
-    <OwnerShell api={api} active={tab} badge={badge} onNavigate={onNavigate} presence={presence} channels={ws?.channels}>
-      {authorized && error && (
-        <div className="mb-4">
-          <StateNotice tone="bad" title="BARRY couldn't load your business right now" action={<button className={btn} onClick={() => void load()}>Try again</button>}>
-            Nothing is wrong with your business — the page couldn&apos;t read its records. Try again in a moment.
-            <details className="mt-1 text-xs text-[#98a2b3]">
-              <summary className="cursor-pointer">Technical detail</summary>
-              {error}
-            </details>
-          </StateNotice>
-        </div>
-      )}
-      {ws?.unavailable.length ? (
-        <div className="mb-4">
-          <StateNotice tone="warn" title="Some records couldn't be read">
-            {ws.unavailable.join(", ")} — the figures below leave them out rather than guess.
-          </StateNotice>
-        </div>
-      ) : null}
-      {notice && (
-        <div className="mb-4">
-          <StateNotice tone={notice.tone} title={notice.text} action={<button className={quiet} onClick={() => setNotice(null)}>Dismiss</button>} />
-        </div>
-      )}
-      {authorized && !ws && !error && (
-        <div className="space-y-4" aria-busy>
-          <div className="o-shimmer h-10 w-2/3 rounded-2xl" />
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            {[0, 1, 2, 3].map((i) => (
-              <div key={i} className="o-panel rounded-2xl p-5">
-                <Skeleton lines={3} />
-              </div>
-            ))}
+    <OwnerShell api={api} active={active} badge={badge} onNavigate={onNavigate} presence={presence}>
+      <div className="flex flex-col gap-4">
+        {authorized && error && <ErrorState title={t("BARRY couldn't load your business right now", "BARRY לא הצליח לטעון את העסק כרגע")} detail={error} onRetry={() => void load()} />}
+        {ws?.unavailable.length ? <Notice tone="warn">{t(`Some records couldn't be read (${ws.unavailable.join(", ")}) — the figures leave them out rather than guess.`, `חלק מהרשומות לא נקראו (${ws.unavailable.join(", ")}) — המספרים לא כוללים אותן במקום לנחש.`)}</Notice> : null}
+        {notice && (
+          <Notice tone={notice.tone} action={<button type="button" className="text-[13px] font-medium text-o-muted" onClick={() => setNotice(null)}>{t("Dismiss", "סגירה")}</button>}>
+            <span data-testid="action-notice"><bdi>{notice.text}</bdi></span>
+          </Notice>
+        )}
+        {decisionId && ws && !decision && (
+          <Notice tone="neutral" action={<Button kind="quiet" onClick={() => setDecisionId(null)}>{t("OK", "הבנתי")}</Button>}>{t("That decision isn't waiting anymore — it was already decided or replaced.", "ההחלטה הזאת כבר לא מחכה — היא כבר הוחלטה או הוחלפה.")}</Notice>
+        )}
+        {authorized && !ws && !error && (
+          <div className="flex flex-col gap-4" aria-busy>
+            <div className="o-shimmer h-9 w-2/3 rounded-xl" />
+            <LoadingRows rows={4} />
+            <LoadingRows rows={3} />
           </div>
-          <div className="o-panel rounded-2xl p-5">
-            <Skeleton lines={5} />
-          </div>
-        </div>
-      )}
-      {!authorized && api.session && <p className="mt-2 text-sm text-o-muted">Once you&apos;re signed in, this is where you see what BARRY is doing, what needs you and where money moves.</p>}
-      {ws && tab === "today" && <TodayView ws={ws} act={act} busyId={busyId} loading={loading} onOpen={goToConversation} onIntervention={goToIntervention} onTab={setTab} onCommand={runCommand} onInitiative={runInitiative} />}
-      {ws && tab === "customers" && <InboxView ws={ws} api={api} act={act} busyId={busyId} open={openConversation} setOpen={goToConversation} onIntervention={goToIntervention} loadedAt={loadedAt} />}
-      {ws && tab === "money" && <MoneyView ws={ws} range={range} setRange={setRange} onOpen={goToConversation} onIntervention={goToIntervention} loadedAt={loadedAt} />}
-      {ws && tab === "ask" && <AskView key={params.get("q") ?? ""} onCommand={runCommand} ws={ws} onIntervention={goToIntervention} onOpen={goToConversation} initialQuestion={params.get("q") ?? ""} />}
-      {ws && tab === "work" && <WorkView ws={ws} act={act} busyId={busyId} onOpen={goToConversation} onInitiative={runInitiative} onAsk={(q) => setTab("ask", null, q)} />}
-      {ws && tab === "activity" && <ActivityView ws={ws} onOpen={goToConversation} />}
+        )}
+        {ws && tab === "today" && <TodayView ws={ws} os={os} onDecision={openDecision} onOpen={openConversation} onTab={(x) => setTab(x)} onAsk={ask} />}
+        {ws && tab === "ask" && <AskView key={params.get("q") ?? ""} ws={ws} onCommand={runCommand} initialQuestion={params.get("q") ?? ""} />}
+        {ws && tab === "work" && <WorkView ws={ws} onDecision={openDecision} onOpen={openConversation} onInitiative={runInitiative} onAsk={(q) => ask(q)} />}
+        {ws && tab === "money" && <MoneyView ws={ws} range={range} setRange={setRange} onOpen={openConversation} />}
+        {ws && tab === "more" && <MoreView ws={ws} api={api} />}
+        {ws && tab === "customers" && <CustomersView ws={ws} onOpen={openConversation} onDecision={openDecision} />}
+        {ws && tab === "activity" && <ActivityView ws={ws} onOpen={openConversation} />}
+      </div>
+      {ws && decision && <DecisionSheet key={decision.id} item={decision} act={act} busy={busy} onClose={() => setDecisionId(null)} onConversation={openConversation} />}
+      {ws && conversation && <ConversationSheet key={conversation} id={conversation} ws={ws} api={api} onClose={() => setConversation(null)} onDecision={openDecision} />}
     </OwnerShell>
   );
 }
-

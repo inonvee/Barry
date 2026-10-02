@@ -66,12 +66,8 @@ export type OpportunityInput = {
 const HOUR = 3600 * 1000;
 const ABANDON_AFTER_H = 24;
 const MAX_AGE_DAYS = 30;
-const AT_RISK: OpportunityKind[] = ["payment_failed", "stalled_purchase"];
-
-/** Money likely lost unless someone acts (the same rule the At risk figure uses). */
-export function isAtRisk(i: Pick<Opportunity, "kind" | "recoverable">): boolean {
-  return AT_RISK.includes(i.kind) || (i.kind === "unpaid_link" && i.recoverable);
-}
+export { isAtRisk } from "./opportunity-risk";
+import { isAtRisk } from "./opportunity-risk";
 
 const add = (m: Money, currency: string, amount: number) => {
   m[currency] = Math.round(((m[currency] ?? 0) + amount) * 100) / 100;
