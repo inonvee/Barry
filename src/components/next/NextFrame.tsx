@@ -18,10 +18,10 @@ import { Alert, AlertDescription, AlertTitle, Input, Skeleton } from "@/componen
 
 /** Sections not rebuilt yet still open the current owner UI. */
 export const NEXT_HREFS: Record<string, string> = {
-  home: "/owner?tab=today",
-  ask: "/owner?tab=ask",
+  home: "/owner/next",
+  ask: "/owner/next/ask",
   work: "/owner/next/work",
-  money: "/owner?tab=money",
+  money: "/owner/next/money",
   customers: "/owner?tab=customers",
   knowledge: "/owner/knowledge",
   rules: "/owner/rules",
@@ -35,7 +35,15 @@ export type NextCtx = {
   businessId: string;
   call: ReturnType<typeof useOwnerApi>["call"];
   reload: () => Promise<void>;
+  /** The money window the workspace was read for (Money switches it; everything else reads today). */
+  range: Range;
+  setRange: (r: Range) => void;
+  /** When the records were last read (the Live indicator and relative times use it). */
+  syncedAt: Date | null;
+  /** The clock ages are measured against: ticks every 30 s from real time. */
+  now: number;
 };
+export type Range = "today" | "7d" | "30d";
 
 export function NextFrame({ active, title, children }: { active: string; title: string; children: (ctx: NextCtx) => React.ReactNode }) {
   const api = useOwnerApi();
@@ -43,17 +51,43 @@ export function NextFrame({ active, title, children }: { active: string; title: 
   const { businessId, call, authorized, session } = api;
   const [loaded, setLoaded] = React.useState<OwnerWorkspace | null>(null);
   const [error, setError] = React.useState("");
+  const [range, setRange] = React.useState<Range>("today");
+  const [syncedAt, setSyncedAt] = React.useState<Date | null>(null);
+  const [syncing, setSyncing] = React.useState(false);
+  const [now, setNow] = React.useState(() => Date.now());
+  React.useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
   const ws = authorized && loaded?.business.id === businessId ? loaded : null;
 
   const reload = React.useCallback(async () => {
     if (!businessId) return;
+    setSyncing(true);
     try {
-      setLoaded(await call<OwnerWorkspace>(`/api/owner/workspace?businessId=${encodeURIComponent(businessId)}&window=today&lang=${lang}`));
+      setLoaded(await call<OwnerWorkspace>(`/api/owner/workspace?businessId=${encodeURIComponent(businessId)}&window=${range}&lang=${lang}`));
+      setSyncedAt(new Date());
       setError("");
     } catch (e) {
       setError(e instanceof Error ? e.message : "load failed");
+    } finally {
+      setSyncing(false);
     }
-  }, [businessId, call, lang]);
+  }, [businessId, call, lang, range]);
+
+  // Live: while the page is open and visible, re-read the records every minute (reads only — nothing is written).
+  React.useEffect(() => {
+    if (!businessId || !authorized) return;
+    const tick = () => {
+      if (document.visibilityState === "visible") void reload();
+    };
+    const id = setInterval(tick, 60_000);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, [businessId, authorized, reload]);
 
   // ?business= picks the business (links from WhatsApp and the current UI carry it), as the current UI does.
   React.useEffect(() => {
@@ -75,10 +109,16 @@ export function NextFrame({ active, title, children }: { active: string; title: 
       active={active}
       title={title}
       dir={dir}
-      workspace={{ name, detail: "BARRY" }}
+      workspace={{ name }}
       user={{ name: t("Owner", "בעל העסק"), email: name }}
       badges={{ work: needs || undefined }}
       hrefs={NEXT_HREFS}
+      live={ws ? { at: syncedAt, syncing, label: t("Live", "חי") } : undefined}
+      labels={
+        lang === "he"
+          ? { home: "בית", ask: "שאל את BARRY", "ask.short": "שאל", work: "עבודה", money: "כסף", customers: "לקוחות", knowledge: "ידע", rules: "כללים", activity: "פעילות", systems: "מערכות מחוברות", settings: "הגדרות", business: "העסק", more: "עוד", search: "לחפש או לשאול את BARRY…" }
+          : undefined
+      }
       onSignOut={() => void api.signOut()}
     >
       <Page>
@@ -94,7 +134,7 @@ export function NextFrame({ active, title, children }: { active: string; title: 
             </AlertDescription>
           </Alert>
         ) : ws ? (
-          children({ ws, businessId, call, reload })
+          children({ ws, businessId, call, reload, range, setRange, syncedAt, now: Math.max(now, syncedAt?.getTime() ?? 0) })
         ) : (
           <div className="flex flex-col gap-3" aria-busy>
             <Skeleton className="h-8 w-40" />

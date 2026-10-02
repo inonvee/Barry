@@ -2,128 +2,34 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { CheckIcon, ChevronRightIcon, CircleAlertIcon, ClockIcon, EyeIcon, InboxIcon, RefreshCwIcon } from "lucide-react";
+import { CheckIcon, ChevronRightIcon, CircleAlertIcon, FileTextIcon, InboxIcon, ListChecksIcon, MessageSquareIcon, MoreHorizontalIcon, OctagonAlertIcon, XIcon } from "lucide-react";
 import type { OwnerWorkspace, OwnerApproval } from "@/lib/owner/service";
 import type { Intervention, InterventionOption } from "@/lib/owner/interventions";
 import type { InitiativeView } from "@/lib/initiative/model";
 import type { OwnerReply } from "@/lib/owner/command-service";
-import { activeWork, proactiveWords, workflows, type ActiveWork } from "@/lib/owner/control-room";
+import type { ActiveWork } from "@/lib/owner/control-room";
 import { noticedCard } from "@/lib/owner/os";
 import { money, type OwnerLang } from "@/lib/owner/lang";
 import { hasMoney } from "@/lib/format/money";
 import { useOwnerLang } from "@/components/owner/lang";
 import { INTERVENTION_KIND, LIFECYCLE } from "@/components/owner/views/shared";
-import { Section } from "@/components/app-shell/AppShell";
 import { Button } from "@/components/ui/button";
-import { Alert, AlertDescription, Badge } from "@/components/ui/basics";
+import { Alert, AlertDescription } from "@/components/ui/basics";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/item";
-import { Sheet, SheetBody, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Progress, Status, Thumb, toneText, type Tone } from "@/components/app-shell/kit";
+import { STAND, ageOf, buildRows, clockOf, workProgress, KIND_ICON, type Row, type T } from "./model";
 import type { NextCtx } from "./NextFrame";
 
 /**
- * WORK, rebuilt in the shadcn shell from the same records and the same owner endpoints:
- *   a row says WHAT it is, WHERE it stands, and whether YOU need to act — one line each, nothing more;
- *   everything else (why, what BARRY already did, what happens next, evidence, actions) is in the row's sheet.
- * Filters: All (grouped) · Needs you · In progress · Noticed · Done.
+ * WORK — master/detail. A row says what it is, who it's about, where it stands (one pill), the amount when there is
+ * one, and its age. The selected situation explains what happened, what BARRY already did, what is blocking it and
+ * the next steps — the same records and the same owner endpoints as the current UI; nothing is invented.
  */
 
-type T = (en: string, he: string) => string;
-type Filter = "all" | "needs" | "progress" | "noticed" | "done";
-type Stand = "you" | "working" | "customer" | "noticed" | "done";
-
-type Row = {
-  key: string;
-  stand: Stand;
-  title: string;
-  /** Where it stands, in words (first), then the one fact that matters. */
-  state: string;
-  detail?: string;
-  amount?: string;
-  at?: string;
-  open: Opened;
-};
-
-type Opened =
-  | { kind: "decision"; item: Intervention }
-  | { kind: "work"; item: ActiveWork }
-  | { kind: "noticed"; item: InitiativeView }
-  | { kind: "approval"; item: OwnerApproval }
-  | { kind: "finished"; item: OwnerWorkspace["ownerOperations"][number] };
-
-const ICON: Record<Stand, React.ComponentType<{ className?: string }>> = { you: CircleAlertIcon, working: RefreshCwIcon, customer: ClockIcon, noticed: EyeIcon, done: CheckIcon };
-
-function ageOf(lang: OwnerLang, iso: string | undefined, now: number) {
-  if (!iso) return "";
-  const m = Math.max(0, Math.floor((now - Date.parse(iso)) / 60000));
-  if (m < 1) return lang === "he" ? "עכשיו" : "now";
-  if (m < 60) return lang === "he" ? `${m} דק׳` : `${m}m`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return lang === "he" ? `${h} שע׳` : `${h}h`;
-  return lang === "he" ? `${Math.floor(h / 24)} ימ׳` : `${Math.floor(h / 24)}d`;
-}
-
-function buildRows(ws: OwnerWorkspace, lang: OwnerLang, t: T) {
-  const flows = workflows(ws, lang);
-  const needs: Row[] = ws.interventions.map((i) => ({
-    key: i.id,
-    stand: "you",
-    title: i.title,
-    // The title already names the kind ("… needs a person"); the second line is what the owner has to do.
-    state: i.title.toLowerCase().includes(INTERVENTION_KIND[i.kind].label[lang].toLowerCase()) ? "" : INTERVENTION_KIND[i.kind].label[lang],
-    detail: i.decision,
-    amount: i.amount,
-    at: i.since,
-    open: { kind: "decision", item: i },
-  }));
-  const progress: Row[] = activeWork(ws).map((w) => {
-    const op = w.operationId ? ws.ownerOperations.find((o) => o.id === w.operationId) : undefined;
-    const flow = flows.find((f) => f.kind === w.workflow);
-    const items = ws.obligations.filter((o) => o.kind === w.workflow);
-    const lastAttempt = items.map((o) => o.lastAttemptAt).filter((x): x is string => Boolean(x)).sort().at(-1);
-    const detail = op
-      ? t(`${op.progress.contacted} of ${op.progress.cohort} reached · ${op.progress.replied} replied`, `${op.progress.contacted} מתוך ${op.progress.cohort} קיבלו פנייה · ${op.progress.replied} ענו`)
-      : flow
-        ? flow.contacted
-          ? t(`${flow.contacted} of ${flow.open} reached · ${flow.waiting} waiting`, `${flow.contacted} מתוך ${flow.open} קיבלו פנייה · ${flow.waiting} ממתינים`)
-          : t(`${flow.open} found · nothing sent yet`, `${flow.open} נמצאו · עוד לא נשלח כלום`)
-        : undefined;
-    const working = w.state === "working";
-    return {
-      key: w.id,
-      stand: working ? "working" : "customer",
-      title: proactiveWords(w.workflow, lang).title,
-      state: working ? t("BARRY working", "BARRY עובד") : t("Waiting on customers", "מחכה ללקוחות"),
-      detail,
-      at: op ? op.updatedAt : lastAttempt ?? items.map((o) => o.createdAt).sort()[0],
-      open: { kind: "work", item: w },
-    } satisfies Row;
-  });
-  const noticed: Row[] = ws.initiatives.map((i) => {
-    const c = noticedCard(i, lang);
-    return { key: i.id, stand: "noticed", title: c.what, state: c.stateWords, detail: c.importance, amount: c.money || undefined, at: i.provenance.detectedAt, open: { kind: "noticed", item: i } };
-  });
-  const done: Row[] = [
-    ...ws.approvals
-      .filter((a) => !(a.actionable || a.lifecycle === "held"))
-      .slice(0, 12)
-      .map((a): Row => ({ key: `ap:${a.id}`, stand: "done", title: `${a.customer} · ${a.what}`, state: (LIFECYCLE[a.lifecycle] ?? LIFECYCLE.approved).label[lang], amount: a.amount, at: a.createdAt, open: { kind: "approval", item: a } })),
-    ...ws.ownerOperations
-      .filter((o) => o.derivedState === "completed" || o.derivedState === "stopped" || o.derivedState === "blocked" || o.derivedState === "failed")
-      .slice(0, 6)
-      .map((o): Row => ({
-        key: `op:${o.id}`,
-        stand: "done",
-        title: proactiveWords(o.workflow, lang).title,
-        state: o.derivedState === "stopped" ? t("Stopped by you", "נעצר על ידך") : o.derivedState === "completed" ? t("Completed", "הושלם") : t("Didn't finish", "לא הסתיים"),
-        detail: t(`${o.progress.contacted} reached · ${o.progress.purchased} bought`, `${o.progress.contacted} קיבלו פנייה · ${o.progress.purchased} קנו`),
-        at: o.stoppedAt ?? o.updatedAt,
-        open: { kind: "finished", item: o },
-      })),
-  ].sort((a, b) => (b.at ?? "").localeCompare(a.at ?? ""));
-  return { needs, progress, noticed, done };
-}
+type Filter = "all" | "you" | "customer" | "running" | "noticed" | "done";
 
 export type WorkActions = {
   decide: (item: Intervention, action: InterventionOption["action"]) => Promise<string>;
@@ -153,156 +59,250 @@ export function useWorkActions({ call, businessId, reload }: Pick<NextCtx, "call
   };
 }
 
+export function useIsDesktop() {
+  const [desktop, setDesktop] = React.useState(false);
+  React.useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const on = () => setDesktop(mq.matches);
+    on();
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
+  return desktop;
+}
+
+export const conversationHref = (id: string) => `/owner?tab=work&conversation=${encodeURIComponent(id)}`;
+
 export function WorkNext(ctx: NextCtx) {
   const { ws } = ctx;
   const { lang, dir, t } = useOwnerLang();
   const actions = useWorkActions(ctx, t, lang);
+  const desktop = useIsDesktop();
   const { needs, progress, noticed, done } = buildRows(ws, lang, t);
+  const all = [...needs, ...progress, ...noticed];
   const [filter, setFilter] = React.useState<Filter>("all");
-  const [opened, setOpened] = React.useState<Opened | null>(null);
+  const [selected, setSelected] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<{ text: string; bad?: boolean } | null>(null);
-  const [now] = React.useState(() => Date.now());
+  const now = ctx.now;
 
-  // Deep links from the current UI keep working: ?intervention= and ?operation= open their sheet.
+  // Deep links: ?intervention= and ?operation= select their row.
   React.useEffect(() => {
     const q = new URLSearchParams(window.location.search);
     const iv = q.get("intervention");
     const op = q.get("operation");
-    const hit: Opened | null = iv ? (needs.find((r) => r.key === iv)?.open ?? null) : op ? (progress.find((r) => r.open.kind === "work" && r.open.item.operationId === op)?.open ?? null) : null;
+    const hit = iv ? needs.find((r) => r.key === iv) : op ? progress.find((r) => r.open.kind === "work" && r.open.item.operationId === op) : undefined;
     if (!hit) return;
-    const t0 = setTimeout(() => setOpened(hit), 0);
+    const t0 = setTimeout(() => setSelected(hit.key), 0);
     return () => clearTimeout(t0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const groups: { id: Filter; label: string; rows: Row[]; empty: string }[] = [
-    { id: "needs", label: t("Needs you", "מחכה לך"), rows: needs, empty: t("Nothing needs you. Approvals, customers who need a person and anything that didn't go through land here first.", "שום דבר לא מחכה לך. אישורים, לקוחות שצריכים אדם וכל מה שלא הצליח — יגיעו לכאן קודם.") },
-    { id: "progress", label: t("In progress", "בעבודה"), rows: progress, empty: t("Nothing running. BARRY follows up under your rules, or when you ask.", "שום דבר לא רץ. BARRY עוקב לפי הכללים שלך, או כשתבקש.") },
-    { id: "noticed", label: t("Noticed", "שם לב"), rows: noticed, empty: t("Nothing new. BARRY only speaks up with evidence.", "אין משהו חדש. BARRY מדבר רק כשיש ראיות.") },
-    { id: "done", label: t("Done", "הסתיים"), rows: done, empty: t("Nothing finished in the last while.", "לא הסתיים כלום לאחרונה.") },
+  const lists: Record<Filter, Row[]> = {
+    all,
+    you: needs,
+    customer: progress.filter((r) => r.stand === "customer"),
+    running: progress.filter((r) => r.stand === "running"),
+    noticed,
+    done,
+  };
+  const rows = lists[filter];
+  // Desktop always shows a selected situation (the first one) so the detail pane is never empty.
+  const current = [...all, ...done].find((r) => r.key === selected) ?? (desktop ? rows[0] : undefined);
+
+  const pills: { id: Filter; label: string; tone?: Tone }[] = [
+    { id: "all", label: t("All", "הכול") },
+    { id: "you", label: t("Needs you", "מחכה לך"), tone: "hot" },
+    { id: "customer", label: t("Waiting on customer", "מחכה ללקוח"), tone: "info" },
+    { id: "running", label: t("Running", "רץ"), tone: "live" },
+    { id: "noticed", label: t("Noticed", "שם לב"), tone: "plum" },
+    { id: "done", label: t("Completed", "הסתיים") },
   ];
-  const shown = filter === "all" ? groups.filter((g) => g.id !== "done" && g.rows.length) : groups.filter((g) => g.id === filter);
+
+  const detail = current ? <Detail key={current.key} row={current} ws={ws} actions={actions} lang={lang} t={t} now={now} onClose={() => setSelected(null)} onDone={(text, bad) => setNotice({ text, bad })} closable={!desktop} /> : null;
 
   return (
-    <>
-      <div className="flex flex-col gap-1">
-        <h2 className="text-2xl font-semibold tracking-tight">{t("Work", "עבודה")}</h2>
-        <p className="text-sm text-muted-foreground">{t("What needs you, what BARRY is doing, and what it noticed.", "מה מחכה לך, מה BARRY עושה, ומה הוא שם לב.")}</p>
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(400px,500px)] xl:gap-8">
+      <div className="flex min-w-0 flex-col gap-5">
+        <div className="flex flex-col gap-1">
+          <h2 className="text-3xl font-semibold tracking-tight">{t("Work", "עבודה")}</h2>
+          <p className="text-[15px] text-muted-foreground">{t("Active situations across your business. BARRY handles the rest.", "מה פתוח בעסק עכשיו. BARRY מטפל בשאר.")}</p>
+        </div>
+
+        {notice && (
+          <Alert variant={notice.bad ? "destructive" : "default"} data-testid="work-notice">
+            {notice.bad ? <CircleAlertIcon /> : <CheckIcon className="text-live" />}
+            <AlertDescription className="flex w-full flex-row items-start justify-between gap-3 text-foreground">
+              <span>{notice.text}</span>
+              <button type="button" className="shrink-0 text-muted-foreground hover:text-foreground" onClick={() => setNotice(null)} aria-label={t("Dismiss", "סגירה")}><XIcon className="size-4" /></button>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        <div className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-0.5 [scrollbar-width:none] lg:mx-0 lg:flex-wrap lg:px-0" role="tablist" aria-label={t("Filter", "סינון")}>
+          {pills.map((p) => {
+            const n = lists[p.id].length;
+            const on = filter === p.id;
+            return (
+              <button
+                key={p.id}
+                type="button"
+                role="tab"
+                aria-selected={on}
+                onClick={() => {
+                  setFilter(p.id);
+                  setSelected(null);
+                }}
+                className={`flex h-9 shrink-0 items-center gap-2 rounded-full border px-3.5 text-sm font-medium transition-colors ${on ? "border-info/60 bg-selected text-foreground" : "bg-card text-muted-foreground hover:text-foreground"}`}
+                data-testid={`work-filter-${p.id}`}
+              >
+                {p.tone && <span className={`size-1.5 rounded-full ${p.tone === "hot" ? "bg-hot" : p.tone === "info" ? "bg-info" : p.tone === "live" ? "bg-live" : "bg-plum"}`} />}
+                {p.label}
+                {p.id !== "done" && n > 0 && <span className="rounded-full bg-surface-2 px-1.5 text-xs tabular-nums text-foreground/80">{n}</span>}
+              </button>
+            );
+          })}
+        </div>
+
+        {rows.length ? (
+          <div role="list" className="flex flex-col overflow-hidden rounded-xl border bg-card" data-testid={`work-group-${filter}`}>
+            {rows.map((r, i) => (
+              <WorkRow key={r.key} row={r} lang={lang} t={t} now={now} selected={desktop && current?.key === r.key} first={i === 0} onOpen={() => setSelected(r.key)} />
+            ))}
+          </div>
+        ) : (
+          <Empty className="bg-card/40">
+            <EmptyHeader>
+              <EmptyMedia><InboxIcon /></EmptyMedia>
+              <EmptyTitle>{filter === "you" ? t("Nothing needs you", "שום דבר לא מחכה לך") : t("Nothing here", "אין כאן כלום")}</EmptyTitle>
+              <EmptyDescription>{filter === "you" ? t("Approvals, customers who need a person and anything that didn't go through land here first.", "אישורים, לקוחות שצריכים אדם וכל מה שלא הצליח — יגיעו לכאן קודם.") : t("BARRY is watching. New situations appear here as they happen.", "BARRY על המשמר. מצבים חדשים יופיעו כאן כשיקרו.")}</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        )}
       </div>
 
-      {notice && (
-        <Alert variant={notice.bad ? "destructive" : "default"} data-testid="work-notice">
-          {notice.bad ? <CircleAlertIcon /> : <CheckIcon />}
-          <AlertDescription className="flex w-full flex-row items-start justify-between gap-3 text-foreground">
-            <span>{notice.text}</span>
-            <button type="button" className="shrink-0 text-muted-foreground hover:text-foreground" onClick={() => setNotice(null)}>{t("Dismiss", "סגירה")}</button>
-          </AlertDescription>
-        </Alert>
-      )}
-
-      <Tabs value={filter} onValueChange={(v) => setFilter(v as Filter)} dir={dir}>
-        <div className="-mx-4 overflow-x-auto px-4 [scrollbar-width:none] lg:mx-0 lg:px-0">
-          <TabsList className="w-max">
-            <TabsTrigger value="all">{t("All", "הכול")}</TabsTrigger>
-            {groups.map((g) => (
-              <TabsTrigger key={g.id} value={g.id} data-testid={`work-filter-${g.id}`}>
-                {g.label}
-                {g.id !== "done" && g.rows.length > 0 && <span className="text-xs tabular-nums text-muted-foreground">{g.rows.length}</span>}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </div>
-      </Tabs>
-
-      {shown.length === 0 ? (
-        <Empty>
-          <EmptyHeader>
-            <EmptyMedia><InboxIcon /></EmptyMedia>
-            <EmptyTitle>{t("All clear", "הכול שקט")}</EmptyTitle>
-            <EmptyDescription>{t("Nothing needs you and nothing is running. BARRY is watching.", "שום דבר לא מחכה לך ושום דבר לא רץ. BARRY על המשמר.")}</EmptyDescription>
-          </EmptyHeader>
-        </Empty>
+      {/* Desktop: the selected situation beside the list. Phones: the same detail in a bottom Sheet. */}
+      {desktop ? (
+        <aside className="sticky top-20 hidden max-h-[calc(100dvh-6rem)] self-start overflow-y-auto rounded-xl border bg-card lg:block" data-testid="work-detail">
+          {detail}
+        </aside>
       ) : (
-        shown.map((g) => (
-          <Section key={g.id} title={filter === "all" ? `${g.label} · ${g.rows.length}` : g.label}>
-            {g.rows.length ? (
-              <div role="list" className="flex flex-col divide-y overflow-hidden rounded-lg border" data-testid={`work-group-${g.id}`}>
-                {g.rows.map((r) => <WorkRow key={r.key} row={r} lang={lang} now={now} onOpen={() => setOpened(r.open)} />)}
-              </div>
-            ) : (
-              <p className="rounded-lg border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">{g.empty}</p>
-            )}
-          </Section>
-        ))
+        <Sheet open={Boolean(current)} onOpenChange={(o) => !o && setSelected(null)}>
+          {current && (
+            <SheetContent side="bottom" dir={dir} className="max-h-[92dvh] gap-0 rounded-t-2xl bg-card p-0" showClose={false} data-testid="work-sheet">
+              <SheetHeader className="sr-only">
+                <SheetTitle>{current.title}</SheetTitle>
+                <SheetDescription>{current.context}</SheetDescription>
+              </SheetHeader>
+              <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-border" />
+              <div className="min-h-0 overflow-y-auto">{detail}</div>
+            </SheetContent>
+          )}
+        </Sheet>
       )}
-
-      <WorkSheet opened={opened} onClose={() => setOpened(null)} ws={ws} actions={actions} lang={lang} dir={dir} t={t} now={now} onDone={(text, bad) => setNotice({ text, bad })} />
-    </>
+    </div>
   );
 }
 
-function WorkRow({ row, lang, now, onOpen }: { row: Row; lang: OwnerLang; now: number; onOpen: () => void }) {
-  const Icon = ICON[row.stand];
-  const you = row.stand === "you";
+export function WorkRow({ row, lang, t, now, selected, first, onOpen, compact }: { row: Row; lang: OwnerLang; t: T; now: number; selected?: boolean; first?: boolean; onOpen: () => void; compact?: boolean }) {
+  const s = STAND[row.stand];
   return (
-    <button type="button" role="listitem" onClick={onOpen} className="flex w-full items-center gap-3 px-4 py-3 text-start outline-none transition-colors hover:bg-accent/50 focus-visible:bg-accent/50" data-testid="work-row">
-      <Icon className={`size-4 shrink-0 ${you ? "text-foreground" : "text-muted-foreground"}`} />
-      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="truncate text-sm font-medium">{row.title}</span>
-        <span className="truncate text-sm text-muted-foreground">
-          {row.state && <span className={you ? "text-foreground" : undefined}>{row.state}</span>}
-          {row.state && row.detail ? " · " : null}
-          {row.detail}
+    <div role="listitem" className={`group relative flex items-center gap-3 px-3 py-3 transition-colors sm:px-4 ${first ? "" : "border-t"} ${selected ? "bg-selected" : "hover:bg-surface-2"}`} data-testid="work-row">
+      {selected && <span className="absolute inset-y-2 start-0 w-0.5 rounded-full bg-info" aria-hidden />}
+      <button type="button" onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-3 text-start outline-none" aria-current={selected ? "true" : undefined}>
+        <Thumb icon={row.person ? undefined : row.icon} name={row.person} tone={row.person ? "muted" : s.tone} size={compact ? "md" : "lg"} />
+        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="truncate text-[15px] font-medium">{row.title}</span>
+          {row.context && <span className="truncate text-sm text-muted-foreground"><bdi>{row.context}</bdi></span>}
+          {/* Phones: status and amount move under the title */}
+          <span className="mt-1 flex items-center gap-2 sm:hidden">
+            <Status tone={s.tone}>{row.stand === "you" || row.stand === "noticed" ? s.label[lang === "he" ? 1 : 0] : row.status ?? s.label[lang === "he" ? 1 : 0]}</Status>
+            {row.amount && <span className="text-sm font-semibold tabular-nums text-warn"><bdi>{row.amount}</bdi></span>}
+          </span>
         </span>
+      </button>
+      {row.amount && <span className="hidden w-20 shrink-0 text-end text-[15px] font-semibold tabular-nums text-warn sm:block"><bdi>{row.amount}</bdi></span>}
+      <span className="hidden shrink-0 justify-end sm:flex">
+        <Status tone={s.tone}>{row.stand === "you" || row.stand === "noticed" ? s.label[lang === "he" ? 1 : 0] : row.status ?? s.label[lang === "he" ? 1 : 0]}</Status>
       </span>
-      <span className="flex shrink-0 flex-col items-end gap-0.5">
-        {row.amount ? <span className="text-sm font-medium tabular-nums"><bdi>{row.amount}</bdi></span> : null}
-        <span className="text-xs tabular-nums text-muted-foreground">{ageOf(lang, row.at, now)}</span>
-      </span>
-      <ChevronRightIcon className="hidden size-4 shrink-0 text-muted-foreground sm:block rtl:rotate-180" />
-    </button>
+      <span className="w-9 shrink-0 text-end text-xs tabular-nums text-muted-foreground">{ageOf(lang, row.at, now)}</span>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="ghost" size="icon-sm" className="hidden shrink-0 text-muted-foreground sm:inline-flex" aria-label={t("More", "עוד")}>
+            <MoreHorizontalIcon />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-48">
+          <DropdownMenuItem onSelect={onOpen}>{t("Open details", "לפתוח פרטים")}</DropdownMenuItem>
+          {"item" in row.open && "conversationId" in row.open.item && (
+            <DropdownMenuItem asChild>
+              <Link href={conversationHref((row.open.item as { conversationId: string }).conversationId)}>{t("Open the conversation", "לפתוח את השיחה")}</Link>
+            </DropdownMenuItem>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground sm:hidden rtl:rotate-180" />
+    </div>
   );
 }
 
 // ── Detail ────────────────────────────────────────────────────────────────────────────────────────────────
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Section({ icon: Icon, tone = "muted", title, children }: { icon: React.ComponentType<{ className?: string }>; tone?: Tone; title: string; children: React.ReactNode }) {
   return (
-    <div className="flex flex-col gap-1">
-      <dt className="text-sm text-muted-foreground">{label}</dt>
-      <dd className="text-sm leading-relaxed">{children}</dd>
+    <section className="flex gap-3">
+      <span className={`mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg ${tone === "muted" ? "bg-surface-2 text-muted-foreground" : tone === "hot" ? "bg-hot/12 text-hot" : tone === "live" ? "bg-live/12 text-live" : "bg-info/12 text-info"}`}><Icon className="size-4" /></span>
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        <h3 className="text-[15px] font-semibold">{title}</h3>
+        <div className="text-sm leading-relaxed text-muted-foreground">{children}</div>
+      </div>
+    </section>
+  );
+}
+
+function Facts({ items }: { items: { label: string; value: React.ReactNode; sub?: string; tone?: Tone }[] }) {
+  return (
+    <dl className="grid grid-cols-3 overflow-hidden rounded-xl border bg-background/40 [&>*+*]:border-s">
+      {items.map((f) => (
+        <div key={f.label} className="flex min-w-0 flex-col gap-1 p-3">
+          <dt className="truncate text-xs text-muted-foreground">{f.label}</dt>
+          <dd className={`line-clamp-2 text-[15px] font-semibold leading-snug tabular-nums ${f.tone ? toneText(f.tone) : ""}`}><bdi>{f.value}</bdi></dd>
+          {f.sub && <dd className="truncate text-xs text-muted-foreground">{f.sub}</dd>}
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+export function Detail({ row, ws, actions, lang, t, now, onClose, onDone, closable }: { row: Row; ws: OwnerWorkspace; actions: WorkActions; lang: OwnerLang; t: T; now: number; onClose: () => void; onDone: (text: string, bad?: boolean) => void; closable?: boolean }) {
+  const s = STAND[row.stand];
+  return (
+    <div className="flex flex-col gap-6 p-5 sm:p-6" data-testid="work-detail-body">
+      <header className="flex items-start gap-4">
+        <Thumb icon={row.person ? undefined : row.icon} name={row.person} tone={row.person ? "muted" : s.tone} size="xl" />
+        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <Status tone={s.tone}>{row.status ?? s.label[lang === "he" ? 1 : 0]}</Status>
+            <span className="text-xs tabular-nums text-muted-foreground">{ageOf(lang, row.at, now)}</span>
+          </div>
+          <h2 className="text-xl font-semibold leading-snug tracking-tight">{row.title}</h2>
+          {row.context && <p className="text-sm text-muted-foreground"><bdi>{row.context}</bdi></p>}
+        </div>
+        {closable && (
+          <Button variant="ghost" size="icon-sm" className="-me-2 -mt-1 shrink-0 text-muted-foreground" onClick={onClose} aria-label={t("Close", "סגירה")}>
+            <XIcon />
+          </Button>
+        )}
+      </header>
+      {row.open.kind === "decision" && <DecisionBody item={row.open.item} ws={ws} actions={actions} lang={lang} t={t} now={now} onClose={onClose} onDone={onDone} />}
+      {row.open.kind === "work" && <ProgressBody w={row.open.item} ws={ws} lang={lang} t={t} now={now} />}
+      {row.open.kind === "noticed" && <NoticedBody i={row.open.item} actions={actions} lang={lang} t={t} onClose={onClose} onDone={onDone} />}
+      {row.open.kind === "approval" && <ApprovalBody a={row.open.item} lang={lang} t={t} />}
+      {row.open.kind === "finished" && <FinishedBody o={row.open.item} lang={lang} t={t} />}
     </div>
   );
 }
 
-function Stat({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div className="flex items-center justify-between gap-3 py-2 text-sm">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="font-medium tabular-nums"><bdi>{value}</bdi></span>
-    </div>
-  );
-}
-
-function WorkSheet({ opened, onClose, ws, actions, lang, dir, t, now, onDone }: { opened: Opened | null; onClose: () => void; ws: OwnerWorkspace; actions: WorkActions; lang: OwnerLang; dir: "ltr" | "rtl"; t: T; now: number; onDone: (text: string, bad?: boolean) => void }) {
-  return (
-    <Sheet open={Boolean(opened)} onOpenChange={(o) => !o && onClose()}>
-      {opened && (
-        <SheetContent side="auto" dir={dir} data-testid="work-sheet">
-          {opened.kind === "decision" && <DecisionDetail item={opened.item} actions={actions} lang={lang} t={t} now={now} onClose={onClose} onDone={onDone} />}
-          {opened.kind === "work" && <ProgressDetail w={opened.item} ws={ws} lang={lang} t={t} />}
-          {opened.kind === "noticed" && <NoticedDetail i={opened.item} actions={actions} lang={lang} t={t} onClose={onClose} onDone={onDone} />}
-          {opened.kind === "approval" && <ApprovalDetail a={opened.item} lang={lang} t={t} now={now} />}
-          {opened.kind === "finished" && <FinishedDetail o={opened.item} lang={lang} t={t} />}
-        </SheetContent>
-      )}
-    </Sheet>
-  );
-}
-
-const conversationHref = (id: string) => `/owner?tab=work&conversation=${encodeURIComponent(id)}`;
-
-function DecisionDetail({ item, actions, lang, t, now, onClose, onDone }: { item: Intervention; actions: WorkActions; lang: OwnerLang; t: T; now: number; onClose: () => void; onDone: (text: string, bad?: boolean) => void }) {
+function DecisionBody({ item, ws, actions, lang, t, now, onClose, onDone }: { item: Intervention; ws: OwnerWorkspace; actions: WorkActions; lang: OwnerLang; t: T; now: number; onClose: () => void; onDone: (text: string, bad?: boolean) => void }) {
   const [confirm, setConfirm] = React.useState<InterventionOption | null>(null);
   const [busy, setBusy] = React.useState(false);
   const run = async (o: InterventionOption) => {
@@ -319,51 +319,73 @@ function DecisionDetail({ item, actions, lang, t, now, onClose, onDone }: { item
   };
   const options = item.options.filter((o) => o.action !== "open_conversation");
   const ordered = [...options.filter((o) => o.primary || o.action === "approve"), ...options.filter((o) => !(o.primary || o.action === "approve") && !o.destructive && o.action !== "decline"), ...options.filter((o) => o.destructive || o.action === "decline")];
-  const needsConfirm = (o: InterventionOption) => o.action === "approve" || o.action === "decline" || o.destructive;
+  const needsConfirm = (o: InterventionOption) => o.action === "approve" || o.action === "decline" || Boolean(o.destructive);
+  const KindIcon = KIND_ICON[item.kind];
   return (
     <>
-      <SheetHeader>
-        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-          <Badge>{t("Needs you", "מחכה לך")}</Badge>
-          <span>{INTERVENTION_KIND[item.kind].label[lang]}</span>
-          <span>·</span>
-          <span className="tabular-nums">{ageOf(lang, item.since, now)}</span>
+      <Facts
+        items={[
+          item.amount ? { label: t("Amount", "סכום"), value: item.amount, tone: "warn" as Tone } : { label: t("Type", "סוג"), value: INTERVENTION_KIND[item.kind].label[lang] },
+          { label: t("Waiting", "מחכה"), value: ageOf(lang, item.since, now), sub: clockOf(lang, ws.business.timezone, item.since, now) },
+          { label: t("Customer", "לקוח"), value: item.customer },
+        ]}
+      />
+      <Section icon={FileTextIcon} title={t("What happened", "מה קרה")}>
+        <p><bdi>{item.why}</bdi></p>
+      </Section>
+      {item.tried.length > 0 && (
+        <Section icon={ListChecksIcon} tone="live" title={t("What BARRY already did", "מה BARRY כבר עשה")}>
+          <ol className="flex flex-col gap-2">
+            {item.tried.map((x, i) => (
+              <li key={i} className="flex gap-2.5 text-foreground/90">
+                <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full bg-live text-background"><CheckIcon className="size-3" strokeWidth={3} /></span>
+                <span><bdi>{x}</bdi></span>
+              </li>
+            ))}
+          </ol>
+        </Section>
+      )}
+      <Section icon={OctagonAlertIcon} tone="hot" title={t("What is blocking progress", "מה עוצר את ההתקדמות")}>
+        <div className="rounded-lg border border-hot/25 bg-hot/8 px-3 py-2.5 text-foreground/90">
+          <p className="font-medium text-foreground"><bdi>{item.decision}</bdi></p>
+          <p className="mt-1 text-muted-foreground"><bdi>{item.then}</bdi></p>
         </div>
-        <SheetTitle className="text-lg leading-snug">{item.title}</SheetTitle>
-        <SheetDescription><bdi>{item.customer}</bdi></SheetDescription>
-      </SheetHeader>
-      <SheetBody>
-        <dl className="flex flex-col gap-5">
-          {item.amount && <Field label={t("Amount", "סכום")}><span className="text-xl font-semibold tabular-nums"><bdi>{item.amount}</bdi></span></Field>}
-          <Field label={t("What you need to do", "מה צריך ממך")}><span className="font-medium">{item.decision}</span></Field>
-          <Field label={t("Why it's with you", "למה זה אצלך")}>{item.why}</Field>
-          {item.tried.length > 0 && (
-            <Field label={t("What BARRY already did", "מה BARRY כבר עשה")}>
-              <ol className="flex flex-col gap-1.5">
-                {item.tried.map((x, i) => (
-                  <li key={i} className="flex gap-2"><CheckIcon className="mt-1 size-3.5 shrink-0 text-muted-foreground" /><span><bdi>{x}</bdi></span></li>
-                ))}
-              </ol>
-            </Field>
-          )}
-          <Field label={t("What happens next", "מה קורה אחר כך")}>{item.then}</Field>
-          <details className="group rounded-md border px-3 py-2 text-sm">
-            <summary className="cursor-pointer select-none text-muted-foreground">{t("How current this is · records", "כמה זה עדכני · רשומות")}</summary>
-            <p className="mt-2">{item.freshness}</p>
-            <ul className="mt-2 flex flex-col gap-1 text-xs text-muted-foreground" dir="ltr">{item.evidence.map((e) => <li key={e} className="break-all">{e}</li>)}</ul>
-          </details>
-        </dl>
-      </SheetBody>
-      <SheetFooter className="border-t">
-        {ordered.map((o, i) => (
-          <Button key={o.action} variant={i === 0 ? "default" : o.destructive || o.action === "decline" ? "outline" : "secondary"} className={o.destructive || o.action === "decline" ? "text-destructive" : undefined} disabled={busy} onClick={() => (needsConfirm(o) ? setConfirm(o) : void run(o))} data-testid={`work-act-${o.action}`}>
-            {o.label}
-          </Button>
-        ))}
-        <Button variant="ghost" asChild>
-          <Link href={conversationHref(item.conversationId)}>{t("Open the conversation", "לפתוח את השיחה")}</Link>
-        </Button>
-      </SheetFooter>
+      </Section>
+      <section className="flex flex-col gap-2.5">
+        <h3 className="text-[15px] font-semibold">{t("Suggested next steps", "הצעדים הבאים")}</h3>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {ordered.map((o, i) => (
+            <button
+              key={o.action}
+              type="button"
+              disabled={busy}
+              onClick={() => (needsConfirm(o) ? setConfirm(o) : void run(o))}
+              className={`flex min-h-14 flex-col items-start justify-center gap-0.5 rounded-xl border px-4 py-2.5 text-start transition-colors disabled:opacity-50 ${i === 0 ? "border-transparent bg-primary text-primary-foreground hover:bg-primary/90" : "bg-background/40 hover:bg-surface-2"} ${o.destructive || o.action === "decline" ? "text-hot" : ""}`}
+              data-testid={`work-act-${o.action}`}
+            >
+              <span className="text-sm font-semibold">{o.label}</span>
+              <span className={`line-clamp-2 text-xs ${i === 0 ? "text-primary-foreground/70" : "text-muted-foreground"}`}>{o.consequence}</span>
+            </button>
+          ))}
+          <Link href={conversationHref(item.conversationId)} className="flex min-h-14 flex-col items-start justify-center gap-0.5 rounded-xl border bg-background/40 px-4 py-2.5 text-start hover:bg-surface-2">
+            <span className="flex items-center gap-2 text-sm font-semibold"><MessageSquareIcon className="size-4" />{t("Review messages", "לקרוא את השיחה")}</span>
+            <span className="text-xs text-muted-foreground">{t("Open the conversation", "לפתוח את השיחה")}</span>
+          </Link>
+        </div>
+      </section>
+      <footer className="flex items-center gap-3 border-t pt-4">
+        <Thumb name={item.customer} size="sm" />
+        <div className="min-w-0 flex-1">
+          <p className="text-xs text-muted-foreground">{t("Customer", "לקוח")}</p>
+          <p className="truncate text-sm font-medium"><bdi>{item.customer}</bdi></p>
+        </div>
+        <KindIcon className="size-4 text-muted-foreground" />
+      </footer>
+      <details className="rounded-lg border px-3 py-2 text-sm">
+        <summary className="cursor-pointer select-none text-muted-foreground">{t("How current this is · records", "כמה זה עדכני · רשומות")}</summary>
+        <p className="mt-2">{item.freshness}</p>
+        <ul className="mt-2 flex flex-col gap-1 text-xs text-muted-foreground" dir="ltr">{item.evidence.map((e) => <li key={e} className="break-all">{e}</li>)}</ul>
+      </details>
 
       <Dialog open={Boolean(confirm)} onOpenChange={(o) => !o && setConfirm(null)}>
         <DialogContent>
@@ -385,63 +407,68 @@ function DecisionDetail({ item, actions, lang, t, now, onClose, onDone }: { item
   );
 }
 
-function ProgressDetail({ w, ws, lang, t }: { w: ActiveWork; ws: OwnerWorkspace; lang: OwnerLang; t: T }) {
-  const words = proactiveWords(w.workflow, lang);
-  const op = w.operationId ? ws.ownerOperations.find((o) => o.id === w.operationId) : undefined;
-  const flow = workflows(ws, lang).find((f) => f.kind === w.workflow);
-  const command = op ? ws.ownerCommands.find((c) => c.operationId === op.id) : undefined;
-  const p = op?.progress;
-  const working = w.state === "working";
+function ProgressBody({ w, ws, lang, t, now }: { w: ActiveWork; ws: OwnerWorkspace; lang: OwnerLang; t: T; now: number }) {
+  const p = workProgress(ws, w, lang, t);
+  const command = p.op ? ws.ownerCommands.find((c) => c.operationId === p.op!.id) : undefined;
+  const tz = ws.business.timezone;
+  const done = p.op ? p.op.progress.purchased : p.flow?.closed ?? 0;
   return (
     <>
-      <SheetHeader>
-        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-          <Badge variant={working ? "secondary" : "outline"}>{working ? t("BARRY working", "BARRY עובד") : t("Waiting on customers", "מחכה ללקוחות")}</Badge>
-          <span>{op ? (op.requestedBy.source === "whatsapp" ? t("You asked on WhatsApp", "ביקשת בוואטסאפ") : t("You asked here", "ביקשת כאן")) : t("Your follow-up rule", "כלל המעקב שלך")}</span>
+      <Facts
+        items={[
+          { label: p.steps[0].label, value: p.steps[0].n },
+          { label: p.steps[1].label, value: p.steps[1].n, tone: p.steps[1].n ? "live" : undefined },
+          { label: p.steps[3].label, value: done },
+        ]}
+      />
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-between text-sm"><span className="text-muted-foreground">{p.line}</span><span className="tabular-nums">{p.reached}/{p.found}</span></div>
+        <Progress value={p.reached} max={p.found} tone={w.state === "working" ? "live" : "info"} />
+      </div>
+      <Section icon={FileTextIcon} title={t("What happened", "מה קרה")}>
+        <p>
+          {p.op
+            ? t(`You asked BARRY${p.op.requestedBy.source === "whatsapp" ? " on WhatsApp" : ""}${command ? `: “${command.text}”` : "."}`, `ביקשת מ־BARRY${p.op.requestedBy.source === "whatsapp" ? " בוואטסאפ" : ""}${command ? `: “${command.text}”` : "."}`)
+            : t(`Your follow-up rule picked up ${p.found} open item${p.found === 1 ? "" : "s"}${p.since ? ` (first on ${clockOf(lang, tz, p.since, now)})` : ""}.`, `כלל המעקב שלך זיהה ${p.found} פריטים פתוחים${p.since ? ` (הראשון ב־${clockOf(lang, tz, p.since, now)})` : ""}.`)}
+        </p>
+      </Section>
+      <Section icon={ListChecksIcon} tone="live" title={t("What BARRY already did", "מה BARRY כבר עשה")}>
+        <ul className="flex flex-col gap-2">
+          {p.steps.map((st) => (
+            <li key={st.label} className="flex items-center justify-between gap-3 text-foreground/90">
+              <span className="flex items-center gap-2.5">
+                <span className={`flex size-4 items-center justify-center rounded-full ${st.n ? "bg-live text-background" : "border border-border"}`}>{st.n ? <CheckIcon className="size-3" strokeWidth={3} /> : null}</span>
+                {st.label}
+              </span>
+              <span className="tabular-nums">{st.n}</span>
+            </li>
+          ))}
+        </ul>
+        {p.lastAttempt && <p className="mt-2 text-xs">{t(`Last attempt ${clockOf(lang, tz, p.lastAttempt, now)}`, `ניסיון אחרון ${clockOf(lang, tz, p.lastAttempt, now)}`)}</p>}
+      </Section>
+      <Section icon={OctagonAlertIcon} tone={p.reached ? "info" : "muted"} title={t("What is blocking progress", "מה עוצר את ההתקדמות")}>
+        <p>{p.reached ? t("Customers who were reached haven't replied yet. BARRY follows up again inside your rules.", "לקוחות שקיבלו פנייה עוד לא ענו. BARRY ימשיך לפי הכללים שלך.") : t("Nothing has been sent yet — the items are queued until your follow-up rule's timing allows it.", "עוד לא נשלח כלום — הפריטים בתור עד שהתזמון בכלל המעקב יאפשר.")}</p>
+        {(p.op?.progress.test || p.flow?.testItems) ? <p className="mt-1.5 text-xs">{t("Some customers here are on BARRY's simulator — counted, never as money.", "חלק מהלקוחות כאן על הסימולטור — נספרים, אבל אף פעם לא ככסף.")}</p> : null}
+        {p.flow && hasMoney(p.flow.atStake) && <p className="mt-1.5 text-xs">{t(`Still open (not revenue): ${money(lang, p.flow.atStake)}`, `עדיין פתוח (לא הכנסה): ${money(lang, p.flow.atStake)}`)}</p>}
+      </Section>
+      <section className="flex flex-col gap-2.5">
+        <h3 className="text-[15px] font-semibold">{t("Suggested next steps", "הצעדים הבאים")}</h3>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <Link href={`/owner/next/ask?q=${encodeURIComponent(lang === "he" ? `מה הסטטוס של ${p.title}?` : `What's the status of ${p.command.toLowerCase()}?`)}`} className="flex min-h-14 flex-col items-start justify-center gap-0.5 rounded-xl bg-primary px-4 py-2.5 text-start text-primary-foreground hover:bg-primary/90">
+            <span className="text-sm font-semibold">{t("Ask BARRY about it", "לשאול את BARRY")}</span>
+            <span className="text-xs text-primary-foreground/70">{t("Status, who was reached, what's next", "סטטוס, למי פנו, מה הלאה")}</span>
+          </Link>
+          <Link href={`/owner?tab=ask&q=${encodeURIComponent(lang === "he" ? `תעצור: ${p.command}` : `Stop: ${p.command}`)}`} className="flex min-h-14 flex-col items-start justify-center gap-0.5 rounded-xl border bg-background/40 px-4 py-2.5 text-start hover:bg-surface-2">
+            <span className="text-sm font-semibold">{t("Ask BARRY to stop it", "לבקש מ־BARRY לעצור")}</span>
+            <span className="text-xs text-muted-foreground">{t("Messages already sent stay sent", "הודעות שנשלחו נשארות")}</span>
+          </Link>
         </div>
-        <SheetTitle className="text-lg leading-snug">{words.title}</SheetTitle>
-        {command && <SheetDescription dir="auto">“{command.text}”</SheetDescription>}
-      </SheetHeader>
-      <SheetBody>
-        <div className="flex flex-col gap-5">
-          <div className="divide-y rounded-lg border px-4">
-            {p ? (
-              <>
-                <Stat label={t("Customers in scope", "לקוחות בטווח")} value={p.cohort} />
-                <Stat label={t("Reached", "קיבלו פנייה")} value={p.contacted} />
-                <Stat label={t("Replied", "ענו")} value={p.replied} />
-                <Stat label={t("Bought", "קנו")} value={p.purchased} />
-                {p.failed > 0 && <Stat label={t("Failed", "נכשלו")} value={p.failed} />}
-                {hasMoney(p.recovered) && <Stat label={t("Recovered (verified)", "הוחזר (מאומת)")} value={money(lang, p.recovered)} />}
-              </>
-            ) : flow ? (
-              <>
-                <Stat label={t("Found", "נמצאו")} value={flow.open} />
-                <Stat label={t("Reached", "קיבלו פנייה")} value={flow.contacted} />
-                <Stat label={t("Waiting on the customer", "מחכים ללקוח")} value={flow.waiting} />
-                <Stat label={flow.closedLabel} value={flow.closed} />
-                {hasMoney(flow.recovered) && <Stat label={t("Recovered (verified)", "הוחזר (מאומת)")} value={money(lang, flow.recovered)} />}
-                {hasMoney(flow.atStake) && <Stat label={t("Still open · not revenue", "עדיין פתוח · לא הכנסה")} value={money(lang, flow.atStake)} />}
-              </>
-            ) : null}
-          </div>
-          {(p?.test || flow?.testItems) ? <p className="text-sm text-muted-foreground">{t("Some customers here are on BARRY's simulator — counted, never as money.", "חלק מהלקוחות כאן על הסימולטור — נספרים, אבל אף פעם לא ככסף.")}</p> : null}
-          <p className="text-sm text-muted-foreground">{t("BARRY only messages customers who already talk to you, within your follow-up rules.", "BARRY שולח הודעות רק ללקוחות שכבר מדברים איתך, לפי כללי המעקב שלך.")}</p>
-        </div>
-      </SheetBody>
-      <SheetFooter className="border-t">
-        <Button variant="outline" asChild>
-          <Link href={`/owner?tab=ask&q=${encodeURIComponent(lang === "he" ? `תעצור: ${words.command}` : `Stop: ${words.command}`)}`}>{t("Ask BARRY to stop it", "לבקש מ־BARRY לעצור")}</Link>
-        </Button>
-        <Button variant="ghost" asChild>
-          <Link href="/owner/rules">{t("Follow-up rules", "כללי מעקב")}</Link>
-        </Button>
-      </SheetFooter>
+      </section>
     </>
   );
 }
 
-function NoticedDetail({ i, actions, lang, t, onClose, onDone }: { i: InitiativeView; actions: WorkActions; lang: OwnerLang; t: T; onClose: () => void; onDone: (text: string, bad?: boolean) => void }) {
+function NoticedBody({ i, actions, lang, t, onClose, onDone }: { i: InitiativeView; actions: WorkActions; lang: OwnerLang; t: T; onClose: () => void; onDone: (text: string, bad?: boolean) => void }) {
   const c = noticedCard(i, lang);
   const [busy, setBusy] = React.useState(false);
   const [confirm, setConfirm] = React.useState(false);
@@ -465,40 +492,30 @@ function NoticedDetail({ i, actions, lang, t, onClose, onDone }: { i: Initiative
   };
   return (
     <>
-      <SheetHeader>
-        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-          <Badge variant="outline">{c.stateWords}</Badge>
-          <span>{c.importance}</span>
-          {c.testData && <span>· {t("test data", "נתוני בדיקה")}</span>}
-        </div>
-        <SheetTitle className="text-lg leading-snug">{c.what}</SheetTitle>
-      </SheetHeader>
-      <SheetBody>
-        <dl className="flex flex-col gap-5">
-          <Field label={t("What BARRY saw", "מה BARRY ראה")}><bdi>{c.observation}</bdi></Field>
-          <Field label={t("Why it matters", "למה זה חשוב")}>{c.whyItMatters}</Field>
-          {c.money && <Field label={t("Money involved", "כסף מעורב")}><bdi>{c.money}</bdi></Field>}
-          <Field label={t("Next step", "הצעד הבא")}><bdi>{c.next}</bdi></Field>
-          <Field label={t("Who decides", "מי מחליט")}>{c.approval}</Field>
-          {c.handling && <Field label={t("Being handled", "בטיפול")}>{c.handling}</Field>}
-          {c.result && <Field label={t("Result", "תוצאה")}>{c.result}</Field>}
-          <details className="rounded-md border px-3 py-2 text-sm">
-            <summary className="cursor-pointer select-none text-muted-foreground">{t("Evidence", "ראיות")}</summary>
-            <p className="mt-2">{c.evidence}</p>
-            <p className="mt-1 text-xs text-muted-foreground">{c.confidence}</p>
-          </details>
-        </dl>
-      </SheetBody>
+      <Section icon={FileTextIcon} title={t("What BARRY saw", "מה BARRY ראה")}>
+        <p><bdi>{c.observation}</bdi></p>
+      </Section>
+      <Section icon={ListChecksIcon} tone="info" title={t("Why it matters", "למה זה חשוב")}>
+        <p>{c.whyItMatters}</p>
+        {c.money && <p className="mt-1.5 font-medium text-warn"><bdi>{c.money}</bdi></p>}
+      </Section>
+      <Section icon={OctagonAlertIcon} title={t("Next step", "הצעד הבא")}>
+        <p><bdi>{c.next}</bdi></p>
+        <p className="mt-1 text-xs">{c.approval}</p>
+      </Section>
       {live && (
-        <SheetFooter className="border-t">
-          {c.canAct && c.action?.kind === "command" && <Button disabled={busy} onClick={() => setConfirm(true)} data-testid="noticed-act">{c.action.label}</Button>}
-          {c.action?.kind === "link" && <Button asChild><Link href={c.action.href}>{c.action.label}</Link></Button>}
-          <div className="grid grid-cols-2 gap-2">
-            <Button variant="outline" disabled={busy} onClick={() => void run("snooze")}>{t("Snooze a week", "לדחות לשבוע")}</Button>
-            <Button variant="outline" disabled={busy} onClick={() => void run("dismiss")}>{t("Dismiss", "להסיר")}</Button>
-          </div>
-        </SheetFooter>
+        <section className="grid gap-2 sm:grid-cols-3">
+          {c.canAct && c.action?.kind === "command" && <Button disabled={busy} onClick={() => setConfirm(true)} data-testid="noticed-act" className="sm:col-span-3">{c.action.label}</Button>}
+          {c.action?.kind === "link" && <Button asChild className="sm:col-span-3"><Link href={c.action.href}>{c.action.label}</Link></Button>}
+          <Button variant="outline" disabled={busy} onClick={() => void run("snooze")}>{t("Snooze a week", "לדחות לשבוע")}</Button>
+          <Button variant="outline" disabled={busy} onClick={() => void run("dismiss")}>{t("Dismiss", "להסיר")}</Button>
+        </section>
       )}
+      <details className="rounded-lg border px-3 py-2 text-sm">
+        <summary className="cursor-pointer select-none text-muted-foreground">{t("Evidence", "ראיות")}</summary>
+        <p className="mt-2">{c.evidence}</p>
+        <p className="mt-1 text-xs text-muted-foreground">{c.confidence}</p>
+      </details>
       <Dialog open={confirm} onOpenChange={setConfirm}>
         <DialogContent>
           <DialogHeader>
@@ -517,54 +534,29 @@ function NoticedDetail({ i, actions, lang, t, onClose, onDone }: { i: Initiative
   );
 }
 
-function ApprovalDetail({ a, lang, t, now }: { a: OwnerApproval; lang: OwnerLang; t: T; now: number }) {
+function ApprovalBody({ a, lang, t }: { a: OwnerApproval; lang: OwnerLang; t: T }) {
   const l = LIFECYCLE[a.lifecycle] ?? LIFECYCLE.approved;
   return (
     <>
-      <SheetHeader>
-        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-          <Badge variant="secondary">{l.label[lang]}</Badge>
-          <span className="tabular-nums">{ageOf(lang, a.createdAt, now)}</span>
-        </div>
-        <SheetTitle className="text-lg leading-snug"><bdi>{a.what}</bdi></SheetTitle>
-        <SheetDescription><bdi>{a.customer}</bdi></SheetDescription>
-      </SheetHeader>
-      <SheetBody>
-        <dl className="flex flex-col gap-5">
-          {a.amount && <Field label={t("Amount", "סכום")}><bdi>{a.amount}</bdi></Field>}
-          <Field label={t("Why it needed you", "למה זה היה צריך אותך")}>{a.whyApproval}</Field>
-          {a.result && <Field label={t("Result", "תוצאה")}><bdi>{a.result}</bdi></Field>}
-        </dl>
-      </SheetBody>
-      <SheetFooter className="border-t">
-        <Button variant="outline" asChild>
-          <Link href={conversationHref(a.conversationId)}>{t("Open the conversation", "לפתוח את השיחה")}</Link>
-        </Button>
-      </SheetFooter>
+      <Facts items={[{ label: t("Result", "תוצאה"), value: l.label[lang] }, { label: t("Amount", "סכום"), value: a.amount ?? "—" }, { label: t("Customer", "לקוח"), value: a.customer }]} />
+      <Section icon={FileTextIcon} title={t("Why it needed you", "למה זה היה צריך אותך")}>
+        <p><bdi>{a.whyApproval}</bdi></p>
+        {a.result && <p className="mt-1.5"><bdi>{a.result}</bdi></p>}
+      </Section>
+      <Button variant="outline" asChild>
+        <Link href={conversationHref(a.conversationId)}>{t("Open the conversation", "לפתוח את השיחה")}</Link>
+      </Button>
     </>
   );
 }
 
-function FinishedDetail({ o, lang, t }: { o: OwnerWorkspace["ownerOperations"][number]; lang: OwnerLang; t: T }) {
+function FinishedBody({ o, lang, t }: { o: OwnerWorkspace["ownerOperations"][number]; lang: OwnerLang; t: T }) {
   const p = o.progress;
   return (
     <>
-      <SheetHeader>
-        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-          <Badge variant="secondary">{o.derivedState === "stopped" ? t("Stopped by you", "נעצר על ידך") : o.derivedState === "completed" ? t("Completed", "הושלם") : t("Didn't finish", "לא הסתיים")}</Badge>
-        </div>
-        <SheetTitle className="text-lg leading-snug">{proactiveWords(o.workflow, lang).title}</SheetTitle>
-      </SheetHeader>
-      <SheetBody>
-        <div className="divide-y rounded-lg border px-4">
-          <Stat label={t("Customers in scope", "לקוחות בטווח")} value={p.cohort} />
-          <Stat label={t("Reached", "קיבלו פנייה")} value={p.contacted} />
-          <Stat label={t("Replied", "ענו")} value={p.replied} />
-          <Stat label={t("Bought", "קנו")} value={p.purchased} />
-          {hasMoney(p.recovered) && <Stat label={t("Recovered (verified)", "הוחזר (מאומת)")} value={money(lang, p.recovered)} />}
-        </div>
-        {o.stoppedAt && <p className="mt-4 text-sm text-muted-foreground">{t("Stopped by you — messages already sent stay sent.", "נעצר על ידך — הודעות שכבר נשלחו נשארות.")}</p>}
-      </SheetBody>
+      <Facts items={[{ label: t("Reached", "קיבלו פנייה"), value: p.contacted }, { label: t("Replied", "ענו"), value: p.replied }, { label: t("Bought", "קנו"), value: p.purchased }]} />
+      {hasMoney(p.recovered) && <p className="text-sm">{t("Recovered (verified)", "הוחזר (מאומת)")}: <bdi className="font-semibold text-live">{money(lang, p.recovered)}</bdi></p>}
+      {o.stoppedAt && <p className="text-sm text-muted-foreground">{t("Stopped by you — messages already sent stay sent.", "נעצר על ידך — הודעות שכבר נשלחו נשארות.")}</p>}
     </>
   );
 }
