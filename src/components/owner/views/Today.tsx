@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import type { OwnerWorkspace } from "@/lib/owner/service";
-import { activityByHour, activityFeed, nowWorking, workflows } from "@/lib/owner/control-room";
+import { activeWork, activityByHour, activityFeed, nowWorking, workflows } from "@/lib/owner/control-room";
 import { ownerPresence, PRESENCE_WORD } from "@/lib/owner/presence-model";
 import { commandSuggestions } from "@/lib/owner/command";
 import type { OwnerReply } from "@/lib/owner/command-service";
@@ -40,9 +40,8 @@ export function todayStory(ws: OwnerWorkspace) {
       : t.conversations
         ? { lead: "BARRY talked with ", figure: plural(t.conversations, "customer"), tail: ` ${ws.window.label}.` }
         : { lead: "BARRY is standing by", figure: "", tail: "." };
-  const lines = nowWorking(ws);
-  const live = ws.conversations.filter((c) => c.status === "in_progress").length;
-  const things = lines.filter((l) => l.state === "working" || l.state === "waiting").reduce((s, l) => s + l.count, 0) + live;
+  // The ONE definition of active work (Work shows the same count): never decisions, never noticed items.
+  const things = activeWork(ws).length;
   const needs = ws.interventions.length;
   const working = things ? `He's working on ${plural(things, "thing")}.` : "Nothing open right now.";
   const needLine = needs ? `${count(needs)} need${needs === 1 ? "s" : ""} you.` : things ? "Nothing needs you." : "He's watching for the next customer.";

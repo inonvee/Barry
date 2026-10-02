@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import type { OwnerWorkspace } from "@/lib/owner/service";
 import type { InitiativeView } from "@/lib/initiative/model";
-import { nowWorking, workflows } from "@/lib/owner/control-room";
+import { activeWork, nowWorking, workflows } from "@/lib/owner/control-room";
 import { WORK_STATE_WORDS, noticedCard, operationWorkState, type WorkState } from "@/lib/owner/os";
 import { Empty, Pill, type Tone } from "../ui";
 import { InterventionQueue, type Act } from "../operating";
@@ -35,7 +35,7 @@ export function WorkView({ ws, act, busyId, onOpen, onInitiative, onAsk }: { ws:
   const ops = ws.ownerOperations;
   const flows = workflows(ws).sort((a, b) => Number(b.state === "running") - Number(a.state === "running") || b.open - a.open);
   const lines = nowWorking(ws).filter((l) => l.id !== "needs_you");
-  const working = ops.filter((o) => operationWorkState(o.derivedState) === "working" || operationWorkState(o.derivedState) === "waiting_on_customer").length + flows.filter((f) => f.state === "running" && f.open > 0).length;
+  const working = activeWork(ws).length;
   const history = ws.initiativeHistory ?? [];
   const noticed = noticedView === "open" ? ws.initiatives : history;
 

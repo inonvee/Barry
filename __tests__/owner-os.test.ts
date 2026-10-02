@@ -138,7 +138,7 @@ describe("Rules BARRY follows = what the runtime enforces", () => {
     await getBackend().upsertLearnedFact({ businessId: g.business.id, key: "authority.discounts", value: "7%", classification: "policy", source: { kind: "owner" }, confidence: "high", status: "verified", ownerVerified: true, reviewedBy: "owner", reviewedAt: now, discoveredAt: now, refreshedAt: now });
     await getBackend().upsertLearnedFact({ businessId: g.business.id, key: "policy.discounts", value: "Up to 20% for everyone", classification: "policy", source: { kind: "web", url: "https://example.com", quote: "20%" }, confidence: "medium", status: "candidate", ownerVerified: false, discoveredAt: now, refreshedAt: now });
     const os = await getOwnerOs(g);
-    const discount = os.rules.rules.find((r) => r.area === "Discounts")!;
+    const discount = os.rules.rules.find((r) => r.area === "discounts")!;
     expect(discount).toMatchObject({ source: "owner", change: "teach", state: "active" });
     expect(discount.words).toMatch(/up to 7%/);
     expect(discountPolicyOf(await effectiveGraph(g))!.value).toBe(7); // the enforced value — same resolution
@@ -148,7 +148,7 @@ describe("Rules BARRY follows = what the runtime enforces", () => {
     expect(os.rules.rules.filter((r) => r.source === "built_in" && r.change === "fixed").length).toBeGreaterThanOrEqual(3);
     expect(os.rules.notSupported.length).toBeGreaterThan(0);
     // No offers state a currency (the catalog is connected): the payment limit names none rather than guessing.
-    const pay = os.rules.rules.find((r) => r.area === "Money")!;
+    const pay = os.rules.rules.find((r) => r.area === "payments")!;
     expect(pay.words).toMatch(/2,000 \(in the order's currency\)/);
     expect(pay.words).not.toMatch(/\$|USD|₪/);
   });
@@ -200,10 +200,10 @@ describe("BARRY setup: honest readiness, every blocker actionable", () => {
       check({ id: "channel.live", area: "channel", status: "fail", gate: "READY_FOR_CUSTOMER_TRAFFIC" }),
     ]);
     const s = setupView({ readiness: r, mode: "simulator", rulesActive: 4, signedIn: true });
-    expect(s.headline).toBe("4 things left before a supervised start");
+    expect(s.headline).toBe("4 things left before supervised start");
     expect(s.supervisedReady).toBe(false);
     const group = (id: string) => s.groups.find((g) => g.id === id)!;
-    expect(group("owner").items.map((i) => i.href)).toEqual(["/owner/knowledge#teach", "/owner/knowledge#teach"]);
+    expect(group("owner").items.map((i) => i.href)).toEqual(["/owner/knowledge#teach", "/owner/knowledge#support"]);
     expect(group("connection").items[0].href).toBe("/owner/systems");
     expect(group("team").items.map((i) => i.id)).toEqual(["ai.model"]);
     expect(group("optional").items[0].href).toBe("/owner/rules");

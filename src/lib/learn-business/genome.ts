@@ -2,6 +2,7 @@ import type { BusinessGraph } from "@/lib/business-graph";
 import type { LearnedFactRecord } from "@/lib/store/types";
 import type { CapabilityProfiles } from "@/lib/capabilities/model";
 import { factSourceId, sourceFreshness, sourceWords, type LearnedSource } from "./sources";
+import { policyWords } from "@/lib/policy/words";
 import { DISCOUNT_AUTHORITY_KEYS, discountWords, resolveEffectiveAuthority, type TrainedRule } from "@/lib/policy/effective-rules";
 
 /**
@@ -112,17 +113,20 @@ export function effectiveGenome(input: { graph: BusinessGraph; facts: LearnedFac
   declare("business.name", graph.business.name, "Declared in the business profile.");
   declare("business.description", graph.business.description, "Declared in the business profile.");
   if (graph.business.timezone) declare("business.timezone", graph.business.timezone, "Declared in the business profile; every time BARRY quotes is in it.");
+  // A policy is described by its RULE VALUE (the free-text description beside it can be stale).
+  const currencies = [...new Set(graph.offers.filter((o) => o.active).map((o) => o.currency))];
+  const currency = currencies.length === 1 ? currencies[0] : null;
   // The policies the runtime ENFORCES — the effective graph (an owner-trained discount rule replaces the profile's).
   for (const p of authority.graph.policies) {
     if (p.provenance?.source === "owner_trained") continue; // shown above as the owner's own rule
     const discount = p.rule.type === "max_auto_discount_pct" ? p.rule.value : undefined;
-    out.push({ key: `policy.rule.${p.rule.type}`, ...(discount !== undefined ? { label: "Discount rule" } : {}), value: discount !== undefined ? discountWords(discount) : p.description, effective: true, status: "active", origin: "policy_rule", why: discount !== undefined ? `ACTIVE RULE — ${discountWords(discount)} Source: your business profile.` : "An explicit rule in the Business Genome; the policy engine enforces it.", from: "the business rules", lastChecked: null, ownerApproved: true, freshness: "n/a", classification: "policy" });
+    out.push({ key: `policy.rule.${p.rule.type}`, ...(discount !== undefined ? { label: "Discount rule" } : {}), value: discount !== undefined ? discountWords(discount) : policyWords(p.rule, currency).words, effective: true, status: "active", origin: "policy_rule", why: discount !== undefined ? `ACTIVE RULE — ${discountWords(discount)} Source: your business profile.` : "A rule in your business profile — BARRY follows it.", from: "the business rules", lastChecked: null, ownerApproved: true, freshness: "n/a", classification: "policy" });
   }
   // A profile rule an owner-trained rule replaced: shown as replaced, never as active.
   for (const p of graph.policies) {
     if (p.provenance?.source === "owner_trained" || authority.graph.policies.some((q) => q.id === p.id)) continue;
     const discount = p.rule.type === "max_auto_discount_pct" ? p.rule.value : undefined;
-    out.push({ key: `policy.rule.${p.rule.type}`, ...(discount !== undefined ? { label: "Discount rule (business profile)" } : {}), value: discount !== undefined ? discountWords(discount) : p.description, effective: false, status: "replaced", origin: "policy_rule", why: "Replaced by the rule you taught BARRY.", from: "the business rules", lastChecked: null, ownerApproved: true, freshness: "n/a", classification: "policy" });
+    out.push({ key: `policy.rule.${p.rule.type}`, ...(discount !== undefined ? { label: "Discount rule (business profile)" } : {}), value: discount !== undefined ? discountWords(discount) : policyWords(p.rule, currency).words, effective: false, status: "replaced", origin: "policy_rule", why: "Replaced by the rule you taught BARRY.", from: "the business rules", lastChecked: null, ownerApproved: true, freshness: "n/a", classification: "policy" });
   }
   for (const a of graph.authority) {
     out.push({ key: `authority.${a.capability}`, status: "active", value: `${a.effect.replace("_", " ")}${a.when.length ? ` when ${a.when.map((w) => `${w.field} ${w.op} ${JSON.stringify(w.value)}`).join(" and ")}` : ""}`, effective: true, origin: "authority_rule", why: a.reason ?? "An explicit authority rule; BARRY never exceeds it.", from: "the authority rules", lastChecked: null, ownerApproved: true, freshness: "n/a", classification: "policy" });
