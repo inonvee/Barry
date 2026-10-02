@@ -52,7 +52,7 @@ function PlanPage() {
             <section className="flex flex-col gap-2">
               <SectionLabel>{t("Your plan", "התוכנית שלך")}</SectionLabel>
               {p ? (
-                <div className="o-group flex flex-col gap-3 px-4 py-4">
+                <div className="o-card flex flex-col gap-3 px-4 py-4">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="text-[18px] font-semibold text-o-ink">{p.name}</p>

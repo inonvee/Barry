@@ -59,7 +59,13 @@ export function TodayView({ ws, os, onDecision, onOpen, onTab, onAsk }: { ws: Ow
       <section className="flex flex-col gap-1 pt-1" aria-label={t("Your business now", "העסק שלך עכשיו")}>
         <p className="text-[14px] text-o-muted">{greeting(lang)} · <bdi>{ws.business.name}</bdi></p>
         <h1 className="text-[26px] font-semibold leading-tight tracking-[-0.02em] text-o-ink md:text-[30px]" data-testid="today-headline">{headline(lang, needs, things)}</h1>
-        <p className="text-[14.5px] leading-snug text-o-muted">{presence.text}</p>
+        <p className="text-[14.5px] leading-snug text-o-muted">
+          {needs
+            ? things
+              ? t(`Meanwhile BARRY is working on ${things === 1 ? "one thing" : `${things} things`}.`, things === 1 ? "בינתיים BARRY עובד על דבר אחד." : `בינתיים BARRY עובד על ${things} דברים.`)
+              : t("Everything else is handled.", "כל השאר בטיפול.")
+            : presence.text}
+        </p>
       </section>
 
       {(ai.status === "unavailable" || ai.status === "degraded") && (

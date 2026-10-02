@@ -37,7 +37,7 @@ function Setup({ os }: { os: OwnerOs }) {
   const [modeTitle, modeText] = MODE[os.mode][lang];
   return (
     <>
-      <section className="o-group flex flex-col gap-1 px-4 py-4" aria-label={t("Where BARRY stands", "איפה BARRY עומד")}>
+      <section className="o-card flex flex-col gap-1 px-4 py-4" aria-label={t("Where BARRY stands", "איפה BARRY עומד")}>
         <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-o-muted">{t("Where BARRY stands", "איפה BARRY עומד")}</p>
         <p className="text-[22px] font-semibold leading-tight tracking-tight text-o-ink" data-testid="setup-headline">{s.headline}</p>
         <ol className="mt-3 flex flex-col">
@@ -68,7 +68,7 @@ function Setup({ os }: { os: OwnerOs }) {
 
       <section className="flex flex-col gap-2">
         <SectionLabel>{t("How independent BARRY is", "כמה BARRY עצמאי")}</SectionLabel>
-        <div className="o-group flex flex-col gap-3 px-4 py-4">
+        <div className="o-card flex flex-col gap-3 px-4 py-4">
           <p className="flex flex-wrap items-center gap-2 text-[14.5px] text-o-ink"><Chip tone={os.mode === "simulator" ? "warn" : "info"}>{modeTitle}</Chip></p>
           <p className="text-[14px] leading-6 text-o-ink-2">{modeText}</p>
           <ul className="flex flex-col gap-1.5 text-[13.5px] leading-5 text-o-ink-2">

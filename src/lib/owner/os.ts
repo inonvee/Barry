@@ -180,7 +180,7 @@ export function noticedCard(i: InitiativeView, lang: OwnerLang = "en") {
     state,
     stateWords: workStateWords(state, lang),
     importance: lang === "he" ? IMPORTANCE_HE[i.importance] : i.importanceWords,
-    what: he?.title ?? i.title,
+    what: he?.title ?? i.title.replace(/^\p{Ll}/u, (c) => c.toUpperCase()),
     observation: he?.observation ?? i.observation,
     whyItMatters: lang === "he" ? (kind === "revenue_at_risk" ? "כסף שעלול ללכת לאיבוד — לא הכנסה." : kind === "recoverable_demand" ? "ביקוש פתוח שאפשר להחזיר — לא הכנסה." : kind === "conversion" ? "רכישות שלא הושלמו — לא נתון הכנסה." : kind === "owner_time" ? "זמן שלך ושל הלקוחות." : kind === "cost_increase" ? "עלייה במה ששילמת." : IMPORTANCE_HE[i.importance]) : (i.impact.note ?? i.importanceWords),
     evidence: lang === "he" ? `${he?.basis ?? ""} · ${i.evidence.length === 1 ? "רשומה אחת" : `${i.evidence.length} רשומות`}` : `${i.basis} · ${i.evidence.length} record${i.evidence.length === 1 ? "" : "s"}`,

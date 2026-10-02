@@ -1,5 +1,5 @@
 import type { ConversationState, TurnLog } from "@/lib/state";
-import { readLedger, termsAmount, type LedgerEntry } from "@/lib/runtime/ledger";
+import { ledgerView, readLedger, termsAmount, type LedgerEntry } from "@/lib/runtime/ledger";
 import { transactionSnapshot } from "@/lib/runtime/handoff";
 import type { OwnerLang } from "./lang";
 
@@ -271,15 +271,20 @@ function outcomeOf(turn: TurnLog, effects: LedgerEntry[], lang: OwnerLang = "en"
 }
 
 /** Where the transaction stands, in Hebrew (from the same ledger view as transactionSnapshot). */
+/** Where the transaction stands, in Hebrew — the same current ledger view the English snapshot reads. */
 function standingHe(state: ConversationState): string[] {
+  const view = ledgerView(readLedger(state));
   const out: string[] = [];
-  for (const e of readLedger(state)) {
+  const lastCart = [...view].reverse().find((e) => e.outcome && typeof e.outcome.cartAfter === "string");
+  if (lastCart && lastCart.outcome!.cartAfter !== "empty") out.push(`עגלה: ${lastCart.outcome!.cartAfter}`);
+  for (const e of view) {
     if (e.status === "awaiting_owner") out.push(`מחכה לאישורך: ${nounHe(e)}`);
     else if (e.effect === "payment.link_created") out.push("נשלח קישור תשלום (עוד לא אומת ששולם)");
     else if (e.effect === "payment.settled") out.push("התשלום אומת");
     else if (e.effect === "booking.created") out.push(`נקבע תור${e.reference ? ` (${e.reference})` : ""}`);
     else if (e.effect === "order.created") out.push(`הזמנה בוצעה${e.reference ? ` (${e.reference})` : ""}`);
     else if (e.effect === "write.blocked") out.push(`נחסם: ${nounHe(e)}`);
+    else if (e.status === "effected" && e.reference) out.push(`${nounHe(e)} (${e.reference})`);
   }
   return [...new Set(out)].slice(-8);
 }

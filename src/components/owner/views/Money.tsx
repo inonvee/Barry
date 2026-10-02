@@ -76,7 +76,7 @@ export function MoneyView({ ws, range, setRange, onOpen }: { ws: OwnerWorkspace;
 
       {testMoney && (
         <p className="px-1 text-[13px] leading-5 text-o-muted" data-testid="money-test">
-          {t("Test money (simulator, never counted):", "כסף של בדיקות (סימולטור, לא נספר):")} <bdi>{money(lang, r.simulatedPaid, t("none paid", "לא שולם"))}</bdi>
+          {t("Test money (simulator, never counted):", "כסף של בדיקות (סימולטור, לא נספר):")} <bdi>{hasMoney(r.simulatedPaid) ? t(`${money(lang, r.simulatedPaid)} paid`, `${money(lang, r.simulatedPaid)} שולם`) : t("none paid", "לא שולם")}</bdi>
           {r.potentialSimulatedItems ? t(` · ${money(lang, r.potentialSimulated)} pending`, ` · ${money(lang, r.potentialSimulated)} ממתין`) : ""}
         </p>
       )}

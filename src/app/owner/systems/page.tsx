@@ -17,6 +17,8 @@ import { ago } from "@/lib/owner/lang";
  */
 const LABEL_TONE: Record<SystemLabel, Tone> = { REAL: "ok", SUPERVISED: "info", "READ-ONLY": "info", SIMULATED: "warn", "TEST MODE": "warn", UNAVAILABLE: "bad", "NOT CONNECTED": "neutral" };
 const HEALTH: Record<OwnerSystem["health"], [string, string]> = { healthy: ["Working", "עובד"], degraded: ["Setup incomplete", "הגדרה חלקית"], down: ["Not working", "לא עובד"], not_set_up: ["Not set up", "לא הוגדר"] };
+/** Who provides it, in owner words: a simulator is named as BARRY's simulator, never by its internal adapter id. */
+const providerWords = (s: OwnerSystem, t: (en: string, he: string) => string) => (s.label === "SIMULATED" ? t("BARRY's simulator", "הסימולטור של BARRY") : (s.provider ?? t("No provider", "אין ספק")));
 const ICON: Record<string, IconName> = { whatsapp_customers: "chat", whatsapp_owner: "phone", understanding: "barry", commerce: "cart", payments: "card", scheduling: "clock", messaging: "send", support: "users", crm: "book" };
 
 export default function SystemsPage() {
@@ -39,7 +41,7 @@ function Systems({ systems }: { systems: OwnerSystem[] }) {
       testId="system-row"
       lead={<Lead icon={ICON[s.id] ?? "plug"} tone={LABEL_TONE[s.label]} />}
       title={s.name}
-      sub={`${s.provider ?? t("No provider", "אין ספק")} · ${HEALTH[s.health][lang === "he" ? 1 : 0]}`}
+      sub={`${providerWords(s, t)} · ${HEALTH[s.health][lang === "he" ? 1 : 0]}`}
       chip={<span data-label={s.label}><Chip tone={LABEL_TONE[s.label]}>{s.labelWords}</Chip></span>}
       onClick={() => setOpen(s)}
     />
@@ -70,7 +72,7 @@ function SystemSheet({ s, onClose }: { s: OwnerSystem; onClose: () => void }) {
   return (
     <Sheet open onClose={onClose} title={s.name} testId="system-sheet" footer={s.id === "whatsapp_owner" && s.label === "NOT CONNECTED" ? <Button kind="primary" full href="/owner/settings#whatsapp">{t("Link your WhatsApp", "לקשר את הוואטסאפ שלך")}</Button> : undefined}>
       <div className="flex flex-col gap-4">
-        <p className="flex flex-wrap items-center gap-2 text-[13px] text-o-muted"><span data-label={s.label}><Chip tone={LABEL_TONE[s.label]}>{s.labelWords}</Chip></span>{s.provider ?? t("No provider", "אין ספק")}</p>
+        <p className="flex flex-wrap items-center gap-2 text-[13px] text-o-muted"><span data-label={s.label}><Chip tone={LABEL_TONE[s.label]}>{s.labelWords}</Chip></span>{providerWords(s, t)}</p>
         <p className="text-[15px] leading-6 text-o-ink">{s.meaning}</p>
         <dl className="flex flex-col gap-3">
           {s.reads.length > 0 && <Field label={t("BARRY can read", "BARRY יכול לקרוא")}><ul className="flex flex-col gap-0.5">{s.reads.map((r) => <li key={r}>{r}</li>)}</ul></Field>}

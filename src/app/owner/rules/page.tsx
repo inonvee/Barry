@@ -81,7 +81,7 @@ function Rules({ os, api, reload }: { os: Parameters<Parameters<typeof OsPage>[0
         <Group>{yours.map(row)}</Group>
       </section>
       <section className="flex flex-col gap-2">
-        <SectionLabel>{t("Always on", "תמיד פעיל")}</SectionLabel>
+        <SectionLabel>{t("Built into BARRY", "מובנה ב־BARRY")}</SectionLabel>
         <Group>{builtIn.map(row)}</Group>
       </section>
       <div className="o-group px-4">

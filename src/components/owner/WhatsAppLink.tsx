@@ -61,7 +61,7 @@ export function WhatsAppLink({ api }: { api: Api }) {
         </Group>
       )}
       {code ? (
-        <div className="o-group flex flex-col gap-2 px-4 py-4">
+        <div className="o-card flex flex-col gap-2 px-4 py-4">
           <p className="text-[13.5px] text-o-muted">{t("From your WhatsApp, send this to BARRY within 15 minutes:", "מהוואטסאפ שלך, שלח את זה ל־BARRY תוך 15 דקות:")}{state.line.display ? <bdi dir="ltr"> +{state.line.display}</bdi> : null}</p>
           <p className="select-all font-mono text-[22px] font-semibold tracking-wider text-o-ink" dir="ltr">{code.send}</p>
           {state.line.display && <Button kind="primary" full href={`https://wa.me/${state.line.display}?text=${encodeURIComponent(code.send)}`}>{t("Open WhatsApp", "לפתוח את וואטסאפ")}</Button>}

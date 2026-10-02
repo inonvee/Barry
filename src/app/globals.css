@@ -103,10 +103,12 @@
 /*
  * OWNER OS SURFACES (Pass 1 design language) — fewer containers, more rhythm:
  *  .o-group   one grouped list (rows separated by hairlines) — the default container for anything listy
+ *  .o-card    the same surface for a single block of content (no hairlines between its children)
  *  .o-sheet   the detail sheet: bottom sheet on phones, side panel on desktop
  *  .o-scrim   what dims behind a sheet
  */
-.o-group {
+.o-group,
+.o-card {
   background: var(--o-surface);
   border-radius: 18px;
   box-shadow: 0 0 0 1px var(--o-line);

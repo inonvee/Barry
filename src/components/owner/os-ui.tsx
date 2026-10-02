@@ -54,7 +54,7 @@ export function PageHeader({ title, sub, back, right }: { title: ReactNode; sub?
   return (
     <header className="flex flex-col gap-1 pt-1">
       {back && (
-        <Link href={back.href} className="-ms-1 mb-1 inline-flex w-fit items-center gap-1 rounded-lg px-1 py-1 text-[13.5px] font-medium text-o-accent lg:hidden">
+        <Link href={back.href} className="-ms-1 mb-1 inline-flex min-h-11 w-fit items-center gap-1 rounded-lg px-1 text-[13.5px] font-medium text-o-accent lg:hidden">
           <Icon name="chevron" size={16} className="rotate-180 rtl:rotate-0" />
           {back.label}
         </Link>
@@ -69,7 +69,7 @@ export function PageHeader({ title, sub, back, right }: { title: ReactNode; sub?
 }
 
 export function SectionLabel({ children, action, id }: { children: ReactNode; action?: { label: string; href?: string; onClick?: () => void }; id?: string }) {
-  const cls = "inline-flex min-h-8 items-center gap-0.5 text-[13px] font-medium text-o-accent";
+  const cls = "inline-flex min-h-11 items-center gap-0.5 text-[13px] font-medium text-o-accent";
   return (
     <div id={id} className="flex scroll-mt-24 items-center justify-between gap-2 px-1">
       <h2 className="text-[12px] font-semibold uppercase tracking-[0.12em] text-o-muted">{children}</h2>
@@ -221,10 +221,12 @@ export function ConfirmButton({ label, confirmLabel, consequence, onConfirm, kin
 
 export function Empty({ title, children, action }: { title: string; children?: ReactNode; action?: ReactNode }) {
   return (
-    <div className="o-group flex flex-col items-start gap-1.5 px-4 py-5">
-      <p className="text-[15px] font-medium text-o-ink">{title}</p>
-      {children && <p className="text-[13.5px] leading-6 text-o-muted">{children}</p>}
-      {action && <div className="mt-2">{action}</div>}
+    <div className="o-card">
+      <div className="flex flex-col items-start gap-1.5 px-4 py-5">
+        <p className="text-[15px] font-medium text-o-ink">{title}</p>
+        {children && <p className="text-[13.5px] leading-6 text-o-muted">{children}</p>}
+        {action && <div className="mt-2">{action}</div>}
+      </div>
     </div>
   );
 }
@@ -248,7 +250,8 @@ export function LoadingRows({ rows = 4 }: { rows?: number }) {
 export function ErrorState({ title, onRetry, detail }: { title: string; onRetry?: () => void; detail?: string }) {
   const { t } = useOwnerLang();
   return (
-    <div role="alert" className="o-group flex flex-col gap-2 px-4 py-4">
+    <div role="alert" className="o-card">
+      <div className="flex flex-col gap-2 px-4 py-4">
       <p className="flex items-center gap-2 text-[15px] font-medium text-o-ink"><Dot tone="bad" />{title}</p>
       <p className="text-[13.5px] text-o-muted">{t("Nothing changed in your business — this page couldn't read its records.", "שום דבר לא השתנה בעסק — הדף לא הצליח לקרוא את הרשומות.")}</p>
       {detail && (
@@ -257,6 +260,7 @@ export function ErrorState({ title, onRetry, detail }: { title: string; onRetry?
         </Disclosure>
       )}
       {onRetry && <div><Button onClick={onRetry}>{t("Try again", "לנסות שוב")}</Button></div>}
+      </div>
     </div>
   );
 }
@@ -274,10 +278,12 @@ export function Notice({ tone, children, action }: { tone: Tone; children: React
 
 /** An equal-width segmented control (2–4 choices) — thumb-sized, with counts. */
 export function Segments<T extends string>({ value, options, onChange, ariaLabel }: { value: T; options: { id: T; label: string; count?: number }[]; onChange: (v: T) => void; ariaLabel: string }) {
+  // Four choices don't fit a label and a count side by side on a phone: the count goes under the label.
+  const stack = options.length >= 4 && options.some((o) => o.count);
   return (
     <div role="tablist" aria-label={ariaLabel} className="grid gap-1 rounded-xl bg-o-sunken p-1 ring-1 ring-inset ring-o-line" style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}>
       {options.map((o) => (
-        <button key={o.id} type="button" role="tab" aria-selected={value === o.id} onClick={() => onChange(o.id)} className={`flex min-h-10 min-w-0 items-center justify-center gap-1.5 rounded-lg px-2 text-[13.5px] font-medium transition ${value === o.id ? "bg-o-raised text-o-ink ring-1 ring-inset ring-o-line-strong" : "text-o-muted hover:text-o-ink"}`} data-testid={`seg-${o.id}`}>
+        <button key={o.id} type="button" role="tab" aria-selected={value === o.id} onClick={() => onChange(o.id)} className={`flex min-h-10 min-w-0 items-center justify-center rounded-lg px-1.5 text-[13.5px] font-medium transition ${stack ? "flex-col gap-0 py-1 leading-tight" : "gap-1.5"} ${value === o.id ? "bg-o-raised text-o-ink ring-1 ring-inset ring-o-line-strong" : "text-o-muted hover:text-o-ink"}`} data-testid={`seg-${o.id}`}>
           <span className="truncate">{o.label}</span>
           {o.count ? <span className={`o-tabular rounded-full px-1.5 text-[11px] ${value === o.id ? "bg-o-accent/20 text-o-ink" : "bg-o-raised text-o-muted"}`}>{o.count}</span> : null}
         </button>
