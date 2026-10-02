@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { hqAuthError } from "@/lib/hq/auth";
-import { executeFounderCommand, founderHome, listFounderCommands } from "@/lib/founder/command-service";
+import { executeFounderCommand, founderHome, listFounderCommands, lookupFounderReply } from "@/lib/founder/command-service";
 import { modelFounderInterpreter } from "@/lib/founder/model-interpreter";
 import { modelFounderComposer } from "@/lib/founder/voice";
 
@@ -38,9 +38,16 @@ export async function POST(req: Request) {
   return Response.json(out);
 }
 
+/** GET → the default view and recent traces; GET ?key=K → recover ONE command's reply by its key (read-only). */
 export async function GET(req: Request) {
   const denied = hqAuthError(req);
   if (denied) return denied;
+  const key = new URL(req.url).searchParams.get("key");
+  if (key !== null) {
+    if (!key || key.length > 120) return Response.json({ error: "A command key is required." }, { status: 400 });
+    const out = await lookupFounderReply(key);
+    return Response.json(out, { status: out.found ? 200 : 404, headers: { "cache-control": "no-store" } });
+  }
   const [home, commands] = await Promise.all([founderHome(), listFounderCommands(30)]);
   return Response.json({ home, commands });
 }

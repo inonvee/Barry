@@ -10,6 +10,7 @@ import { getCommercialBusiness } from "@/lib/commercial/service";
 import { listInitiatives } from "@/lib/initiative/store";
 import { isOpenInitiative, type Initiative } from "@/lib/initiative/model";
 import { hasMoney, moneyWords } from "@/lib/format/money";
+import { isDemoBusiness } from "@/lib/fixtures";
 import type { Money } from "@/lib/owner/revenue";
 
 /**
@@ -77,12 +78,12 @@ export function founderHealth(b: BusinessStatus, extra: { commercialStage?: Comm
   if (extra.commercialStage && ONBOARDING_STAGES.includes(extra.commercialStage)) return make("onboarding", [`Commercial stage: ${STAGE_WORDS[extra.commercialStage]}.`]);
   if (b.unavailable.length) return make("not_enough_evidence", [`Couldn't read: ${b.unavailable.join(", ")}.`]);
   if (b.conversations.total === 0) return make("not_enough_evidence", ["No conversations yet — nothing to judge health on."]);
-  return make("healthy", [`No open incidents above low, nothing waiting on the owner; ${plural(b.conversations.last24h, "conversation")} in the last 24h.${b.controls.safeMode ? " Safe mode is on." : ""}`]);
+  return make("healthy", [`No open incidents above low, nothing waiting on the owner; ${b.conversations.last24h ? `${plural(b.conversations.last24h, "customer conversation")} in the last 24 hours` : "no customer conversations in the last 24 hours"}.${b.controls.safeMode ? " Safe mode is on." : ""}`]);
 }
 
 // ── Fleet view ──────────────────────────────────────────────────────────────────────────────────
 
-export type FleetBusinessView = BusinessStatus & { founderHealth: FounderHealth; account: CommercialAccount | null; commercialStage: CommercialStage; openInitiatives: Pick<Initiative, "id" | "title" | "importance" | "category" | "state" | "firstSeenAt">[] };
+export type FleetBusinessView = BusinessStatus & { founderHealth: FounderHealth; account: CommercialAccount | null; commercialStage: CommercialStage; openInitiatives: Pick<Initiative, "id" | "title" | "importance" | "category" | "state" | "firstSeenAt">[]; /** A demo / simulated tenant (canonical demo registry) — kept out of the daily brief. */ demo: boolean };
 
 export type FounderFleetView = {
   at: string;
@@ -112,7 +113,7 @@ export async function loadFounderFleet(opts: { now?: Date; fleet?: Fleet } = {})
       const stage = commercialStage(account, now);
       const initiatives = await safe(`initiatives (${b.name})`, () => listInitiatives(b.id), [] as Initiative[]);
       const openInitiatives = initiatives.filter(isOpenInitiative).map((i) => ({ id: i.id, title: i.title, importance: i.importance, category: i.category, state: i.state, firstSeenAt: i.firstSeenAt }));
-      return { ...b, founderHealth: founderHealth(b, { commercialStage: account ? stage : null }), account, commercialStage: stage, openInitiatives };
+      return { ...b, founderHealth: founderHealth(b, { commercialStage: account ? stage : null }), account, commercialStage: stage, openInitiatives, demo: isDemoBusiness(b.id) };
     })
   );
   return { at: now.toISOString(), fleet, businesses, proposals, release, unavailable };
@@ -122,7 +123,9 @@ export async function loadFounderFleet(opts: { now?: Date; fleet?: Fleet } = {})
 
 export type BriefSeverity = "high" | "medium" | "low";
 export type BriefItem = { key: string; severity: BriefSeverity; kind: "health" | "commercial" | "initiative" | "proposal" | "release"; businessId?: string; businessName?: string; title: string; why: string; move: string; href: string };
-export type FounderBrief = { at: string; headline: string; quiet: boolean; items: BriefItem[]; healthy: string[]; counts: Record<FounderHealthState, number>; unavailable: string[] };
+/** One business's brief items told as ONE short paragraph (the facts are the items' own words — nothing added). */
+export type BriefStory = { businessId: string; businessName: string; severity: BriefSeverity; text: string };
+export type FounderBrief = { at: string; headline: string; quiet: boolean; items: BriefItem[]; stories: BriefStory[]; fleetNotes: string[]; healthy: string[]; counts: Record<FounderHealthState, number>; unavailable: string[]; /** Demo / simulated tenants left out of the daily brief (still visible elsewhere and when asked about). */ excludedDemo: string[] };
 
 const SEV: Record<BriefSeverity, number> = { high: 0, medium: 1, low: 2 };
 const bizHref = (id: string, view?: string) => `/hq/${encodeURIComponent(id)}${view ? `?view=${view}` : ""}`;
@@ -133,8 +136,9 @@ const bizHref = (id: string, view?: string) => `/hq/${encodeURIComponent(id)}${v
  */
 export function founderBrief(view: FounderFleetView, opts: { limit?: number } = {}): FounderBrief {
   const items: BriefItem[] = [];
-  const now = Date.parse(view.at);
-  for (const b of view.businesses) {
+  // The daily brief is about REAL businesses: demo / simulated tenants stay visible in HQ and when asked about.
+  const real = view.businesses.filter((b) => !b.demo);
+  for (const b of real) {
     const h = b.founderHealth;
     if (h.state === "degraded" || h.state === "blocked") items.push({ key: `health:${b.id}`, severity: "high", kind: "health", businessId: b.id, businessName: b.name, title: `${b.name} ${HEALTH_PHRASE[h.state]}`, why: h.reasons.join(" "), move: h.state === "degraded" ? "Open the incident; consider safe mode or pausing the capability until the provider is healthy." : "Open the business; the owner or the BARRY team has a move.", href: bizHref(b.id, "attention") });
     else if (h.state === "needs_attention") items.push({ key: `health:${b.id}`, severity: "medium", kind: "health", businessId: b.id, businessName: b.name, title: `${b.name} needs attention`, why: h.reasons.join(" "), move: "See whose move it is.", href: bizHref(b.id, "attention") });
@@ -151,20 +155,64 @@ export function founderBrief(view: FounderFleetView, opts: { limit?: number } = 
   if (view.release?.manifest.knownBlockers.length) items.push({ key: "release", severity: "high", kind: "release", title: "The release candidate has known blockers", why: view.release.manifest.knownBlockers.join("; "), move: "Open Releases.", href: "/hq/releases" });
   items.sort((a, b) => SEV[a.severity] - SEV[b.severity]);
   const limit = opts.limit ?? 6;
-  const counts = Object.fromEntries((Object.keys(HEALTH_WORDS) as FounderHealthState[]).map((s) => [s, view.businesses.filter((b) => b.founderHealth.state === s).length])) as Record<FounderHealthState, number>;
+  const counts = Object.fromEntries((Object.keys(HEALTH_WORDS) as FounderHealthState[]).map((s) => [s, real.filter((b) => b.founderHealth.state === s).length])) as Record<FounderHealthState, number>;
   const top = items.slice(0, limit);
   const quiet = top.length === 0;
-  const n = view.businesses.length;
-  void now;
+  const n = real.length;
+  const stories = briefStories(top);
+  const fleetNotes = top.filter((i) => !i.businessId).map((i) => `${i.title}: ${i.why}`);
+  const lead = stories[0];
   return {
     at: view.at,
-    headline: quiet ? `Nothing needs you. ${counts.healthy} of ${n} business${n === 1 ? "" : "es"} healthy${counts.not_enough_evidence ? `, ${counts.not_enough_evidence} without enough evidence yet` : ""}.` : `${plural(top.length, "thing")} worth knowing${top.some((i) => i.severity === "high") ? " — the first needs you" : ""}.`,
+    headline: quiet
+      ? counts.healthy === 0 && counts.not_enough_evidence === n
+        ? `Nothing needs you right now — none of the ${n} business${n === 1 ? "" : "es"} has enough activity yet to judge.`
+        : `Nothing needs you right now. ${counts.healthy} of ${n} business${n === 1 ? "" : "es"} healthy${counts.not_enough_evidence ? `, ${counts.not_enough_evidence} without enough activity yet to judge` : ""}.`
+      : lead ? `${lead.businessName} is the main thing to look at${stories.length > 1 ? `, then ${stories.slice(1, 3).map((s) => s.businessName).join(" and ")}` : ""}.` : top[0].title,
     quiet,
     items: top,
-    healthy: view.businesses.filter((b) => b.founderHealth.state === "healthy").map((b) => b.name),
+    stories,
+    fleetNotes,
+    healthy: real.filter((b) => b.founderHealth.state === "healthy").map((b) => b.name),
     counts,
-    unavailable: [...view.unavailable, ...view.businesses.flatMap((b) => b.unavailable.map((u) => `${b.name}: ${u}`))],
+    unavailable: [...view.unavailable, ...real.flatMap((b) => b.unavailable.map((u) => `${b.name}: ${u}`))],
+    excludedDemo: view.businesses.filter((b) => b.demo).map((b) => b.name),
   };
+}
+
+const sentence = (s: string) => {
+  const t = s.trim();
+  return t ? `${t[0].toUpperCase()}${t.slice(1)}${/[.!?]$/.test(t) ? "" : "."}` : "";
+};
+
+/**
+ * Group the brief by business: one short paragraph per business, most important first, built ONLY from the items'
+ * own facts (their reasons are the records' words). Separate records stay separate items underneath. Pure.
+ */
+export function briefStories(items: BriefItem[]): BriefStory[] {
+  const order: string[] = [];
+  const by = new Map<string, BriefItem[]>();
+  for (const i of items) {
+    if (!i.businessId) continue;
+    if (!by.has(i.businessId)) order.push(i.businessId);
+    by.set(i.businessId, [...(by.get(i.businessId) ?? []), i]);
+  }
+  return order.map((id, idx) => {
+    const its = by.get(id)!;
+    const name = its[0].businessName ?? id;
+    const severity = its.reduce<BriefSeverity>((m, i) => (SEV[i.severity] < SEV[m] ? i.severity : m), "low");
+    const health = its.find((i) => i.kind === "health");
+    const commercial = its.filter((i) => i.kind === "commercial");
+    const initiative = its.find((i) => i.kind === "initiative");
+    const parts: string[] = [];
+    const state = health ? health.title.slice(name.length).trim() : "";
+    if (health) parts.push(idx === 0 && severity !== "low" ? `${name} is the main thing I'd look at first — it ${state.replace(/^is /, "is ")}.` : `${name} ${state}.`);
+    else parts.push(`${name}:`);
+    if (health?.why) parts.push(health.why.split(/(?<=\.)\s+/).map(sentence).join(" "));
+    for (const c of commercial) parts.push(sentence(`${c.title.slice(name.length + 1).trim()} — ${c.why.replace(/\.$/, "")}`));
+    if (initiative) parts.push(sentence(`BARRY also noticed: ${initiative.why}`));
+    return { businessId: id, businessName: name, severity, text: parts.join(" ").replace(/\s+/g, " ").trim() };
+  });
 }
 
 // ── Business drilldown ──────────────────────────────────────────────────────────────────────────
@@ -201,8 +249,9 @@ export async function businessDrilldown(graph: BusinessGraph, opts: { now?: Date
       return fallback;
     }
   };
-  const s = await getBusinessStatus(graph, { now, detail: true });
-  const [commercial, initiatives, runtime] = await Promise.all([safe("commercial", () => getCommercialBusiness(graph, { now }), null), safe("initiatives", () => listInitiatives(graph.business.id), [] as Initiative[]), safe("runtime assignment", () => currentAssignment(graph, now), null)]);
+  // All four reads at once: on Preview the sequential version took ~16 s for one business — long enough for a
+  // phone to drop the response (the live "Load failed").
+  const [s, commercial, initiatives, runtime] = await Promise.all([getBusinessStatus(graph, { now, detail: true }), safe("commercial", () => getCommercialBusiness(graph, { now }), null), safe("initiatives", () => listInitiatives(graph.business.id), [] as Initiative[]), safe("runtime assignment", () => currentAssignment(graph, now), null)]);
   const health = founderHealth(s, { commercialStage: commercial?.account ? commercial.stage : null });
   const c = s.controls;
   const v = commercial?.value ?? null;
@@ -214,7 +263,7 @@ export async function businessDrilldown(graph: BusinessGraph, opts: { now?: Date
     health,
     controls: { mode: c.mode, paused: c.pausedBusiness, safeMode: c.safeMode, pausedCapabilities: c.pausedCapabilities, disabledChannels: c.disabledChannels },
     doing: [
-      s.conversations.last24h ? `${plural(s.conversations.last24h, "conversation")} active in the last 24h` : "No conversations in the last 24h",
+      s.conversations.last24h ? `${plural(s.conversations.last24h, "conversation")} active in the last 24h` : "No customer conversations in the last 24 hours",
       s.obligations.barryCanAct ? `${plural(s.obligations.barryCanAct, "follow-up")} BARRY can act on` : "",
       s.obligations.waitingOnCustomer ? `${plural(s.obligations.waitingOnCustomer, "follow-up")} waiting on customers` : "",
     ].filter(Boolean),

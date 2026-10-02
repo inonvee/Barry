@@ -154,11 +154,11 @@ describe("the composer may reword, never extend", () => {
   });
 
   it("preserves 'nothing was sent' and the approval requirement through a Hebrew composer", async () => {
-    const r = await say("Pause BARRY for Midtown Auto Care.", { composer: async () => "אני משהה את Midtown Auto Care — רק תאשר ואעשה את זה." });
+    const r = await say("תשהה את Midtown Auto Care", { composer: async () => "אני משהה את Midtown Auto Care — רק תאשר ואעשה את זה." });
     expect(r.voice).toBe("composer");
     expect(r.status).toBe("needs_confirmation");
     expect(r.confirmation?.title).toBe("Pause BARRY for Midtown Auto Care");
-    const sneaky = await say("Pause BARRY for Midtown Auto Care.", { composer: async () => "השהיתי את Midtown Auto Care." });
+    const sneaky = await say("תשהה את Midtown Auto Care", { composer: async () => "השהיתי את Midtown Auto Care." });
     expect(sneaky.voice).toBe("grounded");
     expect((await loadControls(GARAGE)).pausedBusiness).toBe(false);
   });

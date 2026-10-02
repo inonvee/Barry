@@ -151,7 +151,7 @@ describe("grounded fleet answers on the seeded fleet", () => {
     expect(r.scope).toEqual({ kind: "business", businessIds: [D] });
     expect(r.answer).toMatch(/^Rina Studio /);
     expect(r.answer).toMatch(new RegExp(`BARRY noticed: ${INITIATIVE_TITLE}`));
-    expect(r.answer).toMatch(/Verified value: made none verified/);
+    expect(r.answer).toMatch(/No verified value yet this period — no provider-verified money/);
     expect(r.answer).toMatch(/Runtime /);
     expect(r.followUps).toEqual(["Why?", "Show incident", "What changed?", "What can I do?"]);
     // Tenant safety: nothing from another business.

@@ -33,7 +33,8 @@ import { businessDrilldown, founderBrief, loadFounderFleet, HEALTH_PHRASE, HEALT
 
 export type FounderActor = { kind: "founder"; via: "session" | "token" | "test" };
 
-export type FounderStatus = "answered" | "clarify" | "needs_confirmation" | "executed" | "no_change" | "proposed" | "handled" | "refused" | "failed";
+/** "received" = the command is durably recorded and still being worked on (a lost response can be recovered by key). */
+export type FounderStatus = "received" | "answered" | "clarify" | "needs_confirmation" | "executed" | "no_change" | "proposed" | "handled" | "refused" | "failed";
 
 export type FounderTraceStep = { step: "identity" | "interpretation" | "scope" | "grounding" | "authority" | "confirmation" | "execution" | "verification" | "proposal" | "reply"; outcome: "ok" | "blocked" | "failed" | "info"; detail: string; at: string };
 
@@ -80,6 +81,19 @@ const KIND = "founder_command";
 export async function getFounderCommand(key: string): Promise<FounderCommandRecord | undefined> {
   const records = await getBackend().listOperatorRecords(FLEET_SCOPE, KIND);
   return records.find((r) => r.key === key)?.data as unknown as FounderCommandRecord | undefined;
+}
+
+/**
+ * Recover a command's reply by its key (the client generated the key before sending, so a response lost in
+ * transit is recoverable without sending the command again). READ-ONLY: never runs, retries or confirms anything.
+ * `settled` is false while the command is still being worked on — including a confirmed control whose change
+ * has been claimed but not yet verified.
+ */
+export async function lookupFounderReply(key: string): Promise<{ found: false } | { found: true; settled: boolean; reply: FounderReply }> {
+  const r = await getFounderCommand(key.slice(0, 120));
+  if (!r) return { found: false };
+  const settled = r.status !== "received" && !(r.status === "executed" && r.action && r.action.verified === undefined && !r.stopReason);
+  return { found: true, settled, reply: reply(r, true) };
 }
 
 export async function listFounderCommands(limit = 50): Promise<FounderCommandRecord[]> {
@@ -244,6 +258,9 @@ export async function executeFounderCommand(input: FounderCommandInput): Promise
   };
   const step = (s: FounderTraceStep["step"], outcome: FounderTraceStep["outcome"], detail: string) => record.trace.push({ step: s, outcome, detail, at: at() });
   step("identity", "ok", `${record.founder} — authenticated by HQ`);
+  // Durable BEFORE any work: if the phone loses the response, the client recovers this key (and a repeated key
+  // finds it) instead of the command ever running a second time.
+  await save({ ...record, status: "received" });
 
   // 1. Interpretation + business resolution (grounded against the fleet directory).
   let resolution: BusinessResolution = resolveBusinesses(text, directory);
@@ -422,10 +439,15 @@ async function fleetRead(r: FounderCommandRecord, topic: "brief" | "attention" |
   ctx.step("grounding", "ok", r.grounded.join(" · "));
   if (topic === "brief") {
     const brief = founderBrief(view);
-    r.answer = brief.quiet ? brief.headline : [brief.headline, ...brief.items.map((i, n) => `${n + 1}. ${i.title} — ${i.why}`)].join("\n");
+    // Spoken like a chief of staff: one short paragraph per business (most important first), then fleet-level
+    // notes. The separate records stay in r.items (Details) — nothing here is added, only grouped.
+    r.answer = brief.quiet
+      ? brief.headline
+      : [...brief.stories.map((s) => s.text), ...brief.fleetNotes].join("\n\n");
     r.items = brief.items.map(briefItem);
-    if (brief.unavailable.length) r.answer += `\nCouldn't read: ${brief.unavailable.slice(0, 4).join("; ")}.`;
-    r.followUps = brief.items.filter((i) => i.businessName).slice(0, 2).map((i) => `What's going on with ${i.businessName}?`).concat(["Handle what you safely can and leave me what needs approval."]);
+    if (brief.unavailable.length) r.answer += `\n\nI couldn't read everything: ${brief.unavailable.slice(0, 4).join("; ")}.`;
+    if (brief.excludedDemo.length) r.grounded.push(`demo tenants left out of the brief: ${brief.excludedDemo.join(", ")}`);
+    r.followUps = brief.stories.slice(0, 2).map((s) => `What's going on with ${s.businessName}?`).concat(["Handle what you safely can and leave me what needs approval."]);
     return;
   }
   if (topic === "attention") {
@@ -477,11 +499,11 @@ async function inspect(r: FounderCommandRecord, b: DirectoryEntry, followUp: "ov
   const lines = [
     `${d.name} ${HEALTH_PHRASE[d.health.state]}${d.health.reasons.length ? ` — ${d.health.reasons[0]}` : ""}`,
     `Doing: ${d.doing.join("; ")}.`,
-    d.waitingOn.length ? `Waiting on: ${d.waitingOn.join("; ")}.` : "Waiting on nobody.",
+    d.waitingOn.length ? `Waiting on: ${d.waitingOn.join("; ")}.` : "Nothing needs the owner's decision there right now.",
     d.incidents.length ? `Incidents: ${d.incidents.slice(0, 3).map((i) => `${i.title} (${i.severity})`).join("; ")}.` : "No open incidents.",
     d.initiatives.length ? `BARRY noticed: ${d.initiatives.slice(0, 2).map((i) => i.title).join("; ")}.` : "",
     d.commercial ? `Plan: ${d.commercial.plan ?? "none"} · ${d.commercial.stage}${d.commercial.price ? ` · ${d.commercial.price}` : ""}${d.commercial.alerts.length ? ` · ${d.commercial.alerts.slice(0, 2).join("; ")}` : ""}.` : "Commercial record unavailable.",
-    d.value ? `Verified value: made ${d.value.made}; saved ${d.value.savedRealized}; ${d.value.handled}.` : "Value unavailable.",
+    d.value ? (d.value.made === "none verified" && d.value.savedRealized === "none realized" && /^0 conversations handled with no human, 0 verified outcomes$/.test(d.value.handled) ? "No verified value yet this period — no provider-verified money, no realized savings, nothing handled end to end." : `Verified value: made ${d.value.made}; saved ${d.value.savedRealized}; ${d.value.handled}.`) : "I couldn't read its value this period.",
     `Controls: ${d.controls.mode}${d.controls.paused ? " · PAUSED" : ""}${d.controls.safeMode ? " · safe mode" : ""}. Capabilities: ${d.capabilities.slice(0, 4).join("; ")}.`,
     d.runtime ? `Runtime ${d.runtime.version}${d.runtime.commit ? ` @ ${d.runtime.commit.slice(0, 7)}` : ""}; reasoner ${d.runtime.reasoner}.` : "",
     d.unavailable.length ? `Couldn't read: ${d.unavailable.slice(0, 3).join("; ")}.` : "",

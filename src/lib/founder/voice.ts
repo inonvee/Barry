@@ -37,7 +37,8 @@ export type FounderEnvelope = {
   followUps: string[];
 };
 
-export type FounderComposer = (envelope: FounderEnvelope) => Promise<string | undefined>;
+/** `repair` = ONE constrained rewrite of a draft that was in the wrong language — same envelope, no new facts. */
+export type FounderComposer = (envelope: FounderEnvelope, opts?: { repair?: { draft: string; problem: string } }) => Promise<string | undefined>;
 export type VoiceResult = { text: string; source: "composer" | "grounded"; reason?: string };
 
 const HEBREW = /[֐-׿]/;
@@ -74,22 +75,60 @@ export function checkComposed(text: string, env: FounderEnvelope, fleetNames: st
   return undefined;
 }
 
-/** Turn the envelope into the reply shown: composer output if it passes the checks, else the grounded text. */
-export async function voice(env: FounderEnvelope, composer: FounderComposer | undefined, fleetNames: string[] = []): Promise<VoiceResult> {
-  if (!composer) return { text: env.grounded, source: "grounded" };
-  let out: string | undefined;
-  try {
-    out = await composer(env);
-  } catch {
-    return { text: env.grounded, source: "grounded", reason: "composer unavailable" };
+/**
+ * LANGUAGE (conservative): the reply must be predominantly in the founder's language. Business names, the fleet's
+ * names, ids, URLs and currency codes don't count against it; natural code-switching passes. A Hebrew turn
+ * answered with a substantially English paragraph — or mostly English overall — fails; an English turn mostly
+ * in Hebrew fails. Short replies are not judged. Pure.
+ */
+export function languageProblem(text: string, env: FounderEnvelope, fleetNames: string[] = []): string | undefined {
+  let t = ` ${text} `;
+  for (const n of [...fleetNames, ...env.businessesInScope].sort((a, b) => b.length - a.length)) if (n) t = t.split(n).join(" ");
+  t = t.replace(/https?:\/\/\S+/g, " ").replace(/\b[\w-]*\d[\w-]*\b/g, " ").replace(/\b(?:USD|ILS|EUR|GBP|BARRY|HQ|AI|QA|WhatsApp|SKU|API)\b/g, " ");
+  const count = (s: string) => ({ he: (s.match(/[\u05D0-\u05EA]/g) ?? []).length, en: (s.match(/[A-Za-z]/g) ?? []).length });
+  const all = count(t);
+  if (all.he + all.en < 24) return undefined;
+  if (env.language === "he") {
+    if (all.he / (all.he + all.en) < 0.6) return "the founder wrote Hebrew but the reply is mostly English";
+    const englishParagraph = t.split(/\n+|(?<=[.!?])\s+(?=[A-Z])/).some((p) => { const c = count(p); return c.en >= 60 && c.he === 0; });
+    if (englishParagraph) return "the founder wrote Hebrew but part of the reply is a full English paragraph";
+    return undefined;
   }
-  if (!out?.trim()) return { text: env.grounded, source: "grounded", reason: "composer returned nothing" };
-  const problem = checkComposed(out, env, fleetNames);
-  if (problem) return { text: env.grounded, source: "grounded", reason: `composer reply rejected: ${problem}` };
-  return { text: out.trim(), source: "composer" };
+  if (all.he / (all.he + all.en) > 0.4) return "the founder wrote English but the reply is mostly Hebrew";
+  return undefined;
 }
 
-const PROMPT = `You are Founder BARRY — the founder's chief of staff over a fleet of businesses BARRY runs. You speak like a sharp, warm, concise operator: natural sentences, no headers, no bullet dumps unless a list genuinely helps, no restating the question, no internal ids unless useful.
+/**
+ * Turn the envelope into the reply shown: the composer's wording only if it passes EVERY truth check and the
+ * language check. A truth failure goes straight to the grounded text. A language-only failure gets ONE
+ * constrained rewrite from the same envelope, which must pass every check again; otherwise grounded.
+ */
+export async function voice(env: FounderEnvelope, composer: FounderComposer | undefined, fleetNames: string[] = []): Promise<VoiceResult> {
+  if (!composer) return { text: env.grounded, source: "grounded" };
+  const attempt = async (opts?: { repair?: { draft: string; problem: string } }): Promise<{ text?: string; problem?: string; truth?: boolean }> => {
+    let out: string | undefined;
+    try {
+      out = await composer(env, opts);
+    } catch {
+      return { problem: "composer unavailable", truth: true };
+    }
+    if (!out?.trim()) return { problem: "composer returned nothing", truth: true };
+    const truth = checkComposed(out, env, fleetNames);
+    if (truth) return { problem: truth, truth: true };
+    const lang = languageProblem(out, env, fleetNames);
+    if (lang) return { text: out.trim(), problem: lang, truth: false };
+    return { text: out.trim() };
+  };
+  const first = await attempt();
+  if (!first.problem) return { text: first.text!, source: "composer" };
+  if (first.truth) return { text: env.grounded, source: "grounded", reason: first.problem.startsWith("composer ") ? first.problem : `composer reply rejected: ${first.problem}` };
+  const second = await attempt({ repair: { draft: first.text!, problem: first.problem } });
+  if (!second.problem) return { text: second.text!, source: "composer", reason: `language repaired (${first.problem})` };
+  return { text: env.grounded, source: "grounded", reason: `composer reply rejected: ${first.problem}; repair rejected: ${second.problem}` };
+}
+
+const PROMPT = `You are Founder BARRY — the founder's chief of staff over a fleet of businesses BARRY runs. You speak like a sharp, warm, concise chief of staff talking to the founder: natural sentences, no headers, no numbered lists unless the founder asked for a list, no restating the question, no internal ids or system vocabulary.
+Style: lead with what matters most. Tell one coherent story per business — group that business's facts into one short paragraph instead of separate bullets. Say what nothing means in human words ("no customer conversations in the last 24 hours", "nothing needs your decision there") — never "0 conversations". Don't announce what you didn't do unless the founder asked you to act ("I haven't changed anything" — never "no action was performed").
 You receive an ENVELOPE. "grounded" is the verified truth of this turn. Rephrase it for the founder. Rules:
 - Use ONLY facts in the envelope. Keep every number exactly as written. Never add a business, customer, amount, count, status or outcome.
 - "done" lists the only actions actually executed and verified. Never claim any other action. If "done" is empty, you did nothing.
@@ -97,7 +136,7 @@ You receive an ENVELOPE. "grounded" is the verified truth of this turn. Rephrase
 - If "confirmationRequired" is set, end by asking the founder to confirm exactly that — it has NOT happened yet.
 - A proposal is only prepared, never applied.
 - Keep what the founder still has to decide or what blocked you ("notDone") — never hide a blocker.
-- Reply in the founder's language ("language": "he" = Hebrew, keep business names as written; "en" = English). Short by default; longer only when the facts need it.
+- LANGUAGE: if "language" is "he", write the ENTIRE reply in natural Hebrew (business names, product names and technical terms may stay in English as written). If "en", write in English. Never answer a Hebrew question in English. Short by default; longer only when the facts need it.
 - You may end with one natural next step drawn from "followUps".
 Reply with the message text only.`;
 
@@ -106,12 +145,16 @@ export function modelFounderComposer(): FounderComposer | undefined {
   if (process.env.BARRY_REASONER !== "openai" || !process.env.OPENAI_API_KEY) return undefined;
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, maxRetries: 1 });
   const model = modelFor("composer");
-  return async (env) => {
+  const lang = (env: FounderEnvelope) => (env.language === "he" ? "Hebrew" : "English");
+  return async (env, opts) => {
+    const user = opts?.repair
+      ? JSON.stringify({ envelope: env, task: `Rewrite DRAFT entirely in ${lang(env)} (${opts.repair.problem}). Keep exactly the same facts and numbers; do not add, remove or change any fact, business, action or confirmation.`, draft: opts.repair.draft })
+      : JSON.stringify({ envelope: env, task: `Answer the founder in ${lang(env)}.` });
     const completion = await createCompletion(client, {
       model,
       messages: [
         { role: "system", content: PROMPT },
-        { role: "user", content: JSON.stringify(env) },
+        { role: "user", content: user },
       ],
       ...samplingParams(model, "composer", 0.3),
     });
