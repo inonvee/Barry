@@ -106,15 +106,38 @@ function useNow(asOf: Date | null | undefined): Date {
   return now;
 }
 
-function Ring({ value, total, live }: { value: number; total: number; live: boolean }) {
-  const r = 9;
-  const c = 2 * Math.PI * r;
-  const p = total ? Math.min(1, value / total) : 0;
+/**
+ * Where a piece of BARRY's work stands, station by station (real counts only). A station lights once something
+ * is actually there; a count that changed since the last read settles in once — nothing moves on its own.
+ */
+function Steps({ steps, live, arrived }: { steps: { key: string; label: string; n: number }[]; live: boolean; arrived: Set<string> }) {
   return (
-    <svg width="24" height="24" viewBox="0 0 24 24" className="-rotate-90 rtl:scale-x-[-1]" aria-hidden>
-      <circle cx="12" cy="12" r={r} fill="none" stroke="var(--x-line-2)" strokeWidth="2.5" />
-      {p > 0 && <circle cx="12" cy="12" r={r} fill="none" stroke={live ? "var(--x-live)" : "var(--x-t3)"} strokeWidth="2.5" strokeDasharray={`${c * p} ${c}`} strokeLinecap="butt" />}
-    </svg>
+    <span className="grid grid-cols-4 gap-1.5" aria-label={steps.map((st) => `${st.label} ${st.n}`).join(" · ")}>
+      {steps.map((st) => (
+        <span key={st.key} className="flex min-w-0 flex-col gap-1.5">
+          <span className={`h-[3px] rounded-full ${st.n ? (live ? "bg-x-live" : "bg-x-t3") : "bg-x-line-2"}`} />
+          <span className="flex min-w-0 flex-col">
+            <span key={`${st.key}:${st.n}`} className={`x-num text-[15px] font-semibold leading-tight ${st.n ? "text-x-t1" : "text-x-t4"} ${arrived.has(`${st.key}:${st.n}`) ? "x-arrived" : ""}`}>{st.n}</span>
+            <span className="text-[11.5px] leading-[1.25] text-x-t3">{st.label}</span>
+          </span>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/** Customer → BARRY → You: how a held item got here, shown only when BARRY actually did something in between. */
+function Chain({ links }: { links: { who: string; text: string; tone: "t" | "live" | "you" }[] }) {
+  return (
+    <ol className="ms-[3px] flex flex-col gap-2 border-s border-x-line ps-3.5">
+      {links.map((l) => (
+        <li key={l.who} className="relative grid grid-cols-[64px_minmax(0,1fr)] gap-2 lg:grid-cols-[72px_minmax(0,1fr)]">
+          <span className={`absolute -start-[17.5px] top-[7px] h-[6px] w-[6px] rounded-full ring-2 ring-x-2 ${l.tone === "live" ? "bg-x-live" : l.tone === "you" ? "bg-x-t1" : "bg-x-t4"}`} />
+          <span className={`text-[12.5px] ${l.tone === "live" ? "font-medium text-x-live" : l.tone === "you" ? "font-medium text-x-t1" : "text-x-t3"}`}>{l.who}</span>
+          <span className={`line-clamp-2 text-[13.5px] leading-[1.45] ${l.tone === "you" ? "text-x-t1" : "text-x-t2"}`}>{l.text}</span>
+        </li>
+      ))}
+    </ol>
   );
 }
 
@@ -152,21 +175,34 @@ export function TodayView({ ws, os, onDecision, onOpen, onAsk, asOf }: { ws: Own
   };
   const feed = activityTimeline(ws, 120, lang);
   const waiting = ws.conversations.filter((c) => c.status === "waiting_on_customer").sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt));
-  const arrived = useArrivals([...queue.map((i) => i.id), ...work.map((w) => w.id), ...feed.slice(0, 8).map((f) => f.id)]);
+  const stepsOf = (w: (typeof work)[number]) => {
+    const flow = flows.find((f) => f.kind === w.workflow);
+    const op = w.operationId ? ws.ownerOperations.find((o) => o.id === w.operationId) : undefined;
+    if (op)
+      return [
+        { key: `${w.id}:in`, label: t("In scope", "בטווח"), n: op.progress.cohort },
+        { key: `${w.id}:reached`, label: t("Reached", "קיבלו פנייה"), n: op.progress.contacted },
+        { key: `${w.id}:replied`, label: t("Replied", "ענו"), n: op.progress.replied },
+        { key: `${w.id}:out`, label: t("Bought", "קנו"), n: op.progress.purchased },
+      ];
+    return [
+      { key: `${w.id}:open`, label: t("Found", "נמצאו"), n: flow?.open ?? w.customers },
+      { key: `${w.id}:reached`, label: t("Reached", "קיבלו פנייה"), n: flow?.contacted ?? 0 },
+      { key: `${w.id}:waiting`, label: t("Waiting", "ממתינים"), n: flow?.waiting ?? 0 },
+      { key: `${w.id}:out`, label: flow?.closedLabel ?? t("Done", "הושלם"), n: flow?.closed ?? 0 },
+    ];
+  };
+  const arrived = useArrivals([...queue.map((i) => i.id), ...work.map((w) => w.id), ...work.flatMap((w) => stepsOf(w).map((st) => `${st.key}:${st.n}`)), ...feed.slice(0, 8).map((f) => f.id)]);
   const ai = ws.health.ai;
 
-  const headline =
+  const youPart =
     lang === "he"
-      ? needs
-        ? `${needs === 1 ? "דבר אחד מחכה לך" : `${needs} דברים מחכים לך`}. BARRY ${things === 1 ? "עובד על דבר אחד" : `מטפל ב־${things}`}.`
-        : things
-          ? `BARRY עובד על ${things === 1 ? "דבר אחד" : `${things} דברים`}. שום דבר לא מחכה לך.`
-          : "הכול שקט. BARRY על המשמר."
-      : needs
-        ? `${needs === 1 ? "One thing needs" : `${needs} things need`} you. BARRY is ${things === 1 ? "working on one thing" : `handling ${things}`}.`
-        : things
-          ? `BARRY is working on ${things === 1 ? "one thing" : `${things} things`}. Nothing needs you.`
-          : "All clear. BARRY is watching.";
+      ? needs ? `${needs === 1 ? "דבר אחד מחכה לך" : `${needs} דברים מחכים לך`}.` : "שום דבר לא מחכה לך."
+      : needs ? `${needs === 1 ? "One thing needs" : `${needs} things need`} you.` : "Nothing needs you.";
+  const barryPart =
+    lang === "he"
+      ? things ? `BARRY ${things === 1 ? "עובד על דבר אחד" : `מטפל ב־${things}`}.` : "BARRY על המשמר."
+      : things ? `BARRY is ${things === 1 ? "working on one thing" : `handling ${things}`}.` : "BARRY is watching.";
 
   const primary = hero ? hero.options.find((o) => o.primary && o.action !== "open_conversation") ?? hero.options.find((o) => o.action !== "open_conversation") : undefined;
 
@@ -177,7 +213,7 @@ export function TodayView({ ws, os, onDecision, onOpen, onAsk, asOf }: { ws: Own
       {/* State of the business, in one line */}
       <header className="flex flex-col gap-1.5">
         <p className="text-[12.5px] text-x-t3">{tk.date}</p>
-        <h1 className="text-[23px] font-[650] leading-[1.15] tracking-[-0.025em] text-x-t1 lg:text-[32px]" data-testid="today-headline">{headline}</h1>
+        <h1 className="text-[23px] font-[650] leading-[1.15] tracking-[-0.025em] text-x-t1 lg:text-[32px]" data-testid="today-headline"><span className="text-x-t1">{youPart}</span> <span className="text-x-t2">{barryPart}</span></h1>
         {feed[0] && (
           <p className="text-[13.5px] text-x-t3">
             {t("Last movement", "התנועה האחרונה")} <span className="x-num text-x-t2">{tk.clock(feed[0].at)}</span> · <span className="text-x-t2">{feed[0].text}</span>
@@ -208,34 +244,30 @@ export function TodayView({ ws, os, onDecision, onOpen, onAsk, asOf }: { ws: Own
             <SectionHead title={t("Needs your attention", "צריך את תשומת הלב שלך")} dot={needs ? "hot" : undefined} meta={needs ? <span className="x-num font-semibold text-x-hot">{needs}</span> : undefined} href="/owner?tab=work#needs-you" linkLabel={t("Work", "עבודה")} />
             {hero ? (
               <>
-                <article className={`x-raised relative overflow-hidden ${arrived.has(hero.id) ? "x-arrived" : ""}`} data-testid="attention-hero">
-                  <span className="absolute inset-y-0 start-0 w-[3px] bg-x-hot" />
-                  <div className="flex flex-col gap-3.5 p-4 ps-5 lg:gap-4 lg:p-5 lg:ps-6">
+                <article className={`x-raised overflow-hidden ${arrived.has(hero.id) ? "x-arrived" : ""}`} data-testid="attention-hero">
+                  <div className="flex flex-col gap-3.5 p-4 lg:gap-4 lg:p-5">
                     <div className="flex items-center justify-between gap-3">
-                      <span className="x-label text-x-hot">{INTERVENTION_KIND[hero.kind].label[lang]}</span>
+                      <span className="flex items-center gap-2 text-[12.5px] font-medium text-x-hot"><span className="h-1.5 w-1.5 rounded-full bg-x-hot" />{INTERVENTION_KIND[hero.kind].label[lang]}</span>
                       <span className="x-num text-[12.5px] text-x-t3">{t("waiting", "מחכה")} {tk.age(hero.since)}</span>
                     </div>
-                    <div className="flex flex-col gap-2">
-                      <h3 className="text-[19px] font-semibold leading-[1.25] tracking-[-0.015em] text-x-t1 lg:text-[23px]">{hero.title}</h3>
-                      <p className="line-clamp-3 text-[14px] leading-[1.5] text-x-t2 lg:text-[14.5px]">{hero.why}</p>
-                      {hero.tried.length > 0 && (
-                        <p className="text-[13px] leading-[1.45] text-x-t3"><span className="font-semibold text-x-live">BARRY</span> · <span>{hero.tried[hero.tried.length - 1]}</span></p>
-                      )}
+                    <div className="flex items-start justify-between gap-4">
+                      <h3 className="text-[18px] font-semibold leading-[1.3] tracking-[-0.015em] text-x-t1 lg:text-[21px]">{hero.title}</h3>
+                      {hero.amount && <span className="x-num shrink-0 pt-0.5 text-[17px] font-semibold text-x-t1 lg:text-[19px]">{hero.amount}</span>}
                     </div>
-                    <div className={`items-center gap-3 border-t border-x-line pt-3.5 ${hero.title.includes(hero.customer) && !hero.amount ? "hidden lg:flex" : "flex"}`}>
-                      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-[7px] bg-x-3 text-[14px] font-semibold text-x-t2">{hero.customer.replace(/[^\p{L}]/gu, "").slice(0, 1).toUpperCase() || "?"}</span>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-[14px] font-medium text-x-t1">{hero.customer}</p>
-                        <p className="truncate text-[12.5px] text-x-t3">{hero.decision}</p>
+                    {hero.tried.length > 0 ? (
+                      <Chain links={[{ who: t("Customer", "לקוח"), text: hero.why, tone: "t" }, { who: "BARRY", text: hero.tried[hero.tried.length - 1], tone: "live" }, { who: t("You", "אתה"), text: hero.decision, tone: "you" }]} />
+                    ) : (
+                      <div className="flex flex-col gap-1">
+                        <p className="line-clamp-3 text-[14px] leading-[1.5] text-x-t2">{hero.why}</p>
+                        <p className="text-[13.5px] text-x-t1">{hero.decision}</p>
                       </div>
-                      {hero.amount && <span className="x-num shrink-0 text-[20px] font-semibold text-x-t1">{hero.amount}</span>}
-                    </div>
-                    <div className="flex items-center gap-2">
+                    )}
+                    <div className="flex items-center gap-2 pt-0.5">
                       {primary && (
-                        <button type="button" onClick={() => onDecision(hero)} className="h-10 rounded-[6px] bg-x-t1 px-4 text-[14px] font-semibold text-x-0 hover:bg-white" data-testid="hero-primary">{primary.label}</button>
+                        <button type="button" onClick={() => onDecision(hero)} className="h-9 rounded-[6px] bg-x-t1 px-3.5 text-[13.5px] font-semibold text-x-0 hover:bg-white" data-testid="hero-primary">{primary.label}</button>
                       )}
-                      <button type="button" onClick={() => onDecision(hero)} className="h-10 rounded-[6px] border border-x-line-2 px-4 text-[14px] font-medium text-x-t1 hover:bg-x-3">{t("See details", "פרטים")}</button>
-                      <button type="button" onClick={() => onOpen(hero.conversationId)} className="ms-auto grid h-10 w-10 place-items-center rounded-[6px] text-x-t3 hover:bg-x-3 hover:text-x-t1" aria-label={t("Open the conversation", "לפתוח את השיחה")} title={t("Open the conversation", "לפתוח את השיחה")}><Icon name="chat" size={17} /></button>
+                      <button type="button" onClick={() => onDecision(hero)} className="h-9 rounded-[6px] border border-x-line-2 px-3.5 text-[13.5px] font-medium text-x-t1 hover:bg-x-3">{t("See details", "פרטים")}</button>
+                      <button type="button" onClick={() => onOpen(hero.conversationId)} className="ms-auto grid h-9 w-9 place-items-center rounded-[6px] text-x-t3 hover:bg-x-3 hover:text-x-t1" aria-label={t("Open the conversation", "לפתוח את השיחה")} title={t("Open the conversation", "לפתוח את השיחה")}><Icon name="chat" size={16} /></button>
                     </div>
                   </div>
                 </article>
@@ -243,7 +275,7 @@ export function TodayView({ ws, os, onDecision, onOpen, onAsk, asOf }: { ws: Own
                   <div className="x-panel mt-2 divide-y divide-x-line overflow-hidden">
                     {rest.map((i) => (
                       <button key={i.id} type="button" onClick={() => onDecision(i)} className={`x-row flex w-full items-center gap-3 px-4 py-3 text-start ${arrived.has(i.id) ? "x-arrived" : ""}`} data-testid="decision-row">
-                        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-x-hot" />
+                        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-x-t4" />
                         <span className="min-w-0 flex-1">
                           <span className="line-clamp-2 block text-[14.5px] font-medium leading-[1.3] text-x-t1 lg:truncate">{i.title}</span>
                           <span className="block truncate text-[12.5px] text-x-t3">{i.why}</span>
@@ -274,29 +306,25 @@ export function TodayView({ ws, os, onDecision, onOpen, onAsk, asOf }: { ws: Own
                 const flow = flows.find((f) => f.kind === w.workflow);
                 const op = w.operationId ? ws.ownerOperations.find((o) => o.id === w.operationId) : undefined;
                 const working = w.state === "working";
-                const done = op ? op.progress.contacted : flow?.contacted ?? 0;
-                const total = op ? op.progress.cohort : flow?.open ?? w.customers;
                 const last = op ? { at: op.updatedAt, queued: false } : lastChange(w.workflow);
-                const sub = op
-                  ? t(`${op.progress.contacted} of ${op.progress.cohort} reached · ${op.progress.replied} replied · ${op.progress.purchased} bought`, `${op.progress.contacted} מתוך ${op.progress.cohort} קיבלו הודעה · ${op.progress.replied} ענו · ${op.progress.purchased} קנו`)
-                  : flow
-                    ? flow.contacted
-                      ? t(`${flow.contacted} of ${flow.open} followed up · ${flow.waiting} waiting on the customer`, `${flow.contacted} מתוך ${flow.open} קיבלו מעקב · ${flow.waiting} מחכים ללקוח`)
-                      : t(`${flow.open} open · queued, nothing sent yet`, `${flow.open} פתוחים · בתור, עוד לא נשלח כלום`)
+                const queued = !op && flow && !flow.contacted;
+                const where = queued
+                  ? t(`Queued, nothing sent yet${last ? ` · since ${tk.at(last.at)}` : ""}`, `בתור, עוד לא נשלח כלום${last ? ` · מאז ${tk.at(last.at)}` : ""}`)
+                  : last
+                    ? t(`Last attempt ${tk.at(last.at)}${tk.at(last.at) === tk.clock(last.at) ? "" : ` ${tk.clock(last.at)}`}`, `ניסיון אחרון ${tk.at(last.at)}${tk.at(last.at) === tk.clock(last.at) ? "" : ` ${tk.clock(last.at)}`}`)
                     : "";
                 return (
-                  <Link key={w.id} href={op ? `/owner?tab=work&operation=${encodeURIComponent(op.id)}` : "/owner?tab=work#working"} className={`x-row flex items-center gap-3 px-4 py-3 ${arrived.has(w.id) ? "x-arrived" : ""}`} data-testid="now-row">
-                    <span className="grid h-8 w-8 shrink-0 place-items-center rounded-[6px] border border-x-line bg-x-0 text-x-t2"><Icon name={GLYPH[w.workflow] ?? "pulse"} size={15} /></span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[14.5px] font-medium text-x-t1">{proactiveWords(w.workflow, lang).title}</span>
-                      <span className="block truncate text-[12.5px] text-x-t3">{sub}</span>
-                      <span className={`mt-0.5 block text-[11.5px] lg:hidden ${working ? "text-x-live" : "text-x-t3"}`}>{working ? t("Working", "בעבודה") : t("Waiting on customers", "מחכה ללקוחות")}{last ? <span className="x-num text-x-t4"> · {last.queued ? t("queued since", "בתור מאז") : t("last attempt", "ניסיון אחרון")} {tk.at(last.at)}</span> : null}</span>
+                  <Link key={w.id} href={op ? `/owner?tab=work&operation=${encodeURIComponent(op.id)}` : "/owner?tab=work#working"} className={`x-row flex flex-col gap-3 px-4 py-3.5 lg:flex-row lg:items-center lg:gap-8 ${arrived.has(w.id) ? "x-arrived" : ""}`} data-testid="now-row">
+                    <span className="flex min-w-0 flex-1 items-center gap-3">
+                      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-[6px] border border-x-line bg-x-0 text-x-t2"><Icon name={GLYPH[w.workflow] ?? "pulse"} size={15} /></span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[14.5px] font-medium text-x-t1">{proactiveWords(w.workflow, lang).title}</span>
+                        <span className="x-num block truncate text-[12.5px] text-x-t3"><span className={working ? "text-x-live" : "text-x-t2"}>{working ? t("Working", "בעבודה") : t("Waiting on customers", "מחכה ללקוחות")}</span>{where ? ` · ${where}` : ""}</span>
+                      </span>
                     </span>
-                    <span className="hidden shrink-0 flex-col items-end gap-0.5 lg:flex">
-                      <span className={`text-[12px] font-medium ${working ? "text-x-live" : "text-x-t3"}`}>{working ? t("Working", "בעבודה") : t("Waiting on customers", "מחכה ללקוחות")}</span>
-                      {last && <span className="x-num text-[11.5px] text-x-t4">{last.queued ? t("queued since", "בתור מאז") : t("last attempt", "ניסיון אחרון")} {tk.at(last.at)}</span>}
+                    <span className="ps-11 lg:w-[340px] lg:shrink-0 lg:ps-0">
+                      <Steps steps={stepsOf(w)} live={working} arrived={arrived} />
                     </span>
-                    <Ring value={done} total={total} live={working} />
                   </Link>
                 );
               })}
@@ -441,18 +469,18 @@ function Pulse({ ws, lang, t, tk, now }: { ws: OwnerWorkspace; lang: OwnerLang; 
         <h2 className="text-[15px] font-semibold tracking-[-0.01em] text-x-t1">{t("Business pulse", "הדופק של העסק")}</h2>
         <span className="ms-auto text-[12px] text-x-t3">{t(`Made ${ws.window.label}`, `נגבה ${ws.window.label}`)}</span>
       </div>
-      <div className="flex items-end justify-between gap-4 px-4 pb-3 pt-2">
+      <div className="flex items-end justify-between gap-4 px-4 pb-3 pt-1.5">
         <div>
-          <p className={`x-num text-[34px] font-[650] leading-none ${made ? "text-x-t1" : "text-x-t3"}`}><bdi>{made ? money(lang, r.direct) : amount(lang, 0, trend.currency ?? mainCurrency([motion, s.atRisk, r.potential]))}</bdi></p>
+          <p className={`x-num text-[28px] font-[650] leading-none ${made ? "text-x-t1" : "text-x-t3"}`}><bdi>{made ? money(lang, r.direct) : amount(lang, 0, trend.currency ?? mainCurrency([motion, s.atRisk, r.potential]))}</bdi></p>
           <p className="mt-1.5 text-[12.5px] text-x-t3">{made ? t("Verified by your payment provider", "אומת מול ספק התשלומים") : t("Nothing collected yet — only verified payments count", "עוד לא נגבה כלום — רק תשלום מאומת נספר")}</p>
         </div>
-        <div className="flex h-10 items-end gap-[3px]" aria-label={t("Verified revenue, last 7 days", "הכנסה מאומתת, 7 ימים")}>
-          {trend.made.map((v, i) => <span key={i} className={`w-[7px] rounded-[1px] ${v ? "bg-x-t1" : "bg-x-line-2"}`} style={{ height: `${Math.max(2, (v / max) * 40)}px` }} />)}
+        <div className="flex h-8 items-end gap-[3px]" aria-label={t("Verified revenue, last 7 days", "הכנסה מאומתת, 7 ימים")}>
+          {trend.made.map((v, i) => <span key={i} className={`w-[7px] rounded-[1px] ${v ? "bg-x-t1" : "bg-x-line-2"}`} style={{ height: `${Math.max(2, (v / max) * 32)}px` }} />)}
         </div>
       </div>
       <div className="border-t border-x-line">
         {rows.map((row) => (
-          <Link key={row.label} href={row.href} className="x-row flex items-center justify-between gap-3 px-4 py-2.5">
+          <Link key={row.label} href={row.href} className="x-row flex items-center justify-between gap-3 px-4 py-2">
             <span className="text-[13px] text-x-t2">{row.label}</span>
             <span className={`x-num text-[14px] font-semibold ${row.tone === "warn" ? "text-x-warn" : row.tone === "live" ? "text-x-live" : "text-x-t1"}`}><bdi>{row.value}</bdi></span>
           </Link>
@@ -463,8 +491,8 @@ function Pulse({ ws, lang, t, tk, now }: { ws: OwnerWorkspace; lang: OwnerLang; 
           <span>{t(`Last 24 h · ${events.length} events`, `24 שעות אחרונות · ${events.length} אירועים`)}</span>
           <span className="x-num">{tk.clock(now)}</span>
         </div>
-        <div className="mt-2 flex h-7 items-end gap-[2px]" aria-hidden>
-          {hours.map((n, h) => <span key={h} className={`flex-1 rounded-[1px] ${n ? "bg-x-live/80" : "bg-x-line"}`} style={{ height: `${n ? Math.max(4, (n / hmax) * 28) : 2}px` }} />)}
+        <div className="mt-2 flex h-5 items-end gap-[2px]" aria-hidden>
+          {hours.map((n, h) => <span key={h} className={`flex-1 rounded-[1px] ${n ? "bg-x-live/80" : "bg-x-line"}`} style={{ height: `${n ? Math.max(3, (n / hmax) * 20) : 2}px` }} />)}
         </div>
         {testItems ? <p className="mt-2.5 text-[11.5px] text-x-t4">{t(`${testItems} test payment links on BARRY's simulator — never counted.`, `${testItems} קישורי תשלום של בדיקה על הסימולטור — לא נספרים.`)}</p> : null}
       </div>

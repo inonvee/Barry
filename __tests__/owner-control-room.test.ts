@@ -97,7 +97,7 @@ describe("the control room renders from a real workspace", () => {
     let ws = await getOwnerWorkspace(g);
     const today = renderToString(createElement(TodayView, { ws, onDecision: noop, onOpen: noop, onTab: noop, onAsk: noop }));
     expect(today).toMatch(/BARRY is working on one thing\./); // the same active-work definition Work shows
-    expect(today).toMatch(/1 open · queued, nothing sent yet|1 open/); // the live process, with its real progress
+    expect(today).toMatch(/Queued, nothing sent yet/); // the live process, with its real progress
     expect(today).toMatch(/Following up unpaid payment links/);
     expect(today).toMatch(/Nothing waits on your decision/);
     expect(today).toMatch(/Tell BARRY what to do/);
