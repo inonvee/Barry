@@ -62,7 +62,7 @@ export async function getOwnerOs(staticGraph: BusinessGraph) {
   };
   const rules = ownerRules({
     policies: graph.policies,
-    currency: graph.offers[0]?.currency ?? "USD",
+    currency: [...new Set(graph.offers.filter((o) => o.active).map((o) => o.currency))].length === 1 ? graph.offers.find((o) => o.active)!.currency : null,
     authority: graph.authority.map((r) => ({ capability: `${surface.find((c) => c.id === r.capability)?.purpose ?? r.capability}${r.when.length ? " (in some situations)" : ""}`, effect: r.effect, ...(r.reason ? { reason: r.reason } : {}) })),
     trained: authority.trained,
     followUps,

@@ -147,6 +147,10 @@ describe("Rules BARRY follows = what the runtime enforces", () => {
     // Built-in safety is always listed and can't be switched off; nothing is presented as a general policy brain.
     expect(os.rules.rules.filter((r) => r.source === "built_in" && r.change === "fixed").length).toBeGreaterThanOrEqual(3);
     expect(os.rules.notSupported.length).toBeGreaterThan(0);
+    // No offers state a currency (the catalog is connected): the payment limit names none rather than guessing.
+    const pay = os.rules.rules.find((r) => r.area === "Money")!;
+    expect(pay.words).toMatch(/2,000 \(in the order's currency\)/);
+    expect(pay.words).not.toMatch(/\$|USD|₪/);
   });
 
   it("a founder restriction appears as one, and only ever tightens", async () => {

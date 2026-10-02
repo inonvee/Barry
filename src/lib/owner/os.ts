@@ -147,7 +147,8 @@ const CHANGE_WORDS: Record<RuleChange, string> = {
 export type RulesInput = {
   /** The EFFECTIVE graph's policies (static baseline + owner-trained overlay, with provenance). */
   policies: Policy[];
-  currency: string;
+  /** The business's currency when its offers state one; null when unknown — then no currency is invented. */
+  currency: string | null;
   /** Per-capability authority rules (already in owner words). */
   authority: { capability: string; effect: "allow" | "require_approval" | "deny"; reason?: string }[];
   /** Owner-taught rules that are NOT operational (needs review / clarification / blocked / replaced). */
@@ -159,7 +160,8 @@ export type RulesInput = {
   hardMaxDiscountPct: number;
 };
 
-const money = (v: number, c: string) => new Intl.NumberFormat("en", { style: "currency", currency: c, maximumFractionDigits: Number.isInteger(v) ? 0 : 2 }).format(v);
+// Limits are compared in each order's own currency; without a known business currency none is invented.
+const money = (v: number, c: string | null) => (c ? new Intl.NumberFormat("en", { style: "currency", currency: c, maximumFractionDigits: Number.isInteger(v) ? 0 : 2 }).format(v) : `${new Intl.NumberFormat("en").format(v)} (in the order's currency)`);
 
 /** The rules BARRY follows right now, each with where it came from and whether the owner can change it here. */
 export function ownerRules(input: RulesInput): { rules: OwnerRule[]; pending: OwnerRule[]; notSupported: string[] } {

@@ -25,7 +25,7 @@ export const PRESENCE_WORD: Record<PresenceState, string> = {
   completed: "Just finished",
   working: "Working",
   waiting: "Waiting",
-  idle: "Ready",
+  idle: "Watching",
   paused: "Paused",
 };
 

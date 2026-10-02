@@ -39,7 +39,7 @@ export function todayStory(ws: OwnerWorkspace) {
       ? { lead: "BARRY handled ", figure: plural(t.handledAutonomously, "conversation"), tail: ` ${ws.window.label}.` }
       : t.conversations
         ? { lead: "BARRY talked with ", figure: plural(t.conversations, "customer"), tail: ` ${ws.window.label}.` }
-        : { lead: "BARRY is ready ", figure: "", tail: "and watching." };
+        : { lead: "BARRY is standing by", figure: "", tail: "." };
   const lines = nowWorking(ws);
   const live = ws.conversations.filter((c) => c.status === "in_progress").length;
   const things = lines.filter((l) => l.state === "working" || l.state === "waiting").reduce((s, l) => s + l.count, 0) + live;
