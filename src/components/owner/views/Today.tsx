@@ -168,7 +168,7 @@ function RunningSheet({ item, onClose, t, dir, lang }: { item: Running | null; o
   return (
     <Sheet open={Boolean(item)} onOpenChange={(o) => !o && onClose()}>
       {item && (
-        <SheetContent dir={dir} lang={lang} data-testid="running-sheet">
+        <SheetContent side="auto" dir={dir} lang={lang} data-testid="running-sheet">
           <SheetHeader>
             <p className={`flex items-center gap-2 text-[12.5px] ${item.working ? "text-x-live" : "text-x-t3"}`}>
               <span className={`h-1.5 w-1.5 rounded-full ${item.working ? "bg-x-live" : "bg-x-t3"}`} />
@@ -383,7 +383,7 @@ export function TodayView({ ws, os, onDecision, asOf }: { ws: OwnerWorkspace; os
 
       <RunningSheet item={openRun} onClose={() => setOpenRun(null)} t={t} dir={dir} lang={lang} />
       <Sheet open={pulseOpen} onOpenChange={setPulseOpen}>
-        <SheetContent dir={dir} lang={lang} data-testid="pulse-sheet">
+        <SheetContent side="auto" dir={dir} lang={lang} data-testid="pulse-sheet">
           <SheetHeader>
             <SheetTitle>{t("Business today", "העסק היום")}</SheetTitle>
             <SheetDescription className="x-num">{t(`As of ${tk.clock(now)}`, `נכון ל־${tk.clock(now)}`)}</SheetDescription>
