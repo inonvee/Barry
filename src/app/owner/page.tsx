@@ -7,6 +7,7 @@ import { OwnerShell, type OwnerSection } from "@/components/owner/OwnerShell";
 import { useOwnerLang } from "@/components/owner/lang";
 import { Button, ErrorState, LoadingRows, Notice, type Tone } from "@/components/owner/os-ui";
 import { ownerPresence } from "@/lib/owner/presence-model";
+import { commandSuggestions } from "@/lib/owner/command";
 import type { OwnerWorkspace } from "@/lib/owner/service";
 import type { OwnerOs } from "@/lib/owner/os-service";
 import type { OwnerReply } from "@/lib/owner/command-service";
@@ -52,6 +53,9 @@ function OwnerDashboard() {
   const [decisionId, setDecisionId] = useState<string | null>(params.get("intervention"));
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ tone: Tone; text: string } | null>(null);
+  /** When the records on screen were last read, and whether a re-read is in flight (the shell's live status). */
+  const [syncedAt, setSyncedAt] = useState<Date | null>(null);
+  const [syncing, setSyncing] = useState(false);
   const wantBusiness = params.get("business");
 
   const { businessId, call, authorized } = api;
@@ -60,11 +64,15 @@ function OwnerDashboard() {
 
   const load = useCallback(async () => {
     if (!businessId) return;
+    setSyncing(true);
     try {
       setWs(await fetchWorkspace());
+      setSyncedAt(new Date());
       setError("");
     } catch (e) {
       setError(e instanceof Error ? e.message : "load failed");
+    } finally {
+      setSyncing(false);
     }
   }, [businessId, fetchWorkspace]);
 
@@ -75,6 +83,7 @@ function OwnerDashboard() {
       .then((data) => {
         if (cancelled) return;
         setWs(data);
+        setSyncedAt(new Date());
         setError("");
         adopt(data.business.locale);
       })
@@ -87,6 +96,21 @@ function OwnerDashboard() {
       cancelled = true;
     };
   }, [businessId, authorized, fetchWorkspace, adopt]);
+
+  // Today is live: while it's open and visible, re-read the records every minute (reads only — nothing is written).
+  const live = tab === "today";
+  useEffect(() => {
+    if (!live || !authorized || !businessId) return;
+    const tick = () => {
+      if (document.visibilityState === "visible") void load();
+    };
+    const id = setInterval(tick, 60_000);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, [live, authorized, businessId, load]);
 
   // The setup line on Today reads the same server readiness the Setup page shows (never a fake percentage).
   useEffect(() => {
@@ -191,7 +215,7 @@ function OwnerDashboard() {
   const active: OwnerSection = tab;
 
   return (
-    <OwnerShell api={api} active={active} badge={badge} onNavigate={onNavigate} presence={presence}>
+    <OwnerShell api={api} active={active} badge={badge} onNavigate={onNavigate} presence={presence} ops={live ? { syncedAt, syncing, commands: ws ? commandSuggestions(ws) : [], mode: os?.mode === "simulator" ? t("Practice mode", "מצב תרגול") : os?.mode === "supervised" ? t("Supervised", "מפוקח") : undefined } : undefined}>
       <div className="flex flex-col gap-4">
         {authorized && error && <ErrorState title={t("BARRY couldn't load your business right now", "BARRY לא הצליח לטעון את העסק כרגע")} detail={error} onRetry={() => void load()} />}
         {ws?.unavailable.length ? <Notice tone="warn">{t(`Some records couldn't be read (${ws.unavailable.join(", ")}) — the figures leave them out rather than guess.`, `חלק מהרשומות לא נקראו (${ws.unavailable.join(", ")}) — המספרים לא כוללים אותן במקום לנחש.`)}</Notice> : null}
@@ -210,7 +234,7 @@ function OwnerDashboard() {
             <LoadingRows rows={3} />
           </div>
         )}
-        {ws && tab === "today" && <TodayView ws={ws} os={os} onDecision={openDecision} onOpen={openConversation} onTab={(x) => setTab(x)} onAsk={ask} />}
+        {ws && tab === "today" && <TodayView ws={ws} os={os} onDecision={openDecision} onOpen={openConversation} onTab={(x) => setTab(x)} onAsk={ask} asOf={syncedAt} />}
         {ws && tab === "ask" && <AskView key={params.get("q") ?? ""} ws={ws} onCommand={runCommand} initialQuestion={params.get("q") ?? ""} />}
         {ws && tab === "work" && <WorkView ws={ws} onDecision={openDecision} onOpen={openConversation} onInitiative={runInitiative} onAsk={(q) => ask(q)} />}
         {ws && tab === "money" && <MoneyView ws={ws} range={range} setRange={setRange} onOpen={openConversation} />}

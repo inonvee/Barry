@@ -53,7 +53,7 @@ export function DecisionSheet({ item, onClose, act, busy, onConversation }: { it
       open
       onClose={onClose}
       testId="decision-sheet"
-      title={<bdi>{item.title}</bdi>}
+      title={item.title}
       footer={
         <div className="flex flex-col gap-2">
           {approve && <ConfirmButton testId="approve" label={approve.label} confirmLabel={t("Yes, approve", "כן, לאשר")} consequence={approve.consequence} onConfirm={() => run("approve")} disabled={busy || done} />}

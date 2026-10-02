@@ -129,6 +129,19 @@
 .o-tabular { font-variant-numeric: tabular-nums; }
 
 @theme inline {
+  --color-x-0: var(--x-0);
+  --color-x-1: var(--x-1);
+  --color-x-2: var(--x-2);
+  --color-x-3: var(--x-3);
+  --color-x-line: var(--x-line);
+  --color-x-line-2: var(--x-line-2);
+  --color-x-t1: var(--x-t1);
+  --color-x-t2: var(--x-t2);
+  --color-x-t3: var(--x-t3);
+  --color-x-t4: var(--x-t4);
+  --color-x-hot: var(--x-hot);
+  --color-x-live: var(--x-live);
+  --color-x-warn: var(--x-warn);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-canvas: var(--ds-canvas);
@@ -287,3 +300,84 @@ body {
 .o-command:focus-within { box-shadow: 0 0 0 1px rgba(124, 160, 255, 0.7), 0 0 0 5px rgba(91, 140, 255, 0.12), 0 18px 60px -16px rgba(91, 140, 255, 0.6); }
 .o-hairline { background: linear-gradient(90deg, transparent, var(--o-line-strong), transparent); height: 1px; }
 .o-vline { background: linear-gradient(180deg, rgba(91, 140, 255, 0.5), rgba(155, 123, 255, 0.15) 80%, transparent); width: 1px; }
+
+
+/*
+ * BARRY OPS — Owner OS art direction (Today first). A live operational layer over the business:
+ * cool graphite surfaces stacked in depth, white type with exact contrast steps, and colour ONLY as state:
+ *   hot   needs the owner          live  BARRY is handling it / handled          warn  money or time at risk
+ * Constructed, not decorated: hairline borders, a 1px top highlight for depth, small deliberate radii,
+ * no gradients, no glow. Motion only when the records change.
+ */
+.art-ops {
+  --x-0: #050608;
+  --x-1: #0b0d11;
+  --x-2: #111419;
+  --x-3: #181c23;
+  --x-line: #1d222a;
+  --x-line-2: #2a303a;
+  --x-t1: #f4f6f8;
+  --x-t2: #b7bdc7;
+  --x-t3: #7d8592;
+  --x-t4: #545b67;
+  --x-hot: #ff5a3c;
+  --x-live: #3ad6c2;
+  --x-warn: #f0b13c;
+  /* Re-point the shared tokens so sheets opened from Today belong to the same system. */
+  --o-canvas: var(--x-0);
+  --o-surface: var(--x-1);
+  --o-raised: var(--x-2);
+  --o-sunken: var(--x-0);
+  --o-line: var(--x-line);
+  --o-line-strong: var(--x-line-2);
+  --o-ink: var(--x-t1);
+  --o-ink-2: var(--x-t2);
+  --o-muted: var(--x-t3);
+  --o-faint: var(--x-t4);
+  --o-accent: var(--x-t1);
+  --o-primary: var(--x-t1);
+  --o-on-primary: var(--x-0);
+  --o-violet: var(--x-t2);
+  --o-ok: var(--x-live);
+  --o-ok-bg: rgba(58, 214, 194, 0.08);
+  --o-ok-line: rgba(58, 214, 194, 0.25);
+  --o-warn: var(--x-hot);
+  --o-warn-bg: rgba(255, 90, 60, 0.08);
+  --o-warn-line: rgba(255, 90, 60, 0.3);
+  --o-bad: var(--x-hot);
+  --o-bad-bg: rgba(255, 90, 60, 0.08);
+  --o-bad-line: rgba(255, 90, 60, 0.3);
+  --o-info: var(--x-t1);
+  --o-info-bg: var(--x-2);
+  --o-info-line: var(--x-line-2);
+  --o-neutral: var(--x-t3);
+  --o-neutral-bg: var(--x-2);
+  --o-neutral-line: var(--x-line);
+  color-scheme: dark;
+  background: var(--x-0);
+  color: var(--x-t1);
+  font-family: var(--font-ops), var(--font-heebo), ui-sans-serif, system-ui, sans-serif;
+  font-feature-settings: "tnum" 0, "ss01";
+  letter-spacing: -0.005em;
+}
+.art-ops[dir="rtl"] { font-family: var(--font-heebo), var(--font-ops), ui-sans-serif, system-ui, sans-serif; letter-spacing: 0; }
+/* A panel: one step up in depth, hairline edge, 1px light from above. */
+.x-panel { background: var(--x-1); border: 1px solid var(--x-line); border-radius: 8px; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035); }
+.x-raised { background: var(--x-2); border: 1px solid var(--x-line-2); border-radius: 8px; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 18px 40px -24px rgba(0, 0, 0, 0.9); }
+.x-num { font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.x-label { font-size: 11px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+.art-ops[dir="rtl"] .x-label { letter-spacing: 0; font-size: 12px; }
+.x-row { transition: background-color 120ms ease; }
+.x-row:hover { background: var(--x-2); }
+.x-focus:focus-visible, .art-ops a:focus-visible, .art-ops button:focus-visible { outline: 2px solid var(--x-t1); outline-offset: 2px; }
+/* Arrival: an item that came in with a refresh slides in once. Never on first paint. */
+@keyframes x-arrive { from { opacity: 0; transform: translateY(-4px); background-color: rgba(58, 214, 194, 0.08); } to { opacity: 1; transform: none; background-color: transparent; } }
+.x-arrived { animation: x-arrive 600ms cubic-bezier(0.2, 0.8, 0.2, 1) 1; }
+@media (prefers-reduced-motion: reduce) { .x-arrived { animation: none; } }
+.art-ops .o-sheet { background: var(--x-1); box-shadow: 0 -1px 0 var(--x-line-2), 0 -30px 60px -30px rgba(0, 0, 0, 0.9); border-radius: 12px 12px 0 0; }
+@media (min-width: 1024px) { .art-ops .o-sheet { border-radius: 0; box-shadow: -1px 0 0 var(--x-line-2); } }
+.art-ops .o-sheet .rounded-xl, .art-ops .o-sheet .rounded-2xl { border-radius: 6px; }
+.art-ops .o-scrim { background: rgba(2, 3, 5, 0.7); backdrop-filter: blur(2px); }
+/* Primary controls inside Ops are white with near-black type. */
+.art-ops .bg-o-accent { color: var(--x-0); }
+.art-ops .bg-o-accent:hover { filter: none; background: #ffffff; }

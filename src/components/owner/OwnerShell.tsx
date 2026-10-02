@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
 import type { useOwnerApi } from "./useOwnerApi";
 import { presenceWord, type OwnerPresence, type PresenceState } from "@/lib/owner/presence-model";
 import type { OwnerLang } from "@/lib/owner/lang";
@@ -64,8 +65,11 @@ type Api = ReturnType<typeof useOwnerApi>;
 
 export const PRESENCE_TONE: Record<PresenceState, Tone> = { working: "info", completed: "ok", waiting: "neutral", idle: "ok", needs_you: "warn", degraded: "warn", unavailable: "bad", paused: "neutral" };
 
-export function OwnerShell({ api, active, badge, onNavigate, presence, children }: { api: Api; active: OwnerSection; badge?: Partial<Record<OwnerSection, number>>; onNavigate?: (section: OwnerSection) => boolean | void; presence?: OwnerPresence; children: ReactNode }) {
+export type OpsChrome = { syncedAt: Date | null; syncing: boolean; commands: string[]; mode?: string };
+
+export function OwnerShell({ api, active, badge, onNavigate, presence, children, ops }: { api: Api; active: OwnerSection; badge?: Partial<Record<OwnerSection, number>>; onNavigate?: (section: OwnerSection) => boolean | void; presence?: OwnerPresence; children: ReactNode; ops?: OpsChrome }) {
   const { lang, dir, t } = useOwnerLang();
+  if (ops) return <OpsShell api={api} active={active} badge={badge} onNavigate={onNavigate} presence={presence} ops={ops}>{children}</OpsShell>;
   const s = api.session;
   const click = (id: OwnerSection) => (e: React.MouseEvent) => {
     if (onNavigate?.(id)) e.preventDefault();
@@ -141,6 +145,188 @@ export function OwnerShell({ api, active, badge, onNavigate, presence, children 
           })}
         </div>
       </nav>
+    </div>
+  );
+}
+
+/**
+ * THE OPS SHELL (Owner OS art direction, Today first). A hard sidebar, a command layer that answers ⌘K,
+ * and a status line that only says "live" because the page really re-reads the records on a timer.
+ */
+function OpsShell({ api, active, badge, onNavigate, presence, ops, children }: { api: Api; active: OwnerSection; badge?: Partial<Record<OwnerSection, number>>; onNavigate?: (section: OwnerSection) => boolean | void; presence?: OwnerPresence; ops: OpsChrome; children: ReactNode }) {
+  const { lang, dir, t, setLang } = useOwnerLang();
+  const [palette, setPalette] = useState(false);
+  const s = api.session;
+  const click = (id: OwnerSection) => (e: React.MouseEvent) => {
+    if (onNavigate?.(id)) e.preventDefault();
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPalette((p) => !p);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  const moreActive = MORE_IDS.has(active);
+  const synced = ops.syncedAt ? new Intl.DateTimeFormat(lang === "he" ? "he-IL" : "en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(ops.syncedAt) : null;
+  const calling = presence?.state === "needs_you";
+
+  return (
+    <div className="barry-owner art-ops min-h-[100dvh] w-full" dir={dir} lang={lang}>
+      {/* Desktop sidebar */}
+      <aside className="fixed inset-y-0 start-0 z-30 hidden w-[232px] flex-col border-e border-x-line bg-x-0 px-3 pb-4 pt-5 lg:flex">
+        <Link href="/owner?tab=today" className="px-3 text-[15px] font-[650] tracking-[0.22em] text-x-t1">BARRY</Link>
+        <p className="mt-1 truncate px-3 text-[12.5px] text-x-t3"><bdi>{api.business?.name ?? ""}</bdi>{ops.mode ? <> · {ops.mode}</> : null}</p>
+        <nav className="mt-7 flex flex-col gap-0.5" aria-label={t("Primary", "ראשי")}>
+          {OWNER_NAV.map((n) => (
+            <Link key={n.id} href={n.href} onClick={click(n.id)} aria-current={active === n.id ? "page" : undefined} className={`flex h-9 items-center gap-3 rounded-[6px] px-3 text-[14px] font-medium ${active === n.id ? "bg-x-2 text-x-t1 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]" : "text-x-t3 hover:bg-x-1 hover:text-x-t1"}`} data-testid={`rail-${n.id}`}>
+              <Icon name={n.icon} size={16} className={active === n.id ? "text-x-t1" : "text-x-t4"} />
+              <span className="flex-1">{n.label[lang]}</span>
+              {badge?.[n.id] ? <span className="x-num min-w-5 rounded-[4px] bg-x-hot/15 px-1.5 text-center text-[11.5px] font-semibold text-x-hot">{badge[n.id]}</span> : null}
+            </Link>
+          ))}
+        </nav>
+        <div className="mx-3 my-5 h-px bg-x-line" />
+        {OWNER_MORE_GROUPS.map((g) => (
+          <nav key={g.id} className="mb-3 flex flex-col" aria-label={g.title[lang]}>
+            <p className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-x-t4">{g.title[lang]}</p>
+            {g.items.map((n) => <Link key={n.id} href={n.href} className="flex h-7 items-center rounded-[6px] px-3 text-[13px] text-x-t3 hover:bg-x-1 hover:text-x-t1">{n.label[lang]}</Link>)}
+          </nav>
+        ))}
+        <div className="mt-auto flex items-center gap-1 px-2" role="radiogroup" aria-label={t("Language", "שפה")}>
+          {(["en", "he"] as const).map((l) => (
+            <button key={l} type="button" role="radio" aria-checked={lang === l} lang={l} onClick={() => setLang(l)} className={`h-7 rounded-[5px] px-2 text-[12.5px] ${lang === l ? "bg-x-2 text-x-t1" : "text-x-t4 hover:text-x-t2"}`} data-testid={`lang-${l}`}>{l === "en" ? "English" : "עברית"}</button>
+          ))}
+        </div>
+      </aside>
+
+      <div className="lg:ps-[232px]">
+        {/* Phone header */}
+        <header className="sticky top-0 z-20 border-b border-x-line bg-x-0/90 backdrop-blur-md lg:hidden">
+          <div className="flex h-12 items-center justify-between gap-3 px-4">
+            <Link href="/owner?tab=today" className="flex min-w-0 items-baseline gap-2">
+              <span className="text-[14px] font-[650] tracking-[0.22em] text-x-t1">BARRY</span>
+              <span className="truncate text-[12.5px] text-x-t3"><bdi>{api.business?.name ?? ""}</bdi></span>
+            </Link>
+            <div className="flex items-center gap-3">
+              <LiveStatus ops={ops} synced={synced} compact />
+              <button type="button" onClick={() => setPalette(true)} aria-label={t("Ask BARRY or jump to…", "לשאול את BARRY או לעבור אל…")} className="grid h-8 w-8 place-items-center rounded-[6px] border border-x-line bg-x-1 text-x-t2">
+                <Icon name="search" size={15} />
+              </button>
+            </div>
+          </div>
+        </header>
+        {/* Desktop command layer */}
+        <div className="sticky top-0 z-20 hidden h-14 items-center gap-4 border-b border-x-line bg-x-0/85 px-8 backdrop-blur-md lg:flex">
+          <button type="button" onClick={() => setPalette(true)} className="flex h-9 w-full max-w-[560px] items-center gap-3 rounded-[7px] border border-x-line bg-x-1 px-3 text-start text-[13.5px] text-x-t3 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] hover:border-x-line-2" data-testid="command-bar">
+            <Icon name="search" size={15} className="text-x-t4" />
+            <span className="flex-1">{t("Ask BARRY or jump to…", "לשאול את BARRY או לעבור אל…")}</span>
+            <kbd className="rounded-[4px] border border-x-line-2 px-1.5 text-[11px] text-x-t3">⌘K</kbd>
+          </button>
+          <div className="ms-auto flex items-center gap-5">
+            {presence && <Link href={presence.href ?? "/owner?tab=today"} className={`text-[12.5px] font-medium ${calling ? "text-x-hot" : "text-x-t2"}`} data-testid="presence">{presenceWord(presence.state, lang)}</Link>}
+            <LiveStatus ops={ops} synced={synced} />
+          </div>
+        </div>
+
+        <main className="mx-auto w-full max-w-[1320px] overflow-x-clip px-4 pb-[calc(76px+env(safe-area-inset-bottom))] pt-4 lg:px-8 lg:pb-12 lg:pt-6">
+          <SessionState api={api} />
+          {s && (s.authorized || s.open) ? children : null}
+        </main>
+      </div>
+
+      {/* Phone bar */}
+      <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-x-line bg-x-0/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md lg:hidden" aria-label={t("Primary", "ראשי")}>
+        <div className="grid grid-cols-5">
+          {[...OWNER_NAV, MORE_ITEM].map((n) => {
+            const on = n.id === "more" ? moreActive : active === n.id;
+            return (
+              <Link key={n.id} href={n.href} onClick={click(n.id)} aria-current={on ? "page" : undefined} className={`relative flex h-[58px] flex-col items-center justify-center gap-1 text-[11px] font-medium ${on ? "text-x-t1" : "text-x-t4"}`} data-testid={`nav-${n.id}`}>
+                <Icon name={n.icon} size={19} />
+                {n.short[lang]}
+                {badge?.[n.id] ? <span className="x-num absolute end-[calc(50%-20px)] top-2 min-w-4 rounded-[4px] bg-x-hot px-1 text-center text-[10px] font-bold leading-4 text-x-0">{badge[n.id]}</span> : null}
+              </Link>
+            );
+          })}
+        </div>
+      </nav>
+
+      {palette && <CommandPalette commands={ops.commands} onClose={() => setPalette(false)} />}
+    </div>
+  );
+}
+
+/** "Live" only because the page really re-reads the records on a timer; "Syncing…" while a read is in flight. */
+function LiveStatus({ ops, synced, compact }: { ops: OpsChrome; synced: string | null; compact?: boolean }) {
+  const { t } = useOwnerLang();
+  return (
+    <span className="flex items-center gap-2 text-[12.5px] text-x-t3" data-testid="live-status" title={t("BARRY re-reads your records every minute while this page is open", "BARRY קורא מחדש את הרשומות כל דקה כשהדף פתוח")}>
+      <span className={`h-1.5 w-1.5 rounded-full ${ops.syncing ? "bg-x-t3" : "bg-x-live"}`} />
+      {ops.syncing ? t("Syncing…", "מסתנכרן…") : compact ? <span className="x-num">{synced}</span> : <>{t("Live", "חי")}{synced ? <span className="x-num text-x-t4">· {synced}</span> : null}</>}
+    </span>
+  );
+}
+
+/** ⌘K — ask BARRY anything or jump anywhere. Questions go to Ask (the same command service as WhatsApp). */
+function CommandPalette({ commands, onClose }: { commands: string[]; onClose: () => void }) {
+  const { lang, t } = useOwnerLang();
+  const router = useRouter();
+  const [q, setQ] = useState("");
+  const [sel, setSel] = useState(0);
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => input.current?.focus(), []);
+  const places = [...OWNER_NAV, ...OWNER_MORE].map((n) => ({ kind: "go" as const, label: n.label[lang], href: n.href }));
+  const asks = commands.map((c) => ({ kind: "ask" as const, label: c, href: `/owner?tab=ask&q=${encodeURIComponent(c)}` }));
+  const needle = q.trim().toLowerCase();
+  const items = [
+    ...(needle ? [{ kind: "ask" as const, label: q.trim(), href: `/owner?tab=ask&q=${encodeURIComponent(q.trim())}` }] : []),
+    ...asks.filter((a) => !needle || a.label.toLowerCase().includes(needle)),
+    ...places.filter((p) => !needle || p.label.toLowerCase().includes(needle)),
+  ].slice(0, 9);
+  const go = (i: number) => {
+    const it = items[i];
+    if (!it) return;
+    onClose();
+    router.push(it.href);
+  };
+  return (
+    <div className="fixed inset-0 z-[60] flex items-start justify-center px-3 pt-[12vh]" role="dialog" aria-modal="true" aria-label={t("Ask BARRY or jump to…", "לשאול את BARRY או לעבור אל…")}>
+      <div className="absolute inset-0 bg-[rgba(2,3,5,0.72)] backdrop-blur-[2px]" onClick={onClose} role="presentation" />
+      <div className="x-raised relative w-full max-w-[600px] overflow-hidden">
+        <div className="flex h-12 items-center gap-3 border-b border-x-line px-4">
+          <Icon name="search" size={16} className="text-x-t3" />
+          <input
+            ref={input}
+            value={q}
+            onChange={(e) => { setQ(e.target.value); setSel(0); }}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") onClose();
+              else if (e.key === "ArrowDown") { e.preventDefault(); setSel((s) => Math.min(s + 1, items.length - 1)); }
+              else if (e.key === "ArrowUp") { e.preventDefault(); setSel((s) => Math.max(s - 1, 0)); }
+              else if (e.key === "Enter") { e.preventDefault(); go(sel); }
+            }}
+            dir="auto"
+            placeholder={t("Ask BARRY or jump to…", "לשאול את BARRY או לעבור אל…")}
+            className="h-full flex-1 bg-transparent text-[15px] text-x-t1 placeholder:text-x-t4 focus:outline-none"
+            data-testid="palette-input"
+          />
+          <kbd className="rounded-[4px] border border-x-line-2 px-1.5 text-[11px] text-x-t3">esc</kbd>
+        </div>
+        <ul className="max-h-[52vh] overflow-y-auto py-1.5">
+          {items.map((it, i) => (
+            <li key={`${it.kind}:${it.label}`}>
+              <button type="button" onMouseEnter={() => setSel(i)} onClick={() => go(i)} className={`flex h-10 w-full items-center gap-3 px-4 text-start text-[14px] ${i === sel ? "bg-x-3 text-x-t1" : "text-x-t2"}`}>
+                <span className="w-12 shrink-0 text-[11px] font-semibold uppercase tracking-[0.06em] text-x-t4">{it.kind === "ask" ? t("Ask", "שאל") : t("Go to", "מעבר")}</span>
+                <span className="min-w-0 flex-1 truncate" dir="auto">{it.label}</span>
+                {i === sel && <span className="text-[12px] text-x-t4">↵</span>}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }
