@@ -14,7 +14,7 @@ import { WorkView } from "@/components/owner/views/Work";
 import { MoreView } from "@/components/owner/views/More";
 import { Flow } from "@/components/owner/kit";
 import { conversationState } from "@/components/owner/views/shared";
-import { todayStory } from "@/components/owner/views/Today";
+import { PulseDetail, todayStory } from "@/components/owner/views/Today";
 import { interpretCommand, commandSuggestions } from "@/lib/owner/command";
 import { ownerPresence } from "@/lib/owner/presence-model";
 import { revenueTrend } from "@/lib/owner/service";
@@ -96,12 +96,11 @@ describe("the control room renders from a real workspace", () => {
     const { g, id, paymentRequestId } = await pendingPayment();
     let ws = await getOwnerWorkspace(g);
     const today = renderToString(createElement(TodayView, { ws, onDecision: noop, onOpen: noop, onTab: noop, onAsk: noop }));
-    expect(today).toMatch(/BARRY is working on one thing\./); // the same active-work definition Work shows
-    expect(today).toMatch(/Queued, nothing sent yet/); // the live process, with its real progress
+    expect(today).toMatch(/BARRY is handling 1/); // the same active-work definition Work shows
+    expect(today).toMatch(/1 found · queued, nothing sent yet/); // the live process, with its real progress
     expect(today).toMatch(/Following up unpaid payment links/);
     expect(today).toMatch(/Nothing waits on your decision/);
-    expect(today).toMatch(/Tell BARRY what to do/);
-    expect(today).toMatch(/Nothing collected yet/); // nothing verified yet → no money figure
+    expect(today).toMatch(/₪0<\/bdi><\/span> ?(<!-- -->)?made today/); // nothing verified yet → a verified zero, never a pending figure
     await getBackend().simulatePaymentOutcome(paymentRequestId, "paid");
     await handlePaymentOutcome(g, id, paymentRequestId, "paid");
     ws = await getOwnerWorkspace(g);
@@ -193,6 +192,8 @@ describe("the living interface: commands, presence and story come from records",
     expect(story).toEqual({ things: 1, needs: 0 });
     const today = renderToString(createElement(TodayView, { ws, onDecision: noop, onOpen: noop, onTab: noop, onAsk: noop }));
     expect(today.replace(/BARRY: <bdi>[^<]*<\/bdi>/g, "")).not.toMatch(/₪\s?[1-9]/); // quoted customer messages aside, the unpaid ₪420 link is test money: never shown as made, in motion or at risk
-    expect(today).toMatch(/test payment link/); // …it is named as test money instead
+    const pulse = renderToString(createElement(PulseDetail, { ws, lang: "en", t: (en: string) => en, now: new Date() }));
+    expect(pulse.replace(/BARRY: <bdi>[^<]*<\/bdi>/g, "")).not.toMatch(/₪\s?[1-9]/);
+    expect(pulse).toMatch(/test payment link/); // …it is named as test money where the numbers open
   });
 });

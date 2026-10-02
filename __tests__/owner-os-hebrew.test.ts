@@ -110,7 +110,7 @@ describe("the daily surfaces render in Hebrew", () => {
       expect(text(html), name).toMatch(HEB);
       expect(strayEnglish(html, ok), name).toEqual([]);
     }
-    expect(text(screens.today)).toMatch(/BARRY עובד על דבר אחד/); // the same count as English: one active work stream
+    expect(text(screens.today)).toMatch(/BARRY מטפל ב־1/); // the same count as English: one active work stream
     expect(text(screens.money)).toMatch(/עוד אין תשלומים מאומתים/); // test money is never "made", in Hebrew too
   });
 
