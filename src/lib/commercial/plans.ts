@@ -117,6 +117,23 @@ export const FEATURE_WORDS: Record<Feature, string> = {
   margins: "BARRY Margins (cost intelligence)",
 };
 
+export const FEATURE_WORDS_HE: Record<Feature, string> = {
+  knowledge: "עונה ללקוחות מתוך הידע של העסק",
+  inbox_handoff: "תיבת פניות והעברה לצוות שלך",
+  selling_basic: "מוצא וממליץ על מוצרים ושירותים",
+  approvals_basic: "שואל אותך לפני כל דבר שאסור לו לבד",
+  train: "ללמד את BARRY",
+  owner_visibility: "תמונת מצב לבעלים וסיכום ערך חודשי",
+  commerce_transactions: "עגלות, הנחות והזמנות",
+  bookings: "קביעת תורים",
+  payments: "שליחת קישורי תשלום",
+  proactive_followups: "מעקבים יזומים",
+  recovery: "החזרת הכנסות",
+  connected_systems_execution: "פעולה במערכות המחוברות שלך",
+  margins: "BARRY Margins (ניתוח עלויות)",
+};
+export const PROMISE_HE: Record<PlanId, string> = { CORE: "BARRY מדבר.", OPERATOR: "BARRY עובד.", INTELLIGENCE: "BARRY משתפר.", CUSTOM: "מותאם איתך." };
+
 /** The cheapest standard plan that includes a feature — what an upgrade would unlock. */
 export function planUnlocking(feature: Feature): PlanId | null {
   return STANDARD_PLANS.find((p) => PLAN_CATALOG[p].features.includes(feature)) ?? null;

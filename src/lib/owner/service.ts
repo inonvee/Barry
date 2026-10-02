@@ -20,6 +20,8 @@ import { followUpPolicyFor, OBLIGATION_FOLLOW_UP } from "@/lib/operator/policy";
 import type { ObligationKind } from "@/lib/operator/obligation-model";
 import { attemptCounts, listAttempts } from "@/lib/operator/attempts";
 import { assessCapabilities, capabilitySummary } from "./capabilities";
+import { actionWords } from "./interventions";
+import type { OwnerLang } from "./lang";
 import { listOperations, operationView } from "./operations";
 import type { OwnerOperationView } from "./operation-model";
 import { whatsappOwnerConfig } from "@/lib/channels/whatsapp";
@@ -218,6 +220,8 @@ export type OwnerWorkspace = {
   initiativeHistory: InitiativeView[];
   /** Sources that could not be read (shown, never zeroed). */
   unavailable: string[];
+  /** The language this workspace's owner-facing words are in. */
+  lang: OwnerLang;
 };
 
 /** Start of "today" in the business's own timezone, as an ISO instant. */
@@ -227,14 +231,18 @@ export function startOfLocalDay(timeZone: string, now = new Date()): string {
   return new Date(now.getTime() - elapsed).toISOString();
 }
 
-export function customerLabel(c: ConversationState): string {
+export function customerLabel(c: ConversationState, lang: OwnerLang = "en"): string {
+  return customerLabelOf(c, lang);
+}
+function customerLabelOf(c: ConversationState, lang: OwnerLang = "en"): string {
   const name = c.knownFields.name?.trim();
   if (name) return name;
   // The name the channel shows for this contact (e.g. a WhatsApp profile name) — a label, not a verified customer fact.
   const profile = c.knownFields.__channelProfileName?.trim();
   if (profile) return profile;
   const id = c.customerId.replace(/^[a-z]+:/i, "");
-  return id.length > 4 ? `Customer ···${id.slice(-4)}` : "Customer";
+  const word = lang === "he" ? "לקוח" : "Customer";
+  return id.length > 4 ? `${word} ···${id.slice(-4)}` : word;
 }
 
 export function channelOf(c: ConversationState): OwnerConversationRow["channel"] {
@@ -286,7 +294,7 @@ function systemHealth(v: ConnectionView): SystemHealth {
 
 const REASON_FOR_APPROVAL = "Your rules say you approve this before BARRY does it.";
 
-function approvalView(a: ApprovalWithLifecycle, customer: string): OwnerApproval {
+function approvalView(a: ApprovalWithLifecycle, customer: string, graph?: BusinessGraph, lang: OwnerLang = "en"): OwnerApproval {
   const input = (a.requestedInput ?? {}) as Record<string, unknown>;
   const amount = typeof input.amount === "number" && typeof input.currency === "string" ? termsAmount({ amount: input.amount, currency: input.currency }) : undefined;
   const held = a.lifecycle === "held";
@@ -294,9 +302,9 @@ function approvalView(a: ApprovalWithLifecycle, customer: string): OwnerApproval
     id: a.id,
     conversationId: a.conversationId,
     customer,
-    what: a.summary,
+    what: lang === "he" && graph ? actionWords(graph, a, "he") : a.summary,
     ...(amount ? { amount } : {}),
-    whyApproval: a.reason?.trim() ? a.reason : REASON_FOR_APPROVAL,
+    whyApproval: lang === "he" ? "לפי הכללים שלך, זה דורש את האישור שלך לפני ש־BARRY מבצע." : a.reason?.trim() ? a.reason : REASON_FOR_APPROVAL,
     lifecycle: a.lifecycle,
     revision: a.revision,
     createdAt: a.createdAt,
@@ -316,7 +324,9 @@ function approvalView(a: ApprovalWithLifecycle, customer: string): OwnerApproval
 }
 
 /** The whole owner workspace for one business, for a time window (default: today, business time). */
-export async function getOwnerWorkspace(staticGraph: BusinessGraph, opts: { since?: string; label?: string; now?: Date } = {}): Promise<OwnerWorkspace> {
+export async function getOwnerWorkspace(staticGraph: BusinessGraph, opts: { since?: string; label?: string; now?: Date; lang?: OwnerLang } = {}): Promise<OwnerWorkspace> {
+  const lang = opts.lang ?? "en";
+  const customerLabel = (c: ConversationState) => customerLabelOf(c, lang);
   // The owner sees the rules the runtime enforces (static profile + approved owner-trained overlay).
   const graph = await effectiveGraph(staticGraph);
   const now = opts.now ?? new Date();
@@ -385,7 +395,7 @@ export async function getOwnerWorkspace(staticGraph: BusinessGraph, opts: { sinc
 
   const inWindow = rows.filter((r) => byId.get(r.id)!.messages.some((m) => m.role === "customer" && m.at >= since));
   const handoffs = conversations.flatMap((c) => readHandoffs(c).map((h) => ({ ...h, customer: customerLabel(c) }))).sort((a, b) => Number(b.status !== "resolved") - Number(a.status !== "resolved") || b.createdAt.localeCompare(a.createdAt));
-  const interventions = buildInterventions({ graph, conversations, approvals, payments, customerLabel, now });
+  const interventions = buildInterventions({ graph, conversations, approvals, payments, customerLabel, now, lang });
   const opportunities = revenueOpportunities({ graph, conversations, approvals, payments, bookings, orders, customerLabel, now });
   const policy = followUpPolicyFor(graph);
   const entitlement = await safe("plan", () => loadEntitlement(businessId), undefined);
@@ -398,7 +408,7 @@ export async function getOwnerWorkspace(staticGraph: BusinessGraph, opts: { sinc
 
   return {
     business: { id: businessId, name: graph.business.name, timezone: graph.business.timezone, locale: graph.business.locale },
-    window: { since, label: opts.label ?? "today" },
+    window: { since, label: opts.label ?? (lang === "he" ? "היום" : "today") },
     today: {
       conversations: inWindow.length,
       handledAutonomously: inWindow.filter((r) => r.handledAutonomously).length,
@@ -416,7 +426,7 @@ export async function getOwnerWorkspace(staticGraph: BusinessGraph, opts: { sinc
     obligations,
     conversations: rows,
     approvals: approvals
-      .map((a) => approvalView(a, byId.get(a.conversationId) ? customerLabel(byId.get(a.conversationId)!) : "Customer"))
+      .map((a) => approvalView(a, byId.get(a.conversationId) ? customerLabel(byId.get(a.conversationId)!) : lang === "he" ? "לקוח" : "Customer", graph, lang))
       .sort((x, y) => Number(y.actionable || y.lifecycle === "held") - Number(x.actionable || x.lifecycle === "held") || y.createdAt.localeCompare(x.createdAt)),
     outcomes,
     handoffs,
@@ -445,5 +455,6 @@ export async function getOwnerWorkspace(staticGraph: BusinessGraph, opts: { sinc
     },
     trend: revenueTrend(weekEvidence, graph.business.timezone, now),
     unavailable,
+    lang,
   };
 }

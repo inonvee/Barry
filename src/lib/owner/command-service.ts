@@ -11,6 +11,8 @@ import { nowWorking } from "./control-room";
 import { interpretCommand, type CommandIntent, type CommandSource } from "./command";
 import { STARTABLE, STATE_WORDS, operationTitle, type OwnerOperation, type OwnerOperationView } from "./operation-model";
 import { ACTIVE, CONFIRM_ABOVE, listOperations, operationView, proposeOperation, runOperation, saveOperation, stopOperation } from "./operations";
+import { proactiveWords } from "./control-room";
+import { L, money as moneyIn, type OwnerLang } from "./lang";
 
 /**
  * THE OWNER COMMAND SERVICE — the single pipeline behind the web command bar and the Owner WhatsApp
@@ -91,22 +93,22 @@ async function savePrompt(p: OwnerPrompt): Promise<void> {
 }
 
 /** A decision prompt for one exact, current request (approval id + revision), for one recipient. */
-export async function approvalPrompt(ws: OwnerWorkspace, interventionId: string, to: string, source: CommandSource, now = new Date()): Promise<OwnerOutbound | undefined> {
+export async function approvalPrompt(ws: OwnerWorkspace, interventionId: string, to: string, source: CommandSource, now = new Date(), lang: OwnerLang = "en"): Promise<OwnerOutbound | undefined> {
+  const T = (en: string, he: string) => L(lang, en, he);
   const item = ws.interventions.find((i) => i.id === interventionId);
   const approval = item?.refs.approvalId ? ws.approvals.find((a) => a.id === item.refs.approvalId) : undefined;
   if (!item || !approval || !approval.actionable) return undefined;
   const p: OwnerPrompt = { key: `pr_${crypto.randomBytes(8).toString("hex")}`, businessId: ws.business.id, kind: "approval", approvalId: approval.id, revision: approval.revision, interventionId, customer: item.customer, to, createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + PROMPT_HOURS * 3600_000).toISOString() };
   await savePrompt(p);
   return {
-    text: `Needs your approval\n\n${item.customer}: ${item.title}${item.amount && !item.title.includes(item.amount) ? `\n${item.amount}` : ""}\n\nWhy you: ${item.why}\nIf you approve: ${item.options.find((o) => o.action === "approve")?.consequence ?? item.then}`,
-    actions: [{ id: `d:${p.key}:approve`, title: "Approve" }, { id: `d:${p.key}:decline`, title: "Decline" }],
-    links: links(source, [{ label: "Review", path: `/owner?tab=actions&intervention=${encodeURIComponent(interventionId)}` }]),
+    text: `${T("Needs your approval", "צריך את האישור שלך")}\n\n${item.customer}: ${item.title}${item.amount && !item.title.includes(item.amount) ? `\n${item.amount}` : ""}\n\n${T("Why you", "למה אתה")}: ${item.why}\n${T("If you approve", "אם תאשר")}: ${item.options.find((o) => o.action === "approve")?.consequence ?? item.then}`,
+    actions: [{ id: `d:${p.key}:approve`, title: T("Approve", "לאשר") }, { id: `d:${p.key}:decline`, title: T("Decline", "לדחות") }],
+    links: links(source, [{ label: T("Review", "לפרטים"), path: `/owner?tab=work&intervention=${encodeURIComponent(interventionId)}` }]),
   };
 }
 
 // ── Reads (from the owner read model only) ──────────────────────────────────────────────────────
 
-const m = (x: Record<string, number>, empty = "none") => moneyWords(x, { empty });
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 function nameMatches(label: string, subject: string): boolean {
@@ -114,107 +116,145 @@ function nameMatches(label: string, subject: string): boolean {
   return label.toLowerCase().split(/[^\p{L}]+/u).includes(s);
 }
 
-async function answerQuery(intent: Extract<CommandIntent, { kind: "query" }>, ws: OwnerWorkspace, ops: OwnerOperationView[], ctx: { graph: BusinessGraph; source: CommandSource; actor: OwnerActor; text: string; now: Date }): Promise<OwnerOutbound> {
+async function answerQuery(intent: Extract<CommandIntent, { kind: "query" }>, ws: OwnerWorkspace, ops: OwnerOperationView[], ctx: { graph: BusinessGraph; source: CommandSource; actor: OwnerActor; text: string; now: Date; lang: OwnerLang }): Promise<OwnerOutbound> {
+  const lang = ctx.lang;
+  const T = (en: string, he: string) => L(lang, en, he);
+  const m = (x: Record<string, number>, empty = "none") => (lang === "he" ? moneyIn("he", x, empty === "none" ? "אין" : empty) : moneyWords(x, { empty }));
   switch (intent.topic) {
     case "initiatives": {
       // Only what scans persisted with evidence — never a new "insight" made up on demand.
       const money = intent.subject === "money";
       const list = ws.initiatives.filter((i) => !money || i.category === "money_leakage" || i.category === "abandoned_demand" || i.category === "cost_margin");
-      if (!list.length) return { text: money ? "I don't see money slipping away in your records right now — nothing at risk or left without a follow-up that I can prove." : "Nothing stood out in my last look at your records. I'll tell you when something does — I won't make things up to fill the space.", links: links(ctx.source, [{ label: "Today", path: "/owner?tab=today" }]) };
-      const lines = list.slice(0, 3).map((i) => `• ${i.title}\n  ${i.observation}\n  → ${i.recommendation.text}`);
-      return { text: `What I noticed${money ? " about money" : ""}:\n${lines.join("\n")}${list.length > 3 ? `\n…and ${list.length - 3} more on Today.` : ""}`, links: links(ctx.source, [{ label: "See it on Today", path: "/owner?tab=today" }]) };
+      if (!list.length) return { text: money ? T("I don't see money slipping away in your records right now — nothing at risk or left without a follow-up that I can prove.", "אני לא רואה כרגע כסף שבורח ברשומות שלך — אין משהו בסיכון או בלי מעקב שאני יכול להוכיח.") : T("Nothing stood out in my last look at your records. I'll tell you when something does — I won't make things up to fill the space.", "שום דבר לא בלט בבדיקה האחרונה של הרשומות. אגיד לך כשמשהו יבלוט — לא אמציא דברים כדי למלא את המקום."), links: links(ctx.source, [{ label: T("Today", "היום"), path: "/owner?tab=today" }]) };
+      const { noticedCard } = await import("./os");
+      const lines = list.slice(0, 3).map((i) => {
+        const c = noticedCard(i, lang);
+        return `• ${c.what}\n  ${c.observation}\n  → ${c.next}`;
+      });
+      return { text: `${T(`What I noticed${money ? " about money" : ""}:`, `מה ששמתי לב${money ? " לגבי כסף" : ""}:`)}\n${lines.join("\n")}${list.length > 3 ? T(`\n…and ${list.length - 3} more in Work.`, `\n…ועוד ${list.length - 3} ב״עבודה״.`) : ""}`, links: links(ctx.source, [{ label: T("See it in Work", "לראות ב״עבודה״"), path: "/owner?tab=work#noticed" }]) };
     }
     case "needs_you": {
-      if (!ws.interventions.length) return { text: "Nothing needs you right now. I'm handling everything inside your rules." };
+      if (!ws.interventions.length) return { text: T("Nothing needs you right now. I'm handling everything inside your rules.", "שום דבר לא מחכה לך כרגע. אני מטפל בהכול בתוך הכללים שלך.") };
       const lines = ws.interventions.slice(0, 5).map((i, n) => `${n + 1}. ${i.customer} — ${i.title}`);
       const first = ws.interventions.find((i) => i.refs.approvalId && ws.approvals.some((a) => a.id === i.refs.approvalId && a.actionable));
-      const prompt = first ? await approvalPrompt(ws, first.id, actorId(ctx.actor), ctx.source, ctx.now) : undefined;
-      const more = ws.interventions.length > 5 ? `\n…and ${ws.interventions.length - 5} more.` : "";
+      const prompt = first ? await approvalPrompt(ws, first.id, actorId(ctx.actor), ctx.source, ctx.now, lang) : undefined;
+      const more = ws.interventions.length > 5 ? T(`\n…and ${ws.interventions.length - 5} more.`, `\n…ועוד ${ws.interventions.length - 5}.`) : "";
       // The first decidable request carries its why / consequence and Approve / Decline (no repeated title).
-      const detail = prompt ? `\n\nWhy you:${prompt.text.split("\n\nWhy you:")[1] ?? ""}` : "";
-      return { text: `${plural(ws.interventions.length, "thing")} need${ws.interventions.length === 1 ? "s" : ""} you:\n${lines.join("\n")}${more}${detail}`, actions: prompt?.actions, links: [...(prompt?.links ?? []), ...links(ctx.source, [{ label: "All decisions", path: "/owner?tab=actions" }])].slice(0, 2) };
+      const marker = T("\n\nWhy you:", "\n\nלמה אתה:");
+      const detail = prompt ? `${marker}${prompt.text.split(marker)[1] ?? ""}` : "";
+      const head = T(`${plural(ws.interventions.length, "thing")} need${ws.interventions.length === 1 ? "s" : ""} you:`, ws.interventions.length === 1 ? "דבר אחד מחכה לך:" : `${ws.interventions.length} דברים מחכים לך:`);
+      return { text: `${head}\n${lines.join("\n")}${more}${detail}`, actions: prompt?.actions, links: [...(prompt?.links ?? []), ...links(ctx.source, [{ label: T("All decisions", "כל ההחלטות"), path: "/owner?tab=work" }])].slice(0, 2) };
     }
     case "working": {
-      const lines = nowWorking(ws).map((l) => `• ${l.text}`);
+      const lines = nowWorking(ws, lang).map((l) => `• ${l.text}`);
       const active = ops.filter((o) => (ACTIVE as readonly string[]).includes(o.derivedState));
-      for (const o of active) lines.unshift(`• ${o.title} (you asked${o.requestedBy.source === "whatsapp" ? " on WhatsApp" : ""}) — ${STATE_WORDS[o.derivedState].toLowerCase()}: ${progressWords(o)}`);
-      return { text: lines.length ? `Right now:\n${lines.join("\n")}` : "Nothing open right now — I'm watching for the next customer.", links: links(ctx.source, [{ label: "Today", path: "/owner?tab=today" }]) };
+      for (const o of active) lines.unshift(lang === "he" ? `• ${proactiveWords(o.workflow, "he").title} (ביקשת${o.requestedBy.source === "whatsapp" ? " בוואטסאפ" : ""}) — ${STATE_WORDS_HE[o.derivedState]}: ${progressWords(o, lang)}` : `• ${o.title} (you asked${o.requestedBy.source === "whatsapp" ? " on WhatsApp" : ""}) — ${STATE_WORDS[o.derivedState].toLowerCase()}: ${progressWords(o)}`);
+      return { text: lines.length ? `${T("Right now:", "כרגע:")}\n${lines.join("\n")}` : T("Nothing open right now — I'm watching for the next customer.", "אין כרגע משהו פתוח — אני מחכה ללקוח הבא."), links: links(ctx.source, [{ label: T("Work", "עבודה"), path: "/owner?tab=work" }]) };
     }
     case "money": {
       const r = ws.revenue;
       const s = ws.opportunities.summary;
-      const lines = [`Made (verified by your payment provider): ${m(r.direct, "nothing yet")}${r.directPayments ? ` from ${plural(r.directPayments, "payment")}` : ""}.`];
-      if (hasMoney(r.recovered)) lines.push(`Recovered (inside made): ${m(r.recovered)}.`);
-      lines.push(`Pending — not revenue yet: ${m(r.potential)}.`);
-      if (hasMoney(s.atRisk)) lines.push(`At risk: ${m(s.atRisk)}.`);
-      if (hasMoney(r.simulatedPaid) || r.potentialSimulatedItems) lines.push(`Test money (simulator, never counted): ${m(r.simulatedPaid, "none paid")}${r.potentialSimulatedItems ? `, ${m(r.potentialSimulated)} pending` : ""}.`);
-      return { text: `${ws.window.label === "today" ? "Today" : ws.window.label}:\n${lines.join("\n")}`, links: links(ctx.source, [{ label: "Money", path: "/owner?tab=money" }]) };
+      const lines = [T(`Made (verified by your payment provider): ${m(r.direct, "nothing yet")}${r.directPayments ? ` from ${plural(r.directPayments, "payment")}` : ""}.`, `נגבה (אומת מול ספק התשלומים): ${m(r.direct, "עוד כלום")}${r.directPayments ? ` מ־${r.directPayments === 1 ? "תשלום אחד" : `${r.directPayments} תשלומים`}` : ""}.`)];
+      if (hasMoney(r.recovered)) lines.push(T(`Recovered (inside made): ${m(r.recovered)}.`, `הוחזר (כלול בנגבה): ${m(r.recovered)}.`));
+      lines.push(T(`Pending — not revenue yet: ${m(r.potential)}.`, `ממתין — עוד לא הכנסה: ${m(r.potential)}.`));
+      if (hasMoney(s.atRisk)) lines.push(T(`At risk: ${m(s.atRisk)}.`, `בסיכון: ${m(s.atRisk)}.`));
+      if (hasMoney(r.simulatedPaid) || r.potentialSimulatedItems) lines.push(T(`Test money (simulator, never counted): ${m(r.simulatedPaid, "none paid")}${r.potentialSimulatedItems ? `, ${m(r.potentialSimulated)} pending` : ""}.`, `כסף של בדיקות (סימולטור, לא נספר): ${m(r.simulatedPaid, "לא שולם")}${r.potentialSimulatedItems ? `, ${m(r.potentialSimulated)} ממתין` : ""}.`));
+      const when = ws.window.label === "today" || ws.window.label === "היום" ? T("Today", "היום") : ws.window.label;
+      return { text: `${when}:\n${lines.join("\n")}`, links: links(ctx.source, [{ label: T("Money", "כסף"), path: "/owner?tab=money" }]) };
     }
     case "waiting_customers": {
       const onYou = ws.conversations.filter((c) => c.status === "needs_you");
       const onThem = ws.conversations.filter((c) => c.status === "waiting_on_customer");
       const live = ws.conversations.filter((c) => c.status === "in_progress");
-      const name = (c: { customer: string; lastActivityAt: string }) => `${c.customer} (${hoursAgo(c.lastActivityAt, ctx.now)})`;
-      const lines = [onYou.length ? `Waiting on you: ${onYou.slice(0, 5).map(name).join(", ")}` : "Nobody is waiting on you.", live.length ? `Talking with BARRY now: ${live.slice(0, 5).map(name).join(", ")}` : "", onThem.length ? `BARRY is waiting to hear back from: ${onThem.slice(0, 5).map(name).join(", ")}` : ""].filter(Boolean);
-      return { text: lines.join("\n"), links: links(ctx.source, [{ label: "Inbox", path: "/owner?tab=inbox" }]) };
+      const name = (c: { customer: string; lastActivityAt: string }) => `${c.customer} (${hoursAgo(c.lastActivityAt, ctx.now, lang)})`;
+      const lines = [onYou.length ? `${T("Waiting on you", "מחכים לך")}: ${onYou.slice(0, 5).map(name).join(", ")}` : T("Nobody is waiting on you.", "אף אחד לא מחכה לך."), live.length ? `${T("Talking with BARRY now", "מדברים עם BARRY עכשיו")}: ${live.slice(0, 5).map(name).join(", ")}` : "", onThem.length ? `${T("BARRY is waiting to hear back from", "BARRY מחכה לתשובה מ")}: ${onThem.slice(0, 5).map(name).join(", ")}` : ""].filter(Boolean);
+      return { text: lines.join("\n"), links: links(ctx.source, [{ label: T("Customers", "לקוחות"), path: "/owner?tab=customers" }]) };
     }
     case "customer": {
       const subject = intent.subject ?? "";
       const found = ws.conversations.filter((c) => nameMatches(c.customer, subject));
-      if (found.length === 0) return { text: `I don't see a customer called ${subject} in your conversations.` };
-      if (found.length > 1) return { text: `${plural(found.length, "customer")} match “${subject}”: ${found.slice(0, 5).map((c) => c.customer).join(", ")}. Which one?` };
+      if (found.length === 0) return { text: T(`I don't see a customer called ${subject} in your conversations.`, `אני לא רואה לקוח בשם ${subject} בשיחות שלך.`) };
+      if (found.length > 1) return { text: T(`${plural(found.length, "customer")} match “${subject}”: ${found.slice(0, 5).map((c) => c.customer).join(", ")}. Which one?`, `${found.length} לקוחות מתאימים ל“${subject}”: ${found.slice(0, 5).map((c) => c.customer).join(", ")}. איזה מהם?`) };
       const c = found[0];
       const money = ws.revenueEvidence.filter((e) => e.conversationId === c.id);
       const paid = money.filter((e) => e.category === "collected");
       const pending = money.filter((e) => e.category === "open_opportunity");
       const test = money.filter((e) => e.category === "simulated");
-      const payment = paid.length ? `Paid: ${m(sum(paid))}, verified by your payment provider.` : pending.length ? `Not paid yet — ${m(sum(pending))} link still open.` : test.length ? `Only test money (simulator): ${m(sum(test))} — not counted.` : "No payment from them yet.";
-      const needs = ws.interventions.filter((i) => i.conversationId === c.id).map((i) => `Needs you: ${i.title}`);
+      const payment = paid.length ? T(`Paid: ${m(sum(paid))}, verified by your payment provider.`, `שילם: ${m(sum(paid))}, אומת מול ספק התשלומים.`) : pending.length ? T(`Not paid yet — ${m(sum(pending))} link still open.`, `עוד לא שילם — קישור של ${m(sum(pending))} עדיין פתוח.`) : test.length ? T(`Only test money (simulator): ${m(sum(test))} — not counted.`, `רק כסף של בדיקות (סימולטור): ${m(sum(test))} — לא נספר.`) : T("No payment from them yet.", "עוד לא התקבל תשלום.");
+      const needs = ws.interventions.filter((i) => i.conversationId === c.id).map((i) => `${T("Needs you", "מחכה לך")}: ${i.title}`);
       const state = await getConversationStore().get(c.id);
-      const story = state ? (await import("./story")).conversationStory(state) : undefined;
-      const lines = [`${c.customer} — ${STATUS_WORDS[c.status]}`, ...(story?.standing.slice(0, 2) ?? []), payment, ...needs];
-      return { text: lines.join("\n"), links: links(ctx.source, [{ label: "Open conversation", path: `/owner?tab=inbox&conversation=${encodeURIComponent(c.id)}` }]) };
+      const story = state ? (await import("./story")).conversationStory(state, lang) : undefined;
+      const lines = [`${c.customer} — ${(lang === "he" ? STATUS_WORDS_HE : STATUS_WORDS)[c.status]}`, ...(story?.standing.slice(0, 2) ?? []), payment, ...needs];
+      return { text: lines.join("\n"), links: links(ctx.source, [{ label: T("Open conversation", "לפתוח את השיחה"), path: `/owner?tab=customers&conversation=${encodeURIComponent(c.id)}` }]) };
     }
     case "operation": {
       const op = ops.find((o) => !intent.workflow || o.workflow === intent.workflow);
-      if (!op) return { text: intent.workflow ? `You haven't started ${operationTitle(intent.workflow).command.toLowerCase()} yet. Tell me to, and I'll show you exactly who it would reach first.` : "You haven't started anything from a command yet." };
-      return { text: operationSummary(op), links: links(ctx.source, [{ label: "See it live", path: `/owner?tab=today&operation=${encodeURIComponent(op.id)}` }]) };
+      if (!op) return { text: intent.workflow ? T(`You haven't started ${operationTitle(intent.workflow).command.toLowerCase()} yet. Tell me to, and I'll show you exactly who it would reach first.`, `עוד לא התחלת ${proactiveWords(intent.workflow, "he").command}. תגיד לי, ואראה לך קודם בדיוק למי זה יגיע.`) : T("You haven't started anything from a command yet.", "עוד לא התחלת שום דבר מפקודה.") };
+      return { text: operationSummary(op, lang), links: links(ctx.source, [{ label: T("See it live", "לראות בזמן אמת"), path: `/owner?tab=work&operation=${encodeURIComponent(op.id)}` }]) };
     }
     case "capabilities": {
+      if (lang === "he") {
+        const os = await (await import("./os-service")).getOwnerOs(ctx.graph, "he");
+        const real = os.systems.filter((x) => x.used && (x.label === "REAL" || x.label === "SUPERVISED")).flatMap((x) => x.does);
+        const sim = os.systems.filter((x) => x.used && x.label === "SIMULATED").map((x) => x.name);
+        return { text: `${real.length ? `מה אני עושה באמת עכשיו:\n${real.slice(0, 6).map((c) => `• ${c}`).join("\n")}` : "עוד שום דבר לא רץ באמת."}${sim.length ? `\nעל סימולטור בלבד (שום דבר אמיתי לא קורה): ${sim.join(", ")}` : ""}`, links: links(ctx.source, [{ label: "הגדרת BARRY", path: "/owner/setup" }]) };
+      }
       const now = ws.capabilities.now.slice(0, 6);
-      return { text: now.length ? `What I do for real now:\n${now.map((c) => `• ${c}`).join("\n")}${ws.capabilities.nowSimulated.length ? `\nOn a simulator only: ${ws.capabilities.nowSimulated.slice(0, 3).join(", ")}` : ""}` : "Nothing runs for real yet — Train BARRY shows what unlocks it.", links: links(ctx.source, [{ label: "Train BARRY", path: "/owner/train" }]) };
+      return { text: now.length ? `What I do for real now:\n${now.map((c) => `• ${c}`).join("\n")}${ws.capabilities.nowSimulated.length ? `\nOn a simulator only: ${ws.capabilities.nowSimulated.slice(0, 3).join(", ")}` : ""}` : "Nothing runs for real yet — BARRY setup shows what unlocks it.", links: links(ctx.source, [{ label: "BARRY setup", path: "/owner/setup" }]) };
     }
     default: {
-      const a = await askOwnerBarry(ctx.graph, ctx.text);
+      const a = await askOwnerBarry(ctx.graph, ctx.text, { lang });
       if (ctx.source !== "web" && a.source === "briefing") return { text: HELP };
-      return { text: ctx.source === "web" ? a.answer : a.answer.slice(0, 1500), links: a.links.interventions[0] ? links(ctx.source, [{ label: `Decide: ${a.links.interventions[0].customer}`, path: `/owner?tab=actions&intervention=${encodeURIComponent(a.links.interventions[0].id)}` }]) : undefined };
+      return { text: ctx.source === "web" ? a.answer : a.answer.slice(0, 1500), links: a.links.interventions[0] ? links(ctx.source, [{ label: T(`Decide: ${a.links.interventions[0].customer}`, `להחליט: ${a.links.interventions[0].customer}`), path: `/owner?tab=work&intervention=${encodeURIComponent(a.links.interventions[0].id)}` }]) : undefined };
     }
   }
 }
 
 const HELP = "You can ask me things like:\n• Who needs me?\n• What are you working on?\n• How much did we make today?\n• What happened with Maya?\nOr tell me: “Recover today's abandoned carts”, “Stop the recovery”, “Don't offer more than 5% today”.";
 const STATUS_WORDS: Record<OwnerWorkspace["conversations"][number]["status"], string> = { needs_you: "waiting on you", waiting_on_customer: "BARRY is waiting to hear back", completed: "done", lost: "lost", in_progress: "talking with BARRY now" };
+const STATUS_WORDS_HE: Record<OwnerWorkspace["conversations"][number]["status"], string> = { needs_you: "מחכה לך", waiting_on_customer: "BARRY מחכה לתשובה", completed: "הסתיים", lost: "לא נסגר", in_progress: "מדבר עם BARRY עכשיו" };
+const STATE_WORDS_HE: Record<OwnerOperationView["derivedState"], string> = { proposed: "מחכה לאישור שלך", running: "רץ", waiting_on_customers: "מחכה ללקוחות", completed: "הסתיים", stopped: "נעצר על ידך", blocked: "חסום", failed: "נכשל" };
 const sum = (rows: { amount: number; currency: string }[]) => rows.reduce<Record<string, number>>((acc, e) => ({ ...acc, [e.currency]: Math.round(((acc[e.currency] ?? 0) + e.amount) * 100) / 100 }), {});
-function hoursAgo(iso: string, now: Date): string {
+function hoursAgo(iso: string, now: Date, lang: OwnerLang = "en"): string {
   const h = Math.floor((now.getTime() - Date.parse(iso)) / 3600_000);
+  if (lang === "he") return h < 1 ? "עכשיו" : h < 24 ? `לפני ${h} שע׳` : `לפני ${Math.floor(h / 24)} ימים`;
   return h < 1 ? "just now" : h < 24 ? `${h}h` : `${Math.floor(h / 24)}d`;
 }
 
-function progressWords(o: OwnerOperationView): string {
+function progressWords(o: OwnerOperationView, lang: OwnerLang = "en"): string {
   const p = o.progress;
+  const mw = (x: Record<string, number>) => (lang === "he" ? moneyIn("he", x) : moneyWords(x, { empty: "none" }));
+  if (lang === "he") {
+    const parts = [`נשלחו ${p.contacted}`, `ענו ${p.replied}`, `קנו ${p.purchased}`];
+    if (hasMoney(p.recovered)) parts.push(`הוחזרו ${mw(p.recovered)}`);
+    if (p.stillTalking) parts.push(`עדיין מדברים ${p.stillTalking}`);
+    if (p.failed) parts.push(`נכשלו ${p.failed}`);
+    return parts.join(" · ");
+  }
   const parts = [`contacted ${p.contacted}`, `replied ${p.replied}`, `purchased ${p.purchased}`];
-  if (hasMoney(p.recovered)) parts.push(`recovered ${m(p.recovered)}`);
+  if (hasMoney(p.recovered)) parts.push(`recovered ${mw(p.recovered)}`);
   if (p.stillTalking) parts.push(`still talking ${p.stillTalking}`);
   if (p.failed) parts.push(`failed ${p.failed}`);
   return parts.join(" · ");
 }
 
-export function operationSummary(o: OwnerOperationView): string {
+export function operationSummary(o: OwnerOperationView, lang: OwnerLang = "en"): string {
   const p = o.progress;
+  if (lang === "he") {
+    const head = `${proactiveWords(o.workflow, "he").title} — ${STATE_WORDS_HE[o.derivedState]}`;
+    if (o.derivedState === "blocked") return `${head}\nלא ניתן להתחיל — הפרטים ב״עבודה״.`;
+    const lines = [head, `נשלחו: ${p.contacted}`, `ענו: ${p.replied}`, `קנו: ${p.purchased}`];
+    if (hasMoney(p.recovered)) lines.push(`הוחזרו: ${moneyIn("he", p.recovered)} (מאומת)`);
+    if (p.stillTalking) lines.push(`עדיין מדברים: ${p.stillTalking}`);
+    if (p.failed) lines.push(`נכשלו: ${p.failed}`);
+    if (o.stoppedAt) lines.push("נעצר על ידך — הודעות שכבר נשלחו נשארות.");
+    if (p.test) lines.push(`${p.test === 1 ? "לקוח אחד" : `${p.test} לקוחות`} במצב בדיקה (סימולטור) — אף פעם לא נספר ככסף.`);
+    return lines.join("\n");
+  }
   const head = `${o.title} — ${STATE_WORDS[o.derivedState]}`;
   if (o.derivedState === "blocked") return `${head}\n${o.blockedReason ?? ""}`;
   const lines = [head, `Contacted: ${p.contacted}`, `Replied: ${p.replied}`, `Purchased: ${p.purchased}`];
-  if (hasMoney(p.recovered)) lines.push(`Recovered: ${m(p.recovered)} (verified)`);
+  if (hasMoney(p.recovered)) lines.push(`Recovered: ${moneyWords(p.recovered, { empty: "none" })} (verified)`);
   if (p.stillTalking) lines.push(`Still talking: ${p.stillTalking}`);
   if (p.failed) lines.push(`Failed: ${p.failed}`);
   if (o.stoppedAt) lines.push(`Stopped by you — messages already sent stay sent.`);
@@ -223,17 +263,24 @@ export function operationSummary(o: OwnerOperationView): string {
 }
 
 /** "Found 47 … 35 eligible · 8 already purchased · 4 can't be contacted (reasons)". */
-export function groundingSummary(op: OwnerOperation): string {
+export function groundingSummary(op: OwnerOperation, lang: OwnerLang = "en"): string {
   const eligible = op.targets.filter((t) => t.eligibility === "eligible");
   const done = op.targets.filter((t) => t.alreadyDone);
   const other = op.targets.filter((t) => t.eligibility === "excluded" && !t.alreadyDone);
+  const early = eligible.filter((t) => t.reason).length;
+  if (lang === "he") {
+    const lines = [`מצאתי ${op.targets.length} ${op.scope.kind === "today" ? "מהיום" : "שעדיין פתוחים"}.`, `${eligible.length} מתאימים למעקב.`];
+    if (done.length) lines.push(`${done.length} כבר טופלו.`);
+    if (other.length) lines.push(`${other.length} אי אפשר לפנות אליהם כרגע.`);
+    if (early) lines.push(`${early} עוד לא הגיע זמנם לפי הכלל שלך — נכללו כי ביקשת עכשיו.`);
+    return lines.join("\n");
+  }
   const reasons = new Map<string, number>();
   for (const t of other) reasons.set(t.reason ?? "excluded", (reasons.get(t.reason ?? "excluded") ?? 0) + 1);
   const noun = operationTitle(op.workflow).command.toLowerCase().replace(/^\w+ /, "");
   const lines = [`Found ${plural(op.targets.length, singular(noun), noun)} ${op.scope.kind === "today" ? "from today" : "still open"}.`, `${eligible.length} ${eligible.length === 1 ? "is" : "are"} eligible for a follow-up.`];
   if (done.length) lines.push(`${done.length} already done (${done[0].reason}).`);
   if (other.length) lines.push(`${other.length} can't be contacted now: ${[...reasons.entries()].map(([r, n]) => `${n} ${r}`).join("; ")}.`);
-  const early = eligible.filter((t) => t.reason).length;
   if (early) lines.push(`${early} ${early === 1 ? "isn't" : "aren't"} due yet under your rule — included because you asked now.`);
   return lines.join("\n");
 }
@@ -241,7 +288,7 @@ const singular = (noun: string) => noun.replace(/ies$/, "y").replace(/s$/, "");
 
 // ── The pipeline ─────────────────────────────────────────────────────────────────────────────────
 
-export type ExecuteInput = { graph: BusinessGraph; source: CommandSource; actor: OwnerActor; key: string; text?: string; actionId?: string; now?: Date; trace?: TraceStep[] };
+export type ExecuteInput = { graph: BusinessGraph; source: CommandSource; actor: OwnerActor; key: string; text?: string; actionId?: string; now?: Date; trace?: TraceStep[]; /** The owner's chosen language for the reply's words (web only; the WhatsApp channel never sets it). Presentation only. */ lang?: OwnerLang };
 
 export async function executeOwnerCommand(input: ExecuteInput): Promise<{ record: OwnerCommandRecord; reply: OwnerReply; duplicate: boolean }> {
   const now = input.now ?? new Date();
@@ -260,7 +307,7 @@ export async function executeOwnerCommand(input: ExecuteInput): Promise<{ record
     record.trace.push({ step: "reply", outcome: "ok", detail: reply.text.split("\n")[0].slice(0, 160), at: at() });
   } catch (err) {
     record.status = "failed";
-    record.reply = { text: "Something went wrong on my side — nothing was changed. Try again in a moment.", intent: record.intent?.kind ?? "query" };
+    record.reply = { text: L(input.lang ?? "en", "Something went wrong on my side — nothing was changed. Try again in a moment.", "משהו השתבש אצלי — שום דבר לא השתנה. נסה שוב עוד רגע."), intent: record.intent?.kind ?? "query" };
     record.trace.push({ step: "execution", outcome: "failed", detail: err instanceof Error ? err.message.slice(0, 200) : "error", at: at() });
   }
   record.updatedAt = at();
@@ -270,6 +317,8 @@ export async function executeOwnerCommand(input: ExecuteInput): Promise<{ record
 
 async function dispatch(input: ExecuteInput, record: OwnerCommandRecord, now: Date): Promise<OwnerReply> {
   const { graph, source, actor } = input;
+  const lang: OwnerLang = input.lang ?? "en";
+  const T = (en: string, he: string) => L(lang, en, he);
   const t = () => new Date().toISOString();
   const step = (s: TraceStep["step"], outcome: TraceStep["outcome"], detail: string) => record.trace.push({ step: s, outcome, detail, at: t() });
 
@@ -277,29 +326,29 @@ async function dispatch(input: ExecuteInput, record: OwnerCommandRecord, now: Da
   const action = input.actionId ? parseAction(input.actionId) : undefined;
   if (input.actionId && !action) {
     step("interpretation", "blocked", "unrecognised action id");
-    return { text: "I couldn't match that button to anything I sent you — nothing was done.", intent: "unsupported" };
+    return { text: T("I couldn't match that button to anything I sent you — nothing was done.", "לא מצאתי למה הכפתור הזה שייך — לא נעשה כלום."), intent: "unsupported" };
   }
   const intent: CommandIntent = action ? (action.type === "decision" ? { kind: "approval_response", decision: action.decision } : action.type === "start" ? { kind: "operation_confirm" } : { kind: "operation_stop" }) : interpretCommand(input.text ?? "", source).intent;
   record.intent = intent;
   step("interpretation", "ok", `${intent.kind}${"topic" in intent ? `:${intent.topic}` : ""}${"workflow" in intent && intent.workflow ? `:${intent.workflow}` : ""}${action ? " (exact action)" : ""}`);
 
-  const ws = await getOwnerWorkspace(graph, { now });
+  const ws = await getOwnerWorkspace(graph, { now, lang });
   step("state", ws.unavailable.length ? "info" : "ok", ws.unavailable.length ? `records unavailable: ${ws.unavailable.join(", ")}` : "current records loaded");
   const conversations = await getConversationStore().listByBusiness(graph.business.id);
   const views = (await listOperations(graph.business.id)).map((o) => operationView(o, ws.obligations, conversations));
 
   switch (intent.kind) {
     case "query":
-      return { ...(await answerQuery(intent, ws, views, { graph, source, actor, text: input.text ?? "", now })), intent: "query" };
+      return { ...(await answerQuery(intent, ws, views, { graph, source, actor, text: input.text ?? "", now, lang })), intent: "query" };
 
     case "operation_request": {
       if (!STARTABLE.includes(intent.workflow)) {
         step("grounding", "blocked", `no customer-facing follow-up for ${intent.workflow}`);
-        return { text: `I can't start that on my own — there's no message BARRY can send customers for ${operationTitle(intent.workflow).command.toLowerCase()} yet. It stays on your list instead.`, intent: intent.kind };
+        return { text: T(`I can't start that on my own — there's no message BARRY can send customers for ${operationTitle(intent.workflow).command.toLowerCase()} yet. It stays on your list instead.`, `אני לא יכול להתחיל את זה לבד — עוד אין הודעה ש־BARRY יכול לשלוח ללקוחות עבור ${proactiveWords(intent.workflow, "he").command}. זה נשאר ברשימה שלך.`), intent: intent.kind };
       }
       if (ws.unavailable.includes("obligations") || ws.unavailable.includes("conversations")) {
         step("grounding", "blocked", "records unavailable — cohort can't be grounded");
-        return { text: "I can't read your records right now, so I can't tell exactly who this would reach. Nothing was started — try again in a moment.", intent: intent.kind };
+        return { text: T("I can't read your records right now, so I can't tell exactly who this would reach. Nothing was started — try again in a moment.", "אני לא מצליח לקרוא את הרשומות כרגע, אז אני לא יכול לדעת בדיוק למי זה יגיע. שום דבר לא התחיל — נסה שוב עוד רגע."), intent: intent.kind };
       }
       const op = await proposeOperation({ graph, ws, workflow: intent.workflow, scope: intent.scope, commandId: record.id, source, actor: actorLabel(actor), now });
       record.operationId = op.id;
@@ -307,23 +356,23 @@ async function dispatch(input: ExecuteInput, record: OwnerCommandRecord, now: Da
       step("grounding", "ok", `cohort ${op.targets.length}: ${eligible} eligible, ${op.targets.length - eligible} excluded`);
       step("entitlement", op.entitlement === "included" ? "ok" : "blocked", op.entitlement === "included" ? "proactive follow-ups included" : "not included in the plan");
       step("authority", op.state === "blocked" ? "blocked" : "ok", op.state === "blocked" ? op.blockedReason ?? "blocked" : `${op.authority} Rule: ${op.rule ? `after ${op.rule.afterHours}h, max ${op.rule.maxAttempts}, every ${op.rule.intervalHours}h` : "none"}`);
-      const link = links(source, [{ label: "See it live", path: `/owner?tab=today&operation=${encodeURIComponent(op.id)}` }]);
-      if (op.state === "blocked") return { text: `${op.blockedReason}${op.entitlement === "not_included" ? "" : ""} Nothing was started.`, intent: intent.kind, links: op.entitlement === "not_included" ? links(source, [{ label: "Your plan", path: "/owner/settings#plan" }]) : undefined, operation: operationView(op, ws.obligations, conversations) };
-      const summary = groundingSummary(op);
+      const link = links(source, [{ label: T("See it live", "לראות בזמן אמת"), path: `/owner?tab=${source === "web" ? "work" : "today"}&operation=${encodeURIComponent(op.id)}` }]);
+      if (op.state === "blocked") return { text: lang === "he" ? (op.entitlement === "not_included" ? "מעקבים יזומים לא כלולים בתוכנית שלך. שום דבר לא התחיל." : "אי אפשר להתחיל את זה כרגע לפי הכללים או ההגבלות הקיימות. שום דבר לא התחיל.") : `${op.blockedReason} Nothing was started.`, intent: intent.kind, links: op.entitlement === "not_included" ? links(source, [{ label: T("Your plan", "התוכנית שלך"), path: "/owner/settings#plan" }]) : undefined, operation: operationView(op, ws.obligations, conversations) };
+      const summary = groundingSummary(op, lang);
       if (eligible === 0) {
         op.state = "completed";
         op.finishedAt = t();
         op.events.push({ at: t(), what: "Nothing eligible — nothing sent" });
         await saveOperation(op);
         step("plan", "info", "nothing eligible");
-        return { text: `${summary}\n\nNobody to contact right now — nothing was sent.`, intent: intent.kind, links: link, operation: operationView(op, ws.obligations, conversations) };
+        return { text: `${summary}\n\n${T("Nobody to contact right now — nothing was sent.", "אין כרגע למי לפנות — שום דבר לא נשלח.")}`, intent: intent.kind, links: link, operation: operationView(op, ws.obligations, conversations) };
       }
       if (eligible > CONFIRM_ABOVE) {
         step("plan", "info", `waiting for the owner's go (${eligible} > ${CONFIRM_ABOVE})`);
-        return { text: `${summary}\n\n${op.plannedAction}\nShall I start with the ${eligible} eligible customers?`, actions: [{ id: `o:${op.id}:${op.actionToken}:start`, title: "Start" }, { id: `o:${op.id}:${op.actionToken}:stop`, title: "Cancel" }], links: link, intent: intent.kind, operation: operationView(op, ws.obligations, conversations) };
+        return { text: `${summary}\n\n${lang === "he" ? `להתחיל עם ${eligible} הלקוחות המתאימים?` : `${op.plannedAction}\nShall I start with the ${eligible} eligible customers?`}`, actions: [{ id: `o:${op.id}:${op.actionToken}:start`, title: T("Start", "להתחיל") }, { id: `o:${op.id}:${op.actionToken}:stop`, title: T("Cancel", "לבטל") }], links: link, intent: intent.kind, operation: operationView(op, ws.obligations, conversations) };
       }
       step("plan", "ok", `starting now with ${eligible}`);
-      return { ...(await start(op.id, `${summary}\n\nStarting with the ${eligible} eligible customer${eligible === 1 ? "" : "s"}.`)), intent: intent.kind };
+      return { ...(await start(op.id, `${summary}\n\n${T(`Starting with the ${eligible} eligible customer${eligible === 1 ? "" : "s"}.`, eligible === 1 ? "מתחיל עם הלקוח המתאים." : `מתחיל עם ${eligible} הלקוחות המתאימים.`)}`)), intent: intent.kind };
     }
 
     case "operation_confirm": {
@@ -331,13 +380,13 @@ async function dispatch(input: ExecuteInput, record: OwnerCommandRecord, now: Da
       const target = action?.type === "start" ? ops.find((o) => o.id === action.opId) : ops.filter((o) => o.state === "proposed" && Date.parse(o.createdAt) > now.getTime() - 30 * 60_000)[0];
       if (action?.type === "start" && (!target || target.actionToken !== action.token)) {
         step("grounding", "blocked", "start action does not match a stored operation token");
-        return { text: "That button doesn't match anything waiting for you — nothing was started.", intent: intent.kind };
+        return { text: T("That button doesn't match anything waiting for you — nothing was started.", "הכפתור הזה לא מתאים לשום דבר שמחכה לך — שום דבר לא התחיל."), intent: intent.kind };
       }
       if (!target || target.state !== "proposed") {
         step("grounding", "info", target ? `operation already ${target.state}` : "nothing proposed");
-        return { text: target ? `That one is already ${STATE_WORDS[target.state].toLowerCase()} — nothing new was started.` : "Nothing is waiting for your go right now.", intent: intent.kind };
+        return { text: target ? T(`That one is already ${STATE_WORDS[target.state].toLowerCase()} — nothing new was started.`, `זה כבר במצב "${STATE_WORDS_HE[target.state]}" — שום דבר חדש לא התחיל.`) : T("Nothing is waiting for your go right now.", "שום דבר לא מחכה לאישור שלך כרגע."), intent: intent.kind };
       }
-      return { ...(await start(target.id, `Starting ${target.title.toLowerCase()} for ${target.targets.filter((x) => x.eligibility === "eligible").length} customers.`)), intent: intent.kind };
+      return { ...(await start(target.id, T(`Starting ${target.title.toLowerCase()} for ${target.targets.filter((x) => x.eligibility === "eligible").length} customers.`, `מתחיל: ${proactiveWords(target.workflow, "he").command}, ל־${target.targets.filter((x) => x.eligibility === "eligible").length} לקוחות.`))), intent: intent.kind };
     }
 
     case "operation_stop": {
@@ -348,18 +397,18 @@ async function dispatch(input: ExecuteInput, record: OwnerCommandRecord, now: Da
         const o = ops.find((x) => x.id === action.opId);
         if (!o || o.actionToken !== action.token) {
           step("grounding", "blocked", "stop action does not match a stored operation token");
-          return { text: "That button doesn't match anything running — nothing was changed.", intent: intent.kind };
+          return { text: T("That button doesn't match anything running — nothing was changed.", "הכפתור הזה לא מתאים לשום דבר שרץ — שום דבר לא השתנה."), intent: intent.kind };
         }
         chosen = [o];
       } else {
         const matching = intent.workflow ? activeOps.filter((o) => o.workflow === intent.workflow) : activeOps;
         if (matching.length === 0) {
           step("grounding", "info", "no active owner operation");
-          return { text: "Nothing you started is running right now, so there's nothing to stop. Your automatic follow-up rules still run on their own — you can change them in Train BARRY.", intent: intent.kind, links: links(source, [{ label: "Train BARRY", path: "/owner/train" }]) };
+          return { text: T("Nothing you started is running right now, so there's nothing to stop. Your automatic follow-up rules still run on their own — the BARRY team changes them with you.", "שום דבר שהתחלת לא רץ כרגע, אז אין מה לעצור. כללי המעקב האוטומטיים ממשיכים לרוץ לבד — צוות BARRY משנה אותם איתך."), intent: intent.kind, links: links(source, [{ label: T("Rules", "כללים"), path: "/owner/rules" }]) };
         }
         if (matching.length > 1 && !intent.everything) {
           step("grounding", "info", `ambiguous: ${matching.length} active operations`);
-          return { text: `${plural(matching.length, "thing")} you started ${matching.length === 1 ? "is" : "are"} running:\n${matching.map((o, i) => `${i + 1}. ${o.title}`).join("\n")}\nWhich should I stop? (Or say “stop everything”.)`, actions: matching.slice(0, 3).map((o) => ({ id: `o:${o.id}:${o.actionToken}:stop`, title: `Stop ${o.title.split(" ").slice(0, 2).join(" ")}`.slice(0, 20) })), intent: intent.kind };
+          return { text: lang === "he" ? `${matching.length} דברים שהתחלת רצים עכשיו:\n${matching.map((o, i) => `${i + 1}. ${proactiveWords(o.workflow, "he").title}`).join("\n")}\nאיזה לעצור? (או ״לעצור הכול״.)` : `${plural(matching.length, "thing")} you started ${matching.length === 1 ? "is" : "are"} running:\n${matching.map((o, i) => `${i + 1}. ${o.title}`).join("\n")}\nWhich should I stop? (Or say “stop everything”.)`, actions: matching.slice(0, 3).map((o) => ({ id: `o:${o.id}:${o.actionToken}:stop`, title: lang === "he" ? `לעצור ${proactiveWords(o.workflow, "he").command.split(" ").slice(0, 2).join(" ")}`.slice(0, 20) : `Stop ${o.title.split(" ").slice(0, 2).join(" ")}`.slice(0, 20) })), intent: intent.kind };
         }
         chosen = matching;
       }
@@ -369,7 +418,7 @@ async function dispatch(input: ExecuteInput, record: OwnerCommandRecord, now: Da
         if (!stopped) continue;
         const v = operationView(stopped, ws.obligations, conversations);
         step("execution", "ok", `stopped ${o.id}`);
-        lines.push(stopped.state === "stopped" ? `Stopped ${stopped.title.toLowerCase()}. ${v.progress.contacted ? `${plural(v.progress.contacted, "customer")} already contacted — those messages stay sent. ` : ""}BARRY won't contact anyone else in it.` : `${stopped.title} was already ${STATE_WORDS[stopped.state].toLowerCase()}.`);
+        lines.push(lang === "he" ? (stopped.state === "stopped" ? `עצרתי: ${proactiveWords(stopped.workflow, "he").title}. ${v.progress.contacted ? `${v.progress.contacted} לקוחות כבר קיבלו הודעה — ההודעות האלה נשארות. ` : ""}BARRY לא יפנה לאף אחד נוסף במסגרת הזאת.` : `זה כבר היה במצב "${STATE_WORDS_HE[stopped.state]}".`) : stopped.state === "stopped" ? `Stopped ${stopped.title.toLowerCase()}. ${v.progress.contacted ? `${plural(v.progress.contacted, "customer")} already contacted — those messages stay sent. ` : ""}BARRY won't contact anyone else in it.` : `${stopped.title} was already ${STATE_WORDS[stopped.state].toLowerCase()}.`);
       }
       return { text: lines.join("\n"), intent: intent.kind };
     }
@@ -381,7 +430,7 @@ async function dispatch(input: ExecuteInput, record: OwnerCommandRecord, now: Da
         prompt = prompts.find((p) => p.key === action.promptKey);
         if (!prompt || prompt.to !== actorId(actor)) {
           step("approval", "blocked", prompt ? "prompt belongs to another recipient" : "unknown prompt");
-          return { text: "That decision doesn't match a request I sent you — nothing was done.", intent: intent.kind };
+          return { text: T("That decision doesn't match a request I sent you — nothing was done.", "ההחלטה הזאת לא מתאימה לבקשה ששלחתי לך — לא נעשה כלום."), intent: intent.kind };
         }
       } else {
         // Text decides only a request this owner was shown, still current, unambiguous.
@@ -392,25 +441,25 @@ async function dispatch(input: ExecuteInput, record: OwnerCommandRecord, now: Da
         else {
           const pending = ws.interventions.filter((i) => i.refs.approvalId && ws.approvals.some((a) => a.id === i.refs.approvalId && a.actionable) && (!intent.subject || nameMatches(i.customer, intent.subject)));
           step("approval", "info", pending.length ? "shown the exact request to decide" : "no matching request");
-          if (!pending.length) return { text: intent.subject ? `Nothing from ${intent.subject} is waiting for your decision.` : "Nothing is waiting for your decision right now.", intent: intent.kind };
-          const p = await approvalPrompt(ws, pending[0].id, actorId(actor), source, now);
-          return { ...(p ?? { text: "That request isn't open any more." }), text: `${pending.length > 1 ? `${pending.length} requests are waiting — here's the first.\n\n` : ""}${p?.text ?? ""}`, intent: intent.kind };
+          if (!pending.length) return { text: intent.subject ? T(`Nothing from ${intent.subject} is waiting for your decision.`, `שום דבר מ־${intent.subject} לא מחכה להחלטה שלך.`) : T("Nothing is waiting for your decision right now.", "שום דבר לא מחכה להחלטה שלך כרגע."), intent: intent.kind };
+          const p = await approvalPrompt(ws, pending[0].id, actorId(actor), source, now, lang);
+          return { ...(p ?? { text: T("That request isn't open any more.", "הבקשה הזאת כבר לא פתוחה.") }), text: `${pending.length > 1 ? T(`${pending.length} requests are waiting — here's the first.\n\n`, `${pending.length} בקשות מחכות — הנה הראשונה.\n\n`) : ""}${p?.text ?? ""}`, intent: intent.kind };
         }
       }
       if (prompt.usedAt) {
         step("approval", "info", "prompt already used (duplicate)");
-        return { text: "Already done — that decision was made once and won't run again.", intent: intent.kind };
+        return { text: T("Already done — that decision was made once and won't run again.", "כבר בוצע — ההחלטה הזאת התקבלה פעם אחת ולא תרוץ שוב."), intent: intent.kind };
       }
       if (Date.parse(prompt.expiresAt) < now.getTime()) {
         step("approval", "blocked", "prompt expired");
-        return { text: "That request is too old to decide from here — open it to see where it stands.", links: links(source, [{ label: "Review", path: `/owner?tab=actions&intervention=${encodeURIComponent(prompt.interventionId)}` }]), intent: intent.kind };
+        return { text: T("That request is too old to decide from here — open it to see where it stands.", "הבקשה הזאת ישנה מדי כדי להחליט עליה מכאן — פתח אותה כדי לראות איפה היא עומדת."), links: links(source, [{ label: T("Review", "לפרטים"), path: `/owner?tab=actions&intervention=${encodeURIComponent(prompt.interventionId)}` }]), intent: intent.kind };
       }
       const approval = ws.approvals.find((a) => a.id === prompt!.approvalId);
       if (!approval || !approval.actionable || approval.revision !== prompt.revision) {
         step("approval", "blocked", !approval ? "request not found" : !approval.actionable ? `request is ${approval.lifecycle}` : `revision changed ${prompt.revision} → ${approval.revision}`);
         const current = ws.interventions.find((i) => i.refs.approvalId === prompt!.approvalId);
-        const again = approval?.actionable && current ? await approvalPrompt(ws, current.id, actorId(actor), source, now) : undefined;
-        return { text: `That request changed or was already decided since I sent it — nothing was done.${again ? `\n\nHere's the current one:\n\n${again.text}` : ""}`, actions: again?.actions, links: again?.links, intent: intent.kind };
+        const again = approval?.actionable && current ? await approvalPrompt(ws, current.id, actorId(actor), source, now, lang) : undefined;
+        return { text: `${T("That request changed or was already decided since I sent it — nothing was done.", "הבקשה השתנתה או כבר הוחלטה מאז ששלחתי אותה — לא נעשה כלום.")}${again ? `\n\n${T("Here's the current one:", "הנה הבקשה העדכנית:")}\n\n${again.text}` : ""}`, actions: again?.actions, links: again?.links, intent: intent.kind };
       }
       // Single use, marked BEFORE execution: a double tap or replay finds it used.
       await savePrompt({ ...prompt, usedAt: now.toISOString(), usedFor: `${intent.decision} by ${actorLabel(actor)}` });
@@ -419,35 +468,35 @@ async function dispatch(input: ExecuteInput, record: OwnerCommandRecord, now: Da
       const held = outcome.turn.trace?.hold;
       step("execution", held ? "blocked" : "ok", held ? `held: ${held.reason}` : `${outcome.turn.trace?.stop.reason ?? "resumed"}`);
       step("verification", "ok", "approval resolved through the runtime resume path (revalidation, final-write gate, compare-and-set)");
-      if (held) return { text: `Not carried out: ${held.reason}. The customer was asked to confirm first.`, intent: intent.kind };
-      return { text: intent.decision === "approve" ? `Approved. BARRY told ${prompt.customer}: “${outcome.response.slice(0, 220)}”` : `Declined — ${prompt.customer} was told; nothing was sent or charged.`, links: links(source, [{ label: "Conversation", path: `/owner?tab=inbox&conversation=${encodeURIComponent(approval.conversationId)}` }]), intent: intent.kind };
+      if (held) return { text: T(`Not carried out: ${held.reason}. The customer was asked to confirm first.`, "לא בוצע: הלקוח התבקש לאשר קודם."), intent: intent.kind };
+      return { text: intent.decision === "approve" ? T(`Approved. BARRY told ${prompt.customer}: “${outcome.response.slice(0, 220)}”`, `אושר. BARRY כתב ל${/^[\u0590-\u05FF]/.test(prompt.customer) ? "" : "־"}${prompt.customer}: “${outcome.response.slice(0, 220)}”`) : T(`Declined — ${prompt.customer} was told; nothing was sent or charged.`, `נדחה — ${prompt.customer} קיבל עדכון; שום דבר לא נשלח ולא נגבה.`), links: links(source, [{ label: T("Conversation", "לשיחה"), path: `/owner?tab=${source === "web" ? "customers" : "inbox"}&conversation=${encodeURIComponent(approval.conversationId)}` }]), intent: intent.kind };
     }
 
     case "policy_change_request": {
       step("plan", "info", `rule proposal prepared (not applied): ${intent.text.slice(0, 120)}`);
-      return { text: `I've prepared this as a rule: “${intent.text.replace(/[.!]+$/, "")}”.\nRules take effect only after you review how I'll apply them — nothing has changed yet.`, links: links(source, [{ label: "Review the rule", path: `/owner/train?rule=${encodeURIComponent(intent.text)}#teach-rule` }]), intent: intent.kind };
+      return { text: T(`I've prepared this as a rule: “${intent.text.replace(/[.!]+$/, "")}”.\nRules take effect only after you review how I'll apply them — nothing has changed yet.`, `הכנתי את זה ככלל: “${intent.text.replace(/[.!]+$/, "")}”.\nכלל נכנס לתוקף רק אחרי שתבדוק איך אני אפעל לפיו — עוד שום דבר לא השתנה.`), links: links(source, [{ label: T("Review the rule", "לבדוק את הכלל"), path: `/owner/train?rule=${encodeURIComponent(intent.text)}#teach-rule` }]), intent: intent.kind };
     }
 
     case "unsupported":
       step("plan", "blocked", "unsupported");
-      return { text: `${intent.reason} Nothing was started.`, intent: intent.kind };
+      return { text: lang === "he" ? "BARRY שולח הודעות רק ללקוחות שכבר מדברים עם העסק, בתוך השיחה שלהם — קמפיינים או הודעות תפוצה הוא לא יכול להריץ. שום דבר לא התחיל." : `${intent.reason} Nothing was started.`, intent: intent.kind };
   }
 
   async function start(opId: string, lead: string): Promise<Omit<OwnerReply, "intent">> {
     const res = await runOperation(graph, opId, now);
     if (!res.ok) {
       step("execution", "info", `not started: ${res.reason}`);
-      return { text: res.op ? `That one is already ${STATE_WORDS[res.op.state].toLowerCase()} — nothing new was started.` : "I couldn't find that operation — nothing was started." };
+      return { text: res.op ? T(`That one is already ${STATE_WORDS[res.op.state].toLowerCase()} — nothing new was started.`, `זה כבר במצב "${STATE_WORDS_HE[res.op.state]}" — שום דבר חדש לא התחיל.`) : T("I couldn't find that operation — nothing was started.", "לא מצאתי את הפעולה הזאת — שום דבר לא התחיל.") };
     }
-    const fresh = await getOwnerWorkspace(graph, { now });
+    const fresh = await getOwnerWorkspace(graph, { now, lang });
     const view = operationView(res.op, fresh.obligations, await getConversationStore().listByBusiness(graph.business.id));
     const dry = res.op.targets.some((x) => x.result?.outcome === "dry_run");
     step("execution", res.op.state === "failed" || res.op.state === "blocked" ? "failed" : "ok", `${res.op.state}: contacted ${view.progress.contacted}, failed ${view.progress.failed}`);
     step("verification", "ok", "per-target attempts recorded by the executor; results will be read from records");
     return {
-      text: `${lead}\n\n${operationSummary(view)}${dry ? "\n\n(Test mode: messages were recorded in each conversation, not sent over WhatsApp.)" : ""}`,
-      actions: (ACTIVE as readonly string[]).includes(res.op.state) ? [{ id: `o:${res.op.id}:${res.op.actionToken}:stop`, title: "Stop" }] : undefined,
-      links: links(source, [{ label: "See it live", path: `/owner?tab=today&operation=${encodeURIComponent(res.op.id)}` }]),
+      text: `${lead}\n\n${operationSummary(view, lang)}${dry ? T("\n\n(Test mode: messages were recorded in each conversation, not sent over WhatsApp.)", "\n\n(מצב בדיקה: ההודעות נרשמו בכל שיחה ולא נשלחו בוואטסאפ.)") : ""}`,
+      actions: (ACTIVE as readonly string[]).includes(res.op.state) ? [{ id: `o:${res.op.id}:${res.op.actionToken}:stop`, title: T("Stop", "לעצור") }] : undefined,
+      links: links(source, [{ label: T("See it live", "לראות בזמן אמת"), path: `/owner?tab=${source === "web" ? "work" : "today"}&operation=${encodeURIComponent(res.op.id)}` }]),
       operation: view,
     };
   }

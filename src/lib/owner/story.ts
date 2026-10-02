@@ -1,6 +1,7 @@
 import type { ConversationState, TurnLog } from "@/lib/state";
 import { readLedger, termsAmount, type LedgerEntry } from "@/lib/runtime/ledger";
 import { transactionSnapshot } from "@/lib/runtime/handoff";
+import type { OwnerLang } from "./lang";
 
 /**
  * THE STORY OF ONE CONVERSATION — what the customer asked, what BARRY did about it, and what became of
@@ -39,7 +40,7 @@ export type ConversationStory = {
 const clip = (s: string, n = 160) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 const cap = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
-const STOP_WORDS: Record<string, string> = {
+const STOP_WORDS_EN: Record<string, string> = {
   owner_approval_required: "needs your approval",
   policy_denied: "not allowed by your rules",
   write_blocked: "blocked by the customer's own limits",
@@ -52,7 +53,39 @@ const STOP_WORDS: Record<string, string> = {
   approval_execution_failed: "your approved request didn't go through",
 };
 
-function termsWords(e: LedgerEntry): string {
+const STOP_WORDS_HE: Record<string, string> = {
+  owner_approval_required: "צריך את האישור שלך",
+  policy_denied: "לא מותר לפי הכללים שלך",
+  write_blocked: "נחסם לפי המגבלות שהלקוח עצמו ביקש",
+  tool_failed: "המערכת לא השלימה את הפעולה",
+  capability_unavailable: "צריך מערכת שעוד לא מחוברת",
+  needs_customer: "מחכה ללקוח",
+  requested_change_not_applied: "השינוי שהתבקש לא בוצע",
+  understanding_unavailable: "לא הצליח להבין את ההודעה",
+  approval_held_customer_intent_unverified: "מוחזק עד שהלקוח יאשר",
+  approval_execution_failed: "הבקשה שאישרת לא הצליחה",
+};
+
+/** What an effect was about, in Hebrew (from the effect type — never the English free text). */
+function nounHe(e: LedgerEntry): string {
+  const x = e.effect;
+  if (/^payment\./.test(x) || /payment|checkout/i.test(e.operation)) return "קישור תשלום";
+  if (/^booking\./.test(x) || /booking/i.test(e.operation)) return "תור";
+  if (/^order\./.test(x) || /order/i.test(e.operation)) return "הזמנה";
+  if (/^cart\./.test(x) || /cart/i.test(e.operation)) return "שינוי בעגלה";
+  if (/discount/i.test(x) || /discount/i.test(e.operation)) return "הנחה";
+  if (/refund/i.test(x) || /refund/i.test(e.operation)) return "החזר כספי";
+  if (/^handoff\./.test(x)) return "העברה לצוות";
+  if (/^enquiry\./.test(x)) return "פנייה";
+  return "פעולה";
+}
+
+function termsWords(e: LedgerEntry, lang: OwnerLang = "en"): string {
+  if (lang === "he") {
+    const amount = termsAmount(e.terms);
+    const parts = [typeof e.terms.item === "string" ? e.terms.item : "", typeof e.terms.items === "string" ? e.terms.items : "", amount ?? ""].filter(Boolean);
+    return parts.length ? ` — ${parts.join(", ")}` : "";
+  }
   const amount = termsAmount(e.terms);
   const parts: string[] = [];
   if (typeof e.terms.item === "string") parts.push(e.terms.item);
@@ -66,7 +99,8 @@ function termsWords(e: LedgerEntry): string {
 }
 
 /** One effect in owner words: what it was, what became of it, its terms and any reference. */
-export function describeEffect(e: LedgerEntry): string {
+export function describeEffect(e: LedgerEntry, lang: OwnerLang = "en"): string {
+  if (lang === "he") return describeEffectHe(e);
   const ref = e.reference ? ` (${e.reference})` : "";
   const t = termsWords(e);
   switch (e.status) {
@@ -135,16 +169,89 @@ export function describeEffect(e: LedgerEntry): string {
   return `${cap(e.describes)}${t}${ref}`;
 }
 
+function describeEffectHe(e: LedgerEntry): string {
+  const ref = e.reference ? ` (${e.reference})` : "";
+  const t = termsWords(e, "he");
+  const noun = nounHe(e);
+  switch (e.status) {
+    case "awaiting_owner":
+      return `ביקש את אישורך: ${noun}${t}`;
+    case "owner_declined":
+      return `דחית: ${noun}${t}`;
+    case "withdrawn":
+      return `הלקוח ביטל: ${noun}${t}`;
+    case "superseded":
+      return `הוחלף בבקשה חדשה יותר: ${noun}${t}`;
+    case "failed":
+      return e.operation === "understand" ? "לא הצליח להבין את ההודעה של הלקוח" : `ניסה: ${noun}${t} — זה נכשל; שום דבר לא השתנה`;
+    case "effected_unconfirmed":
+      return `שלח: ${noun}${t}${ref} — המערכת עוד לא אישרה`;
+    case "no_effect":
+      if (e.effect === "write.blocked") return `לא שלח ${noun}${t}: נחסם לפי המגבלות שהלקוח ביקש`;
+      if (e.effect === "understanding.partial") return "הבין רק חלק מההודעה של הלקוח";
+      if (e.effect === "understanding.revalidated") return "קרא שוב הודעה קודמת שלא הובנה";
+      if (e.effect === "cart.not_changed") return `לא הצליח לשנות את העגלה${t}`;
+      return `${noun}${t}: בלי שינוי`;
+  }
+  switch (e.effect) {
+    case "handoff.created":
+      return e.outcome?.responseCommitted ? "העביר את השיחה לצוות שלך (הלקוח עודכן שתחזרו אליו כמו שנקבע)" : "העביר את השיחה לצוות שלך (בלי הבטחה לזמן תשובה)";
+    case "handoff.resolved":
+      return "הצוות שלך סגר את ההעברה";
+    case "payment.link_created":
+      return `שלח קישור תשלום${t} — עוד לא שולם`;
+    case "payment.settled":
+      return `התשלום אומת מול הספק${t}`;
+    case "payment.pending":
+      return "בדק את התשלום: עוד לא שולם";
+    case "payment.not_paid":
+      return "בדק את התשלום: לא שולם";
+    case "booking.created":
+      return `קבע את התור${t}${ref}`;
+    case "order.created":
+      return `יצר את ההזמנה${t}${ref}`;
+    case "order.fulfilled":
+      return `אישר את ההזמנה${ref}`;
+    case "enquiry.created":
+      return `רשם פנייה לצוות שלך${ref}`;
+    case "followup.scheduled":
+      return "תזמן מעקב";
+    case "catalog.searched":
+      return `חיפש בקטלוג${typeof e.outcome?.results === "number" ? ` (${e.outcome.results} תוצאות)` : ""}`;
+    case "availability.found":
+      return "בדק זמנים פנויים: נמצאו";
+    case "availability.none":
+      return "בדק זמנים פנויים: אין בטווח הזה";
+    case "stock.available":
+      return "בדק מלאי: יש";
+    case "stock.insufficient":
+      return "בדק מלאי: אין מספיק";
+    case "cart.line_added":
+      return `הוסיף לעגלה${t}`;
+    case "cart.line_updated":
+      return `שינה שורה בעגלה${t}`;
+    case "cart.line_replaced":
+      return `החליף פריט בעגלה${t}`;
+    case "cart.line_removed":
+      return `הסיר מהעגלה${t}`;
+  }
+  if (e.effect.endsWith(".read")) return `בדק: ${noun}${t}`;
+  return `${noun}${t}${ref}`;
+}
+
 const READ_EFFECT = /\.read$|^catalog\.|^availability\.|^stock\.|^payment\.(pending|not_paid)$|^understanding\./;
 
-function customerWords(turn: TurnLog): string {
-  if (turn.understood.intent === "approval_resumed") return turn.understood.entities?.decision === "declined" ? "(you declined the request)" : "(you approved the request)";
-  if (turn.understood.intent === "approval_already_resolved") return "(a request was decided twice)";
+function customerWords(turn: TurnLog, lang: OwnerLang = "en"): string {
+  if (turn.understood.intent === "approval_resumed") return turn.understood.entities?.decision === "declined" ? (lang === "he" ? "(דחית את הבקשה)" : "(you declined the request)") : lang === "he" ? "(אישרת את הבקשה)" : "(you approved the request)";
+  if (turn.understood.intent === "approval_already_resolved") return lang === "he" ? "(בקשה הוחלטה פעמיים)" : "(a request was decided twice)";
+  // In Hebrew the customer's own message is shown (the recorded asks are English paraphrases).
+  if (lang === "he") return clip(turn.customerMessage);
   const asks = turn.understood.asks?.map((a) => a.ask).filter(Boolean) ?? [];
   return asks.length ? asks.join("; ") : clip(turn.customerMessage);
 }
 
-function outcomeOf(turn: TurnLog, effects: LedgerEntry[]): { outcome: StoryOutcome; stopped?: string } {
+function outcomeOf(turn: TurnLog, effects: LedgerEntry[], lang: OwnerLang = "en"): { outcome: StoryOutcome; stopped?: string } {
+  const STOP_WORDS = lang === "he" ? STOP_WORDS_HE : STOP_WORDS_EN;
   const t = turn.trace;
   if (t?.understanding && !t.understanding.valid) return { outcome: "not_understood", stopped: STOP_WORDS.understanding_unavailable };
   if (turn.understood.intent === "approval_resumed") {
@@ -163,17 +270,31 @@ function outcomeOf(turn: TurnLog, effects: LedgerEntry[]): { outcome: StoryOutco
   return { outcome: "answered" };
 }
 
-export function conversationStory(state: ConversationState): ConversationStory {
+/** Where the transaction stands, in Hebrew (from the same ledger view as transactionSnapshot). */
+function standingHe(state: ConversationState): string[] {
+  const out: string[] = [];
+  for (const e of readLedger(state)) {
+    if (e.status === "awaiting_owner") out.push(`מחכה לאישורך: ${nounHe(e)}`);
+    else if (e.effect === "payment.link_created") out.push("נשלח קישור תשלום (עוד לא אומת ששולם)");
+    else if (e.effect === "payment.settled") out.push("התשלום אומת");
+    else if (e.effect === "booking.created") out.push(`נקבע תור${e.reference ? ` (${e.reference})` : ""}`);
+    else if (e.effect === "order.created") out.push(`הזמנה בוצעה${e.reference ? ` (${e.reference})` : ""}`);
+    else if (e.effect === "write.blocked") out.push(`נחסם: ${nounHe(e)}`);
+  }
+  return [...new Set(out)].slice(-8);
+}
+
+export function conversationStory(state: ConversationState, lang: OwnerLang = "en"): ConversationStory {
   const ledger = readLedger(state);
   const bySeq = new Map(ledger.map((e) => [e.seq, e]));
   const steps: StoryStep[] = state.turns.map((turn) => {
     const effects = (turn.trace?.effects ?? []).map((e) => bySeq.get(e.seq)).filter((e): e is LedgerEntry => Boolean(e));
-    const { outcome, stopped } = outcomeOf(turn, effects);
+    const { outcome, stopped } = outcomeOf(turn, effects, lang);
     return {
       at: turn.at,
       turnId: turn.id,
-      customer: customerWords(turn),
-      barry: effects.map(describeEffect),
+      customer: customerWords(turn, lang),
+      barry: effects.map((e) => describeEffect(e, lang)),
       outcome,
       ...(stopped ? { stopped } : {}),
       ...(turn.response ? { reply: clip(turn.response) } : {}),
@@ -182,8 +303,8 @@ export function conversationStory(state: ConversationState): ConversationStory {
   const tried: string[] = [];
   for (const e of ledger) {
     if (READ_EFFECT.test(e.effect) && e.status !== "failed") continue;
-    const line = describeEffect(e);
+    const line = describeEffect(e, lang);
     if (tried.at(-1) !== line) tried.push(line);
   }
-  return { steps, standing: transactionSnapshot(state), tried: tried.slice(-10) };
+  return { steps, standing: lang === "he" ? standingHe(state) : transactionSnapshot(state), tried: tried.slice(-10) };
 }

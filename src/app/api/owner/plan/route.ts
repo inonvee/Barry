@@ -12,7 +12,7 @@ export async function GET(req: NextRequest) {
   const g = ownerGraph(req, req.nextUrl.searchParams.get("businessId"));
   if ("error" in g) return g.error;
   try {
-    return Response.json(await getOwnerPlanView(g.graph));
+    return Response.json(await getOwnerPlanView(g.graph, { lang: req.nextUrl.searchParams.get("lang") === "he" ? "he" : "en" }));
   } catch (err) {
     return ownerFailure("plan", err);
   }
@@ -28,7 +28,8 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) return Response.json({ error: "Invalid request" }, { status: 400 });
   try {
     const request = await requestPlanChange(g.graph.business.id, { ...(parsed.data.plan ? { plan: parsed.data.plan } : {}), ...(parsed.data.message ? { message: parsed.data.message } : {}) }, "owner");
-    return Response.json({ request, note: "The BARRY team will contact you. Nothing about your plan or billing changes until you agree it with them." });
+    const he = new URL(req.url).searchParams.get("lang") === "he";
+    return Response.json({ request, note: he ? "צוות BARRY ייצור איתך קשר. שום דבר בתוכנית או בחיוב לא ישתנה עד שתסכים איתם." : "The BARRY team will contact you. Nothing about your plan or billing changes until you agree it with them." });
   } catch (err) {
     return ownerFailure("plan request", err);
   }

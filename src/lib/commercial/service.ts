@@ -12,7 +12,7 @@ import { commercialReadiness, type CommercialReadiness } from "./readiness";
 import { commercialAlerts, type CommercialAlert } from "./alerts";
 import { loadValueAccount, type ValueAccount } from "./value";
 import { getCommercialBilling } from "./billing";
-import { FEATURE_WORDS, FREE_PERIOD_DAYS, PLAN_CATALOG, planUnlocking, STANDARD_PLANS, type Feature, type PlanId } from "./plans";
+import { FEATURE_WORDS, FEATURE_WORDS_HE, FREE_PERIOD_DAYS, PLAN_CATALOG, PROMISE_HE, planUnlocking, STANDARD_PLANS, type Feature, type PlanId } from "./plans";
 import { currentEntitlement, hasFeature } from "./entitlements";
 
 /**
@@ -246,28 +246,35 @@ export type OwnerPlanView = {
   } | null;
 };
 
-export async function getOwnerPlanView(graph: BusinessGraph, opts: { now?: Date } = {}): Promise<OwnerPlanView> {
+const SUBSCRIPTION_HE: Record<string, string> = { pre_activation: "לפני הפעלה", free_period: "חודש ניסיון חינם", active: "פעיל — חיוב חודשי", paused: "מושהה", cancelled: "בוטל" };
+
+export async function getOwnerPlanView(graph: BusinessGraph, opts: { now?: Date; lang?: "en" | "he" } = {}): Promise<OwnerPlanView> {
   const now = opts.now ?? new Date();
+  const he = opts.lang === "he";
+  const FEATURE_WORDS_L = he ? FEATURE_WORDS_HE : FEATURE_WORDS;
+  const promise = (p: PlanId) => (he ? PROMISE_HE[p] : PLAN_CATALOG[p].promise);
   const a = await getCommercialAccount(graph.business.id).catch(() => null);
   await loadEntitlement(graph.business.id);
   const e = currentEntitlement(graph.business.id);
   const value = await loadValueAccount(graph, monthPeriod(now), now).catch(() => null);
   const features = (Object.keys(FEATURE_WORDS) as Feature[]);
-  const canDo = features.filter((f) => hasFeature(e, f)).map((f) => FEATURE_WORDS[f]);
-  const planLocked = e.plan ? features.filter((f) => !hasFeature(e, f)).map((f) => ({ feature: FEATURE_WORDS[f], unlockedBy: PLAN_CATALOG[planUnlocking(f) ?? "CUSTOM"].name })) : [];
+  const canDo = features.filter((f) => hasFeature(e, f)).map((f) => FEATURE_WORDS_L[f]);
+  const planLocked = e.plan ? features.filter((f) => !hasFeature(e, f)).map((f) => ({ feature: FEATURE_WORDS_L[f], unlockedBy: PLAN_CATALOG[planUnlocking(f) ?? "CUSTOM"].name })) : [];
   const currentIdx = a ? STANDARD_PLANS.indexOf(a.plan) : -1;
   const upgrades = a && a.plan !== "CUSTOM"
-    ? STANDARD_PLANS.slice(currentIdx + 1).map((p) => ({ id: p, name: PLAN_CATALOG[p].name, promise: PLAN_CATALOG[p].promise, monthlyPrice: PLAN_CATALOG[p].monthlyPrice!, currency: PLAN_CATALOG[p].currency, unlocks: PLAN_CATALOG[p].features.filter((f) => !a.features.includes(f)).map((f) => FEATURE_WORDS[f]) }))
+    ? STANDARD_PLANS.slice(currentIdx + 1).map((p) => ({ id: p, name: PLAN_CATALOG[p].name, promise: promise(p), monthlyPrice: PLAN_CATALOG[p].monthlyPrice!, currency: PLAN_CATALOG[p].currency, unlocks: PLAN_CATALOG[p].features.filter((f) => !a.features.includes(f)).map((f) => FEATURE_WORDS_L[f]) }))
     : [];
   const free = freePeriodProgress(a, now);
   return {
-    plan: a ? { id: a.plan, name: PLAN_CATALOG[a.plan].name, promise: PLAN_CATALOG[a.plan].promise, monthlyPrice: effectiveMonthlyPrice(a, now), currency: a.currency, priceLockedUntil: a.foundingCustomer ? a.priceLockUntil : null } : null,
-    subscription: { state: a ? a.subscriptionState.replace(/_/g, " ") : "no plan yet", freeMonth: free, recurringStartsAt: a?.recurringStartsAt ?? null },
+    plan: a ? { id: a.plan, name: PLAN_CATALOG[a.plan].name, promise: promise(a.plan), monthlyPrice: effectiveMonthlyPrice(a, now), currency: a.currency, priceLockedUntil: a.foundingCustomer ? a.priceLockUntil : null } : null,
+    subscription: { state: a ? (he ? (SUBSCRIPTION_HE[a.subscriptionState] ?? a.subscriptionState.replace(/_/g, " ")) : a.subscriptionState.replace(/_/g, " ")) : he ? "עוד אין תוכנית" : "no plan yet", freeMonth: free, recurringStartsAt: a?.recurringStartsAt ?? null },
     canDo,
     planLocked,
     upgrades,
     value: value
-      ? { period: value.period.label, handled: value.handled.conversations, outcomes: value.handled.outcomes, generated: value.made.generated, recovered: value.made.recovered, savedRealized: value.saved.realized, savedNote: value.saved.marginsNote, needsYou: value.needsYou.conversations, workingOn: value.workingOn, blocked: value.blocked, unlockNext: value.unlockNext }
+      ? he
+        ? { period: value.period.label, handled: value.handled.conversations, outcomes: value.handled.outcomes, generated: value.made.generated, recovered: value.made.recovered, savedRealized: value.saved.realized, savedNote: value.saved.marginsNote ? "BARRY Margins צריך נתוני עלות מחוברים — בלי זה לא מוצג חיסכון." : null, needsYou: value.needsYou.conversations, workingOn: [], blocked: [], unlockNext: planLocked.slice(0, 2).map((p) => `${p.feature} — עם ${p.unlockedBy}`) }
+        : { period: value.period.label, handled: value.handled.conversations, outcomes: value.handled.outcomes, generated: value.made.generated, recovered: value.made.recovered, savedRealized: value.saved.realized, savedNote: value.saved.marginsNote, needsYou: value.needsYou.conversations, workingOn: value.workingOn, blocked: value.blocked, unlockNext: value.unlockNext }
       : null,
   };
 }

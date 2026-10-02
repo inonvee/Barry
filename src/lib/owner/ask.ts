@@ -13,6 +13,7 @@ import { NEXT_MOVE_WORDS, isOpen } from "@/lib/operator/obligations";
 import { getConversationStore } from "@/lib/state";
 import { getBackend } from "@/lib/store";
 import { assessPilotReadiness, type PilotReadiness } from "./readiness";
+import type { OwnerLang } from "./lang";
 
 /**
  * OWNER BARRY (read-only MVP) — the business owner's assistant, not the customer's.
@@ -97,6 +98,9 @@ function revenueWords(r: ReturnType<typeof revenueSummary>) {
 
 /** The briefing as plain text — the answer when a model can't be used or its answer can't be verified. */
 export function briefingText(b: OwnerBriefing): string {
+  return briefingTextEn(b);
+}
+function briefingTextEn(b: OwnerBriefing): string {
   const lines = [
     "I can report on your business, but I'm read-only: I can't change settings, approve requests or run actions from here (use Approvals, or ask the BARRY team for rule changes).",
     `Today at ${b.business}: ${b.today.conversations} customer conversation${b.today.conversations === 1 ? "" : "s"}, ${b.today.handledWithoutYou} handled without you, ${b.today.needYourAttention} need you.`,
@@ -111,6 +115,21 @@ export function briefingText(b: OwnerBriefing): string {
     `Readiness: ${b.readiness.level}.`,
     b.capabilities.canDoNow.length ? `BARRY can do now: ${b.capabilities.canDoNow.slice(0, 8).join("; ")}.` : "",
     b.capabilities.afterSetup.length ? `After setup: ${b.capabilities.afterSetup.slice(0, 4).map((s) => `${s.step} → ${s.unlocks.join(", ")}`).join("; ")}.` : "",
+  ];
+  return lines.filter(Boolean).join("\n");
+}
+
+/** The factual briefing in Hebrew — the same figures, shown when a model can't be used or verified. */
+export function briefingTextHe(b: OwnerBriefing): string {
+  const none = (v: string) => (v === "none" ? "אין" : v);
+  const lines = [
+    "אני יכול לדווח על העסק, אבל אני לקריאה בלבד: מכאן אני לא משנה הגדרות, לא מאשר בקשות ולא מבצע פעולות (אישורים נמצאים ב״עבודה״; שינויי כללים — עם צוות BARRY).",
+    `היום ב־${b.business}: ${b.today.conversations} שיחות עם לקוחות, ${b.today.handledWithoutYou} בלי צורך בך, ${b.today.needYourAttention} צריכות אותך.`,
+    `נגבה היום: ${none(b.revenueToday.collectedByBarry)} (${b.revenueToday.paymentsCollected} תשלומים מאומתים). ב־7 הימים האחרונים: ${none(b.revenueLast7Days.collectedByBarry)}.`,
+    b.revenueToday.openOpportunities !== "none" ? `הזדמנויות פתוחות (עוד לא הכנסה): ${b.revenueToday.openOpportunities}.` : "",
+    b.revenueToday.pendingSimulatedTestMoney !== "none" ? `ממתין בסימולטור (כסף של בדיקות, לא הכנסה): ${b.revenueToday.pendingSimulatedTestMoney}.` : "",
+    b.waitingForYou.length ? `מחכה לך: ${b.waitingForYou.map((w) => `${w.customer}${w.amount ? ` (${w.amount})` : ""}`).join("; ")}.` : "שום דבר לא מחכה לך.",
+    b.moneyInMotion.items.length ? `כסף בתנועה: ${none(b.moneyInMotion.stuckWithYou)} מחכה לך, ${none(b.moneyInMotion.waitingOnCustomer)} מחכה ללקוחות, ${none(b.moneyInMotion.atRisk)} בסיכון.` : "",
   ];
   return lines.filter(Boolean).join("\n");
 }
@@ -162,8 +181,9 @@ export function checkAnswerAgainstBriefing(answer: string, briefing: unknown, qu
   return undefined;
 }
 
-export async function askOwnerBarry(graph: BusinessGraph, question: string, opts: { client?: Pick<OpenAI, "chat">; now?: Date } = {}): Promise<OwnerAnswer & { briefing: OwnerBriefing; links: OwnerAnswerLinks }> {
+export async function askOwnerBarry(graph: BusinessGraph, question: string, opts: { client?: Pick<OpenAI, "chat">; now?: Date; lang?: OwnerLang } = {}): Promise<OwnerAnswer & { briefing: OwnerBriefing; links: OwnerAnswerLinks }> {
   const now = opts.now ?? new Date();
+  const briefingText = (b: OwnerBriefing) => (opts.lang === "he" ? briefingTextHe(b) : briefingTextEn(b));
   const ws = await getOwnerWorkspace(graph, { now });
   const weekSince = new Date(now.getTime() - 7 * 24 * 3600 * 1000).toISOString();
   const [conversations, payments, bookings, orders, approvals] = await Promise.all([
@@ -189,7 +209,7 @@ export async function askOwnerBarry(graph: BusinessGraph, question: string, opts
       model,
       messages: [
         { role: "system", content: OWNER_PROMPT },
-        { role: "user", content: JSON.stringify({ briefing, question: question.slice(0, 1000) }) },
+        { role: "user", content: JSON.stringify({ briefing, question: question.slice(0, 1000), ...(opts.lang === "he" ? { replyLanguage: "Hebrew — the owner's interface is in Hebrew; answer in natural Israeli Hebrew" } : {}) }) },
       ],
       ...samplingParams(model, "composer", 0.2),
     });
