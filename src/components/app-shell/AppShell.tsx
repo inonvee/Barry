@@ -119,17 +119,17 @@ export function AppShell({ active, title, workspace, user, badges, dir = "ltr", 
             </div>
           </header>
 
-          <main className="flex-1 pb-[calc(4.5rem+env(safe-area-inset-bottom))] lg:pb-0">{children}</main>
+          <main className="flex-1 pb-[calc(4.25rem+env(safe-area-inset-bottom))] lg:pb-0">{children}</main>
         </div>
 
         {/* Mobile bottom tabs */}
         <nav className="fixed inset-x-0 bottom-0 z-30 border-t bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur supports-[backdrop-filter]:bg-background/80 lg:hidden" aria-label="Primary" data-testid="app-tabbar">
-          <div className="grid h-[68px] grid-cols-5 px-1">
+          <div className="grid h-[58px] grid-cols-5 px-1">
             {PRIMARY_NAV.map((n) => (
               <TabLink key={n.id} item={link(n)} active={active === n.id} badge={badges?.[n.id]} />
             ))}
-            <button type="button" onClick={() => setNavOpen(true)} className="flex flex-col items-center justify-center gap-1 text-[11px] font-medium text-muted-foreground">
-              <MenuIcon className="size-5" />
+            <button type="button" onClick={() => setNavOpen(true)} className="flex flex-col items-center justify-center gap-0.5 text-[11px] font-medium text-muted-foreground">
+              <span className="flex h-7 w-12 items-center justify-center"><MenuIcon className="size-[21px]" strokeWidth={1.75} /></span>
               {labels?.more ?? "More"}
             </button>
           </div>
@@ -212,10 +212,11 @@ function NavLink({ item, active, badge, onNavigate }: { item: NavItem; active: b
 function TabLink({ item, active, badge }: { item: NavItem; active: boolean; badge?: number }) {
   const Icon = item.icon;
   return (
-    <Link href={item.href} aria-current={active ? "page" : undefined} className={cn("relative mx-1 my-1.5 flex flex-col items-center justify-center gap-1 rounded-xl text-[11px] font-medium", active ? "bg-sidebar-accent text-foreground" : "text-muted-foreground")} data-testid={`tab-${item.id}`}>
-      <span className="relative">
-        <Icon className="size-5" />
-        {badge ? <span className="absolute -end-2.5 -top-1.5 min-w-4 rounded-full bg-hot px-1 text-center text-[10px] font-semibold leading-4 text-white tabular-nums">{badge}</span> : null}
+    <Link href={item.href} aria-current={active ? "page" : undefined} className={cn("relative flex flex-col items-center justify-center gap-0.5 text-[11px]", active ? "font-semibold text-foreground" : "font-medium text-muted-foreground")} data-testid={`tab-${item.id}`}>
+      {/* Selected: a quiet pill behind the icon only — every tab keeps the same weight and footprint */}
+      <span className={cn("relative flex h-7 w-12 items-center justify-center rounded-full transition-colors", active && "bg-selected")}>
+        <Icon className="size-[21px]" strokeWidth={active ? 2.25 : 1.75} />
+        {badge ? <span className="absolute -top-1 start-[calc(50%+6px)] min-w-[18px] rounded-full bg-hot px-1 text-center text-[10px] font-semibold leading-[18px] text-white ring-2 ring-background tabular-nums">{badge}</span> : null}
       </span>
       {item.short ?? item.label}
     </Link>
@@ -286,7 +287,7 @@ function CommandMenu({ open, onOpenChange, link }: { open: boolean; onOpenChange
 
 /** Page container: one width, one gutter, one vertical rhythm. */
 export function Page({ className, ...props }: React.ComponentProps<"div">) {
-  return <div className={cn("mx-auto flex w-full max-w-[1400px] flex-col gap-8 px-4 py-6 lg:px-8 lg:py-8", className)} {...props} />;
+  return <div className={cn("mx-auto flex w-full max-w-[1400px] flex-col gap-8 px-4 py-4 sm:py-6 lg:px-8 lg:py-8", className)} {...props} />;
 }
 
 export function PageHeader({ title, description, actions }: { title: string; description?: string; actions?: React.ReactNode }) {

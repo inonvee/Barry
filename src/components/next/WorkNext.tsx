@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { CheckIcon, ChevronRightIcon, CircleAlertIcon, FileTextIcon, InboxIcon, ListChecksIcon, MessageSquareIcon, MoreHorizontalIcon, OctagonAlertIcon, XIcon } from "lucide-react";
+import { CheckIcon, CircleAlertIcon, FileTextIcon, InboxIcon, ListChecksIcon, MessageSquareIcon, MoreHorizontalIcon, OctagonAlertIcon, XIcon } from "lucide-react";
 import type { OwnerWorkspace, OwnerApproval } from "@/lib/owner/service";
 import type { Intervention, InterventionOption } from "@/lib/owner/interventions";
 import type { InitiativeView } from "@/lib/initiative/model";
@@ -22,6 +22,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Progress, Status, Thumb, toneText, type Tone } from "@/components/app-shell/kit";
 import { STAND, ageOf, buildRows, clockOf, workProgress, KIND_ICON, type Row, type T } from "./model";
 import type { NextCtx } from "./NextFrame";
+import { MobileDetail } from "./MobileDetail";
 
 /**
  * WORK — master/detail. A row says what it is, who it's about, where it stands (one pill), the amount when there is
@@ -122,10 +123,10 @@ export function WorkNext(ctx: NextCtx) {
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(400px,500px)] xl:gap-8">
-      <div className="flex min-w-0 flex-col gap-5">
+      <div className="flex min-w-0 flex-col gap-4 sm:gap-5">
         <div className="flex flex-col gap-1">
-          <h2 className="text-3xl font-semibold tracking-tight">{t("Work", "עבודה")}</h2>
-          <p className="text-[15px] text-muted-foreground">{t("Active situations across your business. BARRY handles the rest.", "מה פתוח בעסק עכשיו. BARRY מטפל בשאר.")}</p>
+          <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">{t("Work", "עבודה")}</h2>
+          <p className="hidden text-[15px] text-muted-foreground sm:block">{t("Active situations across your business. BARRY handles the rest.", "מה פתוח בעסק עכשיו. BARRY מטפל בשאר.")}</p>
         </div>
 
         {notice && (
@@ -152,7 +153,7 @@ export function WorkNext(ctx: NextCtx) {
                   setFilter(p.id);
                   setSelected(null);
                 }}
-                className={`flex h-9 shrink-0 items-center gap-2 rounded-full border px-3.5 text-sm font-medium transition-colors ${on ? "border-info/60 bg-selected text-foreground" : "bg-card text-muted-foreground hover:text-foreground"}`}
+                className={`flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[13px] font-medium sm:h-9 sm:gap-2 sm:px-3.5 sm:text-sm transition-colors ${on ? "border-info/60 bg-selected text-foreground" : "bg-card text-muted-foreground hover:text-foreground"}`}
                 data-testid={`work-filter-${p.id}`}
               >
                 {p.tone && <span className={`size-1.5 rounded-full ${p.tone === "hot" ? "bg-hot" : p.tone === "info" ? "bg-info" : p.tone === "live" ? "bg-live" : "bg-plum"}`} />}
@@ -188,13 +189,12 @@ export function WorkNext(ctx: NextCtx) {
       ) : (
         <Sheet open={Boolean(current)} onOpenChange={(o) => !o && setSelected(null)}>
           {current && (
-            <SheetContent side="bottom" dir={dir} className="max-h-[92dvh] gap-0 rounded-t-2xl bg-card p-0" showClose={false} data-testid="work-sheet">
+            <SheetContent side="bottom" dir={dir} className="max-h-[90dvh] gap-0 rounded-t-2xl bg-card p-0" showClose={false} data-testid="work-sheet">
               <SheetHeader className="sr-only">
                 <SheetTitle>{current.title}</SheetTitle>
                 <SheetDescription>{current.context}</SheetDescription>
               </SheetHeader>
-              <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-border" />
-              <div className="min-h-0 overflow-y-auto">{detail}</div>
+              <MobileDetail key={current.key} row={current} ws={ws} actions={actions} lang={lang} t={t} now={now} onClose={() => setSelected(null)} onDone={(text, bad) => setNotice({ text, bad })} />
             </SheetContent>
           )}
         </Sheet>
@@ -203,28 +203,38 @@ export function WorkNext(ctx: NextCtx) {
   );
 }
 
-export function WorkRow({ row, lang, t, now, selected, first, onOpen, compact }: { row: Row; lang: OwnerLang; t: T; now: number; selected?: boolean; first?: boolean; onOpen: () => void; compact?: boolean }) {
+/** Short status words for phones (the full words stay on desktop). */
+const SHORT: Record<string, [string, string]> = { customer: ["Waiting", "ממתין"] };
+
+export function WorkRow({ row, lang, t, now, selected, first, onOpen }: { row: Row; lang: OwnerLang; t: T; now: number; selected?: boolean; first?: boolean; onOpen: () => void; compact?: boolean }) {
   const s = STAND[row.stand];
+  const he = lang === "he" ? 1 : 0;
+  const status = row.stand === "you" || row.stand === "noticed" ? s.label[he] : row.status ?? s.label[he];
+  const shortStatus = SHORT[row.stand]?.[he] ?? status;
   return (
-    <div role="listitem" className={`group relative flex items-center gap-3 px-3 py-3 transition-colors sm:px-4 ${first ? "" : "border-t"} ${selected ? "bg-selected" : "hover:bg-surface-2"}`} data-testid="work-row">
+    <div role="listitem" className={`group relative flex items-center gap-3 px-3 py-2.5 transition-colors sm:px-4 sm:py-3 ${first ? "" : "border-t"} ${selected ? "bg-selected" : "hover:bg-surface-2 active:bg-surface-2"}`} data-testid="work-row">
       {selected && <span className="absolute inset-y-2 start-0 w-0.5 rounded-full bg-info" aria-hidden />}
       <button type="button" onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-3 text-start outline-none" aria-current={selected ? "true" : undefined}>
-        <Thumb icon={row.person ? undefined : row.icon} name={row.person} tone={row.person ? "muted" : s.tone} size={compact ? "md" : "lg"} />
+        <Thumb icon={row.person ? undefined : row.icon} name={row.person} tone={row.person ? "muted" : s.tone} size="md" className="sm:size-12" />
+        {/* Phones: two lines — title · age, then context · amount · status. Desktop keeps its columns. */}
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <span className="truncate text-[15px] font-medium">{row.title}</span>
-          {row.context && <span className="truncate text-sm text-muted-foreground"><bdi>{row.context}</bdi></span>}
-          {/* Phones: status and amount move under the title */}
-          <span className="mt-1 flex items-center gap-2 sm:hidden">
-            <Status tone={s.tone}>{row.stand === "you" || row.stand === "noticed" ? s.label[lang === "he" ? 1 : 0] : row.status ?? s.label[lang === "he" ? 1 : 0]}</Status>
-            {row.amount && <span className="text-sm font-semibold tabular-nums text-warn"><bdi>{row.amount}</bdi></span>}
+          <span className="flex min-w-0 items-baseline gap-2">
+            <span className="min-w-0 flex-1 truncate text-[15px] font-medium leading-snug">{row.title}</span>
+            <span className="shrink-0 text-xs tabular-nums text-muted-foreground sm:hidden">{ageOf(lang, row.at, now)}</span>
+          </span>
+          <span className="flex min-w-0 items-center gap-2">
+            {row.context && <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground sm:text-sm">{row.context}</span>}
+            {!row.context && <span className="flex-1" />}
+            {row.amount && <span className="shrink-0 text-[13px] font-semibold tabular-nums text-warn sm:hidden"><bdi>{row.amount}</bdi></span>}
+            <Status tone={s.tone} className="h-5 px-2 text-[11px] sm:hidden">{shortStatus}</Status>
           </span>
         </span>
       </button>
       {row.amount && <span className="hidden w-20 shrink-0 text-end text-[15px] font-semibold tabular-nums text-warn sm:block"><bdi>{row.amount}</bdi></span>}
       <span className="hidden shrink-0 justify-end sm:flex">
-        <Status tone={s.tone}>{row.stand === "you" || row.stand === "noticed" ? s.label[lang === "he" ? 1 : 0] : row.status ?? s.label[lang === "he" ? 1 : 0]}</Status>
+        <Status tone={s.tone}>{status}</Status>
       </span>
-      <span className="w-9 shrink-0 text-end text-xs tabular-nums text-muted-foreground">{ageOf(lang, row.at, now)}</span>
+      <span className="hidden w-9 shrink-0 text-end text-xs tabular-nums text-muted-foreground sm:block">{ageOf(lang, row.at, now)}</span>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button variant="ghost" size="icon-sm" className="hidden shrink-0 text-muted-foreground sm:inline-flex" aria-label={t("More", "עוד")}>
@@ -240,7 +250,6 @@ export function WorkRow({ row, lang, t, now, selected, first, onOpen, compact }:
           )}
         </DropdownMenuContent>
       </DropdownMenu>
-      <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground sm:hidden rtl:rotate-180" />
     </div>
   );
 }
@@ -285,7 +294,7 @@ export function Detail({ row, ws, actions, lang, t, now, onClose, onDone, closab
             <span className="text-xs tabular-nums text-muted-foreground">{ageOf(lang, row.at, now)}</span>
           </div>
           <h2 className="text-xl font-semibold leading-snug tracking-tight">{row.title}</h2>
-          {row.context && <p className="text-sm text-muted-foreground"><bdi>{row.context}</bdi></p>}
+          {row.context && <p className="text-sm text-muted-foreground">{row.context}</p>}
         </div>
         {closable && (
           <Button variant="ghost" size="icon-sm" className="-me-2 -mt-1 shrink-0 text-muted-foreground" onClick={onClose} aria-label={t("Close", "סגירה")}>
@@ -331,7 +340,7 @@ function DecisionBody({ item, ws, actions, lang, t, now, onClose, onDone }: { it
         ]}
       />
       <Section icon={FileTextIcon} title={t("What happened", "מה קרה")}>
-        <p><bdi>{item.why}</bdi></p>
+        <p>{item.why}</p>
       </Section>
       {item.tried.length > 0 && (
         <Section icon={ListChecksIcon} tone="live" title={t("What BARRY already did", "מה BARRY כבר עשה")}>
@@ -339,7 +348,7 @@ function DecisionBody({ item, ws, actions, lang, t, now, onClose, onDone }: { it
             {item.tried.map((x, i) => (
               <li key={i} className="flex gap-2.5 text-foreground/90">
                 <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full bg-live text-background"><CheckIcon className="size-3" strokeWidth={3} /></span>
-                <span><bdi>{x}</bdi></span>
+                <span>{x}</span>
               </li>
             ))}
           </ol>
@@ -347,8 +356,8 @@ function DecisionBody({ item, ws, actions, lang, t, now, onClose, onDone }: { it
       )}
       <Section icon={OctagonAlertIcon} tone="hot" title={t("What is blocking progress", "מה עוצר את ההתקדמות")}>
         <div className="rounded-lg border border-hot/25 bg-hot/8 px-3 py-2.5 text-foreground/90">
-          <p className="font-medium text-foreground"><bdi>{item.decision}</bdi></p>
-          <p className="mt-1 text-muted-foreground"><bdi>{item.then}</bdi></p>
+          <p className="font-medium text-foreground">{item.decision}</p>
+          <p className="mt-1 text-muted-foreground">{item.then}</p>
         </div>
       </Section>
       <section className="flex flex-col gap-2.5">
@@ -493,14 +502,14 @@ function NoticedBody({ i, actions, lang, t, onClose, onDone }: { i: InitiativeVi
   return (
     <>
       <Section icon={FileTextIcon} title={t("What BARRY saw", "מה BARRY ראה")}>
-        <p><bdi>{c.observation}</bdi></p>
+        <p>{c.observation}</p>
       </Section>
       <Section icon={ListChecksIcon} tone="info" title={t("Why it matters", "למה זה חשוב")}>
         <p>{c.whyItMatters}</p>
         {c.money && <p className="mt-1.5 font-medium text-warn"><bdi>{c.money}</bdi></p>}
       </Section>
       <Section icon={OctagonAlertIcon} title={t("Next step", "הצעד הבא")}>
-        <p><bdi>{c.next}</bdi></p>
+        <p>{c.next}</p>
         <p className="mt-1 text-xs">{c.approval}</p>
       </Section>
       {live && (
@@ -540,8 +549,8 @@ function ApprovalBody({ a, lang, t }: { a: OwnerApproval; lang: OwnerLang; t: T 
     <>
       <Facts items={[{ label: t("Result", "תוצאה"), value: l.label[lang] }, { label: t("Amount", "סכום"), value: a.amount ?? "—" }, { label: t("Customer", "לקוח"), value: a.customer }]} />
       <Section icon={FileTextIcon} title={t("Why it needed you", "למה זה היה צריך אותך")}>
-        <p><bdi>{a.whyApproval}</bdi></p>
-        {a.result && <p className="mt-1.5"><bdi>{a.result}</bdi></p>}
+        <p>{a.whyApproval}</p>
+        {a.result && <p className="mt-1.5">{a.result}</p>}
       </Section>
       <Button variant="outline" asChild>
         <Link href={conversationHref(a.conversationId)}>{t("Open the conversation", "לפתוח את השיחה")}</Link>
