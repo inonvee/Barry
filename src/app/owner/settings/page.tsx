@@ -5,43 +5,22 @@ import { Suspense, useEffect, useState } from "react";
 import { useOwnerApi } from "@/components/owner/useOwnerApi";
 import { OwnerShell, WhatsAppCard } from "@/components/owner/OwnerShell";
 import { WhatsAppLink } from "@/components/owner/WhatsAppLink";
-import { Pill, Skeleton, StateNotice, btn, type Tone } from "@/components/owner/ui";
-import { Hero, IconTile, Panel, PanelHeader, type IconName } from "@/components/owner/kit";
-import type { ConnectionView } from "@/lib/connections/status";
+import { Hero, Panel, PanelHeader } from "@/components/owner/kit";
 import type { OwnerChannels } from "@/lib/owner/service";
 import { PlanAndValue } from "@/components/owner/PlanAndValue";
 
 /**
- * OWNER SETTINGS — configuration, not another dashboard: the business, who approves, channels,
- * connected systems, and the plan. What the BARRY team configures stays in the team's words, folded.
+ * OWNER SETTINGS — configuration, not another dashboard: the business, who approves, the WhatsApp link
+ * and the plan (connected systems have their own page). What the BARRY team configures stays in the team's words, folded.
  * Credentials are never shown.
  */
-function connectionState(c: ConnectionView): { tone: Tone; word: string } {
-  if (c.status === "not_configured") return { tone: "neutral", word: "Not configured" };
-  if (c.status !== "connected") return { tone: "bad", word: c.status };
-  if (c.missing.length) return { tone: "warn", word: "Setup incomplete" };
-  if (c.simulated) return { tone: "info", word: "Simulated" };
-  return { tone: "good", word: "Connected" };
-}
-
-const DOMAIN_ICON: Record<string, IconName> = { commerce: "cart", payments: "money", scheduling: "clock", messaging: "chat" };
-
 function SettingsPage() {
   const api = useOwnerApi();
   const { businessId, call, authorized } = api;
-  const [connections, setConnections] = useState<ConnectionView[] | null>(null);
   const [channels, setChannels] = useState<OwnerChannels | undefined>(undefined);
-  const [error, setError] = useState("");
   useEffect(() => {
     if (!businessId || !authorized) return;
     let cancelled = false;
-    call<{ connections: ConnectionView[] }>(`/api/connections?businessId=${encodeURIComponent(businessId)}`)
-      .then((d) => {
-        if (!cancelled) setConnections(d.connections);
-      })
-      .catch((e: Error) => {
-        if (!cancelled) setError(e.message);
-      });
     call<OwnerChannels>(`/api/owner/channels?businessId=${encodeURIComponent(businessId)}`)
       .then((c) => {
         if (!cancelled) setChannels(c);
@@ -55,7 +34,7 @@ function SettingsPage() {
   return (
     <OwnerShell api={api} active="settings" channels={channels}>
       <div className="flex flex-col gap-6">
-        <Hero eyebrow={`Settings · ${b?.name ?? "—"}`} title="Your business, your plan, your systems." lead="Configuration lives here. Running the business happens in Today, Inbox and Money — or by message." />
+        <Hero eyebrow={`Settings · ${b?.name ?? "—"}`} title="Your business, your plan, your access." lead="Your WhatsApp link, plan and access. Running the business happens in Today, Work and Money — or by message." />
         {authorized && (
           <>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -73,7 +52,13 @@ function SettingsPage() {
                   <div>
                     <dt className="text-[12px] text-o-muted">What BARRY may do</dt>
                     <dd className="text-o-ink-2">
-                      Your rules decide what BARRY does on its own and what it asks you first. <Link href="/owner/train" className="font-medium text-o-accent hover:underline">Train BARRY ›</Link>
+                      Your rules decide what BARRY does on its own and what it asks you first. <Link href="/owner/rules" className="font-medium text-o-accent hover:underline">Rules BARRY follows ›</Link>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-[12px] text-o-muted">Systems</dt>
+                    <dd>
+                      <Link href="/owner/systems" className="font-medium text-o-accent hover:underline">Connected systems ›</Link>
                     </dd>
                   </div>
                   <div>
@@ -93,28 +78,6 @@ function SettingsPage() {
               <PlanAndValue api={api} />
             </div>
 
-            <Panel className="p-4 md:p-5">
-              <PanelHeader icon="plug" title="Connected systems" sub="What BARRY works through. The BARRY team configures these; nothing here changes how BARRY treats your customers without your rules." right={<Link href="/connections" className={btn}>Technical view</Link>} />
-              {error && <div className="mt-3"><StateNotice tone="bad" title="Couldn't read connections">{error}</StateNotice></div>}
-              {!connections && !error && <div className="mt-3"><Skeleton lines={3} /></div>}
-              {connections && (
-                <ul className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {connections.map((c) => {
-                    const st = connectionState(c);
-                    return (
-                      <li key={c.capability} className="flex items-center gap-3 rounded-xl bg-o-sunken/60 px-3 py-2.5 ring-1 ring-inset ring-o-line">
-                        <IconTile name={DOMAIN_ICON[c.capability] ?? "plug"} tone={st.tone === "good" ? "ok" : st.tone === "bad" ? "bad" : st.tone === "warn" ? "warn" : "neutral"} size={30} />
-                        <span className="min-w-0 flex-1">
-                          <span className="block text-[14px] font-medium capitalize text-o-ink">{c.capability}</span>
-                          <span className="block truncate text-[12px] text-o-muted">{c.provider ?? "No provider"}</span>
-                        </span>
-                        <Pill tone={st.tone}>{st.word}</Pill>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </Panel>
           </>
         )}
       </div>

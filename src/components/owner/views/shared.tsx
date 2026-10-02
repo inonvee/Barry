@@ -7,8 +7,14 @@ import type { LiveState } from "../kit";
 
 /** Owner-facing words and tones shared by the control-room views. */
 
-export type Tab = "today" | "inbox" | "money" | "ask" | "actions";
-export const TABS: Tab[] = ["today", "inbox", "money", "ask", "actions"];
+export type Tab = "today" | "ask" | "work" | "money" | "customers" | "activity";
+export const TABS: Tab[] = ["today", "ask", "work", "money", "customers", "activity"];
+/** Earlier tab names stay valid: WhatsApp messages and briefs already sent link to them. */
+export const TAB_ALIASES: Record<string, Tab> = { inbox: "customers", actions: "work" };
+export function tabOf(raw: string | null): Tab {
+  const t = raw ? (TAB_ALIASES[raw] ?? raw) : "today";
+  return (TABS as string[]).includes(t) ? (t as Tab) : "today";
+}
 
 /** The five conversation states the owner scans for. */
 export type ConversationState = "barry" | "customer" | "you" | "review" | "resolved";

@@ -9,19 +9,21 @@ import { ownerPresence } from "@/lib/owner/presence-model";
 import type { Act } from "@/components/owner/operating";
 import type { OwnerWorkspace } from "@/lib/owner/service";
 import type { Intervention, InterventionAction } from "@/lib/owner/interventions";
-import { TABS, type Tab } from "@/components/owner/views/shared";
+import { TABS, tabOf, type Tab } from "@/components/owner/views/shared";
 import { TodayView, type RunCommand } from "@/components/owner/views/Today";
 import type { OwnerReply } from "@/lib/owner/command-service";
 import { InboxView } from "@/components/owner/views/Inbox";
 import { MoneyView } from "@/components/owner/views/Money";
 import { AskView } from "@/components/owner/views/Ask";
-import { ActionsView } from "@/components/owner/views/Actions";
+import { WorkView } from "@/components/owner/views/Work";
+import { ActivityView } from "@/components/owner/views/Activity";
 
 /**
- * THE OWNER CONTROL ROOM — BARRY runs the business; this is where the owner sees and controls it.
- * Today (what needs me · what BARRY is doing · what it did · where money moves), Inbox, Money,
- * Ask BARRY, Actions & approvals. Everything renders from the owner read model; every action goes
- * through the owner endpoints, which re-check authority before any effect.
+ * THE OWNER BUSINESS OS — BARRY runs the business; this is where the owner sees and directs it.
+ * Today (the living story), Ask BARRY, Work (needs you · BARRY is working · BARRY noticed), Money,
+ * and from More: Customers and Activity. Everything renders from the owner read model — the same
+ * records the Owner WhatsApp channel reads; every action goes through the owner endpoints, which
+ * re-check authority before any effect. Older links (?tab=inbox, ?tab=actions) still land correctly.
  */
 
 export default function OwnerPage() {
@@ -36,7 +38,7 @@ function OwnerDashboard() {
   const api = useOwnerApi();
   const router = useRouter();
   const params = useSearchParams();
-  const tab: Tab = (TABS as string[]).includes(params.get("tab") ?? "") ? (params.get("tab") as Tab) : "today";
+  const tab: Tab = tabOf(params.get("tab"));
   const [range, setRange] = useState<"today" | "7d" | "30d">("today");
   const [loaded, setWs] = useState<OwnerWorkspace | null>(null);
   const [error, setError] = useState("");
@@ -105,10 +107,10 @@ function OwnerDashboard() {
   };
   const goToConversation = (conversationId: string) => {
     setOpenConversation(conversationId);
-    setTab("inbox", conversationId);
+    setTab("customers", conversationId);
   };
   const goToIntervention = (id?: string) => {
-    setTab("actions");
+    setTab("work");
     if (id && typeof document !== "undefined") setTimeout(() => document.querySelector(`[data-intervention="${CSS.escape(id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 80);
   };
   const onNavigate = (section: OwnerSection) => {
@@ -177,7 +179,7 @@ function OwnerDashboard() {
   }, [ws, wantOperation, wantIntervention]);
 
   const queue = ws?.interventions ?? [];
-  const badge = { today: queue.length || undefined, actions: queue.length || undefined, inbox: ws?.conversations.filter((c) => c.status === "needs_you").length || undefined };
+  const badge = { work: queue.length || undefined, customers: ws?.conversations.filter((c) => c.status === "needs_you").length || undefined };
   const presence = ws ? ownerPresence(ws) : undefined;
   return (
     <OwnerShell api={api} active={tab} badge={badge} onNavigate={onNavigate} presence={presence} channels={ws?.channels}>
@@ -220,11 +222,12 @@ function OwnerDashboard() {
         </div>
       )}
       {!authorized && api.session && <p className="mt-2 text-sm text-o-muted">Once you&apos;re signed in, this is where you see what BARRY is doing, what needs you and where money moves.</p>}
-      {ws && tab === "today" && <TodayView ws={ws} act={act} busyId={busyId} loading={loading} onOpen={goToConversation} onIntervention={goToIntervention} onTab={setTab} onCommand={runCommand} onInitiative={runInitiative} onAsk={(q) => setTab("ask", null, q)} />}
-      {ws && tab === "inbox" && <InboxView ws={ws} api={api} act={act} busyId={busyId} open={openConversation} setOpen={goToConversation} onIntervention={goToIntervention} loadedAt={loadedAt} />}
+      {ws && tab === "today" && <TodayView ws={ws} act={act} busyId={busyId} loading={loading} onOpen={goToConversation} onIntervention={goToIntervention} onTab={setTab} onCommand={runCommand} onInitiative={runInitiative} />}
+      {ws && tab === "customers" && <InboxView ws={ws} api={api} act={act} busyId={busyId} open={openConversation} setOpen={goToConversation} onIntervention={goToIntervention} loadedAt={loadedAt} />}
       {ws && tab === "money" && <MoneyView ws={ws} range={range} setRange={setRange} onOpen={goToConversation} onIntervention={goToIntervention} loadedAt={loadedAt} />}
       {ws && tab === "ask" && <AskView key={params.get("q") ?? ""} onCommand={runCommand} ws={ws} onIntervention={goToIntervention} onOpen={goToConversation} initialQuestion={params.get("q") ?? ""} />}
-      {ws && tab === "actions" && <ActionsView ws={ws} act={act} busyId={busyId} onOpen={goToConversation} />}
+      {ws && tab === "work" && <WorkView ws={ws} act={act} busyId={busyId} onOpen={goToConversation} onInitiative={runInitiative} onAsk={(q) => setTab("ask", null, q)} />}
+      {ws && tab === "activity" && <ActivityView ws={ws} onOpen={goToConversation} />}
     </OwnerShell>
   );
 }

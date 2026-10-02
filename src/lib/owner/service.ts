@@ -24,8 +24,8 @@ import { listOperations, operationView } from "./operations";
 import type { OwnerOperationView } from "./operation-model";
 import { whatsappOwnerConfig } from "@/lib/channels/whatsapp";
 import { linkActive, listOwnerIdentities, maskedIdentity } from "@/lib/owner-channel/identity";
-import { visibleInitiatives } from "@/lib/initiative/store";
-import type { InitiativeView } from "@/lib/initiative/model";
+import { listInitiatives } from "@/lib/initiative/store";
+import { toView, type Initiative, type InitiativeView } from "@/lib/initiative/model";
 
 /**
  * THE OWNER'S VIEW OF THEIR BUSINESS — read model for the owner dashboard (and for Owner Barry).
@@ -214,6 +214,8 @@ export type OwnerWorkspace = {
   ownerCommands: OwnerCommandSummary[];
   /** What BARRY noticed (persisted by scans; never detected on read). Best first. */
   initiatives: InitiativeView[];
+  /** What BARRY noticed that is now done, dismissed or snoozed (last 14 days, newest first) — the Work history. */
+  initiativeHistory: InitiativeView[];
   /** Sources that could not be read (shown, never zeroed). */
   unavailable: string[];
 };
@@ -391,6 +393,7 @@ export async function getOwnerWorkspace(staticGraph: BusinessGraph, opts: { sinc
   const obligations = await safe("obligations", () => reconcileObligations({ graph, conversations, approvals, payments, bookings, carts, policy, attempts: attemptCounts(attempts), now, customerLabel }), [] as Obligation[]);
   const profiles = await safe("capability profiles", () => resolveCapabilityProfiles(graph), undefined);
   const connections = await safe("connections", () => describeBusinessConnections(businessId, profiles), [] as ConnectionView[]);
+  const allInitiatives = await safe("initiatives", () => listInitiatives(businessId), [] as Initiative[]);
   const capabilities = capabilitySummary(await safe("capabilities", () => assessCapabilities(graph, { profiles, connections }), { needs: [], steps: [], now: [], nowSimulated: [], afterSetup: [] }));
 
   return {
@@ -428,7 +431,13 @@ export async function getOwnerWorkspace(staticGraph: BusinessGraph, opts: { sinc
       .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""))
       .slice(0, 8)
       .map((c) => ({ id: c.id!, at: c.createdAt ?? "", source: c.source ?? "web", text: (c.text ?? "").slice(0, 200), intent: c.intent?.kind ?? "query", ...(c.operationId ? { operationId: c.operationId } : {}), reply: (c.reply?.text ?? "").split("\n")[0].slice(0, 200) })),
-    initiatives: await safe("initiatives", () => visibleInitiatives(businessId), []),
+    // The same filter as visibleInitiatives (surfaced / reviewed / accepted / acting), from one read.
+    initiatives: allInitiatives.filter((i) => ["surfaced", "reviewed", "accepted", "acting"].includes(i.state)).map(toView),
+    initiativeHistory: allInitiatives
+      .filter((i) => ["measured", "resolved", "dismissed", "snoozed"].includes(i.state) && now.getTime() - Date.parse(i.decidedAt ?? i.resolvedAt ?? i.lastSeenAt) <= 14 * 24 * 3600_000)
+      .sort((a, b) => (b.decidedAt ?? b.resolvedAt ?? b.lastSeenAt).localeCompare(a.decidedAt ?? a.resolvedAt ?? a.lastSeenAt))
+      .slice(0, 10)
+      .map(toView),
     operator: {
       // Unreadable plan → shown as not included (the executor fails closed the same way).
       included: entitlement ? hasFeature(entitlement, "proactive_followups") : false,

@@ -21,7 +21,6 @@ const FIELD: Record<string, { tone: Tone; meaning: string }> = {
   needs_review: { tone: "warn", meaning: "Needs your answer before BARRY uses it" },
   blocked: { tone: "bad", meaning: "Can't become operational" },
 };
-const AVAIL: Record<string, { tone: Tone; word: string }> = { can_do_now: { tone: "good", word: "Can do now" }, after_setup: { tone: "warn", word: "After setup" }, simulator_only: { tone: "info", word: "Simulator only" }, not_supported: { tone: "neutral", word: "Not supported" } };
 
 function Fold({ summary, children, open, id }: { summary: string; children: React.ReactNode; open?: boolean; id?: string }) {
   return (
@@ -35,7 +34,12 @@ function Fold({ summary, children, open, id }: { summary: string; children: Reac
   );
 }
 
-export function TrainBarry({ api }: { api: Api }) {
+/**
+ * `part` splits the one teaching surface across the Owner OS: "rules" (the rule questions and teaching a
+ * rule — on Rules BARRY follows) and "knowledge" (what BARRY knows, is unsure about, should learn next and
+ * where it came from — on What BARRY knows). Both read and write through the same Learn Business endpoints.
+ */
+export function TrainBarry({ api, part }: { api: Api; part: "rules" | "knowledge" }) {
   const { businessId, call, authorized } = api;
   const [view, setView] = useState<TrainBarryView | null>(null);
   const [error, setError] = useState("");
@@ -83,33 +87,12 @@ export function TrainBarry({ api }: { api: Api }) {
   if (!authorized) return null;
   if (error) return <StateNotice tone="bad" title="Couldn't load what BARRY has learned">{error}</StateNotice>;
   if (!view) return <Panel className="p-5"><Skeleton lines={4} /></Panel>;
-  const statusCounts = view.understands.reduce<Record<string, number>>((m, u) => ((m[u.status] = (m[u.status] ?? 0) + 1), m), {});
-  return (
-    <div className="flex flex-col gap-5">
-      {actionError && <StateNotice tone="bad" title="BARRY didn't save that">{actionError}</StateNotice>}
-
-      {/* RULES BARRY FOLLOWS — what the policy engine enforces, in your words */}
-      <Panel className="p-4 md:p-5" glow={view.rules.length > 0}>
-        <PanelHeader icon="shield" title="Rules BARRY follows" sub="The policy engine decides with exactly these. Above a limit, you approve the exact terms." />
-        {view.rules.length === 0 ? (
-          <p className="mt-3 text-[13px] text-o-muted">No limit is set yet — teach BARRY one below (for example: “Up to 5% without asking me”).</p>
-        ) : (
-          <ul className="mt-3 flex flex-col gap-2">
-            {view.rules.map((r) => (
-              <li key={r.revision} className="rounded-xl bg-o-ok-bg/60 px-4 py-3 ring-1 ring-inset ring-o-ok-line">
-                <span className="flex flex-wrap items-center gap-2"><Pill tone="good">{r.statusWords}</Pill><span className="text-[15px] font-semibold leading-6 text-o-ink">{r.headline.replace(/^ACTIVE RULE — /, "")}</span></span>
-                <span className="mt-1 block text-[12.5px] text-o-muted">{r.source}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Panel>
-
-      {view.needsConfirmation.length > 0 && (
+  const questions = view.needsConfirmation.filter((n) => n.id.startsWith("rule:") === (part === "rules"));
+  const questionsPanel = questions.length > 0 ? (
         <Panel className="p-4 md:p-5">
           <PanelHeader icon="flag" tone="warn" title="Needs your answer" sub="One question each. BARRY keeps your approved values until you decide." />
           <ul className="mt-3 flex flex-col gap-2">
-            {view.needsConfirmation.map((n) => (
+            {questions.map((n) => (
               <li key={n.id} className="flex flex-col gap-2 rounded-xl bg-o-warn-bg/50 px-4 py-3 ring-1 ring-inset ring-o-warn-line">
                 <p className="text-[14px] font-medium text-o-ink">{n.question}</p>
                 <p className="text-[13px] text-o-muted">{n.explanation}</p>
@@ -122,7 +105,30 @@ export function TrainBarry({ api }: { api: Api }) {
             ))}
           </ul>
         </Panel>
-      )}
+  ) : null;
+  if (part === "rules") {
+    return (
+      <div className="flex flex-col gap-5">
+        {actionError && <StateNotice tone="bad" title="BARRY didn't save that">{actionError}</StateNotice>}
+        {questionsPanel}
+        <Panel className="p-4 md:p-5" id="teach-rule">
+          <PanelHeader icon="shield" title="Teach BARRY a rule" sub="Write it like you'd tell a new employee (“Up to 5% discount without asking me”). BARRY reads it, shows you how it will apply it, and only uses it once you confirm." />
+          <div className="mt-3 flex flex-col gap-2">
+            <input value={doc.name} onChange={(e) => setDoc({ ...doc, name: e.target.value })} placeholder="A name for it (e.g. Discount rule)" className={`${input} text-sm`} />
+            <textarea value={doc.text} onChange={(e) => setDoc({ ...doc, text: e.target.value })} rows={3} placeholder="The rule, in your words" className={`${input} min-h-0 py-2 text-sm`} />
+            <button className={`${primary} w-fit`} disabled={busy || !doc.name.trim() || !doc.text.trim()} onClick={() => void act("/api/learnbusiness/sources", { type: "document", name: doc.name, text: doc.text, approved: true }).then(() => setDoc({ name: "", text: "" }))}>{fromCommand ? "Let BARRY read your rule" : "Let BARRY read it"}</button>
+          </div>
+        </Panel>
+      </div>
+    );
+  }
+  const statusCounts = view.understands.reduce<Record<string, number>>((m, u) => ((m[u.status] = (m[u.status] ?? 0) + 1), m), {});
+  return (
+    <div className="flex flex-col gap-5">
+      {actionError && <StateNotice tone="bad" title="BARRY didn't save that">{actionError}</StateNotice>}
+
+
+      {questionsPanel}
 
       {/* WHAT BARRY KNOWS — every row says what it means for BARRY now */}
       <Panel className="p-4 md:p-5">
@@ -161,7 +167,7 @@ export function TrainBarry({ api }: { api: Api }) {
         </Panel>
       )}
 
-      <Section title="What to teach BARRY next" subtitle={view.teachNext.length ? "The minimum questions, most important first." : "Nothing missing for what BARRY does today."}>
+      <Section id="teach" title="What to teach BARRY next" subtitle={view.teachNext.length ? "The minimum questions, most important first." : "Nothing missing for what BARRY does today."}>
         {view.teachNext.length > 0 && (
           <ul className="flex flex-col gap-2">
             {view.teachNext.map((t) => (
@@ -196,7 +202,7 @@ export function TrainBarry({ api }: { api: Api }) {
             <textarea value={factsText} onChange={(e) => setFactsText(e.target.value)} rows={3} placeholder={"hours.opening = Sun–Thu 10:00–19:00\npolicy.returns = 14 days with a receipt"} className={`${input} min-h-0 py-2 text-sm`} />
             <button className={`${btn} mt-2`} disabled={busy || !factsText.trim()} onClick={() => { const facts = factsText.split("\n").map((l) => l.split("=")).filter((p) => p.length >= 2).map(([k, ...v]) => ({ key: k.trim(), value: v.join("=").trim() })); void act("/api/learnbusiness/sources", { type: "owner_facts", facts, approved: true }).then(() => setFactsText("")); }}>Teach these facts</button>
           </Fold>
-          <Fold id="teach-rule" open={fromCommand || undefined} summary={fromCommand ? "Your rule from the command bar — let BARRY read it" : "Give BARRY a document (paste its text)"}>
+          <Fold summary="Give BARRY a document (paste its text)">
             <input value={doc.name} onChange={(e) => setDoc({ ...doc, name: e.target.value })} placeholder="Document name (e.g. Store policy)" className={`${input} mb-2 text-sm`} />
             <textarea value={doc.text} onChange={(e) => setDoc({ ...doc, text: e.target.value })} rows={4} placeholder="Paste the document text" className={`${input} min-h-0 py-2 text-sm`} />
             <button className={`${btn} mt-2`} disabled={busy || !doc.name.trim() || !doc.text.trim()} onClick={() => void act("/api/learnbusiness/sources", { type: "document", name: doc.name, text: doc.text, approved: true }).then(() => setDoc({ name: "", text: "" }))}>Let BARRY read it</button>
@@ -208,16 +214,6 @@ export function TrainBarry({ api }: { api: Api }) {
         </div>
       </Panel>
 
-      <Section title="What BARRY can do" subtitle="From what it really runs on.">
-        <ul className="divide-y divide-o-line">
-          {[...view.canDoNow, ...view.afterSetup, ...view.notSupported].map((p) => (
-            <li key={p.id} className="flex flex-col gap-0.5 py-2 text-[13px]">
-              <span className="flex flex-wrap items-center gap-2"><Pill tone={AVAIL[p.availability].tone}>{AVAIL[p.availability].word}</Pill><span className="font-medium text-o-ink">{p.title}</span></span>
-              <span className="text-[12px] text-o-muted">{p.how}{p.missing.length ? ` · needs: ${p.missing.join(", ")}` : ""}</span>
-            </li>
-          ))}
-        </ul>
-      </Section>
     </div>
   );
 }

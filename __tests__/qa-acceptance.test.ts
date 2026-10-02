@@ -316,8 +316,8 @@ describe("WhatsApp QA dry run through the real adapter + gateway", () => {
 // ── 14. Surfaces render ─────────────────────────────────────────────────
 
 describe("the testing surfaces render", () => {
-  it("owner, train, QA and simulator pages render without throwing", async () => {
-    for (const path of ["@/app/owner/page", "@/app/owner/train/page", "@/app/qa/page", "@/app/simulator/page"]) {
+  it("owner OS, QA and simulator pages render without throwing", async () => {
+    for (const path of ["@/app/owner/page", "@/app/owner/rules/page", "@/app/owner/knowledge/page", "@/app/owner/systems/page", "@/app/owner/setup/page", "@/app/owner/settings/page", "@/app/qa/page", "@/app/simulator/page"]) {
       const mod = (await import(path)) as { default: () => ReturnType<typeof createElement> };
       expect(() => renderToString(createElement(mod.default))).not.toThrow();
     }

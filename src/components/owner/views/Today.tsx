@@ -16,7 +16,7 @@ import { ActivityStream, CommandReply, MotionStrip, NeedsYouFloat, NoticedCard, 
 import { greeting, plural, type Tab } from "./shared";
 
 /**
- * TODAY — a story, not a grid. What BARRY did ("BARRY made ₪X today"), what he is doing ("He's
+ * TODAY — a living story, not a grid. What BARRY did ("BARRY made ₪X today"), what he is doing ("He's
  * working on 3 things"), what needs the owner ("One needs you"), and the business in motion. The
  * owner directs BARRY from the command bar. Every figure comes from the workspace read model.
  */
@@ -49,7 +49,7 @@ export function todayStory(ws: OwnerWorkspace) {
   return { did, working: `${working} ${needLine}`, things, needs };
 }
 
-export function TodayView({ ws, act, busyId, loading, onOpen, onIntervention, onTab, onCommand, onInitiative, onAsk }: { ws: OwnerWorkspace; act: Act; busyId: string | null; loading: boolean; onOpen: (id: string) => void; onIntervention: (id?: string) => void; onTab: (t: Tab) => void; onCommand?: RunCommand; onInitiative?: InitiativeAct; onAsk?: (q: string) => void }) {
+export function TodayView({ ws, act, busyId, loading, onOpen, onIntervention, onTab, onCommand, onInitiative }: { ws: OwnerWorkspace; act: Act; busyId: string | null; loading: boolean; onOpen: (id: string) => void; onIntervention: (id?: string) => void; onTab: (t: Tab) => void; onCommand?: RunCommand; onInitiative?: InitiativeAct }) {
   const [text, setText] = useState("");
   const [exchange, setExchange] = useState<{ text: string; reply: OwnerReply } | null>(null);
   const [sending, setSending] = useState(false);
@@ -81,9 +81,15 @@ export function TodayView({ ws, act, busyId, loading, onOpen, onIntervention, on
   const ownerOps = ws.ownerOperations.filter((o) => o.derivedState !== "blocked" && (o.derivedState === "running" || o.derivedState === "waiting_on_customers" || o.derivedState === "proposed" || Date.parse(o.updatedAt) >= Date.parse(ws.window.since)));
   const commandText = (id: string) => ws.ownerCommands.find((c) => c.operationId === id)?.text;
 
+  const ownerOpsShown = ownerOps.slice(0, 1);
+  const flowsShown = ownerOpsShown.length ? [] : flows.slice(0, 1);
+  const moreWork = ownerOps.length - ownerOpsShown.length + flows.length - flowsShown.length;
+
+  // The story, in order: presence → what needs you → what BARRY is working on → what changed → money in
+  // motion → what BARRY noticed → ask. Each part shows the essentials; the rest is one tap away.
   return (
     <div className="flex flex-col gap-8 md:gap-10">
-      {/* The story */}
+      {/* Presence: the story so far */}
       <section className="o-rise relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 pt-1 lg:gap-10">
         <div className="min-w-0">
           <p className="text-[12px] font-semibold uppercase tracking-[0.2em] text-o-muted">{ws.business.name}</p>
@@ -109,30 +115,19 @@ export function TodayView({ ws, act, busyId, loading, onOpen, onIntervention, on
         </div>
       </section>
 
-      {/* Direct BARRY */}
-      <section aria-label="Tell BARRY what to do" className="-mt-2">
-        <CommandBar
-          value={text}
-          onChange={setText}
-          onSubmit={submit}
-          busy={sending}
-          state={presence.state}
-          suggestions={commandSuggestions(ws).map((s) => ({ text: s, icon: SUGGESTION_ICON[s] ?? "spark" }))}
-          onSuggestion={submit}
-        />
-        {exchange && <CommandReply text={exchange.text} reply={exchange.reply} busy={sending} onAction={(id) => void send({ actionId: id }, exchange.text)} onClose={() => setExchange(null)} />}
-      </section>
-
       {(ai.status === "unavailable" || ai.status === "degraded") && (
         <StateNotice tone={ai.status === "unavailable" ? "bad" : "warn"} title={ai.status === "unavailable" ? "BARRY can't understand customers right now" : "BARRY had trouble understanding some messages"}>
           {ai.summary}
         </StateNotice>
       )}
 
-      {/* Live work, with the interruption floating beside it */}
+      {/* What needs you, then what BARRY is working on */}
       <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1.7fr)_minmax(18rem,1fr)]">
+        <aside className="order-1 lg:sticky lg:top-20 lg:order-2">
+          <NeedsYouFloat ws={ws} act={act} busyId={busyId} onReview={(id) => onIntervention(id)} />
+        </aside>
         <section className="o-stage order-2 p-5 md:p-7 lg:order-1" aria-labelledby="working">
-          <StageTitle live={liveState} liveLabel={liveState === "live" ? "Live now" : liveState === "waiting" ? "Waiting on customers" : "Quiet"} right={<HeaderLink onClick={() => onTab("inbox")}>Inbox</HeaderLink>}>
+          <StageTitle live={liveState} liveLabel={liveState === "live" ? "Live now" : liveState === "waiting" ? "Waiting on customers" : "Quiet"} right={<HeaderLink onClick={() => onTab("work")}>All work</HeaderLink>}>
             <span id="working">BARRY is working</span>
           </StageTitle>
 
@@ -148,20 +143,13 @@ export function TodayView({ ws, act, busyId, loading, onOpen, onIntervention, on
           )}
 
           <div className="mt-6 flex flex-col gap-8">
-            {ownerOps.map((o) => (
-              <div key={o.id}>
-                <OperationFlow op={o} text={commandText(o.id)} />
-                <div className="o-hairline mt-8" />
-              </div>
+            {ownerOpsShown.map((o) => (
+              <OperationFlow key={o.id} op={o} text={commandText(o.id)} />
             ))}
-            {flows.length > 0 ? (
-              flows.slice(0, 2).map((f, i) => (
-                <div key={f.kind}>
-                  {i > 0 && <div className="o-hairline mb-8" />}
-                  <WorkflowFlow w={f} />
-                </div>
-              ))
-            ) : (
+            {flowsShown.map((f) => (
+              <WorkflowFlow key={f.kind} w={f} />
+            ))}
+            {ownerOpsShown.length === 0 && flowsShown.length === 0 && (
               <div className="grid grid-cols-1 gap-5 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
                 <div>
                   <p className="text-[15px] font-medium text-o-ink">No follow-ups running yet.</p>
@@ -170,30 +158,28 @@ export function TodayView({ ws, act, busyId, loading, onOpen, onIntervention, on
                 <WhatsAppCard channels={ws.channels} wide />
               </div>
             )}
-            {flows.length > 2 && <p className="text-[12.5px] text-o-faint">+ {plural(flows.length - 2, "more workflow")} on Money.</p>}
+            {moreWork > 0 && (
+              <button type="button" onClick={() => onTab("work")} className="w-fit text-[13px] font-medium text-o-accent hover:underline">+ {plural(moreWork, "more thing")} in Work ›</button>
+            )}
           </div>
-
-          {hours.values.some((v) => v > 0) && (
-            <div className="mt-8">
-              <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-o-faint">Conversations today, by hour</p>
-              <Bars values={hours.values} labels={hours.labels} ariaLabel="Conversation activity by hour today" height={40} />
-            </div>
-          )}
         </section>
-
-        <aside className="order-1 flex flex-col gap-6 lg:sticky lg:top-20 lg:order-2">
-          <NeedsYouFloat ws={ws} act={act} busyId={busyId} onReview={(id) => onIntervention(id)} />
-          {onInitiative && <NoticedCard items={ws.initiatives} onAct={onInitiative} onAsk={() => onAsk?.("What did you notice?")} />}
-          <section aria-labelledby="happened" className="px-1">
-            <StageTitle>
-              <span id="happened">Just happened</span>
-            </StageTitle>
-            <div className="mt-3">
-              <ActivityStream items={feed} onOpen={onOpen} empty="Payments, follow-ups, approvals and handoffs appear here the moment BARRY records them." />
-            </div>
-          </section>
-        </aside>
       </div>
+
+      {/* What changed / finished */}
+      <section aria-labelledby="happened">
+        <StageTitle right={<HeaderLink onClick={() => onTab("activity")}>All activity</HeaderLink>}>
+          <span id="happened">Just happened</span>
+        </StageTitle>
+        <div className="mt-3">
+          <ActivityStream items={feed} onOpen={onOpen} empty="Payments, follow-ups, approvals and handoffs appear here the moment BARRY records them." />
+        </div>
+        {hours.values.some((v) => v > 0) && (
+          <div className="mt-6">
+            <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-o-faint">Conversations today, by hour</p>
+            <Bars values={hours.values} labels={hours.labels} ariaLabel="Conversation activity by hour today" height={40} />
+          </div>
+        )}
+      </section>
 
       {/* Money in motion */}
       <section aria-labelledby="motion">
@@ -203,6 +189,23 @@ export function TodayView({ ws, act, busyId, loading, onOpen, onIntervention, on
         <div className="o-stage mt-3 px-4 py-1 md:px-6">
           <MotionStrip ws={ws} onTab={onTab} />
         </div>
+      </section>
+
+      {/* What BARRY noticed */}
+      {onInitiative && ws.initiatives.length > 0 && <NoticedCard items={ws.initiatives} onAct={onInitiative} onAsk={() => onTab("work")} />}
+
+      {/* Ask / direct BARRY — the same command service as WhatsApp */}
+      <section aria-label="Tell BARRY what to do">
+        <CommandBar
+          value={text}
+          onChange={setText}
+          onSubmit={submit}
+          busy={sending}
+          state={presence.state}
+          suggestions={commandSuggestions(ws).map((s) => ({ text: s, icon: SUGGESTION_ICON[s] ?? "spark" }))}
+          onSuggestion={submit}
+        />
+        {exchange && <CommandReply text={exchange.text} reply={exchange.reply} busy={sending} onAction={(id) => void send({ actionId: id }, exchange.text)} onClose={() => setExchange(null)} />}
       </section>
 
       {setupSteps.length > 0 && (
@@ -215,7 +218,7 @@ export function TodayView({ ws, act, busyId, loading, onOpen, onIntervention, on
               {i < setupSteps.length - 1 ? " ·" : ""}
             </span>
           ))}
-          <Link href="/owner/train" className="font-medium text-o-accent hover:underline">Train BARRY</Link>
+          <Link href="/owner/setup" className="font-medium text-o-accent hover:underline">BARRY setup</Link>
         </p>
       )}
     </div>

@@ -10,29 +10,32 @@ import { BarryOrb, Icon, LiveDot, type IconName, type LiveState } from "./kit";
 import type { OwnerChannels } from "@/lib/owner/service";
 
 /**
- * THE OWNER CONTROL ROOM SHELL — BARRY runs the business in the background; this is where the owner
- * sees and controls it. A small mental model: TODAY · INBOX · MONEY · BARRY, and everything else under
- * MORE (Actions, Train BARRY, Connections, Plan, Settings). Desktop: a quiet sidebar. Phones: a top
- * bar with BARRY's presence and a five-tab bottom bar. WhatsApp is framed as the everyday command
- * surface — shown with its REAL readiness, never as connected when it isn't.
+ * THE OWNER BUSINESS OS SHELL — BARRY runs the business in the background; this is where the owner sees
+ * and directs it. Four daily surfaces: TODAY · ASK BARRY · WORK · MONEY. Everything else is the OS, under
+ * MORE: customers, the rules BARRY follows, what BARRY knows, connected systems, activity, BARRY setup,
+ * plan and settings. Desktop: a quiet sidebar. Phones: a top bar with BARRY's presence and a five-tab
+ * bottom bar. WhatsApp is framed as the everyday command surface — shown with its REAL readiness.
  */
 
-export type OwnerSection = "today" | "inbox" | "money" | "ask" | "actions" | "train" | "connections" | "plan" | "settings";
+export type OwnerSection = "today" | "ask" | "work" | "money" | "customers" | "rules" | "knowledge" | "systems" | "activity" | "setup" | "plan" | "settings";
 
 type NavItem = { id: OwnerSection; href: string; label: string; short: string; icon: IconName };
 
 export const OWNER_NAV: NavItem[] = [
   { id: "today", href: "/owner?tab=today", label: "Today", short: "Today", icon: "today" },
-  { id: "inbox", href: "/owner?tab=inbox", label: "Inbox", short: "Inbox", icon: "inbox" },
+  { id: "ask", href: "/owner?tab=ask", label: "Ask BARRY", short: "Ask", icon: "barry" },
+  { id: "work", href: "/owner?tab=work", label: "Work", short: "Work", icon: "pulse" },
   { id: "money", href: "/owner?tab=money", label: "Money", short: "Money", icon: "money" },
-  { id: "ask", href: "/owner?tab=ask", label: "Ask BARRY", short: "BARRY", icon: "barry" },
 ];
 
 export const OWNER_MORE: NavItem[] = [
-  { id: "actions", href: "/owner?tab=actions", label: "Actions & approvals", short: "Actions", icon: "shield" },
-  { id: "train", href: "/owner/train", label: "Train BARRY", short: "Train", icon: "book" },
-  { id: "connections", href: "/connections", label: "Connections", short: "Connections", icon: "plug" },
-  { id: "plan", href: "/owner/settings#plan", label: "Plan", short: "Plan", icon: "card" },
+  { id: "customers", href: "/owner?tab=customers", label: "Customers", short: "Customers", icon: "inbox" },
+  { id: "rules", href: "/owner/rules", label: "Rules BARRY follows", short: "Rules", icon: "shield" },
+  { id: "knowledge", href: "/owner/knowledge", label: "What BARRY knows", short: "Knowledge", icon: "book" },
+  { id: "systems", href: "/owner/systems", label: "Connected systems", short: "Systems", icon: "plug" },
+  { id: "activity", href: "/owner?tab=activity", label: "Activity", short: "Activity", icon: "clock" },
+  { id: "setup", href: "/owner/setup", label: "BARRY setup", short: "Setup", icon: "check" },
+  { id: "plan", href: "/owner/settings#plan", label: "Plan & billing", short: "Plan", icon: "card" },
   { id: "settings", href: "/owner/settings", label: "Settings", short: "Settings", icon: "settings" },
 ];
 

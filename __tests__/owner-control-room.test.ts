@@ -10,7 +10,7 @@ import { activityFeed, nowWorking, workflows } from "@/lib/owner/control-room";
 import { resetControlsCacheForTests } from "@/lib/hq/controls";
 import { TodayView } from "@/components/owner/views/Today";
 import { MoneyView } from "@/components/owner/views/Money";
-import { ActionsView } from "@/components/owner/views/Actions";
+import { WorkView } from "@/components/owner/views/Work";
 import { WhatsAppCard } from "@/components/owner/OwnerShell";
 import { Flow } from "@/components/owner/kit";
 import { conversationState } from "@/components/owner/views/shared";
@@ -117,12 +117,12 @@ describe("the control room renders from a real workspace", () => {
     expect(money).toMatch(/Test money/);
   });
 
-  it("Actions renders the queue; the owner WhatsApp channel is never shown as connected when it isn't", async () => {
+  it("Work renders the queue; the owner WhatsApp channel is never shown as connected when it isn't", async () => {
     const { g } = await pendingPayment();
     const ws: OwnerWorkspace = await getOwnerWorkspace(g);
     expect(ws.channels).toEqual(ownerChannels(g.business.id));
     expect(ws.channels.ownerCommands).toBe("not_connected");
-    const actions = renderToString(createElement(ActionsView, { ws, act: noop, busyId: null, onOpen: noop }));
+    const actions = renderToString(createElement(WorkView, { ws, act: noop, busyId: null, onOpen: noop, onInitiative: async () => undefined, onAsk: noop }));
     expect(actions).toMatch(/Nothing needs you right now/);
     const card = renderToString(createElement(WhatsAppCard, { channels: ws.channels }));
     expect(card).toMatch(/Owner commands: not connected yet/);
