@@ -14,6 +14,7 @@ import { hasMoney, moneyWords } from "@/lib/format/money";
 import type { Money } from "@/lib/owner/revenue";
 import { intentFromModel, interpretFounder, resolveBusinesses, UNSUPPORTED_HELP, type BusinessResolution, type DirectoryEntry, type FounderActionKind, type FounderInterpreter, type FounderIntent } from "./command";
 import { runInitiativeScan } from "@/lib/initiative/engine";
+import { actionEffect, actionTitle, askedText, doneText, failedText, followUpFor, noChangeText, replayText, unverifiedText, verifiedText, type Lang } from "./i18n";
 import { languageOf, voice, type FounderComposer, type FounderEnvelope } from "./voice";
 import { businessDrilldown, founderBrief, loadFounderFleet, HEALTH_PHRASE, HEALTH_WORDS, type BriefItem } from "./read-model";
 
@@ -65,6 +66,8 @@ export type FounderCommandRecord = {
   groundedAnswer?: string;
   /** Who worded `answer`: the conversation composer (checked against the envelope) or the grounded text. */
   voice?: { source: "composer" | "grounded"; reason?: string };
+  /** The language of the founder's ORIGINAL command: a confirmation (a later request) answers in the same language. */
+  language?: Lang;
   /** A follow-up that leaned on the previous command (context only — every fact was re-grounded). */
   followUpOf?: string;
   trace: FounderTraceStep[];
@@ -72,7 +75,7 @@ export type FounderCommandRecord = {
   updatedAt: string;
 };
 
-export type FounderReply = Pick<FounderCommandRecord, "key" | "status" | "answer" | "items" | "followUps" | "proposalIds" | "verification" | "stopReason"> & { intent: FounderIntent["family"]; scope: FounderCommandRecord["scope"]; confirmation?: { key: string; title: string; effect: string }; duplicate: boolean; voice?: "composer" | "grounded" };
+export type FounderReply = Pick<FounderCommandRecord, "key" | "status" | "answer" | "items" | "followUps" | "proposalIds" | "verification" | "stopReason"> & { intent: FounderIntent["family"]; scope: FounderCommandRecord["scope"]; confirmation?: { key: string; title: string; effect: string; /** The title in the founder's language (for the Confirm button). */ label: string }; duplicate: boolean; voice?: "composer" | "grounded"; /** The founder's language for this conversation turn (drives the few UI words around a confirmation). */ language: Lang; /** True when this reply answers a confirmation that was ALREADY used: nothing ran, the original result is unchanged. */ replay?: boolean };
 
 const KIND = "founder_command";
 
@@ -131,8 +134,9 @@ function reply(r: FounderCommandRecord, duplicate: boolean): FounderReply {
     ...(r.stopReason ? { stopReason: r.stopReason } : {}),
     intent: r.intent.family,
     scope: r.scope,
-    ...(r.status === "needs_confirmation" && r.action ? { confirmation: { key: r.key, title: r.action.title, effect: r.action.effect } } : {}),
+    ...(r.status === "needs_confirmation" && r.action ? { confirmation: { key: r.key, title: r.action.title, effect: r.action.effect, label: actionTitle(r.language ?? languageOf(r.text), r.action.kind, r.action.businessName) } } : {}),
     duplicate,
+    language: r.language ?? languageOf(r.text),
     ...(r.voice ? { voice: r.voice.source } : {}),
   };
 }
@@ -253,6 +257,7 @@ export async function executeFounderCommand(input: FounderCommandInput): Promise
     followUps: [],
     proposalIds: [],
     trace: [],
+    language: languageOf(text),
     createdAt: now.toISOString(),
     updatedAt: now.toISOString(),
   };
@@ -669,16 +674,17 @@ async function prepareAction(r: FounderCommandRecord, kind: FounderActionKind, b
   r.authority = "founder control (existing, audited; confirmation required)";
   ctx.step("authority", "ok", r.authority);
   const snapshot: Partial<BusinessControls> = { pausedBusiness: before.pausedBusiness, safeMode: before.safeMode };
+  const lang: Lang = r.language ?? "en";
   r.action = { kind, businessId: b.id, businessName: b.name, change: a.change, title: a.title(b.name), effect: a.effect, before: snapshot };
   if (isNoop(before, a.change)) {
     r.status = "no_change";
-    r.verification = `${b.name}: ${String(a.key)} is already ${String(before[a.key])} (read from the durable controls).`;
-    r.answer = `${b.name} is already ${kind === "pause_business" ? "paused" : kind === "resume_business" ? "running (not paused)" : kind === "safe_mode_on" ? "in safe mode" : "out of safe mode"}. Nothing to change.`;
+    r.verification = verifiedText(lang, b.name, String(a.key), String(before[a.key]), before.updatedAt, before.updatedBy);
+    r.answer = lang === "he" ? noChangeText(lang, b.name) : `${b.name} is already ${kind === "pause_business" ? "paused" : kind === "resume_business" ? "running (not paused)" : kind === "safe_mode_on" ? "in safe mode" : "out of safe mode"}. Nothing to change.`;
     ctx.step("verification", "ok", r.verification);
     return;
   }
   r.status = "needs_confirmation";
-  r.answer = `${a.title(b.name)}?\n${a.effect}\nConfirm to apply it through the audited founder control.`;
+  r.answer = askedText(lang, actionTitle(lang, kind, b.name), actionEffect(lang, kind, a.effect));
   r.followUps = ["Confirm"];
   ctx.step("confirmation", "info", "waiting for the founder to confirm");
 }
@@ -687,8 +693,18 @@ async function prepareAction(r: FounderCommandRecord, kind: FounderActionKind, b
 export async function confirmFounderAction(input: { actor: FounderActor; key: string; now?: Date }): Promise<FounderReply> {
   if (!input.actor || input.actor.kind !== "founder") throw new Error("Founder BARRY needs an authenticated founder");
   const r = await getFounderCommand(input.key);
-  if (!r) return { key: input.key, status: "refused", answer: "There is nothing waiting for confirmation under that key.", items: [], followUps: [], proposalIds: [], intent: "founder_action", scope: { kind: "business", businessIds: [] }, stopReason: "unknown key", duplicate: false };
-  if (r.status !== "needs_confirmation" || !r.action) return reply(r, true);
+  if (!r) return { key: input.key, status: "refused", answer: "There is nothing waiting for confirmation under that key.", items: [], followUps: [], proposalIds: [], intent: "founder_action", scope: { kind: "business", businessIds: [] }, stopReason: "unknown key", duplicate: false, language: "en" };
+  if (r.status !== "needs_confirmation" || !r.action) {
+    // Already used (or not a pending control): the recorded result is returned UNCHANGED — nothing runs, no audit,
+    // no new verification. A used control confirmation is flagged as a replay so it can't read as a second execution.
+    const base = reply(r, true);
+    if (r.action && (r.status === "executed" || r.status === "no_change")) {
+      const lang = r.language ?? languageOf(r.text);
+      return { ...base, replay: true, answer: replayText(lang, r.action.kind, r.action.businessName, r.action.confirmedAt ?? r.updatedAt), followUps: [], items: [] };
+    }
+    return base;
+  }
+  const lang: Lang = r.language ?? languageOf(r.text);
   const at = () => new Date().toISOString();
   const step = (s: FounderTraceStep["step"], outcome: FounderTraceStep["outcome"], detail: string) => r.trace.push({ step: s, outcome, detail, at: at() });
   const a = r.action;
@@ -706,15 +722,15 @@ export async function confirmFounderAction(input: { actor: FounderActor; key: st
     const expected = a.change[field as keyof ControlChange];
     const ok = after[field] === expected;
     r.action.verified = ok;
-    r.verification = ok ? `${a.businessName}: ${String(field)} = ${String(after[field])} in the durable controls (updated ${after.updatedAt} by ${after.updatedBy}).` : `${a.businessName}: expected ${String(field)} = ${String(expected)}, durable state says ${String(after[field])}.`;
+    r.verification = ok ? verifiedText(lang, a.businessName, String(field), String(after[field]), after.updatedAt, after.updatedBy) : `${a.businessName}: expected ${String(field)} = ${String(expected)}, durable state says ${String(after[field])}.`;
     step("verification", ok ? "ok" : "failed", r.verification);
     r.status = ok ? (result.changed ? "executed" : "no_change") : "failed";
-    r.answer = ok ? `Done — ${a.title.replace(/^\w/, (c) => c.toLowerCase())}${a.title.endsWith(".") ? "" : "."} Verified in the durable controls; the audit records you, the time and the reason.` : `I applied the change but couldn't verify it: ${r.verification}`;
-    r.followUps = a.kind === "pause_business" ? [`Resume ${a.businessName}`] : a.kind === "safe_mode_on" ? [`Take ${a.businessName} out of safe mode`] : [];
+    r.answer = ok ? doneText(lang, lang === "he" ? actionTitle(lang, a.kind, a.businessName) : a.title) : unverifiedText(lang, r.verification);
+    r.followUps = followUpFor(lang, a.kind, a.businessName);
   } catch (err) {
     r.status = "failed";
     r.stopReason = err instanceof Error ? redact(err.message).slice(0, 300) : "unknown error";
-    r.answer = "The control change failed; nothing was verified as changed.";
+    r.answer = failedText(lang);
     step("execution", "failed", r.stopReason);
   }
   r.updatedAt = at();

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { buttonPrimary, button, input } from "@/components/ds/primitives";
 import { recoverFounderReply, sendFounderCommand, type SendOutcome } from "@/lib/founder/reconcile";
 import { itemsMode } from "@/lib/founder/presentation";
+import { UI } from "@/lib/founder/i18n";
 
 /**
  * ASK BARRY (founder) — a conversation with the founder's chief of staff over the fleet. Every command goes to the
@@ -17,11 +18,19 @@ import { itemsMode } from "@/lib/founder/presentation";
  */
 
 type Item = { title: string; detail?: string; href?: string; severity?: "high" | "medium" | "low" | "ok" | "info" };
-export type Reply = { key: string; status: string; answer: string; items: Item[]; followUps: string[]; proposalIds: string[]; verification?: string; stopReason?: string; intent: string; scope: { kind: "fleet" | "business"; businessIds: string[] }; confirmation?: { key: string; title: string; effect: string }; duplicate: boolean; voice?: "composer" | "grounded" };
+export type Reply = { key: string; status: string; answer: string; items: Item[]; followUps: string[]; proposalIds: string[]; verification?: string; stopReason?: string; intent: string; scope: { kind: "fleet" | "business"; businessIds: string[] }; confirmation?: { key: string; title: string; effect: string; label?: string }; duplicate: boolean; voice?: "composer" | "grounded"; language?: "en" | "he"; replay?: boolean };
 type Exchange = { id: string; key: string; text: string; reply?: Reply; error?: string; lost?: string; recovering?: boolean };
 
 const DOT: Record<string, string> = { high: "bg-[#d92d20]", medium: "bg-[#f79009]", low: "bg-[#98a2b3]", ok: "bg-[#17b26a]", info: "bg-[#2e90fa]" };
-const STATUS_WORDS: Record<string, string> = { needs_confirmation: "Needs your confirmation", executed: "Done · verified", proposed: "Proposal prepared", handled: "Handled", clarify: "Which one?", failed: "Failed" };
+const STATUS_WORDS: Record<string, string> = { proposed: "Proposal prepared", handled: "Handled", clarify: "Which one?", failed: "Failed" };
+/** The status pill, in the conversation's language for the confirmation flow (replay = a used confirmation, never "done" again). */
+function pillWord(r: Reply): string | undefined {
+  const ui = UI[r.language === "he" ? "he" : "en"];
+  if (r.replay) return ui.replay;
+  if (r.status === "needs_confirmation") return ui.needs_confirmation;
+  if (r.status === "executed") return ui.executed;
+  return STATUS_WORDS[r.status];
+}
 const newKey = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? `fc_${crypto.randomUUID()}` : `fc_${Date.now()}_${Math.random().toString(36).slice(2)}`);
 const deps = (onRecovering?: () => void) => ({ fetch: (u: string, i?: RequestInit) => fetch(u, i), sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)), onRecovering });
 
@@ -45,11 +54,13 @@ function ItemList({ items }: { items: Item[] }) {
  * One reply: the conversational answer is primary. Raw items that merely back the answer sit under a compact
  * "Details & links" disclosure; a confirmation, a proposal, a verification or a failure stays prominent.
  */
-export function FounderReplyView({ reply: r, busy, onConfirm, onFollowUp }: { reply: Reply; busy: boolean; onConfirm: (c: { key: string; title: string }) => void; onFollowUp: (text: string) => void }) {
+export function FounderReplyView({ reply: r, busy, confirmed, onConfirm, onFollowUp }: { reply: Reply; busy: boolean; /** This confirmation already has a settled reply — the button is spent. */ confirmed?: boolean; onConfirm: (c: { key: string; title: string }) => void; onFollowUp: (text: string) => void }) {
   const mode = itemsMode(r.status, r.items.length);
+  const ui = UI[r.language === "he" ? "he" : "en"];
+  const pill = pillWord(r);
   return (
     <div className="flex flex-col gap-2">
-      {STATUS_WORDS[r.status] && <span className="w-fit rounded-full bg-[#f2f4f7] px-2 py-0.5 text-[11px] font-medium text-[#344054]">{STATUS_WORDS[r.status]}</span>}
+      {pill && <span className={`w-fit rounded-full px-2 py-0.5 text-[11px] font-medium ${r.replay ? "bg-[#fffaeb] text-[#b54708]" : "bg-[#f2f4f7] text-[#344054]"}`} data-testid="founder-pill">{pill}</span>}
       <p dir="auto" className="whitespace-pre-wrap break-words text-[15px] leading-relaxed text-[#101828]">{r.answer}</p>
       {r.verification && <p dir="auto" className="text-[12px] text-[#067647]">✓ {r.verification}</p>}
       {mode === "open" && <ItemList items={r.items} />}
@@ -61,7 +72,7 @@ export function FounderReplyView({ reply: r, busy, onConfirm, onFollowUp }: { re
       )}
       <div className="flex flex-wrap gap-1.5">
         {r.confirmation && (
-          <button type="button" className={buttonPrimary} disabled={busy} onClick={() => onConfirm(r.confirmation!)} data-testid="founder-confirm">Confirm — {r.confirmation.title}</button>
+          <button type="button" className={buttonPrimary} disabled={busy || confirmed} onClick={() => onConfirm(r.confirmation!)} data-testid="founder-confirm" dir="auto">{confirmed ? ui.confirmed : `${ui.confirm} — ${r.confirmation.label ?? r.confirmation.title}`}</button>
         )}
         {r.proposalIds.length > 0 && <Link href="/hq/proposals" className={button}>Open proposals</Link>}
         {r.followUps.filter((f) => f !== "Confirm").map((f) => (
@@ -77,6 +88,9 @@ export function FounderCommand({ initial, draft, suggestions }: { initial?: stri
   const [busy, setBusy] = useState(false);
   const [log, setLog] = useState<Exchange[]>([]);
   const [context, setContext] = useState<string | undefined>(undefined);
+  // A confirmation is spent once ANY reply for its key has settled (executed, replayed, failed): the button then
+  // says so and can't be pressed again (the server would only answer "already done").
+  const settledKeys = new Set(log.flatMap((e) => (e.reply && e.reply.status !== "needs_confirmation" ? [e.reply.key] : [])));
   const started = useRef(false);
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -147,7 +161,7 @@ export function FounderCommand({ initial, draft, suggestions }: { initial?: stri
                   <button type="button" className={`${button} w-fit`} disabled={busy} onClick={() => void checkAgain(e)}>Check again</button>
                 </div>
               )}
-              {r && <FounderReplyView reply={r} busy={busy} onConfirm={(c) => void post({ confirmKey: c.key }, c.key, `Confirm: ${c.title}`)} onFollowUp={send} />}
+              {r && <FounderReplyView reply={r} busy={busy} confirmed={Boolean(r.confirmation) && settledKeys.has(r.confirmation!.key)} onConfirm={(c) => void post({ confirmKey: c.key }, c.key, `${UI[r.language === "he" ? "he" : "en"].confirm}: ${r.confirmation?.label ?? c.title}`)} onFollowUp={send} />}
             </div>
           </div>
         );
