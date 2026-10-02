@@ -58,10 +58,14 @@ type ShellProps = {
   user: { name: string; email?: string };
   badges?: Partial<Record<string, number>>;
   dir?: "ltr" | "rtl";
+  /** Where each nav entry goes (defaults to the placeholder anchors). */
+  hrefs?: Partial<Record<string, string>>;
+  onSignOut?: () => void;
   children: React.ReactNode;
 };
 
-export function AppShell({ active, title, workspace, user, badges, dir = "ltr", children }: ShellProps) {
+export function AppShell({ active, title, workspace, user, badges, dir = "ltr", hrefs, onSignOut, children }: ShellProps) {
+  const link = (n: NavItem): NavItem => ({ ...n, href: hrefs?.[n.id] ?? n.href });
   const [navOpen, setNavOpen] = React.useState(false);
   const [cmdOpen, setCmdOpen] = React.useState(false);
 
@@ -81,7 +85,7 @@ export function AppShell({ active, title, workspace, user, badges, dir = "ltr", 
       <div className="barry-app flex min-h-dvh w-full bg-background text-foreground" dir={dir} data-testid="app-shell">
         {/* Desktop sidebar */}
         <aside className="sticky top-0 hidden h-dvh w-64 shrink-0 flex-col border-e bg-sidebar text-sidebar-foreground lg:flex" data-testid="app-sidebar">
-          <SidebarBody active={active} workspace={workspace} user={user} badges={badges} />
+          <SidebarBody active={active} workspace={workspace} user={user} badges={badges} link={link} onSignOut={onSignOut} />
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col">
@@ -110,7 +114,7 @@ export function AppShell({ active, title, workspace, user, badges, dir = "ltr", 
         <nav className="fixed inset-x-0 bottom-0 z-30 border-t bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur supports-[backdrop-filter]:bg-background/80 lg:hidden" aria-label="Primary" data-testid="app-tabbar">
           <div className="grid h-16 grid-cols-5">
             {PRIMARY_NAV.map((n) => (
-              <TabLink key={n.id} item={n} active={active === n.id} badge={badges?.[n.id]} />
+              <TabLink key={n.id} item={link(n)} active={active === n.id} badge={badges?.[n.id]} />
             ))}
             <button type="button" onClick={() => setNavOpen(true)} className="flex flex-col items-center justify-center gap-1 text-[11px] font-medium text-muted-foreground">
               <MenuIcon className="size-5" />
@@ -126,17 +130,17 @@ export function AppShell({ active, title, workspace, user, badges, dir = "ltr", 
               <SheetTitle>Navigation</SheetTitle>
               <SheetDescription>Every section of BARRY</SheetDescription>
             </SheetHeader>
-            <SidebarBody active={active} workspace={workspace} user={user} badges={badges} onNavigate={() => setNavOpen(false)} />
+            <SidebarBody active={active} workspace={workspace} user={user} badges={badges} link={link} onSignOut={onSignOut} onNavigate={() => setNavOpen(false)} />
           </SheetContent>
         </Sheet>
 
-        <CommandMenu open={cmdOpen} onOpenChange={setCmdOpen} />
+        <CommandMenu open={cmdOpen} onOpenChange={setCmdOpen} link={link} />
       </div>
     </TooltipProvider>
   );
 }
 
-function SidebarBody({ active, workspace, user, badges, onNavigate }: Pick<ShellProps, "active" | "workspace" | "user" | "badges"> & { onNavigate?: () => void }) {
+function SidebarBody({ active, workspace, user, badges, link, onSignOut, onNavigate }: Pick<ShellProps, "active" | "workspace" | "user" | "badges" | "onSignOut"> & { link: (n: NavItem) => NavItem; onNavigate?: () => void }) {
   return (
     <div className="flex h-full flex-col">
       {/* Workspace */}
@@ -149,16 +153,16 @@ function SidebarBody({ active, workspace, user, badges, onNavigate }: Pick<Shell
       </div>
 
       <nav className="flex flex-1 flex-col gap-4 overflow-y-auto px-2 py-2" aria-label="Sections">
-        <NavGroup items={PRIMARY_NAV} active={active} badges={badges} onNavigate={onNavigate} />
+        <NavGroup items={PRIMARY_NAV.map(link)} active={active} badges={badges} onNavigate={onNavigate} />
         <div className="flex flex-col gap-1">
           <p className="px-2 py-1 text-xs font-medium text-muted-foreground">Business</p>
-          <NavGroup items={SECONDARY_NAV} active={active} badges={badges} onNavigate={onNavigate} />
+          <NavGroup items={SECONDARY_NAV.map(link)} active={active} badges={badges} onNavigate={onNavigate} />
         </div>
       </nav>
 
       <div className="flex flex-col gap-1 border-t p-2">
-        <NavLink item={{ id: "settings", label: "Settings", href: "#settings", icon: SettingsIcon }} active={active === "settings"} onNavigate={onNavigate} />
-        <UserMenu user={user} />
+        <NavLink item={link({ id: "settings", label: "Settings", href: "#settings", icon: SettingsIcon })} active={active === "settings"} onNavigate={onNavigate} />
+        <UserMenu user={user} onSignOut={onSignOut} />
       </div>
     </div>
   );
@@ -209,7 +213,7 @@ function TabLink({ item, active, badge }: { item: NavItem; active: boolean; badg
   );
 }
 
-function UserMenu({ user }: { user: ShellProps["user"] }) {
+function UserMenu({ user, onSignOut }: { user: ShellProps["user"]; onSignOut?: () => void }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -234,7 +238,7 @@ function UserMenu({ user }: { user: ShellProps["user"] }) {
           Plan & billing
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        <DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => onSignOut?.()}>
           <LogOutIcon />
           Sign out
         </DropdownMenuItem>
@@ -244,7 +248,7 @@ function UserMenu({ user }: { user: ShellProps["user"] }) {
 }
 
 /** ⌘K — jump anywhere, or hand BARRY a request (placeholder wiring until the IA lands). */
-function CommandMenu({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
+function CommandMenu({ open, onOpenChange, link }: { open: boolean; onOpenChange: (o: boolean) => void; link: (n: NavItem) => NavItem }) {
   const router = useRouter();
   const go = (href: string) => {
     onOpenChange(false);
@@ -256,7 +260,7 @@ function CommandMenu({ open, onOpenChange }: { open: boolean; onOpenChange: (o: 
       <CommandList>
         <CommandEmpty>No results.</CommandEmpty>
         <CommandGroup heading="Go to">
-          {[...PRIMARY_NAV, ...SECONDARY_NAV].map((n) => {
+          {[...PRIMARY_NAV, ...SECONDARY_NAV].map(link).map((n) => {
             const Icon = n.icon;
             return (
               <CommandItem key={n.id} onSelect={() => go(n.href)}>
