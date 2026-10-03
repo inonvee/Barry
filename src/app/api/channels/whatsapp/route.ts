@@ -32,7 +32,8 @@ export async function POST(req: NextRequest) {
   const results = [];
   for (const message of parsed.messages) {
     // An error mid-way leaves the message's inbox record at its last persisted stage: a retry resumes it there.
-    results.push(await processInbound(message, sender).catch((err) => ({ status: "failed" as const, conversationId: message.conversationId, error: err instanceof Error ? err.message.slice(0, 120) : "error", retry: true })));
+    // (Without the concurrency guard — migration 0019 — this fails closed: nothing runs, nothing is sent, Meta retries later.)
+    results.push(await processInbound(message, sender).catch((err) => ({ status: "failed" as const, conversationId: message.conversationId, error: err instanceof Error ? err.message.slice(0, 160) : "error", retry: true })));
   }
   // Owner line: the owner command channel (never a customer conversation).
   const ownerResults = [];

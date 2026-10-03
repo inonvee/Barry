@@ -6,7 +6,7 @@ import { handleCustomerMessage, readInboundTurns } from "@/lib/runtime";
 import { getConversationStore } from "@/lib/state";
 import { ConversationBusyError, withConversationLock } from "@/lib/state/lock";
 import { updateConversation } from "@/lib/state/update";
-import { getInboxStore, INBOX_DONE, InboxUnavailableError, MAX_INBOUND_ATTEMPTS, needsWork, type InboxRow } from "./inbox";
+import { getInboxStore, INBOX_DONE, MAX_INBOUND_ATTEMPTS, needsWork, type InboxRow } from "./inbox";
 import type { ChannelKind, NormalizedInboundMessage, NormalizedOutboundMessage } from "./types";
 import { CHANNEL_DELIVERY_KEY, type DeliveryStatus } from "@/lib/operator/execution-state";
 
@@ -36,10 +36,8 @@ export type DeliveryRecord = {
   error?: string;
 };
 
-export const CHANNEL_SEEN_KEY = "__channelSeen";
 export { CHANNEL_DELIVERY_KEY };
 export const CHANNEL_PROFILE_KEY = "__channelProfileName";
-const MAX_SEEN = 200;
 const MAX_DELIVERY = 50;
 
 export function conversationIdFor(channel: ChannelKind, businessId: string, channelUserId: string): string {
@@ -103,13 +101,8 @@ export async function processInbound(message: Inbound, sender: OutboundSender, o
   const customerId = resolved.linked ? resolved.customerId : message.customerId ?? resolved.customerId;
   const conversationId = message.conversationId;
   const inbox = getInboxStore();
-  let claimed: Awaited<ReturnType<typeof inbox.claim>>;
-  try {
-    claimed = await inbox.claim({ businessId: graph.business.id, conversationId, channel: message.identity.channel, providerMessageId: message.inboundId, customerId, body: message.text, meta: { to: message.identity.channelUserId, ...(message.profileName ? { profileName: message.profileName.slice(0, 80) } : {}) }, receivedAt: message.receivedAt });
-  } catch (err) {
-    if (err instanceof InboxUnavailableError) return processInboundLegacy(message, sender, graph.business.id, customerId);
-    throw err;
-  }
+  // Without the inbox (migration 0019) this throws ConcurrencyGuardMissingError: nothing runs, nothing is sent.
+  const claimed = await inbox.claim({ businessId: graph.business.id, conversationId, channel: message.identity.channel, providerMessageId: message.inboundId, customerId, body: message.text, meta: { to: message.identity.channelUserId, ...(message.profileName ? { profileName: message.profileName.slice(0, 80) } : {}) }, receivedAt: message.receivedAt });
   if (!claimed.created && INBOX_DONE.includes(claimed.row.status)) return { status: "duplicate", conversationId };
   let advanced = new Set<string>();
   try {
@@ -231,42 +224,6 @@ async function processInboxRow(start: InboxRow, businessId: string, sender: Outb
   }
 }
 
-/**
- * Pre-0019 path (the inbox table isn't installed): the old at-most-once seen list on the conversation.
- * Kept only so an un-migrated database still answers; it is NOT safe under bursts (reported loudly).
- */
-async function processInboundLegacy(message: Inbound, sender: OutboundSender, businessId: string, customerId: string): Promise<InboundResult> {
-  const graph = resolveBusinessGraph(businessId);
-  const store = getConversationStore();
-  const conversationId = message.conversationId;
-  const state = await store.getOrCreate(conversationId, graph.business.id, customerId);
-  const seen = readList<string>(state.knownFields[CHANNEL_SEEN_KEY]);
-  if (seen.includes(message.inboundId)) return { status: "duplicate", conversationId };
-  state.knownFields[CHANNEL_SEEN_KEY] = JSON.stringify([...seen, message.inboundId].slice(-MAX_SEEN));
-  if (message.profileName && !state.knownFields[CHANNEL_PROFILE_KEY]) state.knownFields[CHANNEL_PROFILE_KEY] = message.profileName.slice(0, 80);
-  await store.save(state);
-  let out;
-  try {
-    out = await handleCustomerMessage(graph, conversationId, customerId, message.text);
-  } catch (err) {
-    const error = err instanceof Error ? err.message.slice(0, 200) : "runtime error";
-    await recordDelivery(conversationId, { at: new Date().toISOString(), channel: message.identity.channel, inboundId: message.inboundId, status: "failed", error: `not processed: ${error}` });
-    return { status: "failed", conversationId, error };
-  }
-  const text = renderForTextChannel({ conversationId, text: out.response, rich: out.rich });
-  const messageAt = [...out.state.messages].reverse().find((m) => m.role === "barry")?.at;
-  let delivery: DeliveryRecord;
-  try {
-    const sent = sender.mode === "live" ? await sender.send(message.identity.channelUserId, text, { businessId: graph.business.id }) : {};
-    delivery = { at: new Date().toISOString(), channel: sender.channel, inboundId: message.inboundId, status: sender.mode === "live" ? "sent" : "dry_run", ...(messageAt ? { messageAt } : {}), ...(sent.providerMessageId ? { providerMessageId: sent.providerMessageId } : {}) };
-  } catch (err) {
-    delivery = { at: new Date().toISOString(), channel: sender.channel, inboundId: message.inboundId, status: "failed", ...(messageAt ? { messageAt } : {}), error: err instanceof Error ? err.message.slice(0, 200) : "send failed" };
-  }
-  await recordDelivery(conversationId, delivery);
-  return { status: "processed", conversationId, reply: text, delivery };
-}
-
-/** Append one delivery record — on the latest copy, under the lock, version-checked (never a lost update). */
 async function recordDelivery(conversationId: string, d: DeliveryRecord): Promise<void> {
   await updateConversation(conversationId, (state) => {
     state.knownFields[CHANNEL_DELIVERY_KEY] = JSON.stringify([...readList<DeliveryRecord>(state.knownFields[CHANNEL_DELIVERY_KEY]), d].slice(-MAX_DELIVERY));

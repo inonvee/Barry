@@ -1,5 +1,5 @@
 import { getSupabaseClient, isSupabaseConfigured } from "@/lib/store/supabase-client";
-import { reportGuardMissing } from "@/lib/state/lock";
+import { guardMissing } from "@/lib/state/lock";
 
 /**
  * THE INBOUND INBOX — every customer message a channel delivers, recorded ONCE (unique per business,
@@ -143,19 +143,11 @@ function fromRow(r: Record<string, unknown>): InboxRow {
 
 const COLS: Record<string, string> = { status: "status", attempts: "attempts", reply: "reply", replyAt: "reply_at", providerReplyId: "provider_reply_id", error: "error", meta: "meta" };
 
-export class InboxUnavailableError extends Error {
-  constructor() {
-    super("The inbound inbox (migration 0019) is not installed");
-    this.name = "InboxUnavailableError";
-  }
-}
-
 export class SupabaseInboxStore implements InboxStore {
   private check(error: { code?: string; message?: string } | null, what: string): void {
     if (!error) return;
     if (error.code === "42P01" || error.code === "PGRST205" || /relation .*conversation_inbox.* does not exist|Could not find the table/i.test(error.message ?? "")) {
-      reportGuardMissing("inbound inbox unavailable");
-      throw new InboxUnavailableError();
+      guardMissing("inbound inbox unavailable");
     }
     throw new Error(`Inbox ${what} failed: ${error.message}`);
   }

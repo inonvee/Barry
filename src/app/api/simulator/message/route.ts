@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getBusinessGraph } from "@/lib/fixtures";
 import { handleCustomerMessage } from "@/lib/runtime";
 import { ConversationScopeError } from "@/lib/state";
+import { ConcurrencyGuardMissingError } from "@/lib/state/lock";
 import { notifyOwnerDecisions } from "@/lib/owner/briefs";
 import { simulatorAccessError, simulatorEnabled } from "@/lib/simulator-access";
 
@@ -39,6 +40,8 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     // A conversation id that belongs to another business is never continued under this one.
     if (err instanceof ConversationScopeError) return NextResponse.json({ error: err.message }, { status: 404 });
+    // Fail closed, said plainly: nothing was saved or sent.
+    if (err instanceof ConcurrencyGuardMissingError) return NextResponse.json({ error: err.message, code: err.code }, { status: 503 });
     throw err;
   }
 }

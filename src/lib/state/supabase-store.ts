@@ -1,6 +1,6 @@
 import { getSupabaseClient } from "@/lib/store/supabase-client";
 import { ConversationConflictError, ConversationScopeError, createInitialConversationState } from "./types";
-import { reportGuardMissing } from "./lock";
+import { guardMissing, isMissingFunction } from "./lock";
 import type { ConversationMessage, ConversationState, ConversationStore, ConversationSummary, TurnActivity, TurnLog } from "./types";
 
 // Tracks, per in-memory ConversationState object, how many messages/turns
@@ -118,110 +118,25 @@ export class SupabaseConversationStore implements ConversationStore {
     return { ...fresh, version: 0 };
   }
 
-  /** null = unknown; false = migration 0019 missing (legacy, unprotected save — reported loudly). */
-  private atomicSave: boolean | null = null;
-
   /**
    * Compare-and-swap save in ONE database transaction (migration 0019): the row is written only if it is
    * still at the version this copy was read at, together with the new messages and turns — all or nothing.
-   * A conflict writes nothing and throws ConversationConflictError.
+   * A conflict writes nothing and throws ConversationConflictError. Without migration 0019 (no function, or
+   * a row read without a version) it FAILS CLOSED — there is no unprotected save path.
    */
   async save(state: ConversationState): Promise<void> {
-    if (this.atomicSave !== false && state.version !== undefined) {
-      const prev = persistedCounts.get(state) ?? { messages: 0, turns: 0 };
-      const updatedAt = new Date().toISOString();
-      const row = { stage: state.stage, detected_intent: state.detectedIntent ?? null, selected_offer_id: state.selectedOfferId ?? null, known_fields: state.knownFields, missing_fields: state.missingFields, objections: state.objections, pending_action: state.pendingAction ?? null, pending_approval_id: state.pendingApprovalId ?? null, outcome: state.outcome ?? null, updated_at: updatedAt };
-      const messages = state.messages.slice(prev.messages).map((m) => ({ role: m.role, content: m.content, at: m.at, ...(m.rich ? { rich: m.rich } : {}) }));
-      const turns = state.turns.slice(prev.turns).map((t) => ({ id: t.id, at: t.at, customer_message: t.customerMessage, understood: t.understood, retrieved: t.retrieved, goal: t.goal ?? null, selected_action: t.selectedAction ?? null, policy_decision: t.policyDecision ?? null, tool_result: t.toolResult ?? null, response: t.response, state_after: t.stateAfter, reasoner: t.reasoner, trace: t.trace ?? null, verification: t.verification ?? null, compiled: t.compiled ?? null }));
-      const { data, error } = await getSupabaseClient().rpc("barry_save_conversation", { p_id: state.id, p_expected_version: state.version, p_row: row, p_messages: messages, p_turns: turns });
-      if (!error) {
-        if (data === null || data === undefined) throw new ConversationConflictError(state.id);
-        state.updatedAt = updatedAt;
-        state.version = Number(data);
-        persistedCounts.set(state, { messages: state.messages.length, turns: state.turns.length });
-        this.atomicSave = true;
-        return;
-      }
-      if (!(error.code === "PGRST202" || /Could not find the function|function .* does not exist/i.test(error.message ?? ""))) throw new Error(`Failed to save conversation ${state.id}: ${error.message}`);
-      this.atomicSave = false;
-      reportGuardMissing("atomic conversation save unavailable");
-    }
-    await this.legacySave(state);
-  }
-
-  /** Pre-0019 save: unprotected last-write-wins (kept only so an un-migrated database still works). */
-  private async legacySave(state: ConversationState): Promise<void> {
-    if (this.atomicSave !== false) reportGuardMissing("conversation saved without a version (pre-0019 row)");
-    state.updatedAt = new Date().toISOString();
-    const client = getSupabaseClient();
-
-    const { error: updateError } = await client
-      .from("conversations")
-      .update({
-        stage: state.stage,
-        detected_intent: state.detectedIntent ?? null,
-        selected_offer_id: state.selectedOfferId ?? null,
-        known_fields: state.knownFields,
-        missing_fields: state.missingFields,
-        objections: state.objections,
-        pending_action: state.pendingAction ?? null,
-        pending_approval_id: state.pendingApprovalId ?? null,
-        outcome: state.outcome ?? null,
-        updated_at: state.updatedAt,
-      })
-      .eq("id", state.id);
-    if (updateError) throw new Error(`Failed to save conversation ${state.id}: ${updateError.message}`);
-
+    if (state.version === undefined) guardMissing("conversation read without a version column");
     const prev = persistedCounts.get(state) ?? { messages: 0, turns: 0 };
-
-    const newMessages = state.messages.slice(prev.messages);
-    if (newMessages.length > 0) {
-      const { error } = await client.from("messages").insert(
-        newMessages.map((m) => ({
-          conversation_id: state.id,
-          role: m.role,
-          content: m.content,
-          at: m.at,
-          // Channel-neutral rich payload (migration 0010); omitted when absent.
-          ...(m.rich ? { rich: m.rich } : {}),
-        }))
-      );
-      if (error) throw new Error(`Failed to save messages for ${state.id}: ${error.message}`);
-    }
-
-    const newTurns = state.turns.slice(prev.turns);
-    if (newTurns.length > 0) {
-      const base = newTurns.map((t) => ({
-        id: t.id,
-        conversation_id: state.id,
-        at: t.at,
-        customer_message: t.customerMessage,
-        understood: t.understood,
-        retrieved: t.retrieved,
-        goal: t.goal ?? null,
-        selected_action: t.selectedAction ?? null,
-        policy_decision: t.policyDecision ?? null,
-        tool_result: t.toolResult ?? null,
-        response: t.response,
-        state_after: t.stateAfter,
-        reasoner: t.reasoner,
-      }));
-      // Explainability columns (migration 0011). Until 0011 is applied, the
-      // turn is still saved — only the explanation is dropped, loudly.
-      const explained = base.map((row, i) => ({
-        ...row,
-        trace: newTurns[i].trace ?? null,
-        verification: newTurns[i].verification ?? null,
-        compiled: newTurns[i].compiled ?? null,
-      }));
-      let { error } = await client.from("turn_logs").insert(explained);
-      if (error && isMissingColumnError(error)) {
-        console.error("[barry:store] turn_logs explainability columns missing — apply migration 0011", error.message);
-        ({ error } = await client.from("turn_logs").insert(base));
-      }
-      if (error) throw new Error(`Failed to save turn logs for ${state.id}: ${error.message}`);
-    }
-
+    const updatedAt = new Date().toISOString();
+    const row = { stage: state.stage, detected_intent: state.detectedIntent ?? null, selected_offer_id: state.selectedOfferId ?? null, known_fields: state.knownFields, missing_fields: state.missingFields, objections: state.objections, pending_action: state.pendingAction ?? null, pending_approval_id: state.pendingApprovalId ?? null, outcome: state.outcome ?? null, updated_at: updatedAt };
+    const messages = state.messages.slice(prev.messages).map((m) => ({ role: m.role, content: m.content, at: m.at, ...(m.rich ? { rich: m.rich } : {}) }));
+    const turns = state.turns.slice(prev.turns).map((t) => ({ id: t.id, at: t.at, customer_message: t.customerMessage, understood: t.understood, retrieved: t.retrieved, goal: t.goal ?? null, selected_action: t.selectedAction ?? null, policy_decision: t.policyDecision ?? null, tool_result: t.toolResult ?? null, response: t.response, state_after: t.stateAfter, reasoner: t.reasoner, trace: t.trace ?? null, verification: t.verification ?? null, compiled: t.compiled ?? null }));
+    const { data, error } = await getSupabaseClient().rpc("barry_save_conversation", { p_id: state.id, p_expected_version: state.version, p_row: row, p_messages: messages, p_turns: turns });
+    if (isMissingFunction(error)) guardMissing("atomic conversation save unavailable");
+    if (error) throw new Error(`Failed to save conversation ${state.id}: ${error.message}`);
+    if (data === null || data === undefined) throw new ConversationConflictError(state.id);
+    state.updatedAt = updatedAt;
+    state.version = Number(data);
     persistedCounts.set(state, { messages: state.messages.length, turns: state.turns.length });
   }
 
@@ -301,9 +216,4 @@ export class SupabaseConversationStore implements ConversationStore {
     if (error) throw new Error(`Failed to delete QA conversations for ${businessId}: ${error.message}`);
     return count ?? 0;
   }
-}
-
-/** PostgREST's "column not in schema cache" (the migration adding it isn't applied yet). */
-function isMissingColumnError(error: { code?: string; message?: string }): boolean {
-  return error.code === "PGRST204" || /column .* (does not exist|not find)|Could not find the '.*' column/i.test(error.message ?? "");
 }

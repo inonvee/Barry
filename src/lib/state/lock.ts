@@ -78,44 +78,47 @@ export class MemoryLockStore implements LockStore {
   }
 }
 
-/** PostgREST "function not found" — migration 0019 isn't applied. */
-const missingFunction = (e: { code?: string; message?: string } | null) => Boolean(e && (e.code === "PGRST202" || e.code === "42883" || /function .* does not exist|Could not find the function/i.test(e.message ?? "")));
-
-let guardMissingLogged = false;
-/** Loud, once: running without the database concurrency guard is a deployment error. */
-export function reportGuardMissing(what: string): void {
-  if (guardMissingLogged) return;
-  guardMissingLogged = true;
-  console.error(`[barry:concurrency] ${what} — migration 0019 (conversation concurrency guard) is NOT applied. Conversations are NOT protected against concurrent writes. Apply it before any real customer traffic.`);
+/**
+ * The database concurrency guard (migration 0019: version-checked atomic save, conversation locks, the
+ * inbound inbox) is not installed. Conversation writes FAIL CLOSED: nothing is written, nothing is sent —
+ * never a silent fall back to unprotected last-write-wins.
+ */
+export class ConcurrencyGuardMissingError extends Error {
+  readonly code = "concurrency_guard_missing";
+  constructor(readonly what: string) {
+    super(`Conversation writes are blocked: the database concurrency guard (migration 0019) is not installed (${what}). Apply migration 0019 to this environment's database.`);
+    this.name = "ConcurrencyGuardMissingError";
+  }
 }
 
-export class SupabaseLockStore implements LockStore {
-  /** null = unknown, false = migration 0019 missing (fall back to in-process locking, loudly). */
-  installed: boolean | null = null;
-  private local = new MemoryLockStore();
+let guardMissingLogged = false;
+/** Loud, once per process, and then throws: running without the guard is a deployment error. */
+export function guardMissing(what: string): never {
+  if (!guardMissingLogged) {
+    guardMissingLogged = true;
+    console.error(`[barry:concurrency] ${what} — migration 0019 (conversation concurrency guard) is NOT applied. Conversation writes are BLOCKED (fail closed) until it is.`);
+  }
+  throw new ConcurrencyGuardMissingError(what);
+}
 
+/** PostgREST / Postgres "function not found" — migration 0019 isn't applied. */
+export const isMissingFunction = (e: { code?: string; message?: string } | null) => Boolean(e && (e.code === "PGRST202" || e.code === "42883" || /function .* does not exist|Could not find the function/i.test(e.message ?? "")));
+
+export class SupabaseLockStore implements LockStore {
   async tryAcquire(conversationId: string, holder: string, ttlMs: number): Promise<boolean> {
-    if (this.installed === false) return this.local.tryAcquire(conversationId, holder, ttlMs);
     const { data, error } = await getSupabaseClient().rpc("barry_try_conversation_lock", { p_conversation_id: conversationId, p_holder: holder, p_ttl_ms: ttlMs });
-    if (missingFunction(error)) {
-      this.installed = false;
-      reportGuardMissing("conversation locks unavailable");
-      return this.local.tryAcquire(conversationId, holder, ttlMs);
-    }
+    if (isMissingFunction(error)) guardMissing("conversation locks unavailable");
     if (error) throw new Error(`Failed to take the conversation lock: ${error.message}`);
-    this.installed = true;
     return data === true;
   }
 
   async release(conversationId: string, holder: string): Promise<void> {
-    if (this.installed === false) return this.local.release(conversationId, holder);
     const { error } = await getSupabaseClient().rpc("barry_release_conversation_lock", { p_conversation_id: conversationId, p_holder: holder });
     // A failed release is not fatal: the lease expires on its own.
     if (error) console.error("[barry:concurrency] lock release failed (the lease will expire)", error.message);
   }
 
-  async waitForChange(conversationId: string, ms: number): Promise<void> {
-    if (this.installed === false) return this.local.waitForChange(conversationId, ms);
+  async waitForChange(_conversationId: string, ms: number): Promise<void> {
     await new Promise((r) => setTimeout(r, Math.min(ms, 400)));
   }
 }
