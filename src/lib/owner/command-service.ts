@@ -229,12 +229,14 @@ function progressWords(o: OwnerOperationView, lang: OwnerLang = "en"): string {
     if (hasMoney(p.recovered)) parts.push(`הוחזרו ${mw(p.recovered)}`);
     if (p.stillTalking) parts.push(`עדיין מדברים ${p.stillTalking}`);
     if (p.failed) parts.push(`נכשלו ${p.failed}`);
+    if (p.dryRun) parts.push(`מצב בדיקה: ${p.dryRun} נרשמו ולא נשלחו`);
     return parts.join(" · ");
   }
   const parts = [`contacted ${p.contacted}`, `replied ${p.replied}`, `purchased ${p.purchased}`];
   if (hasMoney(p.recovered)) parts.push(`recovered ${mw(p.recovered)}`);
   if (p.stillTalking) parts.push(`still talking ${p.stillTalking}`);
   if (p.failed) parts.push(`failed ${p.failed}`);
+  if (p.dryRun) parts.push(`test mode: ${p.dryRun} recorded, not sent`);
   return parts.join(" · ");
 }
 
@@ -247,6 +249,7 @@ export function operationSummary(o: OwnerOperationView, lang: OwnerLang = "en"):
     if (hasMoney(p.recovered)) lines.push(`הוחזרו: ${moneyIn("he", p.recovered)} (מאומת)`);
     if (p.stillTalking) lines.push(`עדיין מדברים: ${p.stillTalking}`);
     if (p.failed) lines.push(`נכשלו: ${p.failed}`);
+    if (p.dryRun) lines.push(`מצב בדיקה: ${p.dryRun} נרשמו ולא נשלחו ללקוח.`);
     if (o.stoppedAt) lines.push("נעצר על ידך — הודעות שכבר נשלחו נשארות.");
     if (p.test) lines.push(`${p.test === 1 ? "לקוח אחד" : `${p.test} לקוחות`} במצב בדיקה (סימולטור) — אף פעם לא נספר ככסף.`);
     return lines.join("\n");
@@ -257,6 +260,7 @@ export function operationSummary(o: OwnerOperationView, lang: OwnerLang = "en"):
   if (hasMoney(p.recovered)) lines.push(`Recovered: ${moneyWords(p.recovered, { empty: "none" })} (verified)`);
   if (p.stillTalking) lines.push(`Still talking: ${p.stillTalking}`);
   if (p.failed) lines.push(`Failed: ${p.failed}`);
+  if (p.dryRun) lines.push(`Test mode: ${p.dryRun} recorded, not sent to the customer.`);
   if (o.stoppedAt) lines.push(`Stopped by you — messages already sent stay sent.`);
   if (p.test) lines.push(`${plural(p.test, "customer")} in test mode (simulator) — never counted as money.`);
   return lines.join("\n");
@@ -494,7 +498,7 @@ async function dispatch(input: ExecuteInput, record: OwnerCommandRecord, now: Da
     step("execution", res.op.state === "failed" || res.op.state === "blocked" ? "failed" : "ok", `${res.op.state}: contacted ${view.progress.contacted}, failed ${view.progress.failed}`);
     step("verification", "ok", "per-target attempts recorded by the executor; results will be read from records");
     return {
-      text: `${lead}\n\n${operationSummary(view, lang)}${dry ? T("\n\n(Test mode: messages were recorded in each conversation, not sent over WhatsApp.)", "\n\n(מצב בדיקה: ההודעות נרשמו בכל שיחה ולא נשלחו בוואטסאפ.)") : ""}`,
+      text: `${lead}\n\n${operationSummary(view, lang)}${dry ? T("\n\n(Test mode: the messages were recorded as test runs — nothing was sent, and nothing was added to the customers' conversations.)", "\n\n(מצב בדיקה: ההודעות נרשמו כהרצת בדיקה — שום דבר לא נשלח ושום דבר לא נוסף לשיחות עם הלקוחות.)") : ""}`,
       actions: (ACTIVE as readonly string[]).includes(res.op.state) ? [{ id: `o:${res.op.id}:${res.op.actionToken}:stop`, title: T("Stop", "לעצור") }] : undefined,
       links: links(source, [{ label: T("See it live", "לראות בזמן אמת"), path: `/owner?tab=${source === "web" ? "work" : "today"}&operation=${encodeURIComponent(res.op.id)}` }]),
       operation: view,

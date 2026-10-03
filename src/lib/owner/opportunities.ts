@@ -1,4 +1,5 @@
 import type { BusinessGraph } from "@/lib/business-graph";
+import { lastSaid } from "@/lib/operator/execution-state";
 import type { ConversationState } from "@/lib/state";
 import type { BookingRecord, CommerceOrderRecord, PaymentRequestRecord } from "@/lib/store/types";
 import { readLedger } from "@/lib/runtime/ledger";
@@ -172,7 +173,7 @@ export function revenueOpportunities(input: OpportunityInput): { items: Opportun
   }
 
   for (const c of input.conversations) {
-    const lastMsg = c.messages.at(-1);
+    const lastMsg = lastSaid(c);
     if (!lastMsg || tooOld(lastMsg.at)) continue;
     const ledger = readLedger(c);
     const hasOrder = input.orders.some((o) => o.conversationId === c.id);

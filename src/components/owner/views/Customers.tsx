@@ -26,7 +26,8 @@ type ConversationDetail = {
   id: string;
   customer: string;
   channel: string;
-  messages: { from: string; text: string; at: string }[];
+  /** notSent: a BARRY message that never reached the customer (test mode, or the channel refused it). */
+  messages: { from: string; text: string; at: string; notSent?: "dry_run" | "failed" }[];
   outcomes: OutcomeEvent[];
   transaction: string[];
   story?: ConversationStory;
@@ -188,7 +189,7 @@ export function ConversationSheet({ id, ws, api, onClose, onDecision }: { id: st
                   {data.messages.map((m, i) => (
                     <li key={i} className={`flex flex-col ${m.from === "customer" ? "items-start" : "items-end"}`}>
                       <p dir="auto" className={`max-w-[88%] whitespace-pre-wrap break-words rounded-2xl px-3 py-2 text-[14px] leading-6 ${m.from === "customer" ? "rounded-ss-md bg-o-sunken text-o-ink" : "rounded-se-md bg-o-accent/15 text-o-ink"}`}>{m.text}</p>
-                      <span className="mt-0.5 px-1 text-[11px] text-o-faint">{m.from === "customer" ? name : m.from === "barry" ? "BARRY" : t("System", "מערכת")} · {ago(lang, m.at)}</span>
+                      <span className="mt-0.5 px-1 text-[11px] text-o-faint">{m.from === "customer" ? name : m.from === "barry" ? "BARRY" : t("System", "מערכת")} · {ago(lang, m.at)}{m.notSent === "dry_run" ? t(" · test mode — not sent", " · מצב בדיקה — לא נשלח") : m.notSent === "failed" ? t(" · not delivered", " · לא נמסר") : ""}</span>
                     </li>
                   ))}
                 </ol>

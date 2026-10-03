@@ -5,6 +5,7 @@ import { resolveBusinessGraph } from "@/lib/business-graph-repository";
 import { handleCustomerMessage } from "@/lib/runtime";
 import { getConversationStore } from "@/lib/state";
 import type { ChannelKind, NormalizedInboundMessage, NormalizedOutboundMessage } from "./types";
+import { CHANNEL_DELIVERY_KEY, type DeliveryStatus } from "@/lib/operator/execution-state";
 
 /**
  * THE CUSTOMER MESSAGING GATEWAY — one path from any channel to the same BARRY runtime.
@@ -25,13 +26,15 @@ export type DeliveryRecord = {
   at: string;
   channel: ChannelKind;
   inboundId: string;
-  status: "sent" | "dry_run" | "failed";
+  status: DeliveryStatus;
+  /** The transcript message this delivery belongs to (its `at`), so an undelivered reply is never shown as said. */
+  messageAt?: string;
   providerMessageId?: string;
   error?: string;
 };
 
 export const CHANNEL_SEEN_KEY = "__channelSeen";
-export const CHANNEL_DELIVERY_KEY = "__channelDelivery";
+export { CHANNEL_DELIVERY_KEY };
 export const CHANNEL_PROFILE_KEY = "__channelProfileName";
 const MAX_SEEN = 200;
 const MAX_DELIVERY = 50;
@@ -91,10 +94,12 @@ export async function processInbound(message: NormalizedInboundMessage & { inbou
 
   let reply: string;
   let rich: NormalizedOutboundMessage["rich"];
+  let messageAt: string | undefined;
   try {
     const out = await handleCustomerMessage(graph, conversationId, customerId, message.text);
     reply = out.response;
     rich = out.rich;
+    messageAt = [...out.state.messages].reverse().find((m) => m.role === "barry")?.at;
   } catch (err) {
     const error = err instanceof Error ? err.message.slice(0, 200) : "runtime error";
     console.error("[barry:channel] inbound processing failed", { channel: message.identity.channel, conversationId, error });
@@ -106,9 +111,9 @@ export async function processInbound(message: NormalizedInboundMessage & { inbou
   let delivery: DeliveryRecord;
   try {
     const sent = sender.mode === "live" ? await sender.send(message.identity.channelUserId, text, { businessId: graph.business.id }) : {};
-    delivery = { at: new Date().toISOString(), channel: sender.channel, inboundId: message.inboundId, status: sender.mode === "live" ? "sent" : "dry_run", ...(sent.providerMessageId ? { providerMessageId: sent.providerMessageId } : {}) };
+    delivery = { at: new Date().toISOString(), channel: sender.channel, inboundId: message.inboundId, status: sender.mode === "live" ? "sent" : "dry_run", ...(messageAt ? { messageAt } : {}), ...(sent.providerMessageId ? { providerMessageId: sent.providerMessageId } : {}) };
   } catch (err) {
-    delivery = { at: new Date().toISOString(), channel: sender.channel, inboundId: message.inboundId, status: "failed", error: err instanceof Error ? err.message.slice(0, 200) : "send failed" };
+    delivery = { at: new Date().toISOString(), channel: sender.channel, inboundId: message.inboundId, status: "failed", ...(messageAt ? { messageAt } : {}), error: err instanceof Error ? err.message.slice(0, 200) : "send failed" };
   }
   await recordDelivery(conversationId, delivery);
   return { status: "processed", conversationId, reply: text, delivery };

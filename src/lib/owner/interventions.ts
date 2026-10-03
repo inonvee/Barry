@@ -1,4 +1,5 @@
 import type { BusinessGraph } from "@/lib/business-graph";
+import { lastSaid } from "@/lib/operator/execution-state";
 import type { ConversationState } from "@/lib/state";
 import type { PaymentRequestRecord } from "@/lib/store/types";
 import { getCapability } from "@/lib/fabric/capability";
@@ -315,7 +316,7 @@ function conversationItems(graph: BusinessGraph, convo: ConversationState, custo
   const T = (en: string, he: string) => L(lang, en, he);
   const out: Intervention[] = [];
   const ledger = readLedger(convo);
-  const lastMsg = convo.messages.at(-1);
+  const lastMsg = lastSaid(convo);
   const lastTurn = convo.turns.at(-1);
   const story = () => conversationStory(convo, lang);
   const openConversation = (en: string, he: string): InterventionOption => ({ action: "open_conversation", label: T("Open conversation", "לפתוח את השיחה"), primary: true, consequence: T(en, he) });

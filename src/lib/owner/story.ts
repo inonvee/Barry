@@ -1,5 +1,6 @@
 import type { ConversationState, TurnLog } from "@/lib/state";
-import { ledgerView, readLedger, termsAmount, type LedgerEntry } from "@/lib/runtime/ledger";
+import { ledgerView, termsAmount, type LedgerEntry } from "@/lib/runtime/ledger";
+import { truthfulLedger } from "@/lib/operator/execution-state";
 import { transactionSnapshot } from "@/lib/runtime/handoff";
 import type { OwnerLang } from "./lang";
 
@@ -113,11 +114,13 @@ export function describeEffect(e: LedgerEntry, lang: OwnerLang = "en"): string {
     case "superseded":
       return `Replaced by a newer request: ${e.describes}${t}`;
     case "failed":
+      if (e.effect === "followup.failed") return `Tried to send ${e.describes} — the channel refused it; the customer got nothing`;
       return e.operation === "understand" ? "Couldn't understand the customer's message" : `Tried ${e.describes}${t} — it FAILED; nothing changed`;
     case "effected_unconfirmed":
       return `Submitted ${e.describes}${t}${ref} — the system hasn't confirmed it yet`;
     case "no_effect":
       if (e.effect === "write.blocked") return `Did NOT send ${e.describes}${t}: blocked by the customer's own limits`;
+      if (e.effect === "followup.dry_run") return `Test mode: ${e.describes} recorded — NOT sent to the customer`;
       if (e.effect === "understanding.partial") return "Only partly understood the customer's message";
       if (e.effect === "understanding.revalidated") return "Re-read an earlier message it couldn't understand";
       if (e.effect === "cart.not_changed") return `Couldn't make the cart change${t}`;
@@ -146,6 +149,8 @@ export function describeEffect(e: LedgerEntry, lang: OwnerLang = "en"): string {
       return `Recorded an enquiry for your team${ref}`;
     case "followup.scheduled":
       return "Scheduled a follow-up";
+    case "followup.sent":
+      return `Sent ${e.describes}`;
     case "catalog.searched":
       return `Searched the catalog${typeof e.outcome?.results === "number" ? ` (${e.outcome.results} result${e.outcome.results === 1 ? "" : "s"})` : ""}`;
     case "availability.found":
@@ -183,11 +188,13 @@ function describeEffectHe(e: LedgerEntry): string {
     case "superseded":
       return `הוחלף בבקשה חדשה יותר: ${noun}${t}`;
     case "failed":
+      if (e.effect === "followup.failed") return "ניסה לשלוח הודעת מעקב — הערוץ דחה אותה; הלקוח לא קיבל כלום";
       return e.operation === "understand" ? "לא הצליח להבין את ההודעה של הלקוח" : `ניסה: ${noun}${t} — זה נכשל; שום דבר לא השתנה`;
     case "effected_unconfirmed":
       return `שלח: ${noun}${t}${ref} — המערכת עוד לא אישרה`;
     case "no_effect":
       if (e.effect === "write.blocked") return `לא שלח ${noun}${t}: נחסם לפי המגבלות שהלקוח ביקש`;
+      if (e.effect === "followup.dry_run") return "מצב בדיקה: הודעת מעקב נרשמה — לא נשלחה ללקוח";
       if (e.effect === "understanding.partial") return "הבין רק חלק מההודעה של הלקוח";
       if (e.effect === "understanding.revalidated") return "קרא שוב הודעה קודמת שלא הובנה";
       if (e.effect === "cart.not_changed") return `לא הצליח לשנות את העגלה${t}`;
@@ -216,6 +223,8 @@ function describeEffectHe(e: LedgerEntry): string {
       return `רשם פנייה לצוות שלך${ref}`;
     case "followup.scheduled":
       return "תזמן מעקב";
+    case "followup.sent":
+      return "שלח הודעת מעקב";
     case "catalog.searched":
       return `חיפש בקטלוג${typeof e.outcome?.results === "number" ? ` (${e.outcome.results} תוצאות)` : ""}`;
     case "availability.found":
@@ -273,7 +282,7 @@ function outcomeOf(turn: TurnLog, effects: LedgerEntry[], lang: OwnerLang = "en"
 /** Where the transaction stands, in Hebrew (from the same ledger view as transactionSnapshot). */
 /** Where the transaction stands, in Hebrew — the same current ledger view the English snapshot reads. */
 function standingHe(state: ConversationState): string[] {
-  const view = ledgerView(readLedger(state));
+  const view = ledgerView(truthfulLedger(state));
   const out: string[] = [];
   const lastCart = [...view].reverse().find((e) => e.outcome && typeof e.outcome.cartAfter === "string");
   if (lastCart && lastCart.outcome!.cartAfter !== "empty") out.push(`עגלה: ${lastCart.outcome!.cartAfter}`);
@@ -284,13 +293,14 @@ function standingHe(state: ConversationState): string[] {
     else if (e.effect === "booking.created") out.push(`נקבע תור${e.reference ? ` (${e.reference})` : ""}`);
     else if (e.effect === "order.created") out.push(`הזמנה בוצעה${e.reference ? ` (${e.reference})` : ""}`);
     else if (e.effect === "write.blocked") out.push(`נחסם: ${nounHe(e)}`);
-    else if (e.status === "effected" && e.reference) out.push(`${nounHe(e)} (${e.reference})`);
+    else if (e.status === "effected" && e.reference && !e.effect.startsWith("followup.")) out.push(`${nounHe(e)} (${e.reference})`);
   }
   return [...new Set(out)].slice(-8);
 }
 
 export function conversationStory(state: ConversationState, lang: OwnerLang = "en"): ConversationStory {
-  const ledger = readLedger(state);
+  // The read-side truth: legacy follow-up entries that were only dry runs read as exactly that.
+  const ledger = truthfulLedger(state);
   const bySeq = new Map(ledger.map((e) => [e.seq, e]));
   const steps: StoryStep[] = state.turns.map((turn) => {
     const effects = (turn.trace?.effects ?? []).map((e) => bySeq.get(e.seq)).filter((e): e is LedgerEntry => Boolean(e));

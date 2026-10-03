@@ -463,7 +463,7 @@ function ProgressBody({ w, ws, lang, t, now }: { w: ActiveWork; ws: OwnerWorkspa
         {p.lastAttempt && <p className="mt-2 text-xs">{t(`Last attempt ${clockOf(lang, tz, p.lastAttempt, now)}`, `ניסיון אחרון ${clockOf(lang, tz, p.lastAttempt, now)}`)}</p>}
       </Section>
       <Section icon={OctagonAlertIcon} tone={p.reached ? "info" : "muted"} title={t("What is blocking progress", "מה עוצר את ההתקדמות")}>
-        <p>{p.reached ? t("Customers who were reached haven't replied yet. BARRY follows up again inside your rules.", "לקוחות שקיבלו פנייה עוד לא ענו. BARRY ימשיך לפי הכללים שלך.") : t("Nothing has been sent yet — the items are queued until your follow-up rule's timing allows it.", "עוד לא נשלח כלום — הפריטים בתור עד שהתזמון בכלל המעקב יאפשר.")}</p>
+        <p>{p.reached ? t("Customers who were reached haven't replied yet. BARRY follows up again inside your rules.", "לקוחות שקיבלו פנייה עוד לא ענו. BARRY ימשיך לפי הכללים שלך.") : p.practiced ? t("Test mode — messages were recorded, not sent. No customer was contacted.", "מצב בדיקה — ההודעות נרשמו ולא נשלחו. אף לקוח לא קיבל פנייה.") : t("Nothing has been sent yet — the items are queued until your follow-up rule's timing allows it.", "עוד לא נשלח כלום — הפריטים בתור עד שהתזמון בכלל המעקב יאפשר.")}</p>
         {(p.op?.progress.test || p.flow?.testItems) ? <p className="mt-1.5 text-xs">{t("Some customers here are on BARRY's simulator — counted, never as money.", "חלק מהלקוחות כאן על הסימולטור — נספרים, אבל אף פעם לא ככסף.")}</p> : null}
         {p.flow && hasMoney(p.flow.atStake) && <p className="mt-1.5 text-xs">{t(`Still open (not revenue): ${money(lang, p.flow.atStake)}`, `עדיין פתוח (לא הכנסה): ${money(lang, p.flow.atStake)}`)}</p>}
       </Section>

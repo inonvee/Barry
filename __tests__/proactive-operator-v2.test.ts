@@ -67,7 +67,7 @@ describe("follow-up policy: bounded defaults, playbook overrides, hard caps", ()
 });
 
 describe("obligation executor: re-check, act once, record evidence, never loop", () => {
-  it("an unpaid link past the delay → BARRY can act → one dry-run reminder in the customer's language, recorded in the conversation, attempts and obligation", async () => {
+  it("an unpaid link past the delay → BARRY can act → one dry-run reminder in the customer's language, recorded as a dry run (attempt, ledger, delivery) — never in the transcript", async () => {
     const { g, model, id } = setup();
     const { payment } = await pendingLink(model, g, id);
     expect(payment?.status).toBe("pending");
@@ -80,14 +80,16 @@ describe("obligation executor: re-check, act once, record evidence, never loop",
     expect(attempts).toHaveLength(1);
     expect(attempts[0]).toMatchObject({ n: 1, status: "dry_run", channel: "web", idempotencyKey: attempts[0].id });
     expect(attempts[0].what).toMatch(/Would send/);
+    expect(attempts[0].what).toMatch(/reminder/);
     const state = (await getConversationStore().get(id))!;
-    expect(state.messages.at(-1)).toMatchObject({ role: "barry" });
-    expect(state.messages.at(-1)!.content).toMatch(/reminder/);
-    expect(readLedger(state).at(-1)).toMatchObject({ effect: "followup.sent", status: "effected", operation: "followUp" });
+    // A dry run is never "said": the reminder is not in the transcript.
+    expect(state.messages.some((m) => /reminder/.test(m.content))).toBe(false);
+    expect(readLedger(state).at(-1)).toMatchObject({ effect: "followup.dry_run", status: "no_effect", operation: "followUp" });
     expect(readDeliveries(state.knownFields).at(-1)).toMatchObject({ status: "dry_run" });
     // The obligation now waits on the customer with the attempt recorded; a second pass does nothing (interval + idempotency).
     const obligations = await reconcileObligations({ graph: g, conversations: [state], approvals: [], payments: await getBackend().listPaymentRequests(g.business.id), bookings: [], policy: followUpPolicyFor(g), attempts: attemptCounts(await listAttempts(g.business.id)), now: later });
-    expect(obligations[0]).toMatchObject({ kind: "unpaid_payment_followup", nextMove: "waiting_on_customer", attempts: 1 });
+    expect(obligations[0]).toMatchObject({ kind: "unpaid_payment_followup", nextMove: "waiting_on_customer", attempts: 1, sentAttempts: 0 });
+    expect(obligations[0].reason).toMatch(/Test mode/);
     const again = await runObligationExecutor(g, { now: new Date(later.getTime() + H) });
     expect(again.acted).toBe(0);
     expect(await listAttempts(g.business.id)).toHaveLength(1);
@@ -168,9 +170,11 @@ describe("abandoned checkout and appointment reminders are derived from records 
     expect(off.some((o) => o.kind === "abandoned_checkout_recovery")).toBe(false);
     const run = await runObligationExecutor(g, { now: new Date(t0 + 5 * H) });
     expect(run.results.find((r) => r.kind === "abandoned_checkout_recovery")?.outcome).toBe("dry_run");
-    const msg = (await getConversationStore().get(id))!.messages.at(-1)!;
-    expect(msg.content).toMatch(/cart/);
-    expect(msg.content).toMatch(/Nothing has been charged/);
+    // The composed recovery text is kept on the attempt (for review) — and never written into the transcript.
+    const attempt = (await listAttempts(g.business.id)).find((a) => a.kind === "abandoned_checkout_recovery")!;
+    expect(attempt.what).toMatch(/cart/);
+    expect(attempt.what).toMatch(/Nothing has been charged/);
+    expect((await getConversationStore().get(id))!.messages.some((m) => /Nothing has been charged/.test(m.content))).toBe(false);
   });
 
   it("appointment reminders exist only within a day of a confirmed booking and only when the rule is on", async () => {

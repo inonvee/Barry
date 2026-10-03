@@ -53,6 +53,8 @@ export type Obligation = {
   updatedAt: string;
   /** Proactive operator: how many bounded attempts ran and when the last one did. */
   attempts?: number;
+  /** Of those, how many really reached the customer (sent). A test-mode (dry-run) attempt is never contact. */
+  sentAttempts?: number;
   lastAttemptAt?: string;
   completion?: { at: string; evidence: string };
   cancellation?: { at: string; reason: string };

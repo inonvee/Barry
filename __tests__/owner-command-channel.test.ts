@@ -14,7 +14,8 @@ import { processOwnerInbound } from "@/lib/owner-channel/gateway";
 import type { OwnerInbound, OwnerOutbound, OwnerSender } from "@/lib/owner-channel/transport";
 import { executeOwnerCommand, listCommandRecords, ownerLink, parseAction } from "@/lib/owner/command-service";
 import { interpretCommand } from "@/lib/owner/command";
-import { listOperations } from "@/lib/owner/operations";
+import { listOperations, setOperationSendersForTests } from "@/lib/owner/operations";
+import type { OutboundSender } from "@/lib/channels/gateway";
 import { notifyOwnerDecisions, listBriefs } from "@/lib/owner/briefs";
 import { ownerHeldKeys } from "@/lib/operator/holds";
 import { listAttempts } from "@/lib/operator/attempts";
@@ -36,6 +37,7 @@ const ENV = ["BARRY_OWNER_TOKENS", "BARRY_OWNER_TOKEN", "BARRY_PUBLIC_URL", "VER
 const saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
 const disposers: (() => void)[] = [];
 afterEach(() => {
+  setOperationSendersForTests(undefined);
   for (const k of ENV) {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
@@ -68,6 +70,12 @@ const SCRIPT: Record<string, object> = {
   "add it in M": { commerce: { intent: "select", reference: { type: "previous_result", index: 0 }, variant: { size: "M" } }, purchaseDecision: false, advancesTransaction: true },
   "could you ask the owner to approve 10% off this dress?": { constraints: { discountPct: 10 }, advancesTransaction: true, asks: [{ ask: "10% off this dress", kind: "change", coveredByThisIR: true }] },
 };
+
+/** A "live" CUSTOMER sender that captures what would leave (the real-send path) — nothing leaves the test. */
+function liveCustomers(): OutboundSender & { sent: { to: string; text: string }[] } {
+  const sent: { to: string; text: string }[] = [];
+  return { channel: "web", mode: "live", sent, send: async (to, text) => (sent.push({ to, text }), { providerMessageId: `cust_${sent.length}` }) };
+}
 
 function tenant() {
   const r = isolatedRetailer();
@@ -207,6 +215,8 @@ describe("one command model, one service: web and WhatsApp are the same thing", 
 
 describe("bounded operations on a grounded cohort", () => {
   it("'recover today's abandoned carts' grounds exact targets, runs once through the executor, and a replay or re-run never contacts anyone twice", async () => {
+    const customers = liveCustomers();
+    setOperationSendersForTests(() => customers);
     const t = tenant();
     const c1 = await cart(t);
     const c2 = await cart(t);
@@ -221,6 +231,7 @@ describe("bounded operations on a grounded cohort", () => {
     expect(op.state).toBe("waiting_on_customers");
     expect(s.sent[0].m.text).toMatch(/Found 2 abandoned checkouts from today/);
     expect(s.sent[0].m.text).toMatch(/Contacted: 2/);
+    expect(customers.sent).toHaveLength(2);
     const attempts = (await listAttempts(t.g.business.id)).length;
     expect(attempts).toBe(2);
     // The exact same WhatsApp message delivered again → duplicate, nothing re-runs.
@@ -257,6 +268,7 @@ describe("bounded operations on a grounded cohort", () => {
   });
 
   it("stop: no new work for that cohort (the scheduled executor skips it too); sent messages are said to stay sent", async () => {
+    setOperationSendersForTests(() => liveCustomers());
     const t = tenant();
     await cart(t);
     await link(t);

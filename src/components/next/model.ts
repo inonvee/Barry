@@ -91,7 +91,9 @@ export function workProgress(ws: OwnerWorkspace, w: ActiveWork, lang: OwnerLang,
   const lastAttempt = items.map((o) => o.lastAttemptAt).filter((x): x is string => Boolean(x)).sort().at(-1);
   const since = op ? op.createdAt : items.map((o) => o.createdAt).sort()[0];
   const found = op ? op.progress.cohort : (flow?.open ?? w.customers) + (flow?.closed ?? 0);
+  // Reached = a message really left. Test-mode runs are counted apart and never called contact.
   const reached = op ? op.progress.contacted : flow?.contacted ?? 0;
+  const practiced = op ? op.progress.dryRun : flow?.practiced ?? 0;
   const steps = op
     ? [
         { label: t("In scope", "בטווח"), n: op.progress.cohort },
@@ -105,8 +107,12 @@ export function workProgress(ws: OwnerWorkspace, w: ActiveWork, lang: OwnerLang,
         { label: t("Waiting on the customer", "מחכים ללקוח"), n: flow?.waiting ?? 0 },
         { label: flow?.closedLabel ?? t("Done", "הושלם"), n: flow?.closed ?? 0 },
       ];
-  const line = reached ? t(`${reached} of ${found} reached`, `${reached} מתוך ${found} קיבלו פנייה`) : t(`${found} found · nothing sent yet`, `${found} נמצאו · עוד לא נשלח כלום`);
-  return { op, flow, found, reached, steps, line, since, lastAttempt, title: proactiveWords(w.workflow, lang).title, command: proactiveWords(w.workflow, lang).command };
+  const line = reached
+    ? t(`${reached} of ${found} reached`, `${reached} מתוך ${found} קיבלו פנייה`)
+    : practiced
+      ? t(`${found} found · test mode: ${practiced} recorded, nothing sent`, `${found} נמצאו · מצב בדיקה: ${practiced} נרשמו, לא נשלח כלום`)
+      : t(`${found} found · nothing sent yet`, `${found} נמצאו · עוד לא נשלח כלום`);
+  return { op, flow, found, reached, practiced, steps, line, since, lastAttempt, title: proactiveWords(w.workflow, lang).title, command: proactiveWords(w.workflow, lang).command };
 }
 
 export function buildRows(ws: OwnerWorkspace, lang: OwnerLang, t: T) {
@@ -151,7 +157,7 @@ export function buildRows(ws: OwnerWorkspace, lang: OwnerLang, t: T) {
       .map((o): Row => ({
         key: `op:${o.id}`,
         stand: "done",
-        status: o.derivedState === "stopped" ? t("Stopped", "נעצר") : o.derivedState === "completed" ? t("Completed", "הושלם") : t("Didn't finish", "לא הסתיים"),
+        status: o.derivedState === "stopped" ? t("Stopped", "נעצר") : o.progress.contacted === 0 && o.progress.dryRun > 0 ? t("Test run · nothing sent", "הרצת בדיקה · לא נשלח") : o.derivedState === "completed" ? t("Completed", "הושלם") : t("Didn't finish", "לא הסתיים"),
         title: proactiveWords(o.workflow, lang).title,
         context: t(`${o.progress.contacted} reached · ${o.progress.purchased} bought`, `${o.progress.contacted} קיבלו פנייה · ${o.progress.purchased} קנו`),
         at: o.stoppedAt ?? o.updatedAt,

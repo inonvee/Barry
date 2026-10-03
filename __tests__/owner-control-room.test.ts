@@ -60,12 +60,12 @@ const ob = (o: Partial<Obligation>): Obligation =>
 describe("control-room read model: only recorded work, honest outcomes", () => {
   it("workflows count eligible / contacted / open / closed; recovered only = verified paid AFTER a follow-up; test money never counts", () => {
     const obligations = [
-      ob({ status: "completed", attempts: 1, completion: { at: "2026-10-01T10:00:00.000Z", evidence: "payment request pay_1 verified paid" } }),
+      ob({ status: "completed", attempts: 1, sentAttempts: 1, completion: { at: "2026-10-01T10:00:00.000Z", evidence: "payment request pay_1 verified paid" } }),
       ob({ status: "completed", attempts: 0, completion: { at: "2026-10-01T11:00:00.000Z", evidence: "payment request pay_2 verified paid" } }),
-      ob({ status: "waiting_on_customer", attempts: 1, amount: 300 }),
+      ob({ status: "waiting_on_customer", attempts: 1, sentAttempts: 1, amount: 300 }),
       ob({ status: "cancelled", cancellation: { at: "2026-10-01T12:00:00.000Z", reason: "withdrawn" } }),
-      ob({ status: "completed", attempts: 1, simulated: true, completion: { at: "2026-10-01T10:00:00.000Z", evidence: "payment request pay_3 verified paid" } }),
-      ob({ kind: "abandoned_checkout_recovery", status: "completed", attempts: 1, completion: { at: "2026-10-01T10:00:00.000Z", evidence: "payment request pay_9 created after the recovery (pending)" } }),
+      ob({ status: "completed", attempts: 1, sentAttempts: 1, simulated: true, completion: { at: "2026-10-01T10:00:00.000Z", evidence: "payment request pay_3 verified paid" } }),
+      ob({ kind: "abandoned_checkout_recovery", status: "completed", attempts: 1, sentAttempts: 1, completion: { at: "2026-10-01T10:00:00.000Z", evidence: "payment request pay_9 created after the recovery (pending)" } }),
     ];
     const [unpaid, abandoned] = workflows({ obligations });
     expect(unpaid).toMatchObject({ command: "Follow up unpaid payment links", commandBy: "Your follow-up rule", eligible: 5, contacted: 3, open: 1, excluded: 1, closed: 3, closedLabel: "Paid (verified)", recovered: { ILS: 420 }, atStake: { ILS: 300 }, testItems: 1 });
@@ -141,7 +141,7 @@ describe("the control room renders from a real workspace", () => {
 
 describe("the living interface: commands, presence and story come from records", () => {
   const operator = (included = true, enabled = true) => ({ included, rules: [{ kind: "abandoned_checkout_recovery" as const, enabled, afterHours: 4, maxAttempts: 1, intervalHours: 72 }, { kind: "unpaid_payment_followup" as const, enabled: true, afterHours: 24, maxAttempts: 2, intervalHours: 48 }] });
-  const base = { obligations: [ob({ kind: "abandoned_checkout_recovery", attempts: 1, status: "waiting_on_customer" })], interventions: [] as OwnerWorkspace["interventions"] };
+  const base = { obligations: [ob({ kind: "abandoned_checkout_recovery", attempts: 1, sentAttempts: 1, status: "waiting_on_customer" })], interventions: [] as OwnerWorkspace["interventions"] };
 
   it("commands interpret to semantic intents; the plan / rule state is decided by the service, not the words", () => {
     expect(interpretCommand("Recover today's abandoned carts").intent).toEqual({ kind: "operation_request", workflow: "abandoned_checkout_recovery", scope: "today" });

@@ -1,8 +1,9 @@
 import type { BusinessGraph } from "@/lib/business-graph";
+import { truthfulLedger } from "@/lib/operator/execution-state";
 import type { ConversationState } from "@/lib/state";
 import type { PaymentRequestRecord } from "@/lib/store/types";
 import type { ApprovalWithLifecycle } from "@/lib/runtime/owner-requests";
-import { readLedger, type LedgerEntry } from "@/lib/runtime/ledger";
+import type { LedgerEntry } from "@/lib/runtime/ledger";
 import { readHandoffs } from "@/lib/runtime/handoff";
 import { readDeliveries } from "@/lib/channels/gateway";
 import { customerLabel } from "@/lib/owner/service";
@@ -61,6 +62,9 @@ function effectEvent(c: ConversationState, e: LedgerEntry, business: BusinessGra
   if (e.effect.startsWith("request.") || e.effect.startsWith("understanding.")) return null;
   const customer = customerLabel(c);
   const base = { id: `effect:${c.id}:${e.seq}`, at: e.at, businessId: business.id, businessName: business.name, kind: "effect" as const, forWhom: customer, evidence: `ledger #${e.seq} (${e.effect})`, conversationId: c.id, consequential: e.effect !== "read" && !e.effect.endsWith(".read") };
+  // A sent follow-up is "sent": the channel took it; delivery to the phone is not confirmed by any recorded provider status.
+  if (e.effect === "followup.sent") return { ...base, what: `${e.describes} — sent (delivery not confirmed by the provider)`, by: "barry", verified: "unverified" };
+  if (e.effect === "followup.dry_run") return { ...base, what: `${e.describes} — test mode: recorded, NOT sent`, by: "barry", verified: "n/a", consequential: false };
   switch (e.status) {
     case "effected":
       return { ...base, what: e.describes, by: "barry", verified: e.reference || e.effect.includes("read") ? "verified" : "verified" };
@@ -85,7 +89,7 @@ export function businessActivity(input: ActivityInput): ActivityEvent[] {
     return c ? customerLabel(c) : undefined;
   };
   for (const c of input.conversations) {
-    for (const e of readLedger(c)) {
+    for (const e of truthfulLedger(c)) {
       const ev = effectEvent(c, e, b);
       if (ev) out.push(ev);
     }

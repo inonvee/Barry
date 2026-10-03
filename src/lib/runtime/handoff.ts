@@ -90,7 +90,8 @@ export function transactionSnapshot(state: ConversationState): string[] {
     else if (e.effect === "booking.created") out.push(`Booked${e.reference ? ` (${e.reference})` : ""}`);
     else if (e.effect === "order.created") out.push(`Order placed${e.reference ? ` (${e.reference})` : ""}`);
     else if (e.effect === "write.blocked") out.push(`Blocked: ${e.describes}`);
-    else if (e.status === "effected" && e.reference) out.push(`${e.describes} (${e.reference})`);
+    // A follow-up message is outreach, not where the transaction stands (and a legacy dry run was never sent).
+    else if (e.status === "effected" && e.reference && !e.effect.startsWith("followup.")) out.push(`${e.describes} (${e.reference})`);
   }
   return [...new Set(out)].slice(-8);
 }

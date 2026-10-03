@@ -310,7 +310,7 @@ function ProgressKind({ w, ws, lang, t, now }: Props & { w: ActiveWork }) {
           </Block>
           <Did items={p.steps.filter((st) => st.n > 0).map((st) => `${st.label}: ${st.n}`)} t={t} more={p.lastAttempt ? <p className="mt-1 text-xs text-muted-foreground">{t(`Last attempt ${clockOf(lang, tz, p.lastAttempt, now)}`, `ניסיון אחרון ${clockOf(lang, tz, p.lastAttempt, now)}`)}</p> : null} />
           <Blocking tone={p.reached ? "info" : "muted"} title={t("What is blocking progress", "מה עוצר את ההתקדמות")}>
-            {p.reached ? t("Customers who were reached haven't replied yet.", "לקוחות שקיבלו פנייה עוד לא ענו.") : t("Nothing sent yet — queued until your follow-up rule's timing allows it.", "עוד לא נשלח כלום — בתור עד שהתזמון בכלל יאפשר.")}
+            {p.reached ? t("Customers who were reached haven't replied yet.", "לקוחות שקיבלו פנייה עוד לא ענו.") : p.practiced ? t("Test mode — messages were recorded, not sent. No customer was contacted.", "מצב בדיקה — ההודעות נרשמו ולא נשלחו. אף לקוח לא קיבל פנייה.") : t("Nothing sent yet — queued until your follow-up rule's timing allows it.", "עוד לא נשלח כלום — בתור עד שהתזמון בכלל יאפשר.")}
           </Blocking>
           {(p.op?.progress.test || p.flow?.testItems) || (p.flow && hasMoney(p.flow.atStake)) ? (
             <More t={t}>

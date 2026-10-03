@@ -3,7 +3,7 @@ import type { BusinessGraph } from "@/lib/business-graph";
 import { getBackend } from "@/lib/store";
 import { getConversationStore, type ConversationState } from "@/lib/state";
 import { loadControls } from "@/lib/hq/controls";
-import { runObligationExecutor } from "@/lib/operator/executor";
+import { runObligationExecutor, type SenderResolver } from "@/lib/operator/executor";
 import { whatsappConfig, whatsappSender } from "@/lib/channels/whatsapp";
 import type { Obligation, ObligationKind } from "@/lib/operator/obligation-model";
 import type { OwnerWorkspace } from "./service";
@@ -83,6 +83,12 @@ export async function proposeOperation(input: { graph: BusinessGraph; ws: OwnerW
  * Run a proposed operation exactly once: compare-and-set proposed → running, then one bounded executor
  * pass over the eligible keys only. A second call (double tap, retry) finds it no longer proposed.
  */
+let sendersForTests: SenderResolver | undefined;
+/** Tests only: a capturing "live" sender so the real-send path is exercised without anything leaving. */
+export function setOperationSendersForTests(resolver: SenderResolver | undefined): void {
+  sendersForTests = resolver;
+}
+
 export async function runOperation(graph: BusinessGraph, opId: string, now = new Date()): Promise<{ ok: true; op: OwnerOperation } | { ok: false; reason: "not_found" | "not_proposed"; op?: OwnerOperation }> {
   const businessId = graph.business.id;
   const op = (await listOperations(businessId)).find((o) => o.id === opId);
@@ -97,18 +103,20 @@ export async function runOperation(graph: BusinessGraph, opId: string, now = new
   const eligible = op.targets.filter((t) => t.eligibility === "eligible").map((t) => t.key);
   const wa = whatsappConfig();
   try {
-    const run = eligible.length ? await runObligationExecutor(graph, { now, only: eligible, dueNow: true, limit: eligible.length, senders: (c) => (c.id.startsWith("wa:") && wa.sendMode === "live" ? whatsappSender() : undefined) }) : { results: [], acted: 0, blocked: undefined as string | undefined };
+    const run = eligible.length ? await runObligationExecutor(graph, { now, only: eligible, dueNow: true, limit: eligible.length, senders: sendersForTests ?? ((c) => (c.id.startsWith("wa:") && wa.sendMode === "live" ? whatsappSender() : undefined)) }) : { results: [], acted: 0, blocked: undefined as string | undefined };
     for (const t of op.targets) {
       const r = run.results.find((x) => x.key === t.key);
       if (r) t.result = { outcome: r.outcome, why: r.why, at, ...(r.attempt ? { attempt: r.attempt } : {}) };
       else if (t.eligibility === "eligible") t.result = { outcome: "skipped", why: "no longer due when BARRY re-checked the records", at };
     }
-    const sent = op.targets.filter((t) => t.result?.outcome === "sent" || t.result?.outcome === "dry_run").length;
+    // Only a message that really left is contact; a test-mode run is recorded as exactly that.
+    const sent = op.targets.filter((t) => t.result?.outcome === "sent").length;
+    const dry = op.targets.filter((t) => t.result?.outcome === "dry_run").length;
     const failed = op.targets.filter((t) => t.result?.outcome === "failed").length;
     op.state = run.blocked ? "blocked" : sent > 0 ? "waiting_on_customers" : failed > 0 ? "failed" : "completed";
     if (run.blocked) op.blockedReason = "BARRY's outreach is paused or not included for your business right now.";
     if (op.state === "completed" || op.state === "failed" || op.state === "blocked") op.finishedAt = at;
-    op.events.push({ at, what: `Contacted ${sent}${failed ? ` · ${failed} failed` : ""}` });
+    op.events.push({ at, what: `Contacted ${sent}${dry ? ` · test mode: ${dry} recorded, not sent` : ""}${failed ? ` · ${failed} failed` : ""}` });
   } catch (err) {
     op.state = "failed";
     op.finishedAt = at;

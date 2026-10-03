@@ -155,11 +155,12 @@ export async function runObligationExecutor(graph: BusinessGraph, opts: { now?: 
     }
     const attempt: ExecutionAttempt = { id, businessId, obligationKey: o.key, kind: o.kind, n, at, status, what: status === "failed" ? `Follow-up could not be sent: ${error}` : `${status === "dry_run" ? "Would send" : "Sent"}: “${text}”`, evidence: [...o.evidence, `attempt ${n} of ${rule.maxAttempts} · policy ${rule.intervalHours}h apart`], channel, ...(providerMessageId ? { providerMessageId } : {}), idempotencyKey: id };
     await recordAttempt(attempt);
-    // The conversation keeps the proof: a BARRY message, a ledger entry and a delivery record.
+    // The conversation keeps the proof: a ledger entry and a delivery record — and a BARRY message in the
+    // transcript ONLY when the message really left (a dry run or a failed send is never "said").
     const fresh = (await store.get(conversation.id)) ?? conversation;
-    if (status !== "failed") fresh.messages.push({ role: "barry", content: text, at });
-    appendLedger(fresh, { operation: "followUp", effect: status === "failed" ? "followup.failed" : "followup.sent", status: status === "failed" ? "failed" : "effected", describes: `follow-up (${o.kind.replace(/_/g, " ")})`, terms: { attempt: n }, reference: id });
-    const delivery: DeliveryRecord = { at, channel, inboundId: id, status: status === "failed" ? "failed" : status === "sent" ? "sent" : "dry_run", ...(providerMessageId ? { providerMessageId } : {}), ...(error ? { error } : {}) };
+    if (status === "sent") fresh.messages.push({ role: "barry", content: text, at });
+    appendLedger(fresh, { operation: "followUp", effect: status === "sent" ? "followup.sent" : status === "dry_run" ? "followup.dry_run" : "followup.failed", status: status === "sent" ? "effected" : status === "dry_run" ? "no_effect" : "failed", describes: `follow-up (${o.kind.replace(/_/g, " ")})`, terms: { attempt: n }, reference: id });
+    const delivery: DeliveryRecord = { at, channel, inboundId: id, status, ...(status === "sent" ? { messageAt: at } : {}), ...(providerMessageId ? { providerMessageId } : {}), ...(error ? { error } : {}) };
     const deliveries = JSON.parse(fresh.knownFields[CHANNEL_DELIVERY_KEY] ?? "[]") as DeliveryRecord[];
     fresh.knownFields[CHANNEL_DELIVERY_KEY] = JSON.stringify([...deliveries, delivery].slice(-50));
     await store.save(fresh);

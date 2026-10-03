@@ -41,6 +41,10 @@ const PLURAL_HE: Partial<Record<ObligationKind, [string, string, ("m" | "f")?]>>
   approval_blocking_transaction: ["מכירה שמחכה לך", "מכירות שמחכות לך", "f"],
   held_request_recheck: ["בקשה מושהית", "בקשות מושהות", "f"],
 };
+/** A message really reached this customer (a sent attempt). Legacy records without the split prove nothing → not contacted. */
+export const wasContacted = (o: Pick<Obligation, "sentAttempts">) => (o.sentAttempts ?? 0) > 0;
+/** Only test-mode attempts: something was recorded, nothing was sent. */
+export const testedOnly = (o: Pick<Obligation, "attempts" | "sentAttempts">) => (o.attempts ?? 0) > 0 && !wasContacted(o);
 const word = (kind: ObligationKind, n: number) => (PLURAL[kind] ?? ["item", "items"])[n === 1 ? 0 : 1];
 /** "3 abandoned checkouts" / "3 עגלות נטושות". */
 export const kindCount = (lang: OwnerLang, kind: ObligationKind, n: number) => countWords(lang, n, PLURAL[kind] ?? ["item", "items"], PLURAL_HE[kind] ?? ["פריט", "פריטים", "m"]);
@@ -57,9 +61,9 @@ export function nowWorking(ws: Pick<OwnerWorkspace, "obligations" | "interventio
   };
   for (const [kind, n] of byKind((o) => o.nextMove === "barry_can_act")) lines.push({ id: `act:${kind}`, icon: ICON[kind] ?? "bolt", tone: "accent", text: L(lang, `Following up ${n} ${word(kind, n)}`, `עוקב אחרי ${kindCount("he", kind, n)}`), count: n, state: "working" });
   // Already followed up (e.g. at the owner's request before the rule's delay) = waiting on the customer, not "scheduled".
-  const contacted = (o: Obligation) => (o.attempts ?? 0) > 0;
-  for (const [kind, n] of byKind((o) => o.nextMove === "scheduled_for_later" && !contacted(o))) lines.push({ id: `sched:${kind}`, icon: "clock", tone: "violet", text: L(lang, `${n} ${word(kind, n)} scheduled`, `${kindCount("he", kind, n)} — מתוזמן`), count: n, state: "working" });
-  const waiting = open.filter((o) => o.nextMove === "waiting_on_customer" || (o.nextMove === "scheduled_for_later" && contacted(o)));
+  // Only a message that really left counts: a test-mode (dry-run) attempt never put anyone "waiting on" BARRY.
+  for (const [kind, n] of byKind((o) => o.nextMove === "scheduled_for_later" && !wasContacted(o))) lines.push({ id: `sched:${kind}`, icon: "clock", tone: "violet", text: L(lang, `${n} ${word(kind, n)} scheduled`, `${kindCount("he", kind, n)} — מתוזמן`), count: n, state: "working" });
+  const waiting = open.filter((o) => (o.nextMove === "waiting_on_customer" && !testedOnly(o)) || (o.nextMove === "scheduled_for_later" && wasContacted(o)));
   const customers = new Set(waiting.map((o) => o.conversationId)).size;
   if (customers) lines.push({ id: "waiting", icon: "users", tone: "neutral", text: L(lang, `Waiting on ${customers} customer${customers === 1 ? "" : "s"}`, `מחכה ל${customers === 1 ? "לקוח אחד" : `־${customers} לקוחות`}`), count: customers, state: "waiting" });
   if (ws.interventions.length) lines.push({ id: "needs_you", icon: "shield", tone: "warn", text: L(lang, `${ws.interventions.length} decision${ws.interventions.length === 1 ? "" : "s"} waiting for you`, ws.interventions.length === 1 ? "החלטה אחת מחכה לך" : `${ws.interventions.length} החלטות מחכות לך`), count: ws.interventions.length, state: "attention" });
@@ -120,7 +124,7 @@ export function activityFeed(ws: Pick<OwnerWorkspace, "outcomes" | "approvals" |
     out.push({ id: `a:${a.id}`, at: a.createdAt, icon: "shield", tone: a.actionable ? "warn" : "neutral", text: T(`Asked you: ${a.what}`, `ביקש את אישורך`), sub: a.customer, conversationId: a.conversationId });
   }
   for (const o of ws.obligations) {
-    if (o.lastAttemptAt && o.attempts) out.push({ id: `f:${o.key}:${o.attempts}`, at: o.lastAttemptAt, icon: "bolt", tone: "accent", text: T(`Followed up — ${o.customer}`, `נשלחה תזכורת — ${o.customer}`), sub: `${lang === "he" ? kindCount("he", o.kind, 1).replace(/ אח[דת]$/, "") : o.subject}${o.attempts > 1 ? T(` · attempt ${o.attempts}`, ` · ניסיון ${o.attempts}`) : ""}${o.simulated ? T(" · test", " · בדיקה") : ""}`, conversationId: o.conversationId });
+    if (o.lastAttemptAt && o.attempts) out.push({ id: `f:${o.key}:${o.attempts}`, at: o.lastAttemptAt, icon: "bolt", tone: "accent", text: wasContacted(o) ? T(`Followed up — ${o.customer}`, `נשלחה תזכורת — ${o.customer}`) : T(`Test mode: follow-up recorded, not sent — ${o.customer}`, `מצב בדיקה: תזכורת נרשמה ולא נשלחה — ${o.customer}`), sub: `${lang === "he" ? kindCount("he", o.kind, 1).replace(/ אח[דת]$/, "") : o.subject}${o.attempts > 1 ? T(` · attempt ${o.attempts}`, ` · ניסיון ${o.attempts}`) : ""}${o.simulated ? T(" · test", " · בדיקה") : ""}`, conversationId: o.conversationId });
     if (o.completion && ["unpaid_payment_followup", "abandoned_checkout_recovery", "booking_deposit_missing", "failed_action_recovery"].includes(o.kind)) out.push({ id: `c:${o.key}`, at: o.completion.at, icon: "check", tone: "ok", text: T(`Closed — ${o.customer}`, `נסגר — ${o.customer}`), sub: lang === "he" ? kindCount("he", o.kind, 1).replace(/ אח[דת]$/, "") : o.subject, conversationId: o.conversationId });
   }
   return out.sort((x, y) => y.at.localeCompare(x.at)).slice(0, limit);
@@ -137,7 +141,10 @@ export type Workflow = {
   /** running = the rule is on and the plan includes follow-ups; off = the owner's rule turns it off; not_in_plan = the plan has no proactive follow-ups. */
   state: "running" | "off" | "not_in_plan";
   eligible: number;
+  /** Customers a message really reached (sent). Never includes test-mode runs. */
   contacted: number;
+  /** Test mode: a follow-up was composed and recorded for these, nothing was sent. */
+  practiced: number;
   open: number;
   /** Open, already followed up — waiting for the customer. */
   waiting: number;
@@ -204,7 +211,7 @@ export function workflows(ws: Pick<OwnerWorkspace, "obligations"> & Partial<Pick
     const atStake: Money = {};
     for (const o of real) {
       if (isOpen(o)) add(atStake, o.currency, o.amount);
-      if (w.paidClosure && o.status === "completed" && (o.attempts ?? 0) > 0 && /verified paid/.test(o.completion?.evidence ?? "")) add(recovered, o.currency, o.amount);
+      if (w.paidClosure && o.status === "completed" && wasContacted(o) && /verified paid/.test(o.completion?.evidence ?? "")) add(recovered, o.currency, o.amount);
     }
     const words = proactiveWords(w.kind, lang);
     out.push({
@@ -215,9 +222,10 @@ export function workflows(ws: Pick<OwnerWorkspace, "obligations"> & Partial<Pick
       commandBy: L(lang, "Your follow-up rule", "כלל המעקב שלך"),
       state: workflowState(w.kind, ws.operator),
       eligible: items.length,
-      contacted: items.filter((o) => (o.attempts ?? 0) > 0).length,
+      contacted: items.filter(wasContacted).length,
+      practiced: items.filter(testedOnly).length,
       open: items.filter(isOpen).length,
-      waiting: items.filter((o) => isOpen(o) && (o.attempts ?? 0) > 0).length,
+      waiting: items.filter((o) => isOpen(o) && wasContacted(o)).length,
       queued: items.filter((o) => isOpen(o) && !(o.attempts ?? 0)).length,
       excluded: items.filter((o) => o.status === "cancelled").length,
       closed: items.filter((o) => o.status === "completed").length,

@@ -1,4 +1,5 @@
 import type { BusinessGraph } from "@/lib/business-graph";
+import { lastSaid } from "@/lib/operator/execution-state";
 import { getBackend } from "@/lib/store";
 import { effectiveGraph } from "@/lib/policy/effective";
 import { whatsappConfig, whatsappNumbersFor } from "@/lib/channels/whatsapp";
@@ -375,7 +376,7 @@ export async function getOwnerWorkspace(staticGraph: BusinessGraph, opts: { sinc
       if (lastEffect?.effect === "write.blocked") attention.push("blocked");
       const kinds = [...new Set(outcomes.filter((o) => o.conversationId === c.id).map((o) => o.kind))];
       const completed = kinds.some((k) => k === "paid" || k === "booked" || k === "order_created" || k === "case_created") || c.outcome === "won";
-      const lastMsg = c.messages.at(-1);
+      const lastMsg = lastSaid(c);
       const status: OwnerConversationRow["status"] =
         attention.length > 0 ? "needs_you" : c.outcome === "lost" || ledger.at(-1)?.status === "withdrawn" ? "lost" : completed ? "completed" : lastMsg?.role === "barry" ? "waiting_on_customer" : "in_progress";
       return {

@@ -1,4 +1,5 @@
 import type { OwnerLang } from "./lang";
+import { truthfulTranscript } from "@/lib/operator/execution-state";
 import { actionWords } from "./interventions";
 import type { BusinessGraph } from "@/lib/business-graph";
 import { getConversationStore } from "@/lib/state";
@@ -30,7 +31,8 @@ export async function getOwnerConversation(graph: BusinessGraph, conversationId:
     id: state.id,
     customer: customerLabel(state, lang),
     channel: channelOf(state),
-    messages: state.messages.map((m) => ({ from: m.role, text: m.content, at: m.at })),
+    // BARRY messages that never reached the customer (test mode / failed send) are marked, never shown as said.
+    messages: truthfulTranscript(state).map((m) => ({ from: m.role, text: m.content, at: m.at, ...(m.notSent ? { notSent: m.notSent } : {}) })),
     outcomes: outcomeEvents({ graph, conversations: [state], payments, bookings, orders, approvals }),
     transaction: lang === "he" ? conversationStory(state, "he").standing : transactionSnapshot(state),
     /** What the customer asked, what BARRY did, and what became of it — turn by turn, from records. */

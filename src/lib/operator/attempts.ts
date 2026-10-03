@@ -33,13 +33,23 @@ export async function listAttempts(businessId: string): Promise<ExecutionAttempt
   return records.map((r: OperatorRecord) => r.data as unknown as ExecutionAttempt).filter((a) => a && typeof a.obligationKey === "string").sort((a, b) => a.at.localeCompare(b.at));
 }
 
-/** Attempts that count against the policy (sent / dry-run / failed) per obligation key. */
-export function attemptCounts(attempts: ExecutionAttempt[]): Record<string, { count: number; lastAt?: string }> {
-  const out: Record<string, { count: number; lastAt?: string }> = {};
+export type AttemptCount = {
+  /** Attempts that count against the policy's limit (sent / dry-run / failed) — the budget and idempotency. */
+  count: number;
+  lastAt?: string;
+  /** Attempts that really reached the customer (status sent). Only these may be called "contacted" or "reached". */
+  sent: number;
+  /** Test-mode attempts: composed and recorded, nothing sent. */
+  dryRun: number;
+};
+
+/** Attempts per obligation key — the policy budget, and separately what really reached the customer. */
+export function attemptCounts(attempts: ExecutionAttempt[]): Record<string, AttemptCount> {
+  const out: Record<string, AttemptCount> = {};
   for (const a of attempts) {
     if (a.status === "skipped" || a.status === "cancelled") continue;
-    const cur = out[a.obligationKey] ?? { count: 0 };
-    out[a.obligationKey] = { count: cur.count + 1, lastAt: cur.lastAt && cur.lastAt > a.at ? cur.lastAt : a.at };
+    const cur = out[a.obligationKey] ?? { count: 0, sent: 0, dryRun: 0 };
+    out[a.obligationKey] = { count: cur.count + 1, lastAt: cur.lastAt && cur.lastAt > a.at ? cur.lastAt : a.at, sent: cur.sent + (a.status === "sent" ? 1 : 0), dryRun: cur.dryRun + (a.status === "dry_run" ? 1 : 0) };
   }
   return out;
 }

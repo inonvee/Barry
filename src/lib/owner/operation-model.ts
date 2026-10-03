@@ -1,3 +1,4 @@
+import { executionStateOf, reachedCustomer } from "@/lib/operator/execution-state";
 import type { Obligation, ObligationKind } from "@/lib/operator/obligation-model";
 import { isOpen } from "@/lib/operator/obligation-model";
 import type { Money } from "./revenue";
@@ -67,7 +68,10 @@ export type OperationProgress = {
   eligible: number;
   excluded: number;
   alreadyDone: number;
+  /** Customers a message really reached (outcome sent). A test-mode run is never contact. */
   contacted: number;
+  /** Test mode: the follow-up was recorded for these, nothing was sent. */
+  dryRun: number;
   replied: number;
   purchased: number;
   stillTalking: number;
@@ -112,8 +116,9 @@ export function groundCohort(g: GroundingInput): OperationTarget[] {
     if (row.attention.includes("handoff_open")) return ex("a person on your team has this conversation");
     if (g.disabledChannels.includes(row.channel === "simulator" ? "web" : row.channel)) return ex(`the ${row.channel} channel is turned off`);
     const attempts = o.attempts ?? 0;
-    if (g.rule && attempts >= g.rule.maxAttempts) return ex(`already followed up ${attempts} time${attempts === 1 ? "" : "s"} — your limit`);
-    if (g.rule && o.lastAttemptAt && g.now.getTime() - Date.parse(o.lastAttemptAt) < g.rule.intervalHours * 3600_000) return ex(`contacted recently (your rule: every ${g.rule.intervalHours}h)`);
+    const sent = o.sentAttempts ?? 0;
+    if (g.rule && attempts >= g.rule.maxAttempts) return ex(sent ? `already followed up ${sent} time${sent === 1 ? "" : "s"} — your limit` : "already tried in test mode (nothing was sent) — your limit");
+    if (g.rule && o.lastAttemptAt && g.now.getTime() - Date.parse(o.lastAttemptAt) < g.rule.intervalHours * 3600_000) return ex(sent ? `contacted recently (your rule: every ${g.rule.intervalHours}h)` : `tried in test mode recently, nothing was sent (your rule: every ${g.rule.intervalHours}h)`);
     const wa = row.channel === "whatsapp";
     if (wa && g.whatsappLive) {
       const last = g.lastCustomerAt[o.conversationId];
@@ -126,7 +131,7 @@ export function groundCohort(g: GroundingInput): OperationTarget[] {
 
 /** Results read back from records: attempts (contacted), conversation (replied), verified closures (purchased / recovered). */
 export function operationProgress(op: Pick<OwnerOperation, "targets">, current: Obligation[], customerMessages: Record<string, string[]>): OperationProgress {
-  const p: OperationProgress = { cohort: op.targets.length, eligible: 0, excluded: 0, alreadyDone: 0, contacted: 0, replied: 0, purchased: 0, stillTalking: 0, waiting: 0, failed: 0, recovered: {}, test: 0 };
+  const p: OperationProgress = { cohort: op.targets.length, eligible: 0, excluded: 0, alreadyDone: 0, contacted: 0, dryRun: 0, replied: 0, purchased: 0, stillTalking: 0, waiting: 0, failed: 0, recovered: {}, test: 0 };
   for (const t of op.targets) {
     if (t.simulated) p.test += 1;
     if (t.eligibility === "excluded") {
@@ -141,7 +146,11 @@ export function operationProgress(op: Pick<OwnerOperation, "targets">, current: 
       p.failed += 1;
       continue;
     }
-    if (r.outcome !== "sent" && r.outcome !== "dry_run") continue;
+    if (r.outcome === "dry_run") {
+      p.dryRun += 1;
+      continue;
+    }
+    if (!reachedCustomer(executionStateOf(r.outcome))) continue;
     p.contacted += 1;
     const now = current.find((o) => o.key === t.key);
     const replied = (customerMessages[t.conversationId] ?? []).some((at) => at > r.at);

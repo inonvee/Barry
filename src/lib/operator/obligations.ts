@@ -38,7 +38,7 @@ export type ObligationInput = {
   carts?: CommerceCartRecord[];
   /** The business's follow-up policy (defaults when absent) and the attempts already made per obligation key. */
   policy?: FollowUpPolicy;
-  attempts?: Record<string, { count: number; lastAt?: string }>;
+  attempts?: Record<string, { count: number; lastAt?: string; sent?: number; dryRun?: number }>;
   now: Date;
   /** Optional: an owner-words label for a conversation's customer (falls back to the stored name or "Customer"). */
   customerLabel?: (c: ConversationState) => string;
@@ -69,7 +69,12 @@ export function deriveObligations(input: ObligationInput): Derived[] {
   const out: Derived[] = [];
   const paidIn = (conversationId: string) => payments.some((p) => p.conversationId === conversationId && p.status === "paid" && p.verifiedAt);
   const policy = input.policy ?? DEFAULT_FOLLOW_UP_POLICY;
-  const attemptsOf = (key: string) => input.attempts?.[key] ?? { count: 0 };
+  /** count = the policy budget; sent = what really reached the customer (callers that predate the split mean sent). */
+  const attemptsOf = (key: string) => {
+    const a = input.attempts?.[key] ?? { count: 0 };
+    return { count: a.count, lastAt: a.lastAt, sent: a.sent ?? (a.dryRun ? Math.max(0, a.count - a.dryRun) : a.count), dryRun: a.dryRun ?? 0 };
+  };
+  const tried = (a: ReturnType<typeof attemptsOf>) => (a.count ? { attempts: a.count, sentAttempts: a.sent, lastAttemptAt: a.lastAt } : {});
   /** Can BARRY act on this key under the policy (enabled, attempts left, interval elapsed)? */
   const barryCanAct = (key: string, kind: Parameters<typeof ruleFor>[1]) => {
     const rule = ruleFor(policy, kind);
@@ -97,9 +102,9 @@ export function deriveObligations(input: ObligationInput): Derived[] {
       conversationId: p.conversationId,
       customer: who(p.conversationId),
       subject: `${money(p.amount, p.currency)} payment link`,
-      reason: due ? (a.count ? `BARRY reminded the customer ${a.count} time${a.count === 1 ? "" : "s"}; the provider still hasn't reported a payment.` : "The payment link has been unpaid past the follow-up delay.") : "A payment link was sent and the provider hasn't reported a payment.",
+      reason: due ? (a.sent ? `BARRY reminded the customer ${a.sent} time${a.sent === 1 ? "" : "s"}; the provider still hasn't reported a payment.` : a.dryRun ? "Test mode: BARRY prepared a reminder but sent nothing; the provider still hasn't reported a payment." : "The payment link has been unpaid past the follow-up delay.") : "A payment link was sent and the provider hasn't reported a payment.",
       desiredOutcome: "The provider reports the payment as paid.",
-      nextAction: move === "barry_can_act" ? "BARRY sends one reminder with the same link (bounded by your follow-up rules)." : move === "needs_owner" ? "BARRY's reminders are used up; ask the customer yourself whether they still want it." : a.count ? "Waiting for the customer after BARRY's reminder." : "Wait for the customer to pay; BARRY follows up after the delay in your rules.",
+      nextAction: move === "barry_can_act" ? "BARRY sends one reminder with the same link (bounded by your follow-up rules)." : move === "needs_owner" ? "BARRY's reminders are used up; ask the customer yourself whether they still want it." : a.sent ? "Waiting for the customer after BARRY's reminder." : a.dryRun ? "Test mode: the reminder was recorded, not sent — the customer hasn't been contacted." : "Wait for the customer to pay; BARRY follows up after the delay in your rules.",
       nextMove: move,
       owner: move === "barry_can_act" ? "barry" : move === "needs_owner" ? "owner" : "customer",
       eligibleAt,
@@ -110,7 +115,7 @@ export function deriveObligations(input: ObligationInput): Derived[] {
       amount: p.amount,
       currency: p.currency,
       simulated: isSimulatedPayment(p),
-      ...(a.count ? { attempts: a.count, lastAttemptAt: a.lastAt } : {}),
+      ...tried(a),
     });
   }
 
@@ -136,9 +141,9 @@ export function deriveObligations(input: ObligationInput): Derived[] {
       conversationId: r.conversationId,
       customer: who(r.conversationId),
       subject: `${money(cart.total.amount, cart.total.currency)} cart left ${r.status === "checkout" ? "at checkout" : "open"}`,
-      reason: a.count ? "BARRY sent one recovery message; the customer hasn't come back." : "The customer built a cart and did not continue to payment.",
+      reason: a.sent ? "BARRY sent one recovery message; the customer hasn't come back." : a.dryRun ? "Test mode: BARRY prepared a recovery message but sent nothing; the customer hasn't been contacted." : "The customer built a cart and did not continue to payment.",
       desiredOutcome: "The customer completes the checkout or says they don't want it.",
-      nextAction: move === "barry_can_act" ? "BARRY asks once whether they'd like to complete it (nothing is charged)." : move === "scheduled_for_later" ? "BARRY waits the delay in your rules before asking." : "Waiting for the customer after BARRY's message.",
+      nextAction: move === "barry_can_act" ? "BARRY asks once whether they'd like to complete it (nothing is charged)." : move === "scheduled_for_later" ? "BARRY waits the delay in your rules before asking." : a.sent ? "Waiting for the customer after BARRY's message." : "Test mode: the message was recorded, not sent — the customer hasn't been contacted.",
       nextMove: move,
       owner: move === "barry_can_act" ? "barry" : "customer",
       eligibleAt,
@@ -148,7 +153,7 @@ export function deriveObligations(input: ObligationInput): Derived[] {
       capability: "commerce.checkout.create",
       amount: cart.total.amount,
       currency: cart.total.currency,
-      ...(a.count ? { attempts: a.count, lastAttemptAt: a.lastAt } : {}),
+      ...tried(a),
     });
   }
 
@@ -297,16 +302,16 @@ export function deriveObligations(input: ObligationInput): Derived[] {
       conversationId: b.conversationId,
       customer: who(b.conversationId),
       subject: `${offer?.name ?? "appointment"} reminder`,
-      reason: a.count ? "BARRY sent the reminder." : "The appointment is within a day.",
+      reason: a.sent ? "BARRY sent the reminder." : a.dryRun ? "Test mode: the reminder was recorded, not sent." : "The appointment is within a day.",
       desiredOutcome: "The customer shows up (or reschedules in time).",
-      nextAction: act.can ? "BARRY sends one reminder with the time." : a.count ? "Reminder sent; nothing else to do." : "Reminders are off in your rules.",
+      nextAction: act.can ? "BARRY sends one reminder with the time." : a.sent ? "Reminder sent; nothing else to do." : a.dryRun ? "Test mode: the reminder was recorded, not sent." : "Reminders are off in your rules.",
       nextMove: act.can ? "barry_can_act" : "waiting_on_customer",
       owner: act.can ? "barry" : "customer",
       eligibleAt: new Date(Date.parse(b.start) - D).toISOString(),
       dueAt: b.start,
       status: act.can ? "actionable" : "waiting_on_customer",
       authority: "none",
-      ...(a.count ? { attempts: a.count, lastAttemptAt: a.lastAt } : {}),
+      ...tried(a),
     });
   }
   return out;
@@ -384,7 +389,7 @@ function fromRecord(r: OperatorRecord): Obligation {
   return r.data as unknown as Obligation;
 }
 
-const LIVE_FIELDS: (keyof Derived)[] = ["status", "nextMove", "nextAction", "owner", "reason", "dueAt", "eligibleAt", "subject", "customer", "amount", "currency", "evidence", "attempts", "lastAttemptAt"];
+const LIVE_FIELDS: (keyof Derived)[] = ["status", "nextMove", "nextAction", "owner", "reason", "dueAt", "eligibleAt", "subject", "customer", "amount", "currency", "evidence", "attempts", "sentAttempts", "lastAttemptAt"];
 
 /**
  * Reconcile the derived obligations with the stored ones: create, update (only when something changed),

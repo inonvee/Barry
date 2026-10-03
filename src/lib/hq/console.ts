@@ -1,4 +1,5 @@
 import { resolveBusinessGraph } from "@/lib/business-graph-repository";
+import { lastSaid } from "@/lib/operator/execution-state";
 import { getBackend } from "@/lib/store";
 import { getConversationStore, type ConversationState } from "@/lib/state";
 import { withLifecycle } from "@/lib/runtime/owner-requests";
@@ -34,7 +35,7 @@ export function consoleRows(input: { businessId: string; businessName: string; c
     const failed = ledger.some((e) => e.status === "failed" || e.status === "effected_unconfirmed");
     const payment = input.payments.filter((p) => p.conversationId === c.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
     const paid = input.payments.some((p) => p.conversationId === c.id && isVerifiedPaid(p));
-    const lastMsg = c.messages.at(-1);
+    const lastMsg = lastSaid(c);
     const needsOwner = active.length > 0 || handoff;
     const status: ConsoleRow["status"] = needsOwner ? "needs_owner" : paid ? "completed" : lastMsg?.role === "barry" ? "waiting_on_customer" : "in_progress";
     return {
