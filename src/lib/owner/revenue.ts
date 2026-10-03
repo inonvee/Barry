@@ -1,6 +1,7 @@
 import type { BusinessGraph } from "@/lib/business-graph";
 import type { ConversationState } from "@/lib/state";
 import type { ApprovalRecord, BookingRecord, CommerceOrderRecord, PaymentRequestRecord } from "@/lib/store/types";
+import { isSimulatedPaymentProvider } from "@/lib/payments/simulated";
 import { readLedger, type LedgerEntry } from "@/lib/runtime/ledger";
 import { readHandoffs } from "@/lib/runtime/handoff";
 
@@ -77,7 +78,7 @@ const add = (m: Money, currency: string, amount: number) => {
 };
 
 export function isSimulatedPayment(p: PaymentRequestRecord): boolean {
-  return !p.provider || /^(memory|mock|simulat)/i.test(p.provider);
+  return isSimulatedPaymentProvider(p.provider);
 }
 
 export function isSimulatedBooking(b: BookingRecord): boolean {

@@ -1,3 +1,4 @@
+import { isSimulatedPaymentProvider, SimulatedPaymentRefusedError } from "@/lib/payments/simulated";
 import { ApprovalAlreadyResolvedError } from "./types";
 import type {
   ApprovalRecord,
@@ -239,6 +240,8 @@ export class MemoryBackend implements BarryBackend {
   async simulatePaymentOutcome(paymentId: string, outcome: "paid" | "failed") {
     const pr = this.paymentRequests.get(paymentId);
     if (!pr) throw new Error(`Payment request ${paymentId} not found`);
+    // Test money only: a real provider's payment is settled by that provider's verification, never here.
+    if (!isSimulatedPaymentProvider(pr.provider)) throw new SimulatedPaymentRefusedError(pr.provider!);
     return this.updatePaymentRequestStatus(paymentId, outcome, { verifiedAt: new Date().toISOString() });
   }
 

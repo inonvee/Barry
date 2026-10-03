@@ -1,4 +1,5 @@
 import { getSupabaseClient } from "./supabase-client";
+import { isSimulatedPaymentProvider, SimulatedPaymentRefusedError } from "@/lib/payments/simulated";
 import { ApprovalAlreadyResolvedError } from "./types";
 import type {
   ApprovalRecord,
@@ -473,6 +474,10 @@ export class SupabaseBackend implements BarryBackend {
     paymentId: string,
     outcome: "paid" | "failed"
   ): Promise<PaymentRequestRecord> {
+    const existing = await this.getPaymentRequest(paymentId);
+    if (!existing) throw new Error(`Payment request ${paymentId} not found`);
+    // Test money only: a real provider's payment is settled by that provider's verification, never here.
+    if (!isSimulatedPaymentProvider(existing.provider)) throw new SimulatedPaymentRefusedError(existing.provider!);
     return this.updatePaymentRequestStatus(paymentId, outcome, { verifiedAt: new Date().toISOString() });
   }
 

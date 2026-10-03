@@ -28,6 +28,14 @@ type Tab = "chat" | "inspector" | "approvals" | "graph";
 type Data = SimulatorData<ConversationState, ApprovalView, BusinessGraph>;
 const EMPTY: Data = { scope: null, conversation: null, approvals: null, graph: null };
 
+/** Why the simulator routes refused (they are owner-only and absent in Production), or null. */
+function accessProblem(status: number, body: { error?: string; code?: string }): string | null {
+  if (status === 401) return "Sign in as this business's owner in Owner to use the customer simulator.";
+  if (status === 503 && body.code === "owner_access_not_configured") return "Owner access is not configured on this deployment, so the customer simulator is off.";
+  if (status === 404 && body.error === "Not found") return "The customer simulator is not available on this deployment.";
+  return null;
+}
+
 export default function SimulatorPage() {
   const { businessId: sharedBusinessId, business } = useBusiness();
   const businessId = sharedBusinessId || null;
@@ -41,6 +49,7 @@ export default function SimulatorPage() {
   const [tab, setTab] = useState<Tab>("chat");
   const [sending, setSending] = useState(false);
   const [busyApprovalId, setBusyApprovalId] = useState<string | null>(null);
+  const [access, setAccess] = useState<string | null>(null);
 
   const refreshApprovals = useCallback((bizId: string) => {
     fetch(`/api/simulator/approvals?businessId=${encodeURIComponent(bizId)}`)
@@ -76,7 +85,11 @@ export default function SimulatorPage() {
     if (!scope) return;
     let cancelled = false;
     fetch(`/api/simulator/conversation?businessId=${encodeURIComponent(scope.businessId)}&conversationId=${encodeURIComponent(scope.conversationId)}`)
-      .then((r) => r.json())
+      .then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!cancelled) setAccess(accessProblem(r.status, d));
+        return d;
+      })
       .catch(() => ({}))
       .then((d) => {
         if (!cancelled) setConversation(scope, d.state ?? null);
@@ -150,6 +163,7 @@ export default function SimulatorPage() {
         body: JSON.stringify({ businessId: at.businessId, conversationId: at.conversationId, customerId: at.customerId, message }),
       });
       const d = await res.json().catch(() => ({}));
+      setAccess(accessProblem(res.status, d));
       if (d.state) setConversation(at, d.state);
       // Every turn can create, reuse, supersede or withdraw a request — always show the current lifecycle.
       refreshApprovals(at.businessId);
@@ -167,6 +181,7 @@ export default function SimulatorPage() {
       body: JSON.stringify({ businessId: at.businessId, conversationId: at.conversationId, paymentRequestId: paymentPrompt.paymentRequestId, outcome }),
     });
     const d = await res.json().catch(() => ({}));
+    setAccess(accessProblem(res.status, d) ?? (res.status === 403 && d.error ? d.error : null));
     if (d.state) setConversation(at, d.state);
   }
 
@@ -229,6 +244,7 @@ export default function SimulatorPage() {
             </button>
           </div>
         </div>
+        {access && <p className="mx-auto mt-1.5 max-w-6xl rounded-md bg-amber-100 px-2 py-1 text-xs font-medium text-amber-900">{access}</p>}
         {state?.knownFields.__qaForceUnderstandingFailure && (
           <p className="mx-auto mt-1.5 max-w-6xl rounded-md bg-amber-100 px-2 py-1 text-xs font-medium text-amber-900">QA: the next message in this conversation will FAIL understanding (armed in QA tools).</p>
         )}

@@ -5,15 +5,14 @@ import { resumeAfterApproval } from "@/lib/runtime";
 import { getBackend } from "@/lib/store";
 import { getConversationStore } from "@/lib/state";
 import { withLifecycle } from "@/lib/runtime/owner-requests";
-import { ownerAccessConfigured, ownerAuthError } from "@/lib/owner-auth";
+import { simulatorAccessError, simulatorEnabled } from "@/lib/simulator-access";
 
-/** Once owner access is configured, deciding (and listing) requests needs that business's owner session. */
-function guard(req: NextRequest, businessId: string): Response | undefined {
-  return ownerAccessConfigured() ? ownerAuthError(req, businessId) : undefined;
-}
+/** Listing and deciding requests from the simulator needs that business's owner session (and the simulator surface). */
+const guard = (req: NextRequest, businessId: string) => simulatorAccessError(req, businessId);
 
 export async function GET(req: NextRequest) {
   const businessId = req.nextUrl.searchParams.get("businessId");
+  if (!simulatorEnabled()) return NextResponse.json({ error: "Not found" }, { status: 404 });
   if (!businessId) return NextResponse.json({ error: "businessId is required" }, { status: 400 });
   const denied = guard(req, businessId);
   if (denied) return denied;
@@ -35,7 +34,8 @@ const BodySchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-  const parsed = BodySchema.safeParse(await req.json());
+  if (!simulatorEnabled()) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  const parsed = BodySchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.message }, { status: 400 });
   }
