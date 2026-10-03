@@ -1,33 +1,42 @@
-import { ConversationScopeError, createInitialConversationState, type ConversationState, type ConversationStore, type ConversationSummary, type TurnActivity } from "./types";
+import { ConversationConflictError, ConversationScopeError, createInitialConversationState, type ConversationState, type ConversationStore, type ConversationSummary, type TurnActivity } from "./types";
 
 /**
  * In-memory implementation of ConversationStore. Process-scoped — good for
  * unit tests and local dev, not durable across serverless cold starts.
  * See supabase-store.ts for the persistent implementation.
+ *
+ * It behaves like the real store on purpose: every read returns an independent COPY (two requests never
+ * share an object), and save() is compare-and-swap on `version` — so races that would lose data in
+ * production fail the same way here.
  */
 export class MemoryConversationStore implements ConversationStore {
   private conversations = new Map<string, ConversationState>();
 
   async get(id: string): Promise<ConversationState | undefined> {
-    return this.conversations.get(id);
+    const c = this.conversations.get(id);
+    return c ? structuredClone(c) : undefined;
   }
 
   async getOrCreate(id: string, businessId: string, customerId: string): Promise<ConversationState> {
     const existing = this.conversations.get(id);
     if (existing && existing.businessId !== businessId) throw new ConversationScopeError(id);
-    if (existing) return existing;
-    const fresh = createInitialConversationState(id, businessId, customerId);
-    this.conversations.set(id, fresh);
+    if (existing) return structuredClone(existing);
+    const fresh = { ...createInitialConversationState(id, businessId, customerId), version: 0 };
+    this.conversations.set(id, structuredClone(fresh));
     return fresh;
   }
 
   async save(state: ConversationState): Promise<void> {
+    const stored = this.conversations.get(state.id);
+    const expected = state.version ?? 0;
+    if (stored && (stored.version ?? 0) !== expected) throw new ConversationConflictError(state.id);
     state.updatedAt = new Date().toISOString();
-    this.conversations.set(state.id, state);
+    state.version = expected + 1;
+    this.conversations.set(state.id, structuredClone(state));
   }
 
   async listByBusiness(businessId: string): Promise<ConversationState[]> {
-    return [...this.conversations.values()].filter((c) => c.businessId === businessId);
+    return [...this.conversations.values()].filter((c) => c.businessId === businessId).map((c) => structuredClone(c));
   }
 
   async listSummariesByBusiness(businessId: string, limit: number): Promise<{ total: number; conversations: ConversationSummary[] }> {

@@ -1,5 +1,6 @@
 import { getSupabaseClient } from "@/lib/store/supabase-client";
-import { ConversationScopeError, createInitialConversationState } from "./types";
+import { ConversationConflictError, ConversationScopeError, createInitialConversationState } from "./types";
+import { reportGuardMissing } from "./lock";
 import type { ConversationMessage, ConversationState, ConversationStore, ConversationSummary, TurnActivity, TurnLog } from "./types";
 
 // Tracks, per in-memory ConversationState object, how many messages/turns
@@ -31,6 +32,8 @@ function rowToState(
     turns,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
+    // Before migration 0019 the column doesn't exist: such a copy can only be saved the legacy way.
+    ...(typeof row.version === "number" || typeof row.version === "string" ? { version: Number(row.version) } : {}),
   };
 }
 
@@ -101,13 +104,54 @@ export class SupabaseConversationStore implements ConversationStore {
       created_at: fresh.createdAt,
       updated_at: fresh.updatedAt,
     });
-    if (error) throw new Error(`Failed to create conversation ${id}: ${error.message}`);
+    if (error) {
+      // Two requests created the same new conversation at once: the first insert won — use its row.
+      if (error.code === "23505") {
+        const winner = await this.get(id);
+        if (winner && winner.businessId !== businessId) throw new ConversationScopeError(id);
+        if (winner) return winner;
+      }
+      throw new Error(`Failed to create conversation ${id}: ${error.message}`);
+    }
 
     persistedCounts.set(fresh, { messages: 0, turns: 0 });
-    return fresh;
+    return { ...fresh, version: 0 };
   }
 
+  /** null = unknown; false = migration 0019 missing (legacy, unprotected save — reported loudly). */
+  private atomicSave: boolean | null = null;
+
+  /**
+   * Compare-and-swap save in ONE database transaction (migration 0019): the row is written only if it is
+   * still at the version this copy was read at, together with the new messages and turns — all or nothing.
+   * A conflict writes nothing and throws ConversationConflictError.
+   */
   async save(state: ConversationState): Promise<void> {
+    if (this.atomicSave !== false && state.version !== undefined) {
+      const prev = persistedCounts.get(state) ?? { messages: 0, turns: 0 };
+      const updatedAt = new Date().toISOString();
+      const row = { stage: state.stage, detected_intent: state.detectedIntent ?? null, selected_offer_id: state.selectedOfferId ?? null, known_fields: state.knownFields, missing_fields: state.missingFields, objections: state.objections, pending_action: state.pendingAction ?? null, pending_approval_id: state.pendingApprovalId ?? null, outcome: state.outcome ?? null, updated_at: updatedAt };
+      const messages = state.messages.slice(prev.messages).map((m) => ({ role: m.role, content: m.content, at: m.at, ...(m.rich ? { rich: m.rich } : {}) }));
+      const turns = state.turns.slice(prev.turns).map((t) => ({ id: t.id, at: t.at, customer_message: t.customerMessage, understood: t.understood, retrieved: t.retrieved, goal: t.goal ?? null, selected_action: t.selectedAction ?? null, policy_decision: t.policyDecision ?? null, tool_result: t.toolResult ?? null, response: t.response, state_after: t.stateAfter, reasoner: t.reasoner, trace: t.trace ?? null, verification: t.verification ?? null, compiled: t.compiled ?? null }));
+      const { data, error } = await getSupabaseClient().rpc("barry_save_conversation", { p_id: state.id, p_expected_version: state.version, p_row: row, p_messages: messages, p_turns: turns });
+      if (!error) {
+        if (data === null || data === undefined) throw new ConversationConflictError(state.id);
+        state.updatedAt = updatedAt;
+        state.version = Number(data);
+        persistedCounts.set(state, { messages: state.messages.length, turns: state.turns.length });
+        this.atomicSave = true;
+        return;
+      }
+      if (!(error.code === "PGRST202" || /Could not find the function|function .* does not exist/i.test(error.message ?? ""))) throw new Error(`Failed to save conversation ${state.id}: ${error.message}`);
+      this.atomicSave = false;
+      reportGuardMissing("atomic conversation save unavailable");
+    }
+    await this.legacySave(state);
+  }
+
+  /** Pre-0019 save: unprotected last-write-wins (kept only so an un-migrated database still works). */
+  private async legacySave(state: ConversationState): Promise<void> {
+    if (this.atomicSave !== false) reportGuardMissing("conversation saved without a version (pre-0019 row)");
     state.updatedAt = new Date().toISOString();
     const client = getSupabaseClient();
 

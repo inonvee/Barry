@@ -15,6 +15,7 @@ import { reconcileObligations, isOpen, type Obligation } from "./obligations";
 import { followUpPolicyFor, ruleFor } from "./policy";
 import { attemptCounts, attemptId, listAttempts, recordAttempt, type ExecutionAttempt } from "./attempts";
 import { ownerHeldKeys } from "./holds";
+import { ConversationBusyError, withConversationLock } from "@/lib/state/lock";
 
 /** WhatsApp only lets a business message a customer freely within 24 hours of the customer's last message. */
 export const WHATSAPP_WINDOW_MS = 24 * 3600_000;
@@ -123,25 +124,38 @@ export async function runObligationExecutor(graph: BusinessGraph, opts: { now?: 
       results.push({ key: o.key, kind: o.kind, outcome: "skipped", why: `channel ${channel} is disabled by the founder` });
       continue;
     }
-    const handoffOpen = readHandoffs(conversation).some((h) => h.status !== "resolved");
-    if (handoffOpen && o.kind !== "unresolved_handoff") {
-      results.push({ key: o.key, kind: o.kind, outcome: "skipped", why: "a person has this conversation (open handoff); BARRY stays quiet" });
+    // Check, send and record holding the conversation's lock, on its LATEST copy: a customer turn running
+    // right now finishes first (or this obligation waits for the next pass) — never a stale overwrite.
+    let result: ExecutorResult;
+    try {
+      result = await withConversationLock(conversation.id, () => followUpOne(o, rule, n, id), { waitMs: 5_000 });
+    } catch (err) {
+      if (!(err instanceof ConversationBusyError)) throw err;
+      results.push({ key: o.key, kind: o.kind, outcome: "skipped", why: "the customer's conversation is busy right now; tried again on the next pass" });
       continue;
     }
+    if (result.outcome === "sent" || result.outcome === "dry_run" || result.outcome === "failed") acted += 1;
+    results.push(result);
+  }
+
+  async function followUpOne(o: Obligation, rule: NonNullable<ReturnType<typeof ruleFor>>, n: number, id: string): Promise<ExecutorResult> {
+    const conversation = await store.get(o.conversationId);
+    if (!conversation) return { key: o.key, kind: o.kind, outcome: "cancelled", why: "the conversation no longer exists" };
+    const channel = channelOf(conversation.id);
+    const handoffOpen = readHandoffs(conversation).some((h) => h.status !== "resolved");
+    if (handoffOpen && o.kind !== "unresolved_handoff") return { key: o.key, kind: o.kind, outcome: "skipped", why: "a person has this conversation (open handoff); BARRY stays quiet" };
     const lang = resolveReplyLanguage({ customerMessages: conversation.messages.filter((m) => m.role === "customer").map((m) => m.content), stored: conversation.knownFields[SCRATCH_KEYS.conversationLanguage], businessLocale: graph.business.locale }).code;
     const text = followUpText(o.kind, o, lang);
-    if (!text) {
-      results.push({ key: o.key, kind: o.kind, outcome: "skipped", why: "no customer-facing follow-up exists for this kind; it stays on the owner's list" });
-      continue;
-    }
+    if (!text) return { key: o.key, kind: o.kind, outcome: "skipped", why: "no customer-facing follow-up exists for this kind; it stays on the owner's list" };
     const sender = opts.senders?.(conversation) ?? dryRun(channel);
     // WhatsApp's customer-service window: a free-form message only within 24h of the customer's last message.
     const lastCustomer = [...conversation.messages].reverse().find((m) => m.role === "customer")?.at;
-    if (channel === "whatsapp" && sender.mode === "live" && (!lastCustomer || now.getTime() - Date.parse(lastCustomer) > WHATSAPP_WINDOW_MS)) {
-      results.push({ key: o.key, kind: o.kind, outcome: "skipped", why: "outside WhatsApp's 24-hour window — an approved message template is needed" });
-      continue;
-    }
+    if (channel === "whatsapp" && sender.mode === "live" && (!lastCustomer || now.getTime() - Date.parse(lastCustomer) > WHATSAPP_WINDOW_MS)) return { key: o.key, kind: o.kind, outcome: "skipped", why: "outside WhatsApp's 24-hour window — an approved message template is needed" };
     const to = conversation.id.split(":").slice(2).join(":") || conversation.customerId;
+    const base = { id, businessId, obligationKey: o.key, kind: o.kind, n, at, evidence: [...o.evidence, `attempt ${n} of ${rule.maxAttempts} · policy ${rule.intervalHours}h apart`], channel, idempotencyKey: id };
+    // The attempt is recorded BEFORE the send: if anything dies between the send and its result, the attempt
+    // id already exists and the next pass never sends again (it stays "attempted" — result unknown — honestly).
+    await recordAttempt({ ...base, status: "attempted", what: `Sending (result not recorded yet): “${text}”` });
     let status: ExecutionAttempt["status"];
     let providerMessageId: string | undefined;
     let error: string | undefined;
@@ -153,19 +167,16 @@ export async function runObligationExecutor(graph: BusinessGraph, opts: { now?: 
       status = "failed";
       error = err instanceof Error ? err.message.slice(0, 200) : "send failed";
     }
-    const attempt: ExecutionAttempt = { id, businessId, obligationKey: o.key, kind: o.kind, n, at, status, what: status === "failed" ? `Follow-up could not be sent: ${error}` : `${status === "dry_run" ? "Would send" : "Sent"}: “${text}”`, evidence: [...o.evidence, `attempt ${n} of ${rule.maxAttempts} · policy ${rule.intervalHours}h apart`], channel, ...(providerMessageId ? { providerMessageId } : {}), idempotencyKey: id };
-    await recordAttempt(attempt);
+    await recordAttempt({ ...base, status, what: status === "failed" ? `Follow-up could not be sent: ${error}` : `${status === "dry_run" ? "Would send" : "Sent"}: “${text}”`, ...(providerMessageId ? { providerMessageId } : {}) });
     // The conversation keeps the proof: a ledger entry and a delivery record — and a BARRY message in the
     // transcript ONLY when the message really left (a dry run or a failed send is never "said").
-    const fresh = (await store.get(conversation.id)) ?? conversation;
-    if (status === "sent") fresh.messages.push({ role: "barry", content: text, at });
-    appendLedger(fresh, { operation: "followUp", effect: status === "sent" ? "followup.sent" : status === "dry_run" ? "followup.dry_run" : "followup.failed", status: status === "sent" ? "effected" : status === "dry_run" ? "no_effect" : "failed", describes: `follow-up (${o.kind.replace(/_/g, " ")})`, terms: { attempt: n }, reference: id });
+    if (status === "sent") conversation.messages.push({ role: "barry", content: text, at });
+    appendLedger(conversation, { operation: "followUp", effect: status === "sent" ? "followup.sent" : status === "dry_run" ? "followup.dry_run" : "followup.failed", status: status === "sent" ? "effected" : status === "dry_run" ? "no_effect" : "failed", describes: `follow-up (${o.kind.replace(/_/g, " ")})`, terms: { attempt: n }, reference: id });
     const delivery: DeliveryRecord = { at, channel, inboundId: id, status, ...(status === "sent" ? { messageAt: at } : {}), ...(providerMessageId ? { providerMessageId } : {}), ...(error ? { error } : {}) };
-    const deliveries = JSON.parse(fresh.knownFields[CHANNEL_DELIVERY_KEY] ?? "[]") as DeliveryRecord[];
-    fresh.knownFields[CHANNEL_DELIVERY_KEY] = JSON.stringify([...deliveries, delivery].slice(-50));
-    await store.save(fresh);
-    acted += 1;
-    results.push({ key: o.key, kind: o.kind, outcome: status === "failed" ? "failed" : status, why: status === "failed" ? error! : `attempt ${n} of ${rule.maxAttempts}`, attempt: n });
+    const deliveries = JSON.parse(conversation.knownFields[CHANNEL_DELIVERY_KEY] ?? "[]") as DeliveryRecord[];
+    conversation.knownFields[CHANNEL_DELIVERY_KEY] = JSON.stringify([...deliveries, delivery].slice(-50));
+    await store.save(conversation);
+    return { key: o.key, kind: o.kind, outcome: status === "failed" ? "failed" : status, why: status === "failed" ? error! : `attempt ${n} of ${rule.maxAttempts}`, attempt: n };
   }
   // Re-reconcile so the obligations reflect the attempts (nextMove → waiting on the customer, attempts count).
   await reconcileObligations({ graph, conversations: await store.listByBusiness(businessId), approvals, payments, bookings, carts, policy, attempts: attemptCounts(await listAttempts(businessId)), now });

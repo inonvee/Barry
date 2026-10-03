@@ -1,9 +1,10 @@
 import { getBackend } from "@/lib/store";
+import { withConversationLock } from "@/lib/state/lock";
 import { getConversationStore } from "@/lib/state";
 import type { BusinessGraph } from "@/lib/business-graph";
 import type { PaymentBinding, PaymentRequestRecord } from "@/lib/store";
 import { MemoryPaymentAdapter } from "./adapters/memory";
-import type { PaymentAdapter, PaymentWebhookHeaders } from "./adapters/types";
+import type { PaymentAdapter, PaymentWebhookHeaders, VerifiedPaymentWebhook } from "./adapters/types";
 import { resolvePaymentAdapterForBusiness, resolvePaymentAdapterForWebhook } from "./registry";
 
 let adapterOverride: PaymentAdapter | undefined;
@@ -192,6 +193,12 @@ export async function processPaymentWebhook(
   if (verified.currency && verified.currency.toUpperCase() !== payment.currency.toUpperCase()) {
     throw new Error("Payment webhook currency mismatch");
   }
+  // Everything below changes the conversation: one writer at a time (the same lock as customer turns).
+  return withConversationLock(payment.conversationId, () => applyVerifiedPaymentEvent(verified, payment));
+}
+
+async function applyVerifiedPaymentEvent(verified: VerifiedPaymentWebhook, payment: PaymentRequestRecord): Promise<PaymentWebhookResult> {
+  const backend = getBackend();
 
   const event = await backend.recordPaymentWebhookEvent(verified.provider, verified.providerEventId, payment.id);
   if (event.status === "completed") {

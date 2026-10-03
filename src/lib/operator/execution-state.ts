@@ -34,6 +34,8 @@ export function executionStateOf(status: string | undefined): ExecutionState | u
       return "delivered";
     case "dry_run":
       return "dry_run";
+    case "attempted":
+      return "attempted";
     case "failed":
       return "failed";
     default:

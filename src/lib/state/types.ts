@@ -187,6 +187,12 @@ export type ConversationState = {
   turns: TurnLog[];
   createdAt: string;
   updatedAt: string;
+  /**
+   * Optimistic-concurrency version: the version this copy was read at. save() succeeds only if the stored
+   * conversation is still at this version (then bumps it), so a copy read before someone else's write can
+   * never overwrite that write. Absent on a copy that was never read from a store.
+   */
+  version?: number;
 };
 
 /**
@@ -219,6 +225,17 @@ export type TurnActivity = {
  * A conversation belongs to exactly one business. Asking for it under any other business is refused —
  * never answered with the other business's data, and never continued under the wrong business graph.
  */
+/**
+ * The conversation changed since this copy was read (another request saved first). Nothing was written:
+ * the caller must re-read and redo its work, or fail closed — never overwrite.
+ */
+export class ConversationConflictError extends Error {
+  constructor(readonly conversationId: string) {
+    super(`Conversation ${conversationId} changed while this request was working on it; nothing was saved`);
+    this.name = "ConversationConflictError";
+  }
+}
+
 export class ConversationScopeError extends Error {
   constructor(readonly conversationId: string) {
     super(`Conversation ${conversationId} not found for this business`);
@@ -236,6 +253,7 @@ export interface ConversationStore {
   get(id: string): Promise<ConversationState | undefined>;
   /** Throws ConversationScopeError when `id` already exists under a different business. */
   getOrCreate(id: string, businessId: string, customerId: string): Promise<ConversationState>;
+  /** Compare-and-swap on `state.version`: throws ConversationConflictError (and writes nothing) if it moved. */
   save(state: ConversationState): Promise<void>;
   listByBusiness(businessId: string): Promise<ConversationState[]>;
   /** The business's conversations, most recently active first, WITHOUT messages/turns; `total` counts all of them. */

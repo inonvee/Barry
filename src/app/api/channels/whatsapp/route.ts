@@ -30,7 +30,10 @@ export async function POST(req: NextRequest) {
   const parsed = parseWebhook(body, cfg.routes);
   const sender = whatsappSender();
   const results = [];
-  for (const message of parsed.messages) results.push(await processInbound(message, sender));
+  for (const message of parsed.messages) {
+    // An error mid-way leaves the message's inbox record at its last persisted stage: a retry resumes it there.
+    results.push(await processInbound(message, sender).catch((err) => ({ status: "failed" as const, conversationId: message.conversationId, error: err instanceof Error ? err.message.slice(0, 120) : "error", retry: true })));
+  }
   // Owner line: the owner command channel (never a customer conversation).
   const ownerResults = [];
   for (const m of parsed.owner) ownerResults.push(await processOwnerInbound(m, whatsappOwnerSender()).catch((err) => ({ status: "failed" as const, error: err instanceof Error ? err.message.slice(0, 120) : "error" })));
@@ -39,6 +42,10 @@ export async function POST(req: NextRequest) {
   if (parsed.unrouted.length) console.warn("[barry:whatsapp] message for an unrouted number", { count: parsed.unrouted.length });
   if (parsed.unsupported.length) console.warn("[barry:whatsapp] unsupported message types", parsed.unsupported.map((u) => u.type));
   for (const s of parsed.statuses) if (s.status === "failed") console.warn("[barry:whatsapp] delivery failed", { error: s.error });
-  // Always acknowledge a verified delivery (Meta retries otherwise); failures are recorded per conversation.
-  return Response.json({ received: parsed.messages.length, processed: results.filter((r) => r.status === "processed").length, duplicates: results.filter((r) => r.status === "duplicate").length, owner: ownerResults.map((r) => r.status) });
+  const summary = { received: parsed.messages.length, processed: results.filter((r) => r.status === "processed").length, duplicates: results.filter((r) => r.status === "duplicate").length, queued: results.filter((r) => r.status === "queued").length, owner: ownerResults.map((r) => r.status) };
+  // A message that couldn't be processed yet (its conversation was busy, or a retryable failure with
+  // nothing sent) asks Meta to deliver again: the inbox deduplicates every retry, so nothing runs twice
+  // and nothing is sent twice. Everything else is acknowledged (failures are recorded per conversation).
+  if (results.some((r) => (r.status === "queued" || r.status === "failed") && "retry" in r && r.retry)) return Response.json({ ...summary, retry: true }, { status: 500 });
+  return Response.json(summary);
 }

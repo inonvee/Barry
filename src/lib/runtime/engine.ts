@@ -7,6 +7,8 @@ import { getReasoner } from "@/lib/reasoner";
 import { callTool, listTools } from "@/lib/tools";
 import type { ToolCallResult, ToolContext } from "@/lib/tools";
 import { ConversationScopeError, getConversationForBusiness, getConversationStore } from "@/lib/state";
+import { withConversationLock } from "@/lib/state/lock";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { ConversationState, TurnLog } from "@/lib/state";
 import { getBackend } from "@/lib/store";
 import { ApprovalAlreadyResolvedError, type ApprovalRecord } from "@/lib/store/types";
@@ -342,14 +344,49 @@ function buildSchedulingDisplay(
   return undefined;
 }
 
+/** Which inbound channel message (if any) the current turn answers — stamped into the turn's own save. */
+const inboundTurn = new AsyncLocalStorage<{ inboundId?: string }>();
+export const INBOUND_TURNS_KEY = "__inboundTurns";
+export type InboundTurnStamp = { turnId: string; replyAt?: string };
+
+/** inbound message id → the turn that answered it (and its reply's transcript time). Bounded. */
+export function readInboundTurns(knownFields: Record<string, string>): Record<string, InboundTurnStamp> {
+  try {
+    const v = JSON.parse(knownFields[INBOUND_TURNS_KEY] ?? "{}");
+    return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Record, in the SAME save as the turn, that this turn answered the current inbound message. */
+function stampInbound(state: ConversationState, turn: TurnLog): void {
+  const inboundId = inboundTurn.getStore()?.inboundId;
+  if (!inboundId) return;
+  const map = readInboundTurns(state.knownFields);
+  const replyAt = [...state.messages].reverse().find((m) => m.role === "barry")?.at;
+  map[inboundId] = { turnId: turn.id, ...(replyAt ? { replyAt } : {}) };
+  state.knownFields[INBOUND_TURNS_KEY] = JSON.stringify(Object.fromEntries(Object.entries(map).slice(-200)));
+}
+
+/**
+ * One customer turn. Runs holding the conversation's lock (one writer per conversation across every
+ * instance; re-entrant within a request) and saves with a version check, so concurrent messages are
+ * processed one after another on the latest state — never on a stale copy that would overwrite.
+ */
 export async function handleCustomerMessage(
   staticGraph: BusinessGraph,
   conversationId: string,
   customerId: string,
-  message: string
+  message: string,
+  opts: { inboundId?: string } = {}
 ): Promise<TurnOutcome> {
-  // Cost-to-serve: every model call this turn makes is metered (provider-reported tokens) and recorded.
-  return meteredTurn(staticGraph.business.id, conversationId, () => handleCustomerMessageUnmetered(staticGraph, conversationId, customerId, message));
+  return withConversationLock(conversationId, () =>
+    inboundTurn.run({ inboundId: opts.inboundId }, () =>
+      // Cost-to-serve: every model call this turn makes is metered (provider-reported tokens) and recorded.
+      meteredTurn(staticGraph.business.id, conversationId, () => handleCustomerMessageUnmetered(staticGraph, conversationId, customerId, message))
+    )
+  );
 }
 
 async function meteredTurn(businessId: string, conversationId: string, run: () => Promise<TurnOutcome>): Promise<TurnOutcome> {
@@ -669,6 +706,7 @@ async function handleCustomerMessageUnmetered(
     },
   };
   state.turns.push(turn);
+  stampInbound(state, turn);
 
   await store.save(state);
   return { state, turn, response, rich };
@@ -903,6 +941,7 @@ async function understandingUnavailableTurn(args: {
     },
   };
   state.turns.push(turn);
+  stampInbound(state, turn);
   await store.save(state);
   return { state, turn, response };
 }
@@ -1478,6 +1517,15 @@ export async function handlePaymentOutcome(
   paymentRequestId: string,
   outcome: "paid" | "failed"
 ): Promise<TurnOutcome> {
+  return withConversationLock(conversationId, () => handlePaymentOutcomeLocked(graph, conversationId, paymentRequestId, outcome));
+}
+
+async function handlePaymentOutcomeLocked(
+  graph: BusinessGraph,
+  conversationId: string,
+  paymentRequestId: string,
+  outcome: "paid" | "failed"
+): Promise<TurnOutcome> {
   const store = getConversationStore();
   const state = await getConversationForBusiness(store, conversationId, graph.business.id);
   if (!state) throw new ConversationScopeError(conversationId);
@@ -1529,6 +1577,9 @@ export async function handlePaymentOutcome(
   }
 
   state.knownFields[SCRATCH_KEYS.paid] = "1";
+  // Persist the verified payment BEFORE the resume turn: that turn loads its own copy of the
+  // conversation (as every request does against the real store), so an unsaved flag would be lost.
+  await store.save(state);
   return handleCustomerMessage(graph, conversationId, state.customerId, "(payment received)");
 }
 
@@ -1609,7 +1660,10 @@ export async function resumeAfterApproval(
   decidedBy: string,
   alternateValue?: unknown
 ): Promise<TurnOutcome> {
-  return meteredTurn(staticGraph.business.id, `approval:${approvalId}`, () => resumeAfterApprovalUnmetered(staticGraph, approvalId, decision, decidedBy, alternateValue));
+  // The owner's decision resumes the conversation under the same per-conversation lock as customer turns.
+  const approval = await getBackend().getApproval(approvalId);
+  const run = () => meteredTurn(staticGraph.business.id, `approval:${approvalId}`, () => resumeAfterApprovalUnmetered(staticGraph, approvalId, decision, decidedBy, alternateValue));
+  return approval ? withConversationLock(approval.conversationId, run) : run();
 }
 
 async function resumeAfterApprovalUnmetered(

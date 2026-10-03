@@ -6,7 +6,8 @@ import type { OperatorRecord } from "@/lib/store/types";
  * obligation: attempt number, when, outcome, evidence. One record per (obligation key, attempt n);
  * the executor never runs attempt n twice and never exceeds the policy's limit.
  */
-export type AttemptStatus = "sent" | "dry_run" | "skipped" | "failed" | "cancelled";
+/** attempted = recorded right before the send; it stays so only if the result was never recorded (unknown — never re-sent). */
+export type AttemptStatus = "attempted" | "sent" | "dry_run" | "skipped" | "failed" | "cancelled";
 
 export type ExecutionAttempt = {
   id: string;
