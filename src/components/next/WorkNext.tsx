@@ -110,13 +110,13 @@ export function WorkNext(ctx: NextCtx) {
   // Desktop always shows a selected situation (the first one) so the detail pane is never empty.
   const current = [...all, ...done].find((r) => r.key === selected) ?? (desktop ? rows[0] : undefined);
 
-  const pills: { id: Filter; label: string; tone?: Tone }[] = [
+  const pills: { id: Filter; label: string; short?: string; tone?: Tone }[] = [
     { id: "all", label: t("All", "הכול") },
     { id: "you", label: t("Needs you", "מחכה לך"), tone: "hot" },
-    { id: "customer", label: t("Waiting on customer", "מחכה ללקוח"), tone: "info" },
+    { id: "customer", label: t("Waiting on customer", "מחכה ללקוח"), short: t("Waiting", "ממתין"), tone: "info" },
     { id: "running", label: t("Running", "רץ"), tone: "live" },
     { id: "noticed", label: t("Noticed", "שם לב"), tone: "plum" },
-    { id: "done", label: t("Completed", "הסתיים") },
+    { id: "done", label: t("Completed", "הסתיים"), short: t("Done", "הסתיים") },
   ];
 
   const detail = current ? <Detail key={current.key} row={current} ws={ws} actions={actions} lang={lang} t={t} now={now} onClose={() => setSelected(null)} onDone={(text, bad) => setNotice({ text, bad })} closable={!desktop} /> : null;
@@ -139,7 +139,7 @@ export function WorkNext(ctx: NextCtx) {
           </Alert>
         )}
 
-        <div className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-0.5 [scrollbar-width:none] lg:mx-0 lg:flex-wrap lg:px-0" role="tablist" aria-label={t("Filter", "סינון")}>
+        <div className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-0.5 pe-10 [mask-image:linear-gradient(to_right,black_calc(100%-40px),transparent)] [scrollbar-width:none] rtl:[mask-image:linear-gradient(to_left,black_calc(100%-40px),transparent)] sm:pe-4 sm:[mask-image:none] lg:mx-0 lg:flex-wrap lg:px-0 sm:rtl:[mask-image:none]" role="tablist" aria-label={t("Filter", "סינון")}>
           {pills.map((p) => {
             const n = lists[p.id].length;
             const on = filter === p.id;
@@ -157,7 +157,14 @@ export function WorkNext(ctx: NextCtx) {
                 data-testid={`work-filter-${p.id}`}
               >
                 {p.tone && <span className={`size-1.5 rounded-full ${p.tone === "hot" ? "bg-hot" : p.tone === "info" ? "bg-info" : p.tone === "live" ? "bg-live" : "bg-plum"}`} />}
-                {p.label}
+                {p.short ? (
+                  <>
+                    <span className="sm:hidden">{p.short}</span>
+                    <span className="hidden sm:inline">{p.label}</span>
+                  </>
+                ) : (
+                  p.label
+                )}
                 {p.id !== "done" && n > 0 && <span className="rounded-full bg-surface-2 px-1.5 text-xs tabular-nums text-foreground/80">{n}</span>}
               </button>
             );

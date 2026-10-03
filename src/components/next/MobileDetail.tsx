@@ -36,8 +36,8 @@ export function MobileDetail(p: Props) {
     o.kind === "decision" ? <DecisionKind {...p} item={o.item} /> : o.kind === "work" ? <ProgressKind {...p} w={o.item} /> : o.kind === "noticed" ? <NoticedKind {...p} i={o.item} /> : o.kind === "approval" ? approval(p, o.item) : finished(p, o.item);
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="work-detail-body">
-      <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-border" aria-hidden />
-      <header className="flex shrink-0 items-start gap-3 px-4 pb-3 pt-3">
+      <div className="mx-auto mt-1.5 h-1 w-10 shrink-0 rounded-full bg-border" aria-hidden />
+      <header className="flex shrink-0 items-start gap-3 px-4 pb-2.5 pt-2">
         <Thumb icon={row.person ? undefined : row.icon} name={row.person} tone={row.person ? "muted" : s.tone} size="md" />
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <div className="flex items-center gap-2">
@@ -62,8 +62,8 @@ function Facts({ items }: { items: { label: string; value: React.ReactNode; tone
   return (
     <dl className="grid shrink-0 overflow-hidden rounded-lg border bg-background/40 [&>*+*]:border-s" style={{ gridTemplateColumns: items.map((i) => (i.narrow ? "minmax(0, 0.6fr)" : "minmax(0, 1.2fr)")).join(" ") }}>
       {items.map((f) => (
-        <div key={f.label} className="flex min-w-0 flex-col gap-0.5 px-3 py-2">
-          <dt className="truncate text-[11px] text-muted-foreground">{f.label}</dt>
+        <div key={f.label} className="flex min-w-0 flex-col px-2.5 py-1.5">
+          <dt className="truncate text-[10.5px] leading-4 text-muted-foreground">{f.label}</dt>
           <dd className={`truncate text-[13px] font-semibold tabular-nums ${f.tone ? toneText(f.tone) : ""}`}><bdi>{f.value}</bdi></dd>
         </div>
       ))}
@@ -83,7 +83,7 @@ function Block({ title, children }: { title: string; children: React.ReactNode }
 function Did({ items, t, more }: { items: string[]; t: T; more?: React.ReactNode }) {
   const [all, setAll] = React.useState(false);
   // The latest few tell the story; the full trail is one tap away.
-  const shown = all || items.length <= 4 ? items : items.slice(-3);
+  const shown = all || items.length <= 3 ? items : items.slice(-3);
   return (
     <Block title={t("What BARRY did", "מה BARRY עשה")}>
       <ol className="flex flex-col gap-1.5">
@@ -95,7 +95,7 @@ function Did({ items, t, more }: { items: string[]; t: T; more?: React.ReactNode
         ))}
       </ol>
       {more}
-      {items.length > 4 && (
+      {items.length > 3 && (
         <button type="button" onClick={() => setAll((a) => !a)} className="mt-1.5 flex items-center gap-1 text-[13px] font-medium text-info">
           {all ? t("Show less", "פחות") : t(`View all activity (${items.length})`, `כל הפעילות (${items.length})`)}
           <ChevronDownIcon className={`size-4 transition-transform ${all ? "rotate-180" : ""}`} />

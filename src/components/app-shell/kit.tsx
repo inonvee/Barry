@@ -123,7 +123,7 @@ export function Panel({ title, count, countTone = "muted", action, className, bo
   return (
     <section className={cn("min-w-0 rounded-xl border bg-card", className)}>
       {title && (
-        <header className="flex items-center gap-2 px-4 pb-1 pt-4 sm:px-5">
+        <header className="flex items-center gap-2 px-3.5 pb-0.5 pt-3 sm:px-5 sm:pb-1 sm:pt-4">
           <h2 className="text-[15px] font-semibold tracking-tight">{title}</h2>
           {count !== undefined && count > 0 && <span className={cn("text-sm font-medium tabular-nums", TEXT[countTone])}>{count}</span>}
           {action &&

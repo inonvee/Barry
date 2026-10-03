@@ -40,8 +40,8 @@ export function HomeNext(ctx: NextCtx) {
   const primary = hero && hero.open.kind === "decision" ? hero.open.item.options.find((o) => o.primary && o.action !== "open_conversation") ?? hero.open.item.options.find((o) => o.action !== "open_conversation") : undefined;
 
   return (
-    <div className="flex flex-col gap-4 sm:gap-6 lg:gap-8">
-      <header className="flex flex-col gap-1 sm:gap-2">
+    <div className="flex flex-col gap-3 sm:gap-6 lg:gap-8">
+      <header className="flex flex-col gap-0.5 sm:gap-2">
         <div className="flex items-center gap-2.5 sm:gap-3">
           {hour >= 6 && hour < 18 ? <SunIcon className="size-5 text-warn sm:size-7" /> : <MoonIcon className="size-5 text-info sm:size-7" />}
           <h2 className="text-xl font-semibold tracking-tight sm:text-3xl">{greeting(tz, now, t)}</h2>
@@ -65,14 +65,14 @@ export function HomeNext(ctx: NextCtx) {
         </Alert>
       )}
 
-      <div className="grid grid-cols-1 gap-4 sm:gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] lg:gap-6">
+      <div className="grid grid-cols-1 gap-3 sm:gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] lg:gap-6">
         {/* Needs your attention */}
-        <Panel title={t("Needs your attention", "צריך את תשומת הלב שלך")} count={needs.length} countTone="hot" action={{ label: t(`View all`, "הכול"), href: "/owner/next/work" }} className="self-start" bodyClassName="flex flex-col gap-2 p-3 sm:p-4">
+        <Panel title={t("Needs your attention", "צריך את תשומת הלב שלך")} count={needs.length} countTone="hot" action={{ label: t(`View all`, "הכול"), href: "/owner/next/work" }} className="self-start" bodyClassName="flex flex-col gap-1 p-2 sm:gap-2 sm:p-4">
           {hero ? (
             <>
-              <article className="flex flex-col gap-3 rounded-xl border bg-surface-2/50 p-3 sm:gap-4 sm:p-4" data-testid="home-hero">
+              <article className="flex flex-col gap-2.5 px-1.5 pb-1 pt-0.5 sm:gap-4 sm:rounded-xl sm:border sm:bg-surface-2/50 sm:p-4" data-testid="home-hero">
                 <div className="flex gap-3 sm:gap-4">
-                  <Thumb icon={hero.person ? undefined : hero.icon} name={hero.person} tone={hero.person ? "muted" : "hot"} size="lg" className="sm:size-16 sm:rounded-xl" />
+                  <Thumb icon={hero.person ? undefined : hero.icon} name={hero.person} tone={hero.person ? "muted" : "hot"} size="md" className="sm:size-16 sm:rounded-xl" />
                   <div className="flex min-w-0 flex-1 flex-col gap-1">
                     <div className="flex items-center justify-between gap-3 text-sm">
                       <span className="flex items-center gap-2 font-medium text-hot"><Dot tone="hot" />{hero.status}</span>
@@ -84,16 +84,16 @@ export function HomeNext(ctx: NextCtx) {
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  <Button className="h-10 sm:h-10" onClick={() => setOpen(hero)} data-testid="home-primary">{primary?.label ?? t("Review", "לבדוק")}</Button>
+                  <Button className="h-9 sm:h-10" onClick={() => setOpen(hero)} data-testid="home-primary">{primary?.label ?? t("Review", "לבדוק")}</Button>
                   {hero.open.kind === "decision" && (
-                    <Button className="h-10" variant="outline" asChild>
+                    <Button className="h-9 sm:h-10" variant="outline" asChild>
                       <Link href={conversationHref(hero.open.item.conversationId)}>{t("Open conversation", "לפתוח שיחה")}</Link>
                     </Button>
                   )}
                 </div>
               </article>
               {rest.slice(0, 4).map((r, i) => <HomeRow key={r.key} row={r} lang={lang} now={now} onOpen={() => setOpen(r)} className={i >= 2 ? "hidden sm:flex" : undefined} />)}
-              {rest.length > 2 && <Link href="/owner/next/work" className="px-2 py-1.5 text-[13px] text-info hover:underline sm:hidden">{t(`${rest.length - 2} more in Work`, `עוד ${rest.length - 2} בעבודה`)}</Link>}
+              {rest.length > 2 && <Link href="/owner/next/work" className="px-2 py-1 text-[13px] text-info hover:underline sm:hidden">{t(`${rest.length - 2} more in Work`, `עוד ${rest.length - 2} בעבודה`)}</Link>}
               {rest.length > 4 && <Link href="/owner/next/work" className="hidden px-2 py-2 text-sm text-info hover:underline sm:block">{t(`${rest.length - 4} more in Work`, `עוד ${rest.length - 4} בעבודה`)}</Link>}
             </>
           ) : (
@@ -101,16 +101,16 @@ export function HomeNext(ctx: NextCtx) {
           )}
         </Panel>
 
-        <div className="flex min-w-0 flex-col gap-6">
+        <div className="flex min-w-0 flex-col gap-3 sm:gap-6">
           {/* BARRY is handling */}
-          <Panel title={t("BARRY is handling", "BARRY מטפל")} count={progress.length} countTone="live" action={{ label: t("View all", "הכול"), href: "/owner/next/work" }} bodyClassName="flex flex-col gap-1 p-2 sm:p-3">
+          <Panel title={t("BARRY is handling", "BARRY מטפל")} count={progress.length} countTone="live" action={{ label: t("View all", "הכול"), href: "/owner/next/work" }} bodyClassName="flex flex-col gap-0.5 p-2 sm:gap-1 sm:p-3">
             {progress.length ? (
               progress.map((r) => {
                 const w = r.open.kind === "work" ? r.open.item : null;
                 const p = w ? workProgress(ws, w, lang, t) : null;
                 return (
-                  <button key={r.key} type="button" onClick={() => setOpen(r)} className="flex w-full items-center gap-3 rounded-lg px-2 py-2.5 text-start hover:bg-surface-2" data-testid="home-running">
-                    <Thumb icon={r.icon} tone="live" size="lg" />
+                  <button key={r.key} type="button" onClick={() => setOpen(r)} className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-start hover:bg-surface-2 sm:py-2.5" data-testid="home-running">
+                    <Thumb icon={r.icon} tone="live" size="md" className="sm:size-12" />
                     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                       <span className="truncate text-[15px] font-medium">{r.title}</span>
                       <span className="truncate text-sm text-muted-foreground">
@@ -134,7 +134,7 @@ export function HomeNext(ctx: NextCtx) {
           </Panel>
 
           {/* Business pulse */}
-          <Panel title={t("Business pulse", "הדופק של העסק")} action={{ label: t("Money", "כסף"), href: "/owner/next/money" }} bodyClassName="flex flex-col gap-4 p-3 sm:p-4">
+          <Panel title={t("Business pulse", "הדופק של העסק")} action={{ label: t("Money", "כסף"), href: "/owner/next/money" }} bodyClassName="flex flex-col gap-4 p-2 sm:p-4">
             <div className="grid grid-cols-3 overflow-hidden rounded-xl border bg-background/40 sm:hidden [&>*+*]:border-s" data-testid="home-pulse-compact">
               {[
                 { label: t("Made today", "נגבה היום"), value: hasMoney(ws.revenue.direct) ? money(lang, ws.revenue.direct) : amount(lang, 0, cur), tone: "text-live" },
