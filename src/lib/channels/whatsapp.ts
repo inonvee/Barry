@@ -50,6 +50,18 @@ export function whatsappOwnerConfig(): { configured: boolean; numbers: string[];
   return { configured: tokens && numbers.length > 0, numbers, sendMode: base.sendMode, ...(display ? { display } : {}) };
 }
 
+/**
+ * BARRY's FOUNDER line(s) (BARRY_WHATSAPP_FOUNDER_NUMBERS: phone_number_ids) — the founder command channel. Distinct
+ * from every customer line AND every owner line: a number configured as either is never a founder line (fail closed).
+ */
+export function whatsappFounderConfig(): { configured: boolean; numbers: string[]; sendMode: "live" | "dry_run" } {
+  const base = whatsappConfig();
+  const taken = new Set([...Object.keys(base.routes), ...whatsappOwnerConfig().numbers, ...(process.env.BARRY_WHATSAPP_OWNER_NUMBERS ?? "").split(",").map((x) => x.trim())]);
+  const numbers = (process.env.BARRY_WHATSAPP_FOUNDER_NUMBERS ?? "").split(",").map((x) => x.trim()).filter((n) => n && !taken.has(n));
+  const tokens = ["WHATSAPP_APP_SECRET", "WHATSAPP_ACCESS_TOKEN"].every((k) => process.env[k]?.trim());
+  return { configured: tokens && numbers.length > 0, numbers, sendMode: base.sendMode };
+}
+
 /** The phone number(s) routed to a business. */
 export function whatsappNumbersFor(businessId: string): string[] {
   return Object.entries(whatsappConfig().routes)
@@ -101,11 +113,13 @@ export type ParsedWebhook = {
   statuses: { providerMessageId: string; status: string; error?: string }[];
   /** Messages to BARRY's OWNER line — owner command channel only, never a customer conversation. */
   owner: OwnerInbound[];
+  /** Messages to BARRY's FOUNDER line — the founder command channel only (never a customer or owner path). */
+  founder: OwnerInbound[];
 };
 
 /** Normalize a verified webhook payload. Pure: no I/O. */
-export function parseWebhook(body: unknown, routes = whatsappConfig().routes, ownerNumbers: string[] = whatsappOwnerConfig().numbers): ParsedWebhook {
-  const out: ParsedWebhook = { messages: [], unrouted: [], unsupported: [], statuses: [], owner: [] };
+export function parseWebhook(body: unknown, routes = whatsappConfig().routes, ownerNumbers: string[] = whatsappOwnerConfig().numbers, founderNumbers: string[] = whatsappFounderConfig().numbers): ParsedWebhook {
+  const out: ParsedWebhook = { messages: [], unrouted: [], unsupported: [], statuses: [], owner: [], founder: [] };
   const payload = body as WaPayload;
   if (payload?.object !== "whatsapp_business_account") return out;
   for (const entry of payload.entry ?? []) {
@@ -117,16 +131,18 @@ export function parseWebhook(body: unknown, routes = whatsappConfig().routes, ow
         if (s.id && s.status) out.statuses.push({ providerMessageId: s.id, status: s.status, ...(s.errors?.[0] ? { error: `${s.errors[0].code ?? ""} ${s.errors[0].title ?? ""}`.trim() } : {}) });
       }
       const ownerLine = !businessId && ownerNumbers.includes(phoneNumberId);
+      // A founder line is never also a customer or owner line (checked here too, not only in the config).
+      const founderLine = !businessId && !ownerLine && founderNumbers.includes(phoneNumberId);
       for (const m of change.value.messages ?? []) {
         if (!m.id || !m.from) continue;
-        if (ownerLine) {
+        if (ownerLine || founderLine) {
           const action = m.interactive?.button_reply?.id ?? m.interactive?.list_reply?.id ?? m.button?.payload;
           const text = m.type === "text" ? m.text?.body?.trim() : m.button?.text?.trim();
           if (!action && !text) {
-            out.unsupported.push({ inboundId: m.id, businessId: "owner", type: m.type ?? "unknown" });
+            out.unsupported.push({ inboundId: m.id, businessId: founderLine ? "founder" : "owner", type: m.type ?? "unknown" });
             continue;
           }
-          out.owner.push({ channel: "whatsapp", messageId: m.id, channelUserId: m.from, verifiedIdentifier: `phone:${m.from}`, receivedAt: m.timestamp ? new Date(Number(m.timestamp) * 1000).toISOString() : new Date().toISOString(), ...(text ? { text: text.slice(0, 2000) } : {}), ...(action ? { actionId: action.slice(0, 200) } : {}) });
+          (founderLine ? out.founder : out.owner).push({ channel: "whatsapp", messageId: m.id, channelUserId: m.from, verifiedIdentifier: `phone:${m.from}`, receivedAt: m.timestamp ? new Date(Number(m.timestamp) * 1000).toISOString() : new Date().toISOString(), ...(text ? { text: text.slice(0, 2000) } : {}), ...(action ? { actionId: action.slice(0, 200) } : {}) });
           continue;
         }
         if (!businessId) {
@@ -200,14 +216,22 @@ export function whatsappSender(fetchImpl: typeof fetch = fetch): OutboundSender 
  * carries actions. Live only in BARRY_WHATSAPP_SEND=live; otherwise a dry run (recorded, nothing sent).
  */
 export function whatsappOwnerSender(fetchImpl: typeof fetch = fetch): OwnerSender {
-  const cfg = whatsappOwnerConfig();
+  return lineSender(whatsappOwnerConfig(), "owner", fetchImpl);
+}
+
+/** The founder line's sender — the same rendering and the same live / dry-run rule as the owner line. */
+export function whatsappFounderSender(fetchImpl: typeof fetch = fetch): OwnerSender {
+  return lineSender(whatsappFounderConfig(), "founder", fetchImpl);
+}
+
+function lineSender(cfg: { numbers: string[]; sendMode: "live" | "dry_run" }, line: "owner" | "founder", fetchImpl: typeof fetch): OwnerSender {
   return {
     channel: "whatsapp",
     mode: cfg.sendMode,
     async send(to: string, message: OwnerOutbound) {
       const phoneNumberId = cfg.numbers[0];
       const token = process.env.WHATSAPP_ACCESS_TOKEN;
-      if (!phoneNumberId || !token) throw new Error("The BARRY owner line is not configured");
+      if (!phoneNumberId || !token) throw new Error(`The BARRY ${line} line is not configured`);
       const version = process.env.WHATSAPP_GRAPH_VERSION || "v21.0";
       const actions = (message.actions ?? []).slice(0, 3);
       const body = actions.length

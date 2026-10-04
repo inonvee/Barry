@@ -55,6 +55,7 @@ export function buildFashionRetailerGraph(): BusinessGraph {
     business: {
       id: "fashion-retailer",
       name: "Rina Studio",
+      aliases: ["רינה", "רינה סטודיו"],
       description: "Occasion wear and accessories retailer.",
       locale: "he-IL",
       timezone: "Asia/Jerusalem",

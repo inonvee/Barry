@@ -8,6 +8,7 @@ import { operatingMode, proactiveGate, type OperatingMode } from "@/lib/runtime/
 import { runObligationExecutor, type SenderResolver } from "@/lib/operator/executor";
 import { listAttempts } from "@/lib/operator/attempts";
 import { notifyOwnerAttention, notifyOwnerDecisions, sendDailyBrief } from "@/lib/owner/briefs";
+import { runFounderJobs, type FounderJobOutcome } from "@/lib/founder-channel/alerts";
 import { runInitiativeTick, localMoment } from "@/lib/initiative/scheduler";
 import { whatsappConfig, whatsappSender } from "@/lib/channels/whatsapp";
 import { ConversationBusyError, withConversationLock } from "@/lib/state/lock";
@@ -70,7 +71,7 @@ export type JobRecord = {
 };
 
 export type JobOutcome = { businessId: string; job: JobId; slot: string | null; decision: "ran" | "skipped" | "failed"; reason: string; summary?: JobSummary };
-export type BackgroundTick = { at: string; evaluated: number; ran: number; skipped: number; failed: number; outcomes: JobOutcome[] };
+export type BackgroundTick = { at: string; evaluated: number; ran: number; skipped: number; failed: number; outcomes: JobOutcome[]; /** Fleet-level founder jobs (alerts hourly, the daily founder brief) — only on a full-fleet tick. */ founder?: FounderJobOutcome[] };
 
 const jobKey = (job: JobId, slot: string) => `${JOB_PREFIX}${job}:${slot}`;
 
@@ -241,7 +242,9 @@ export async function runBackgroundTick(opts: { now?: Date; businessId?: string;
     }
     outcomes.push(...(await runBusinessJobs(graph, { now, jobs })));
   }
-  const tick: BackgroundTick = { at: now.toISOString(), evaluated: ids.length, ran: outcomes.filter((o) => o.decision === "ran").length, skipped: outcomes.filter((o) => o.decision === "skipped").length, failed: outcomes.filter((o) => o.decision === "failed").length, outcomes };
+  // The founder's system-level notices are fleet work: only a full-fleet tick runs them (never a one-business QA tick).
+  const founder = opts.businessId || opts.jobs ? undefined : await runFounderJobs({ now }).catch((err) => [{ job: "founder_alerts" as const, slot: null, decision: "failed" as const, reason: (err instanceof Error ? err.message : "failed").slice(0, 200) }]);
+  const tick: BackgroundTick = { at: now.toISOString(), evaluated: ids.length, ran: outcomes.filter((o) => o.decision === "ran").length, skipped: outcomes.filter((o) => o.decision === "skipped").length, failed: outcomes.filter((o) => o.decision === "failed").length + (founder?.filter((f) => f.decision === "failed").length ?? 0), outcomes, ...(founder ? { founder } : {}) };
   await getBackend().upsertOperatorRecord({ businessId: FLEET_SCOPE, kind: "founder_state", key: `${TICK_PREFIX}${now.toISOString()}`, data: tick as unknown as Record<string, unknown> }).catch((err) => console.error("[barry:background] tick log failed", err instanceof Error ? err.message : err));
   if (tick.failed) console.error(`[barry:background] tick ${tick.at}: ${tick.failed} job(s) failed`, outcomes.filter((o) => o.decision === "failed"));
   return tick;

@@ -19,11 +19,15 @@ import { z } from "zod";
  *   unsupported       anything else — arbitrary SQL, env, secrets, deploys, bypassing an owner
  */
 
-export type FleetTopic = "brief" | "attention" | "changed";
-export type BusinessFollowUp = "overview" | "why" | "incidents" | "changed" | "options";
-export type CommercialTopic = "cost_to_serve" | "plans";
+export type FleetTopic = "brief" | "attention" | "changed" | "approvals" | "launch";
+export type BusinessFollowUp = "overview" | "why" | "incidents" | "changed" | "options" | "readiness" | "money" | "approvals";
+export type CommercialTopic = "cost_to_serve" | "plans" | "models";
 export type IncidentTopic = "integrations" | "incidents";
-export type FounderActionKind = "pause_business" | "resume_business" | "safe_mode_on" | "safe_mode_off";
+export type FounderActionKind = "pause_business" | "resume_business" | "safe_mode_on" | "safe_mode_off" | "require_approval_on" | "require_approval_off" | "pause_capability" | "resume_capability" | "set_mode";
+export type FounderMode = "simulator" | "supervised" | "live";
+/** Capability families a founder can pause by name (the founder control matches "family.*"). Generic, never a business type. */
+export const CAPABILITY_FAMILIES = ["payments", "commerce", "scheduling", "support", "messaging", "shipping"] as const;
+export type CapabilityFamily = (typeof CAPABILITY_FAMILIES)[number];
 export type ProposalKindIntent = "rollout" | "runtime" | "capability" | "configuration";
 
 export type FounderIntent =
@@ -35,7 +39,7 @@ export type FounderIntent =
   | { family: "initiative_read" }
   | { family: "initiative_scan"; force: boolean }
   | { family: "release_read" }
-  | { family: "founder_action"; action: FounderActionKind }
+  | { family: "founder_action"; action: FounderActionKind; capability?: CapabilityFamily; mode?: FounderMode }
   | { family: "proposal"; kind: ProposalKindIntent }
   | { family: "handle_safe" }
   | { family: "unsupported"; reason: string };
@@ -63,6 +67,19 @@ const RESUME = /^(?:please\s+|barry,?\s+)*(?:resume|unpause|restart|un-?freeze|s
 const SAFE_ON = /\b(?:put|turn|switch|enable|move)\b.*\bsafe mode\b(?!.*\boff\b)|\bsafe mode on\b/i;
 const SAFE_OFF = /\b(?:take|turn|switch|disable|leave|exit|lift)\b.*\bsafe mode\b.*?(?:\boff\b|\bout\b)?|\bsafe mode off\b|\bout of safe mode\b/i;
 
+// Founder controls beyond pause / safe mode — the same audited founder control HQ uses.
+const CAP_WORDS = "payments?|payment links?|checkouts?|carts?|commerce|orders?|bookings?|appointments?|scheduling|support|tickets?|messaging|outbound messages|shipping|shipments?|refunds?";
+const PAUSE_CAP = new RegExp(`\\b(?:pause|disable|stop|block|turn off|freeze)\\s+(?:the\\s+|all\\s+)?(${CAP_WORDS})\\b`, "i");
+const RESUME_CAP = new RegExp(`\\b(?:resume|unpause|re-?enable|enable|turn on|unblock|unfreeze)\\s+(?:the\\s+|all\\s+)?(${CAP_WORDS})\\b`, "i");
+const APPROVAL_ON = /\b(?:require|demand|need|make)\b[^.?!]*\bapprovals?\b[^.?!]*\b(?:every|all|each|any)\b|\bapproval (?:for|on) (?:every|all|each|any)\b|\bhuman[- ]only\b(?![^.?!]*\b(?:off|lift|remove)\b)/i;
+const APPROVAL_OFF = /\b(?:lift|remove|stop|drop|turn off|cancel|end|relax)\b[^.?!]*\b(?:approval|human[- ]only)\b/i;
+const SET_MODE = /\b(?:switch|move|put|set|change|take)\b[^.?!]*\b(?:to|into|in)\s+(simulator|supervised|live|practice)\b/i;
+const READINESS = /\b(?:why (?:is|isn'?t)\b[^?]*\b(?:not )?ready|not ready|ready to (?:go live|launch)|readiness|launch (?:gate|blockers?|checklist)|what(?:'s| is) blocking (?:the )?(?:launch|go-?live))\b/i;
+const LAUNCH_RANK = /\b(?:closest to (?:going live|launch(?:ing)?|live|ready)|nearest to (?:launch|live)|who(?:'s| is) (?:most |almost )?ready|which (?:business(?:es)?|one) (?:is|are) (?:most |almost )?ready)\b/i;
+const APPROVALS = /\b(?:approvals? (?:waiting|pending|open)|pending approvals?|waiting (?:for|on) (?:an? )?approvals?|any approvals?|open approvals?)\b/i;
+const MODELS = /\b(?:model (?:usage|costs?|spend\w*|bill)|spend\w* on (?:the )?(?:ai |llm )?models?|ai (?:costs?|spend\w*|usage)|tokens? (?:costs?|usage|spend\w*)|llm (?:costs?|spend\w*)|openai (?:costs?|bill|spend\w*))\b/i;
+const BIZ_MONEY = /\b(?:money|revenue|paid|payments?|sales|made|collected)\b/i;
+
 const BRIEF = /\b(need to know|brief(?:ing)?|catch me up|what(?:'s| is) (?:up|happening)(?: today| across| in the fleet)?|anything i should know|morning)\b/i;
 const ATTENTION = /\b(need\w* (?:my )?attention|need\w* me|unhealthy|in trouble|at risk|struggling|which businesses? (?:are|is) (?:not )?(?:ok|healthy|degraded|blocked|paused))\b/i;
 const CHANGED = /\b(what changed|changes? since|since yesterday|what(?:'s| is) new|what happened)\b/i;
@@ -83,7 +100,35 @@ const OVERVIEW = /\b(what'?s going on|how is|how'?s|status of|tell me about|look
 
 // Hebrew (and code-switched Hebrew + English names): the same closed intent set, recognised by meaning.
 const HE_FORBIDDEN = /סיסמ|טוקן|מפתח(?:ות)? API|מפתח סודי|סוד(?:ות)?\b|משתני סביבה|תמחק את ה(?:נתונים|טבלה)|תעשה deploy|תעלה לפרודקשן/;
+const HE_CAP = "(?:ה)?(?:תשלומים|תשלום|סליקה|קישורי תשלום|הזמנות|עגלה|עגלות|תורים|קביעת תורים|תמיכה|פניות|הודעות|משלוחים|החזרים)";
+const heCapability = (t: string): CapabilityFamily | undefined => {
+  const m = t.match(new RegExp(HE_CAP));
+  const w = m?.[0].replace(/^ה/, "") ?? "";
+  if (/תשלו|סליקה/.test(w)) return "payments";
+  if (/הזמנות|עגל/.test(w)) return "commerce";
+  if (/תורים/.test(w)) return "scheduling";
+  if (/תמיכה|פניות/.test(w)) return "support";
+  if (/הודעות/.test(w)) return "messaging";
+  if (/משלוחים/.test(w)) return "shipping";
+  if (/החזרים/.test(w)) return "payments";
+  return undefined;
+};
+const HE_MODE: Record<string, FounderMode> = { מפוקח: "supervised", פיקוח: "supervised", סימולטור: "simulator", תרגול: "simulator", לייב: "live", חי: "live", פעיל: "live" };
 const HE: { re: RegExp; needs?: "business"; intent: (t: string) => FounderIntent | undefined }[] = [
+  // Founder controls with a target (before the plain pause / resume rules below).
+  { re: new RegExp(`^(?:בבקשה\\s+)?(?:תשהה|השהה|תעצור|עצור|תחסום|חסום|תכבה|כבה)\\s+(?:את\\s+)?${HE_CAP}`), intent: (t) => (/\?\s*$/.test(t) ? undefined : { family: "founder_action", action: "pause_capability", capability: heCapability(t) }) },
+  { re: new RegExp(`^(?:בבקשה\\s+)?(?:תחזיר|החזר|תפעיל|הפעל|תחדש|חדש|תשחרר|שחרר)\\s+(?:את\\s+)?${HE_CAP}`), intent: (t) => (/\?\s*$/.test(t) ? undefined : { family: "founder_action", action: "resume_capability", capability: heCapability(t) }) },
+  { re: /(?:תבטל|בטל|תוריד|הורד|תסיר|הסר)\s+(?:את\s+)?(?:דרישת|חובת|ה?דרישה ל)\s*(?:ה)?אישור/, intent: () => ({ family: "founder_action", action: "require_approval_off" }) },
+  { re: /(?:תדרוש|דרוש|תחייב|חייב|תבקש|בקש)\s+(?:ש?)?אישור|אישור (?:על|ל)\s*כל (?:פעולה|דבר)/, intent: (t) => (/\?\s*$/.test(t) ? undefined : { family: "founder_action", action: "require_approval_on" }) },
+  { re: /(?:תעביר|העבר|תשים|שים|תחזיר|החזר|תכניס|הכנס)\s+[^?]*?(?:ל|למצב\s+|במצב\s+)(מפוקח|פיקוח|סימולטור|תרגול|לייב|חי|פעיל)(?:\s|$|[.!])/, intent: (t) => {
+    const m = t.match(/(?:ל|למצב\s+|במצב\s+)(מפוקח|פיקוח|סימולטור|תרגול|לייב|חי|פעיל)(?:\s|$|[.!])/);
+    return m ? { family: "founder_action", action: "set_mode", mode: HE_MODE[m[1]] } : undefined;
+  } },
+  { re: /(?:מי|איזה עסק|איזה)\s+(?:הכי\s+)?קרוב (?:ל)?(?:עלות|לעלות|השקה|להשקה)|מי (?:הכי )?מוכן (?:לעלות|להשקה)/, intent: () => ({ family: "fleet_read", topic: "launch" }) },
+  { re: /לא מוכן (?:לעלות|להשקה|לאוויר)|למה [^?]*לא (?:מוכן|עולה)|מה חוסם (?:את )?(?:העלייה|ההשקה)|מוכנות (?:ל)?(?:עלייה|השקה)/, needs: "business", intent: () => ({ family: "business_inspect", followUp: "readiness" }) },
+  { re: /(?:כמה )?(?:אנחנו )?(?:מוציאים|משלמים) על (?:ה)?(?:מודלים|AI|בינה)|עלות (?:ה)?מודלים|שימוש (?:ב)?מודלים|טוקנים/i, intent: () => ({ family: "commercial_read", topic: "models" }) },
+  { re: /(?:יש )?אישורים (?:ש)?(?:מחכים|ממתינים|פתוחים)|יש אישורים/, intent: () => ({ family: "fleet_read", topic: "approvals" }) },
+  { re: /(?:ה)?כסף|הכנסות|שילמו|תשלומים|מכירות/, needs: "business", intent: (t) => (/(?:תשהה|השהה|תעצור|עצור|תחזיר|החזר)/.test(t) ? undefined : { family: "business_inspect", followUp: "money" }) },
   { re: /תטפל במה ש(?:אתה )?(?:יכול|אפשר)|תטפל בכל מה ש/, intent: () => ({ family: "handle_safe" }) },
   { re: /(?:תכין|הכן|תנסח)\s+(?:פריסה|rollout|רולאאוט)/i, intent: () => ({ family: "proposal", kind: "rollout" }) },
   { re: /מצב בטוח/, intent: (t) => (/\?\s*$/.test(t) ? undefined : /(?:תכבה|כבה|תוציא|הוצא|צא|בטל|תבטל)/.test(t) ? { family: "founder_action", action: "safe_mode_off" } : /(?:תפעיל|הפעל|תכניס|הכנס|תשים|שים|תעביר)/.test(t) ? { family: "founder_action", action: "safe_mode_on" } : undefined) },
@@ -97,11 +142,11 @@ const HE: { re: RegExp; needs?: "business"; intent: (t: string) => FounderIntent
   { re: /מספיק ערך|לא מקבלים ערך/, intent: () => ({ family: "value_read" }) },
   { re: /(?:מה|מי)\s+(?:BARRY|בארי|ברי)\s+(?:שם לב|זיהה|גילה|מצא)|יוזמות|מה (?:שמת|שמת לב|מצאת)/i, intent: () => ({ family: "initiative_read" }) },
   { re: /(?:אינטגרציות|חיבורים|ספקים|חיבור).*(?:שבור|לא עובד|תקול|נפל)/, intent: () => ({ family: "incident_read", topic: "integrations" }) },
-  { re: /מה קורה עם|מה המצב (?:של|עם|ב)|ספר לי על|איך הולך (?:ל|עם|ב)/, needs: "business", intent: () => ({ family: "business_inspect", followUp: "overview" }) },
+  { re: /מה קורה (?:עם|אצל|ב)|מה המצב (?:של|עם|ב|אצל)|ספר לי על|איך הולך (?:ל|עם|ב|אצל)|מה (?:ברי|בארי|BARRY) עושה/i, needs: "business", intent: () => ({ family: "business_inspect", followUp: "overview" }) },
   { re: /^מה השתנה\??$/, needs: "business", intent: () => ({ family: "business_inspect", followUp: "changed" }) },
   { re: /מה השתנה|מאתמול|מה חדש/, intent: () => ({ family: "fleet_read", topic: "changed" }) },
   { re: /מה (?:אני )?צריך לדעת|תדריך|תעדכן אותי|מה המצב(?:\?|$)|מה קורה היום/, intent: () => ({ family: "fleet_read", topic: "brief" }) },
-  { re: /צריכ(?:ים|ה)? (?:תשומת לב|אותי)|(?:אילו|איזה) עסקים (?:בבעיה|צריכים)/, intent: () => ({ family: "fleet_read", topic: "attention" }) },
+  { re: /צרי(?:כים|כה|ך) (?:תשומת לב|אותי)|(?:אילו|איזה) (?:עסקים|עסק) (?:בבעיה|צריכים|צריך)/, intent: () => ({ family: "fleet_read", topic: "attention" }) },
   { re: /תקלות|מה נשבר|אירועים פתוחים/, intent: () => ({ family: "incident_read", topic: "incidents" }) },
   { re: /גרסה|ריליס|שחרור|בילד/, intent: () => ({ family: "release_read" }) },
 ];
@@ -134,10 +179,25 @@ export function interpretFounder(text: string, opts: { hasBusiness?: boolean } =
     if (SAFE_OFF.test(t) && /\b(off|out|disable|leave|exit|lift|take)\b/i.test(t)) return { family: "founder_action", action: "safe_mode_off" };
     if (SAFE_ON.test(t)) return { family: "founder_action", action: "safe_mode_on" };
   }
+  if (!/\?\s*$/.test(t)) {
+    const capPause = t.match(PAUSE_CAP);
+    if (capPause) return { family: "founder_action", action: "pause_capability", capability: capabilityFamily(capPause[1]) };
+    const capResume = t.match(RESUME_CAP);
+    if (capResume) return { family: "founder_action", action: "resume_capability", capability: capabilityFamily(capResume[1]) };
+    if (APPROVAL_OFF.test(t)) return { family: "founder_action", action: "require_approval_off" };
+    if (APPROVAL_ON.test(t)) return { family: "founder_action", action: "require_approval_on" };
+    const mode = t.match(SET_MODE);
+    if (mode) return { family: "founder_action", action: "set_mode", mode: mode[1].toLowerCase() === "practice" ? "simulator" : (mode[1].toLowerCase() as FounderMode) };
+  }
   if (RESUME.test(t)) return { family: "founder_action", action: "resume_business" };
   if (PAUSE.test(t) && !/\?\s*$/.test(t)) return { family: "founder_action", action: "pause_business" };
   if (SCAN.test(t) && !/\b(what|which)\b.*\b(did|has|have)\b/i.test(t)) return { family: "initiative_scan", force: FORCE_SCAN.test(t) };
+  if (LAUNCH_RANK.test(t)) return { family: "fleet_read", topic: "launch" };
+  if (MODELS.test(t)) return { family: "commercial_read", topic: "models" };
   if (opts.hasBusiness) {
+    if (READINESS.test(t)) return { family: "business_inspect", followUp: "readiness" };
+    if (APPROVALS.test(t)) return { family: "business_inspect", followUp: "approvals" };
+    if (BIZ_MONEY.test(t) && !COST.test(t)) return { family: "business_inspect", followUp: "money" };
     if (SHOW_INCIDENT.test(t)) return { family: "business_inspect", followUp: "incidents" };
     if (OPTIONS.test(t)) return { family: "business_inspect", followUp: "options" };
     if (WHY.test(t)) return { family: "business_inspect", followUp: "why" };
@@ -148,6 +208,7 @@ export function interpretFounder(text: string, opts: { hasBusiness?: boolean } =
   if (NOTICED.test(t)) return { family: "initiative_read" };
   if (INTEGRATIONS.test(t)) return { family: "incident_read", topic: "integrations" };
   if (opts.hasBusiness && OVERVIEW.test(t)) return { family: "business_inspect", followUp: "overview" };
+  if (APPROVALS.test(t)) return { family: "fleet_read", topic: "approvals" };
   if (CHANGED.test(t)) return { family: "fleet_read", topic: "changed" };
   if (BRIEF.test(t)) return { family: "fleet_read", topic: "brief" };
   if (ATTENTION.test(t)) return { family: "fleet_read", topic: "attention" };
@@ -159,12 +220,24 @@ export function interpretFounder(text: string, opts: { hasBusiness?: boolean } =
   return { family: "unsupported", reason: UNSUPPORTED_HELP };
 }
 
+/** The capability family a founder's word names (generic families only). */
+export function capabilityFamily(word: string): CapabilityFamily | undefined {
+  const w = word.toLowerCase();
+  if (/payment|checkout|refund/.test(w)) return "payments";
+  if (/cart|commerce|order/.test(w)) return "commerce";
+  if (/booking|appointment|scheduling/.test(w)) return "scheduling";
+  if (/support|ticket/.test(w)) return "support";
+  if (/messag/.test(w)) return "messaging";
+  if (/ship/.test(w)) return "shipping";
+  return undefined;
+}
+
 /** The reason given when the words matched nothing (as opposed to a forbidden request). */
-export const UNSUPPORTED_HELP = "I can answer about the fleet, a business, incidents, cost, value, initiatives or the release; pause / resume a business or switch safe mode; or prepare a proposal.";
+export const UNSUPPORTED_HELP = "I can answer about the fleet, a business (status, readiness, money, approvals), incidents, cost and model usage, value, initiatives or the release; pause / resume a business, switch safe mode or its operating mode, require approval for everything, pause / resume a capability; or prepare a proposal.";
 
 // ── Business resolution (grounding, pure) ─────────────────────────────────────────────────────────
 
-export type DirectoryEntry = { id: string; name: string };
+export type DirectoryEntry = { id: string; name: string; /** Other names the business goes by (e.g. its name in Hebrew) — reference data, matched like the name. */ aliases?: string[] };
 export type BusinessResolution = { matched: DirectoryEntry[]; ambiguous: { word: string; candidates: DirectoryEntry[] }[] };
 
 /** Words that never name a business on their own. */
@@ -184,12 +257,14 @@ export function resolveBusinesses(text: string, directory: DirectoryEntry[]): Bu
   // An exact slug id ("acme-retail") names its business; a bare-word id ("acme") is treated like any name word.
   for (const b of directory) if (/[-\d]/.test(b.id) && new RegExp(`(^|[^\\p{L}\\p{N}-])${b.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[^\\p{L}\\p{N}-])`, "u").test(lower)) matched.set(b.id, b);
   const index = new Map<string, DirectoryEntry[]>();
-  for (const b of directory) for (const w of new Set([...words(b.name), ...words(b.id)])) if (w.length >= 3 && !GENERIC.has(w)) index.set(w, [...(index.get(w) ?? []), b]);
+  for (const b of directory) for (const w of new Set([...words(b.name), ...words(b.id), ...(b.aliases ?? []).flatMap(words)])) if (w.length >= 3 && !GENERIC.has(w)) index.set(w, [...(index.get(w) ?? []), b]);
   const seen = new Set<string>();
   for (const w of words(text)) {
     if (w.length < 3 || GENERIC.has(w) || seen.has(w)) continue;
     seen.add(w);
-    const hits = (index.get(w) ?? []).filter((b, i, a) => a.findIndex((x) => x.id === b.id) === i);
+    // Hebrew attaches prepositions to the word ("לרינה", "ברינה", "שלרינה"): the bare word is tried when the whole one isn't known.
+    const bare = !index.has(w) && /^[\u05D0-\u05EA]/.test(w) ? [w.replace(/^(?:של|ול|וב|ומ|וה|ש|ו|ה|ב|ל|מ|כ)/, "")].filter((x) => x.length >= 3 && x !== w) : [];
+    const hits = [...(index.get(w) ?? []), ...bare.flatMap((x) => index.get(x) ?? [])].filter((b, i, a) => a.findIndex((x) => x.id === b.id) === i);
     if (hits.length === 1) matched.set(hits[0].id, hits[0]);
     else if (hits.length > 1 && !hits.some((h) => matched.has(h.id))) ambiguous.push({ word: w, candidates: hits });
   }
@@ -206,7 +281,9 @@ export function resolveBusinesses(text: string, directory: DirectoryEntry[]): Bu
 export const ModelIntentSchema = z.object({
   family: z.enum(["fleet_read", "business_inspect", "commercial_read", "value_read", "incident_read", "initiative_read", "initiative_scan", "release_read", "founder_action", "proposal", "handle_safe", "unsupported"]),
   topic: z.string().max(40).optional(),
-  action: z.enum(["pause_business", "resume_business", "safe_mode_on", "safe_mode_off"]).optional(),
+  action: z.enum(["pause_business", "resume_business", "safe_mode_on", "safe_mode_off", "require_approval_on", "require_approval_off", "pause_capability", "resume_capability", "set_mode"]).optional(),
+  capability: z.enum(CAPABILITY_FAMILIES).optional(),
+  mode: z.enum(["simulator", "supervised", "live"]).optional(),
   kind: z.enum(["rollout", "runtime", "capability", "configuration"]).optional(),
   businesses: z.array(z.string().max(80)).max(10).optional(),
 });
@@ -221,15 +298,16 @@ export function intentFromModel(raw: unknown): { intent: FounderIntent; business
   const intent = ((): FounderIntent | undefined => {
     switch (d.family) {
       case "fleet_read":
-        return { family: "fleet_read", topic: d.topic === "attention" || d.topic === "changed" ? d.topic : "brief" };
+        return { family: "fleet_read", topic: (["attention", "changed", "approvals", "launch"] as const).find((x) => x === d.topic) ?? "brief" };
       case "business_inspect":
-        return { family: "business_inspect", followUp: (["why", "incidents", "changed", "options"] as const).find((x) => x === d.topic) ?? "overview" };
+        return { family: "business_inspect", followUp: (["why", "incidents", "changed", "options", "readiness", "money", "approvals"] as const).find((x) => x === d.topic) ?? "overview" };
       case "commercial_read":
-        return { family: "commercial_read", topic: d.topic === "plans" ? "plans" : "cost_to_serve" };
+        return { family: "commercial_read", topic: d.topic === "plans" ? "plans" : d.topic === "models" ? "models" : "cost_to_serve" };
       case "incident_read":
         return { family: "incident_read", topic: d.topic === "integrations" ? "integrations" : "incidents" };
       case "founder_action":
-        return d.action ? { family: "founder_action", action: d.action } : undefined;
+        // A model can name a control (it still needs the founder's explicit confirmation); a target it can't ground is dropped.
+        return d.action ? { family: "founder_action", action: d.action, ...(d.capability ? { capability: d.capability } : {}), ...(d.mode ? { mode: d.mode } : {}) } : undefined;
       case "proposal":
         return { family: "proposal", kind: d.kind ?? "configuration" };
       case "initiative_scan":

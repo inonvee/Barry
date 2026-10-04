@@ -12,7 +12,11 @@ import { loadValueAccount } from "@/lib/commercial/value";
 import { STAGE_WORDS } from "@/lib/commercial/account";
 import { hasMoney, moneyWords } from "@/lib/format/money";
 import type { Money } from "@/lib/owner/revenue";
-import { intentFromModel, interpretFounder, resolveBusinesses, UNSUPPORTED_HELP, type BusinessResolution, type DirectoryEntry, type FounderActionKind, type FounderInterpreter, type FounderIntent } from "./command";
+import { intentFromModel, interpretFounder, resolveBusinesses, UNSUPPORTED_HELP, type BusinessResolution, type CapabilityFamily, type DirectoryEntry, type FounderActionKind, type FounderInterpreter, type FounderIntent, type FounderMode } from "./command";
+import { resolveBusinessGraph } from "@/lib/business-graph-repository";
+import { launchChecklist } from "@/lib/hq/launch";
+import { globalApprovals } from "@/lib/hq/console";
+import { costToServe, listCostRecords, listModelUsage, listSupportTime } from "@/lib/commercial/cost";
 import { runInitiativeScan } from "@/lib/initiative/engine";
 import { actionEffect, actionTitle, askedText, doneText, failedText, followUpFor, noChangeText, replayText, unverifiedText, verifiedText, type Lang } from "./i18n";
 import { languageOf, voice, type FounderComposer, type FounderEnvelope } from "./voice";
@@ -32,7 +36,10 @@ import { businessDrilldown, founderBrief, loadFounderFleet, HEALTH_PHRASE, HEALT
  * A repeated key returns the recorded result; a confirmation executes at most once.
  */
 
-export type FounderActor = { kind: "founder"; via: "session" | "token" | "test" };
+/** The authenticated founder. `whatsapp` = a verified, active founder channel identity (see lib/founder-channel). */
+export type FounderActor = { kind: "founder"; via: "session" | "token" | "test" | "whatsapp"; /** Masked channel identity ("···1234"), for the audit. */ identity?: string };
+/** Who the audit names for a founder control: HQ's founder, or the founder on a verified channel identity. */
+export const founderControlBy = (a: FounderActor) => (a.via === "whatsapp" ? `founder (Founder BARRY, WhatsApp ${a.identity ?? ""})`.replace(" )", ")") : "founder (Founder BARRY)");
 
 /** "received" = the command is durably recorded and still being worked on (a lost response can be recovered by key). */
 export type FounderStatus = "received" | "answered" | "clarify" | "needs_confirmation" | "executed" | "no_change" | "proposed" | "handled" | "refused" | "failed";
@@ -55,7 +62,7 @@ export type FounderCommandRecord = {
   answer: string;
   items: AnswerItem[];
   followUps: string[];
-  action?: { kind: FounderActionKind; businessId: string; businessName: string; change: ControlChange; title: string; effect: string; before: Partial<BusinessControls>; confirmedAt?: string; auditId?: string; verified?: boolean };
+  action?: { kind: FounderActionKind; businessId: string; businessName: string; change: ControlChange; title: string; effect: string; before: Partial<BusinessControls>; /** The capability family / mode the control targets (titles and verification). */ detail?: string; /** True when the control LOOSENS authority (said explicitly in the confirmation). */ loosens?: boolean; confirmedAt?: string; auditId?: string; verified?: boolean };
   proposalIds: string[];
   /** initiative_scan: what the existing Initiative Engine reported (counts and reasons only — no evidence, no customer text). */
   scan?: { scanId: string; businessId: string; trigger: string; forced: boolean; skipped: string | null; candidates: number; verified: number; rejected: number; created: number; updated: number; surfaced: number; suppressed: number; resolved: number; open: number };
@@ -134,7 +141,7 @@ function reply(r: FounderCommandRecord, duplicate: boolean): FounderReply {
     ...(r.stopReason ? { stopReason: r.stopReason } : {}),
     intent: r.intent.family,
     scope: r.scope,
-    ...(r.status === "needs_confirmation" && r.action ? { confirmation: { key: r.key, title: r.action.title, effect: r.action.effect, label: actionTitle(r.language ?? languageOf(r.text), r.action.kind, r.action.businessName) } } : {}),
+    ...(r.status === "needs_confirmation" && r.action ? { confirmation: { key: r.key, title: r.action.title, effect: r.action.effect, label: actionTitle(r.language ?? languageOf(r.text), r.action.kind, r.action.businessName, r.action.detail) } } : {}),
     duplicate,
     language: r.language ?? languageOf(r.text),
     ...(r.voice ? { voice: r.voice.source } : {}),
@@ -193,15 +200,58 @@ const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : w.endsWith("
 const bizHref = (id: string, view?: string) => `/hq/${encodeURIComponent(id)}${view ? `?view=${view}` : ""}`;
 
 export function fleetDirectory(): DirectoryEntry[] {
-  return listBusinessSummaries().map((b) => ({ id: b.id, name: b.name }));
+  return listBusinessSummaries().map((b) => {
+    let aliases: string[] = [];
+    try {
+      aliases = resolveBusinessGraph(b.id).business.aliases ?? [];
+    } catch {
+      /* the name alone */
+    }
+    return { id: b.id, name: b.name, ...(aliases.length ? { aliases } : {}) };
+  });
 }
 
-const ACTIONS: Record<FounderActionKind, { change: ControlChange; title: (n: string) => string; effect: string; key: keyof BusinessControls }> = {
-  pause_business: { change: { pausedBusiness: true }, title: (n) => `Pause BARRY for ${n}`, effect: CONTROL_ACTIONS.pause_business.effect, key: "pausedBusiness" },
-  resume_business: { change: { pausedBusiness: false }, title: (n) => `Resume ${n}`, effect: "BARRY answers on its channels and acts again under the business's own rules. Nothing else changes.", key: "pausedBusiness" },
-  safe_mode_on: { change: { safeMode: true }, title: (n) => `Put ${n} in safe mode`, effect: CONTROL_ACTIONS.safe_mode.effect, key: "safeMode" },
-  safe_mode_off: { change: { safeMode: false }, title: (n) => `Take ${n} out of safe mode`, effect: "Consequential actions follow the business's own rules again and proactive messages resume.", key: "safeMode" },
-};
+type ActionSpec = { change: ControlChange; title: (n: string) => string; effect: string; key: keyof BusinessControls; detail?: string; loosens?: boolean };
+const CAP_WORDS: Record<CapabilityFamily, string> = { payments: "payments", commerce: "carts and orders", scheduling: "bookings", support: "support tickets", messaging: "outbound messages", shipping: "shipping" };
+
+/**
+ * The exact founder-control change for a requested action, given the business's CURRENT controls (a capability
+ * pause adds / removes one family from the list). Every one is an existing HQ control applied through
+ * applyControlChange; nothing here invents a lever. undefined + reason = the request can't be made precise.
+ */
+function actionSpec(kind: FounderActionKind, before: BusinessControls, target: { capability?: CapabilityFamily; mode?: FounderMode }): ActionSpec | { refused: string } {
+  switch (kind) {
+    case "pause_business":
+      return { change: { pausedBusiness: true }, title: (n) => `Pause BARRY for ${n}`, effect: CONTROL_ACTIONS.pause_business.effect, key: "pausedBusiness" };
+    case "resume_business":
+      return { change: { pausedBusiness: false }, title: (n) => `Resume ${n}`, effect: "BARRY answers on its channels and acts again under the business's own rules. Nothing else changes.", key: "pausedBusiness", loosens: true };
+    case "safe_mode_on":
+      return { change: { safeMode: true }, title: (n) => `Put ${n} in safe mode`, effect: CONTROL_ACTIONS.safe_mode.effect, key: "safeMode" };
+    case "safe_mode_off":
+      return { change: { safeMode: false }, title: (n) => `Take ${n} out of safe mode`, effect: "Consequential actions follow the business's own rules again and proactive messages resume.", key: "safeMode", loosens: true };
+    case "require_approval_on":
+      return { change: { approvalRequiredForAll: true }, title: (n) => `Require approval for every consequential action at ${n}`, effect: CONTROL_ACTIONS.require_approval.effect, key: "approvalRequiredForAll" };
+    case "require_approval_off":
+      return { change: { approvalRequiredForAll: false }, title: (n) => `Lift approval-for-everything at ${n}`, effect: "This LOOSENS control: consequential actions follow the business's own rules again (pending requests stay pending).", key: "approvalRequiredForAll", loosens: true };
+    case "pause_capability":
+    case "resume_capability": {
+      if (!target.capability) return { refused: "Which capability? Say payments, carts / orders, bookings, support, outbound messages or shipping. Nothing was changed." };
+      const fam = `${target.capability}.*`;
+      const list = kind === "pause_capability" ? [...new Set([...before.pausedCapabilities, fam])] : before.pausedCapabilities.filter((c) => c !== fam);
+      const words = CAP_WORDS[target.capability];
+      return kind === "pause_capability"
+        ? { change: { pausedCapabilities: list }, title: (n) => `Pause ${words} at ${n}`, effect: `${CONTROL_ACTIONS.pause_capability.effect} (${fam})`, key: "pausedCapabilities", detail: target.capability }
+        : { change: { pausedCapabilities: list }, title: (n) => `Resume ${words} at ${n}`, effect: `This LOOSENS control: ${words} (${fam}) run again under the business's own rules.`, key: "pausedCapabilities", detail: target.capability, loosens: true };
+    }
+    case "set_mode": {
+      if (!target.mode) return { refused: "Which mode — simulator or supervised? Nothing was changed." };
+      // LIVE removes the supervision step; it is switched in HQ controls after the launch review, never from a chat.
+      if (target.mode === "live") return { refused: "Switching a business to LIVE is done in HQ → Controls after the launch review, not from a conversation. Nothing was changed." };
+      const order = { simulator: 0, supervised: 1, live: 2 } as const;
+      return { change: { mode: target.mode }, title: (n) => `Switch ${n} to ${target.mode!.toUpperCase()} mode`, effect: CONTROL_ACTIONS.change_mode.effect, key: "mode", detail: target.mode, loosens: order[target.mode] > order[before.mode] };
+    }
+  }
+}
 
 // ── Entry point ─────────────────────────────────────────────────────────────────────────────────
 
@@ -243,7 +293,7 @@ export async function executeFounderCommand(input: FounderCommandInput): Promise
   }
   const record: FounderCommandRecord = {
     key,
-    founder: `founder (${input.actor.via})`,
+    founder: input.actor.via === "whatsapp" ? `founder (whatsapp ${input.actor.identity ?? ""})`.replace(" )", ")") : `founder (${input.actor.via})`,
     text,
     intent: { family: "unsupported", reason: UNSUPPORTED_HELP },
     interpretedBy: "rules",
@@ -262,7 +312,7 @@ export async function executeFounderCommand(input: FounderCommandInput): Promise
     updatedAt: now.toISOString(),
   };
   const step = (s: FounderTraceStep["step"], outcome: FounderTraceStep["outcome"], detail: string) => record.trace.push({ step: s, outcome, detail, at: at() });
-  step("identity", "ok", `${record.founder} — authenticated by HQ`);
+  step("identity", "ok", input.actor.via === "whatsapp" ? `${record.founder} — verified founder channel identity (active link, current founder credential)` : `${record.founder} — authenticated by HQ`);
   // Durable BEFORE any work: if the phone loses the response, the client recovers this key (and a repeated key
   // finds it) instead of the command ever running a second time.
   await save({ ...record, status: "received" });
@@ -295,7 +345,7 @@ export async function executeFounderCommand(input: FounderCommandInput): Promise
         intent = BUSINESS_SCOPED.has(previous.intent.family) ? previous.intent : { family: "business_inspect", followUp: "overview" };
         usedContext = true;
       }
-    } else if (ellipsis && resolution.matched.length && (intent.family === "business_inspect" || intent.family === "unsupported")) {
+    } else if (ellipsis && resolveBusinesses(ellipsis[1] ?? ellipsis[2] ?? "", directory).matched.length && resolution.matched.length && (intent.family === "business_inspect" || intent.family === "unsupported")) {
       // "and Rina?": the previous question, now about the named business (an action still needs its own confirmation).
       intent = BUSINESS_SCOPED.has(previous.intent.family) ? previous.intent : { family: "business_inspect", followUp: "overview" };
       usedContext = true;
@@ -413,7 +463,7 @@ async function dispatch(r: FounderCommandRecord, intent: FounderIntent, res: Bus
     case "founder_action": {
       const b = needOne("changed");
       if (!b) return;
-      return prepareAction(r, intent.action, b, ctx);
+      return prepareAction(r, intent.action, b, ctx, { capability: intent.capability, mode: intent.mode });
     }
     case "proposal": {
       if (res.ambiguous.length) {
@@ -438,7 +488,9 @@ async function dispatch(r: FounderCommandRecord, intent: FounderIntent, res: Bus
 
 const briefItem = (i: BriefItem): AnswerItem => ({ title: i.title, detail: `${i.why}${i.why ? " " : ""}→ ${i.move}`, href: i.href, severity: i.severity });
 
-async function fleetRead(r: FounderCommandRecord, topic: "brief" | "attention" | "changed", ctx: Ctx): Promise<void> {
+async function fleetRead(r: FounderCommandRecord, topic: "brief" | "attention" | "changed" | "approvals" | "launch", ctx: Ctx): Promise<void> {
+  if (topic === "approvals") return approvalsRead(r, undefined, ctx);
+  if (topic === "launch") return launchRank(r, ctx);
   const view = await loadFounderFleet({ now: ctx.now });
   r.grounded.push(`fleet status at ${view.at} (${view.businesses.length} businesses)`, `${view.proposals.length} proposals`, view.release ? `release ${view.release.state}` : "release unavailable");
   ctx.step("grounding", "ok", r.grounded.join(" · "));
@@ -472,9 +524,12 @@ async function fleetRead(r: FounderCommandRecord, topic: "brief" | "attention" |
   r.answer = all.length ? [`${plural(all.length, "change")} in the last 24 hours:`, ...all.slice(0, 8).map((c) => `• ${c.what}`)].join("\n") : "Nothing changed in the last 24 hours by the records.";
 }
 
-async function inspect(r: FounderCommandRecord, b: DirectoryEntry, followUp: "overview" | "why" | "incidents" | "changed" | "options", ctx: Ctx): Promise<void> {
+async function inspect(r: FounderCommandRecord, b: DirectoryEntry, followUp: "overview" | "why" | "incidents" | "changed" | "options" | "readiness" | "money" | "approvals", ctx: Ctx): Promise<void> {
   const graph = fleetTenant(b.id);
   if (!graph) throw new Error("business not in the fleet");
+  if (followUp === "readiness") return readinessRead(r, b, ctx);
+  if (followUp === "approvals") return approvalsRead(r, b, ctx);
+  if (followUp === "money") return moneyRead(r, b, ctx);
   const d = await businessDrilldown(graph, { now: ctx.now });
   r.grounded.push(`status ${d.id}`, `controls ${d.id}`, `${d.incidents.length} open incidents`, d.commercial ? "commercial record" : "commercial unavailable", d.runtime ? `runtime ${d.runtime.version}` : "runtime unavailable");
   ctx.step("grounding", "ok", r.grounded.join(" · "));
@@ -517,7 +572,8 @@ async function inspect(r: FounderCommandRecord, b: DirectoryEntry, followUp: "ov
   r.items = [{ title: `Open ${d.name} in HQ`, href }];
 }
 
-async function commercialRead(r: FounderCommandRecord, topic: "cost_to_serve" | "plans", ctx: Ctx): Promise<void> {
+async function commercialRead(r: FounderCommandRecord, topic: "cost_to_serve" | "plans" | "models", ctx: Ctx): Promise<void> {
+  if (topic === "models") return modelsRead(r, ctx);
   const graphs = fleetTenantIds().map((id) => fleetTenant(id)!).filter(Boolean);
   const cf = await getCommercialFleet(graphs, { now: ctx.now });
   r.grounded.push(`commercial fleet ${cf.period.label} (${cf.rows.length} businesses)`);
@@ -535,6 +591,102 @@ async function commercialRead(r: FounderCommandRecord, topic: "cost_to_serve" | 
   r.answer = known.length
     ? [`Cost to serve this period (${cf.period.label}), highest first — measured where invoiced, estimated from model usage / support time otherwise:`, ...known.slice(0, 6).map((x, i) => `${i + 1}. ${x.name}: ${x.costToServe} USD (${basisWords(x.costBasis, x.costComplete)})${x.aboveGuardrail ? " — above the plan guardrail" : ""}`), unknown.length ? `Unavailable (no cost records): ${unknown.map((x) => x.name).join(", ")}.` : ""].filter(Boolean).join("\n")
     : `No cost-to-serve records exist for ${cf.period.label} — no measured invoices, no metered model usage, no support time — so I can't rank who costs the most. Nothing is estimated without a record.`;
+}
+
+// ── Readiness, approvals, money, model usage (the same read models HQ shows) ─────────────────────────
+
+const LEVEL_WORDS = { READY_FOR_SUPERVISED_DESIGN_PARTNER: "ready for a supervised design-partner launch", NOT_READY: "not ready", UNKNOWN_NEEDS_PROOF: "unknown — some required items still need proof" } as const;
+
+/** "Why isn't X ready?" — the deterministic launch gate (HQ → Launch). Unknown stays unknown. */
+async function readinessRead(r: FounderCommandRecord, b: DirectoryEntry, ctx: Ctx): Promise<void> {
+  const graph = fleetTenant(b.id)!;
+  const gate = await launchChecklist(graph, { controls: await loadControls(b.id) });
+  r.grounded.push(`launch gate ${b.id}: ${gate.level}`);
+  ctx.step("grounding", "ok", r.grounded.join(" · "));
+  const required = gate.items.filter((i) => i.requiredForSupervised);
+  const blocked = required.filter((i) => i.status === "blocked");
+  const unknown = required.filter((i) => i.status === "unknown");
+  r.items = [...blocked, ...unknown].map((i) => ({ title: `${i.title}: ${i.status}`, detail: `${i.evidence}${i.nextAction ? ` → ${i.nextAction} (${i.responsibility.replace("_", " ")})` : ""}`, href: bizHref(b.id, "launch"), severity: i.status === "blocked" ? ("high" as const) : ("info" as const) }));
+  r.answer = [
+    `${b.name} is ${LEVEL_WORDS[gate.level]} (launch gate: ${required.length - blocked.length - unknown.length} of ${required.length} required items ready).`,
+    ...blocked.slice(0, 6).map((i) => `• Blocked — ${i.title}: ${i.blocker ?? i.evidence}${i.nextAction ? ` → ${i.nextAction}` : ""}`),
+    ...unknown.slice(0, 4).map((i) => `• Unknown (needs proof) — ${i.title}: ${i.evidence}`),
+  ].join("\n");
+  r.followUps = [`What's going on with ${b.name}?`];
+}
+
+/** "Who is closest to going live?" — every real business ranked by its launch gate (fewest blocked, then unknown). */
+async function launchRank(r: FounderCommandRecord, ctx: Ctx): Promise<void> {
+  const view = await loadFounderFleet({ now: ctx.now });
+  const real = view.businesses.filter((x) => !x.demo);
+  const rows = await Promise.all(real.map(async (x) => ({ x, gate: await launchChecklist(fleetTenant(x.id)!, { controls: x.controls }).catch(() => null) })));
+  r.grounded.push(`launch gates (${rows.length} businesses)`);
+  ctx.step("grounding", "ok", r.grounded.join(" · "));
+  const ranked = rows.filter((y) => y.gate).sort((p, q) => p.gate!.requiredRemaining.length - q.gate!.requiredRemaining.length || p.gate!.unknown.length - q.gate!.unknown.length);
+  const failed = rows.filter((y) => !y.gate).map((y) => y.x.name);
+  r.items = ranked.map(({ x, gate }) => ({ title: `${x.name}: ${LEVEL_WORDS[gate!.level]}`, detail: `${gate!.requiredRemaining.length} blocked, ${gate!.unknown.length} unknown${gate!.requiredRemaining.length ? ` — ${gate!.requiredRemaining.slice(0, 3).join("; ")}` : ""}`, href: bizHref(x.id, "launch"), severity: gate!.level === "READY_FOR_SUPERVISED_DESIGN_PARTNER" ? ("ok" as const) : ("info" as const) }));
+  r.answer = ranked.length
+    ? [`Closest to a supervised launch first (by the launch gate):`, ...ranked.slice(0, 5).map(({ x, gate }, i) => `${i + 1}. ${x.name} — ${LEVEL_WORDS[gate!.level]}: ${gate!.requiredRemaining.length} blocked, ${gate!.unknown.length} unknown${gate!.requiredRemaining[0] ? ` (first blocker: ${gate!.requiredRemaining[0]})` : ""}`), failed.length ? `Couldn't read the gate for: ${failed.join(", ")}.` : ""].filter(Boolean).join("\n")
+    : "I couldn't read any business's launch gate.";
+  r.followUps = ranked.slice(0, 1).map(({ x }) => `Why isn't ${x.name} ready?`);
+}
+
+/** Approvals waiting on owners (fleet or one business) — the HQ approvals console. The founder never decides them. */
+async function approvalsRead(r: FounderCommandRecord, b: DirectoryEntry | undefined, ctx: Ctx): Promise<void> {
+  const rows = await globalApprovals({ ...(b ? { businessId: b.id } : {}), openOnly: true, now: ctx.now });
+  r.grounded.push(`approvals console${b ? ` ${b.id}` : " (fleet)"}: ${rows.length} open`);
+  ctx.step("grounding", "ok", r.grounded.join(" · "));
+  r.items = rows.slice(0, 12).map((a) => ({ title: `${a.businessName}: ${a.summary}`, detail: `${a.lifecycle} · ${a.ageHours}h · ${a.customer}`, href: bizHref(a.businessId, "attention"), severity: a.ageHours >= 24 ? ("medium" as const) : ("info" as const) }));
+  const where = b ? ` at ${b.name}` : "";
+  r.answer = rows.length
+    ? [`${plural(rows.length, "approval")} waiting on owners${where} (the owner decides each — I can't decide for them):`, ...rows.slice(0, 6).map((a) => `• ${b ? "" : `${a.businessName}: `}${a.summary} — ${a.lifecycle}, ${a.ageHours}h old`)].join("\n")
+    : `No approvals are waiting${where}.`;
+}
+
+/** "And her money?" — only the business's own records: verified payments, money waiting / at risk, value this period. */
+async function moneyRead(r: FounderCommandRecord, b: DirectoryEntry, ctx: Ctx): Promise<void> {
+  const graph = fleetTenant(b.id)!;
+  const [s, v] = await Promise.all([getBusinessStatus(graph, { now: ctx.now }), loadValueAccount(graph, monthPeriod(ctx.now), ctx.now).catch(() => null)]);
+  r.grounded.push(`status ${b.id} money`, v ? `value account ${v.period.label}` : "value account unavailable");
+  ctx.step("grounding", "ok", r.grounded.join(" · "));
+  const made: Money = { ...(v?.made.generated ?? {}) };
+  for (const [c, n] of Object.entries(v?.made.recovered ?? {})) made[c] = Math.round(((made[c] ?? 0) + n) * 100) / 100;
+  r.answer = [
+    `${b.name} — money from the records (nothing estimated):`,
+    v ? `• Made this period (${v.period.label}), provider-verified: ${hasMoney(made) ? moneyWords(made) : "nothing verified"}${hasMoney(v.made.recovered) ? ` (recovered ${moneyWords(v.made.recovered)})` : ""}.` : "• I couldn't read its verified money this period.",
+    `• Provider-verified payments: ${s.money.verifiedPayments}.`,
+    hasMoney(s.money.stuckWithOwner) ? `• Waiting on an owner decision: ${moneyWords(s.money.stuckWithOwner)} (not revenue).` : "• Nothing waiting on an owner decision.",
+    hasMoney(s.money.waitingOnCustomer) ? `• Waiting on customers to pay: ${moneyWords(s.money.waitingOnCustomer)} (not revenue).` : "",
+    hasMoney(s.money.atRisk) ? `• At risk: ${moneyWords(s.money.atRisk)}.` : "",
+    hasMoney(s.money.simulated) ? `• Test money on a simulator: ${moneyWords(s.money.simulated)} — never counted.` : "",
+  ].filter(Boolean).join("\n");
+  r.items = [{ title: `${b.name} money`, href: bizHref(b.id) }];
+  r.followUps = [`What's going on with ${b.name}?`];
+}
+
+/** "How much are we spending on models?" — metered model usage priced on the rate card (estimated) or invoices (measured). */
+async function modelsRead(r: FounderCommandRecord, ctx: Ctx): Promise<void> {
+  const period = monthPeriod(ctx.now);
+  const rows = await Promise.all(
+    fleetTenantIds().map(async (id) => {
+      const g = fleetTenant(id)!;
+      const [records, usage, support] = await Promise.all([listCostRecords(id).catch(() => null), listModelUsage(id).catch(() => null), listSupportTime(id).catch(() => [])]);
+      if (!records || !usage) return { id, name: g.business.name, unavailable: true as const };
+      const c = costToServe({ period, records, usage, support });
+      const line = c.lines.find((l) => l.category === "ai_model");
+      return { id, name: g.business.name, unavailable: false as const, calls: c.model.calls, unpriced: c.model.unpricedCalls, estimated: c.model.estimatedUsd, line, rateCard: c.model.rateCardVersion };
+    })
+  );
+  r.grounded.push(`model usage + cost records ${period.label} (${rows.length} businesses)`);
+  ctx.step("grounding", "ok", r.grounded.join(" · "));
+  const used = rows.filter((x): x is Extract<typeof x, { unavailable: false }> => !x.unavailable && (x.calls > 0 || (x.line?.amount ?? 0) > 0)).sort((a, b) => (b.line?.amount ?? b.estimated) - (a.line?.amount ?? a.estimated));
+  const unavailable = rows.filter((x) => x.unavailable).map((x) => x.name);
+  const basis = (x: (typeof used)[number]) => (x.line?.basis === "measured" ? "measured (invoice)" : `estimated from ${plural(x.calls, "metered call")} on rate card ${x.rateCard}${x.unpriced ? `; ${x.unpriced} call(s) unpriced — lower bound` : ""}`);
+  const total = Math.round(used.reduce((n, x) => n + (x.line?.amount ?? x.estimated), 0) * 100) / 100;
+  r.items = used.map((x) => ({ title: `${x.name}: ${x.line?.amount ?? x.estimated} USD`, detail: basis(x), href: "/hq/commercial", severity: "info" as const }));
+  r.answer = used.length
+    ? [`Model spend this period (${period.label}): ${total} USD across ${plural(used.length, "business")} — ${used.every((x) => x.line?.basis === "measured") ? "measured" : "mostly ESTIMATED from metered usage, not an invoice"}:`, ...used.slice(0, 6).map((x, i) => `${i + 1}. ${x.name}: ${x.line?.amount ?? x.estimated} USD (${basis(x)})`), unavailable.length ? `Couldn't read usage for: ${unavailable.join(", ")}.` : "", "Businesses with no metered calls have no model cost on record (not zero by assumption)."].filter(Boolean).join("\n")
+    : `No metered model usage or model invoices are recorded for ${period.label}, so I can't say what models cost — nothing is estimated without a record.${unavailable.length ? ` (Couldn't read: ${unavailable.join(", ")}.)` : ""}`;
 }
 
 async function valueRead(r: FounderCommandRecord, ctx: Ctx): Promise<void> {
@@ -667,24 +819,31 @@ async function releaseRead(r: FounderCommandRecord, ctx: Ctx): Promise<void> {
 
 // ── Founder actions (existing controls only) ───────────────────────────────────────────────────
 
-async function prepareAction(r: FounderCommandRecord, kind: FounderActionKind, b: DirectoryEntry, ctx: Ctx): Promise<void> {
-  const a = ACTIONS[kind];
+async function prepareAction(r: FounderCommandRecord, kind: FounderActionKind, b: DirectoryEntry, ctx: Ctx, target: { capability?: CapabilityFamily; mode?: FounderMode } = {}): Promise<void> {
   const before = await loadControls(b.id);
-  r.grounded.push(`controls ${b.id} (updated ${before.updatedAt ?? "never"})`);
-  r.authority = "founder control (existing, audited; confirmation required)";
-  ctx.step("authority", "ok", r.authority);
-  const snapshot: Partial<BusinessControls> = { pausedBusiness: before.pausedBusiness, safeMode: before.safeMode };
   const lang: Lang = r.language ?? "en";
-  r.action = { kind, businessId: b.id, businessName: b.name, change: a.change, title: a.title(b.name), effect: a.effect, before: snapshot };
+  const a = actionSpec(kind, before, target);
+  if ("refused" in a) {
+    r.status = "clarify";
+    r.stopReason = a.refused;
+    r.answer = lang === "he" ? (kind === "set_mode" && target.mode === "live" ? "העברה למצב LIVE נעשית ב-HQ ← בקרות אחרי בדיקת ההשקה, לא משיחה. שום דבר לא השתנה." : kind === "set_mode" ? "לאיזה מצב — סימולטור או מפוקח? שום דבר לא השתנה." : "איזו יכולת? תשלומים, הזמנות, תורים, תמיכה, הודעות יוצאות או משלוחים. שום דבר לא השתנה.") : a.refused;
+    ctx.step("authority", "blocked", a.refused);
+    return;
+  }
+  r.grounded.push(`controls ${b.id} (updated ${before.updatedAt ?? "never"})`);
+  r.authority = `founder control (existing, audited; confirmation required${a.loosens ? "; LOOSENS control" : ""})`;
+  ctx.step("authority", "ok", r.authority);
+  const snapshot: Partial<BusinessControls> = { pausedBusiness: before.pausedBusiness, safeMode: before.safeMode, mode: before.mode, approvalRequiredForAll: before.approvalRequiredForAll, pausedCapabilities: [...before.pausedCapabilities] };
+  r.action = { kind, businessId: b.id, businessName: b.name, change: a.change, title: a.title(b.name), effect: a.effect, before: snapshot, ...(a.detail ? { detail: a.detail } : {}), ...(a.loosens ? { loosens: true } : {}) };
   if (isNoop(before, a.change)) {
     r.status = "no_change";
-    r.verification = verifiedText(lang, b.name, String(a.key), String(before[a.key]), before.updatedAt, before.updatedBy);
-    r.answer = lang === "he" ? noChangeText(lang, b.name) : `${b.name} is already ${kind === "pause_business" ? "paused" : kind === "resume_business" ? "running (not paused)" : kind === "safe_mode_on" ? "in safe mode" : "out of safe mode"}. Nothing to change.`;
+    r.verification = verifiedText(lang, b.name, String(a.key), JSON.stringify(before[a.key]), before.updatedAt, before.updatedBy);
+    r.answer = lang === "he" ? noChangeText(lang, b.name) : `${b.name} is already ${({ pause_business: "paused", resume_business: "running (not paused)", safe_mode_on: "in safe mode", safe_mode_off: "out of safe mode", require_approval_on: "requiring approval for everything", require_approval_off: "following its own rules (no approval-for-everything)", pause_capability: `paused for ${a.detail}`, resume_capability: `running ${a.detail}`, set_mode: `in ${a.detail} mode` } as Record<FounderActionKind, string>)[kind]}. Nothing to change.`;
     ctx.step("verification", "ok", r.verification);
     return;
   }
   r.status = "needs_confirmation";
-  r.answer = askedText(lang, actionTitle(lang, kind, b.name), actionEffect(lang, kind, a.effect));
+  r.answer = askedText(lang, actionTitle(lang, kind, b.name, a.detail), actionEffect(lang, kind, a.effect));
   r.followUps = ["Confirm"];
   ctx.step("confirmation", "info", "waiting for the founder to confirm");
 }
@@ -708,24 +867,32 @@ export async function confirmFounderAction(input: { actor: FounderActor; key: st
   const at = () => new Date().toISOString();
   const step = (s: FounderTraceStep["step"], outcome: FounderTraceStep["outcome"], detail: string) => r.trace.push({ step: s, outcome, detail, at: at() });
   const a = r.action;
-  step("confirmation", "ok", `confirmed by founder (${input.actor.via})`);
+  step("confirmation", "ok", `confirmed by founder (${input.actor.via}${input.actor.identity ? ` ${input.actor.identity}` : ""})`);
   // Claim the command before executing so a concurrent confirm sees it as taken.
   r.status = "executed";
   r.action.confirmedAt = (input.now ?? new Date()).toISOString();
   await save(r);
   try {
-    const result = await applyControlChange(a.businessId, a.change, { by: "founder (Founder BARRY)", reason: `Founder BARRY: "${r.text}"`.slice(0, 500), now: input.now });
+    // The change recorded at prepare time is re-derived against the controls NOW (a capability list may have
+    // moved since), so the confirmation applies exactly what it said — on top of the current state.
+    const current = await loadControls(a.businessId);
+    const spec = actionSpec(a.kind, current, { capability: a.detail as CapabilityFamily | undefined, mode: a.detail as FounderMode | undefined });
+    const change = "refused" in spec ? a.change : spec.change;
+    const result = await applyControlChange(a.businessId, change, { by: founderControlBy(input.actor), reason: `Founder BARRY: "${r.text}"`.slice(0, 500), now: input.now });
     r.action.auditId = result.audit?.id;
+    r.action.change = change;
     step("execution", "ok", result.changed ? `applied via founder control; audit ${result.audit?.id}` : "no change needed");
     const after = await loadControls(a.businessId);
-    const field = ACTIONS[a.kind].key;
-    const expected = a.change[field as keyof ControlChange];
-    const ok = after[field] === expected;
+    const field = Object.keys(change)[0] as keyof ControlChange;
+    const expected = change[field];
+    const ok = JSON.stringify(Array.isArray(expected) ? [...expected].sort() : expected) === JSON.stringify(Array.isArray(after[field]) ? [...(after[field] as string[])].sort() : after[field]);
     r.action.verified = ok;
-    r.verification = ok ? verifiedText(lang, a.businessName, String(field), String(after[field]), after.updatedAt, after.updatedBy) : `${a.businessName}: expected ${String(field)} = ${String(expected)}, durable state says ${String(after[field])}.`;
+    const shown = (v: unknown) => (Array.isArray(v) ? `[${v.join(", ")}]` : String(v));
+    r.verification = ok ? verifiedText(lang, a.businessName, String(field), shown(after[field]), after.updatedAt, after.updatedBy) : `${a.businessName}: expected ${String(field)} = ${shown(expected)}, durable state says ${shown(after[field])}.`;
     step("verification", ok ? "ok" : "failed", r.verification);
     r.status = ok ? (result.changed ? "executed" : "no_change") : "failed";
-    r.answer = ok ? doneText(lang, lang === "he" ? actionTitle(lang, a.kind, a.businessName) : a.title) : unverifiedText(lang, r.verification);
+    r.answer = ok ? doneText(lang, lang === "he" ? actionTitle(lang, a.kind, a.businessName, a.detail) : a.title) : unverifiedText(lang, r.verification);
+    if (ok && result.audit) r.answer += lang === "he" ? `\nלפני → אחרי: ${shown(result.audit.before[field as keyof typeof result.audit.before])} → ${shown(result.audit.after[field as keyof typeof result.audit.after])}.` : `\nBefore → after: ${shown(result.audit.before[field as keyof typeof result.audit.before])} → ${shown(result.audit.after[field as keyof typeof result.audit.after])}.`;
     r.followUps = followUpFor(lang, a.kind, a.businessName);
   } catch (err) {
     r.status = "failed";

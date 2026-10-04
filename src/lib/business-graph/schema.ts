@@ -26,6 +26,8 @@ export type Tone = z.infer<typeof ToneSchema>;
 export const BusinessSchema = z.object({
   id: z.string(),
   name: z.string(),
+  /** Other names people use for the business (e.g. its name in another language) — reference data for grounding a mention, never logic. */
+  aliases: z.array(z.string()).default([]),
   description: z.string(),
   locale: z.string().default("en-US"),
   timezone: z.string().default("UTC"),
