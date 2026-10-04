@@ -4,8 +4,10 @@ import { setReasonerForTests } from "@/lib/reasoner";
 import { MemoryLockStore, setLockStoreForTests } from "@/lib/state/lock";
 import { MemoryInboxStore, setInboxStoreForTests } from "@/lib/channels/inbox";
 import { applyControlChange, loadControls, resetControlsCacheForTests } from "@/lib/hq/controls";
-import { listFounderIdentities } from "@/lib/founder-channel/identity";
-import { ensureRestorePoint, readRestorePoint } from "@/lib/qa/restore-point";
+import { createFounderLinkCode, listFounderIdentities, redeemFounderLinkCode } from "@/lib/founder-channel/identity";
+import { createLinkCode, listOwnerIdentities, redeemLinkCode } from "@/lib/owner-channel/identity";
+import { listBusinessSummaries } from "@/lib/fixtures";
+import { countSyntheticIdentities, ensureRestorePoint, readRestorePoint } from "@/lib/qa/restore-point";
 import { FWA_STAGES, loadFounderWhatsappReport, runFounderWhatsappAcceptance } from "@/app/api/qa/founder-whatsapp/runner";
 import { GET, POST } from "@/app/api/qa/founder-whatsapp/route";
 import { ScriptedModel } from "./support/scripted-model";
@@ -61,6 +63,15 @@ describe("mechanics", () => {
       expect(after).toMatchObject({ mode: before.mode, pausedBusiness: before.pausedBusiness, approvalRequiredForAll: before.approvalRequiredForAll, pausedCapabilities: before.pausedCapabilities, safeMode: before.safeMode });
       expect(await readRestorePoint("fashion-retailer")).toBeUndefined();
       expect((await listFounderIdentities()).filter((l) => l.status === "active" && l.channelUserId.startsWith("999"))).toHaveLength(0);
+      expect(await countSyntheticIdentities()).toEqual({ syntheticOwnersActive: 0, syntheticFoundersActive: 0 });
+      // The three evidence checks are in EVERY stage's report, explicit and passing.
+      for (const name of [/^syntheticFoundersActive === 0/, /^syntheticOwnersActive === 0/, /^realGraphSendAttempts === 0/]) expect(report.checks.find((c) => name.test(c.name))?.ok, `${stage} ${name}`).toBe(true);
+      expect(report.checks.find((c) => /^realGraphSendAttempts/.test(c.name))?.detail).toMatchObject({ realGraphSendAttempts: 0 });
+      if (stage === "shared_line") {
+        const dual = report.checks.filter((c) => /^dual role/.test(c.name));
+        expect(dual.map((c) => c.name)).toEqual([expect.stringMatching(/holds a valid owner identity AND a founder identity/), expect.stringMatching(/FOUNDER wins/), expect.stringMatching(/founder controls are available/), expect.stringMatching(/falls back to OWNER BARRY/)]);
+        expect(dual.every((c) => c.ok)).toBe(true);
+      }
       const text = JSON.stringify(await loadFounderWhatsappReport(report.runId));
       for (const secret of ["test-app-secret", "test-owner-token-0123456789", "test-founder-token-0123456789abcdefXYZ"]) expect(text).not.toContain(secret);
     }
@@ -73,6 +84,27 @@ describe("mechanics", () => {
     const report = await runFounderWhatsappAcceptance({ appSecret: "test-app-secret" }, { phoneNumberId: "PNID-T", stages: ["identity"], runId: `fwa-${Date.now()}` });
     expect(report.checks.find((c) => /recovered the test business/.test(c.name))?.ok).toBe(true);
     expect(await loadControls("fashion-retailer")).toMatchObject({ pausedBusiness: original.pausedBusiness, approvalRequiredForAll: original.approvalRequiredForAll, pausedCapabilities: original.pausedCapabilities });
+  }, 60_000);
+
+  it("stale synthetic owner (any fleet business) and founder identities from an interrupted run — with no restore point — are revoked first; real ones untouched", async () => {
+    const other = listBusinessSummaries().find((b) => b.id !== "fashion-retailer")!.id;
+    for (const [biz, phone] of [["fashion-retailer", "999700000001"], [other, "999700000002"], ["fashion-retailer", "972500000009"]] as const) {
+      const { code } = await createLinkCode(biz);
+      expect((await redeemLinkCode({ code, channel: "whatsapp", channelUserId: phone, verifiedIdentifier: `phone:${phone}`, businessIds: [biz] })).ok).toBe(true);
+    }
+    for (const phone of ["999700000003", "972500000008"]) {
+      const { code } = await createFounderLinkCode();
+      expect((await redeemFounderLinkCode({ code, channel: "whatsapp", channelUserId: phone, verifiedIdentifier: `phone:${phone}` })).ok).toBe(true);
+    }
+    expect(await readRestorePoint("fashion-retailer")).toBeUndefined();
+    expect(await countSyntheticIdentities()).toEqual({ syntheticOwnersActive: 2, syntheticFoundersActive: 1 });
+    const report = await runFounderWhatsappAcceptance({ appSecret: "test-app-secret" }, { phoneNumberId: "PNID-T", stages: ["identity"], runId: `fwa-${Date.now()}` });
+    const pre = report.checks.find((c) => /no synthetic owner or founder identity is active before the run/.test(c.name));
+    expect(pre).toMatchObject({ ok: true, detail: { staleRevoked: { owners: 2, founders: 1 }, syntheticOwnersActive: 0, syntheticFoundersActive: 0 } });
+    expect(await countSyntheticIdentities()).toEqual({ syntheticOwnersActive: 0, syntheticFoundersActive: 0 });
+    // The real (non-999) owner and founder links are never touched.
+    expect((await listOwnerIdentities("fashion-retailer")).find((l) => l.channelUserId === "972500000009")?.status).toBe("active");
+    expect((await listFounderIdentities()).find((l) => l.channelUserId === "972500000008")?.status).toBe("active");
   }, 60_000);
 
   it("a stage out of its time budget stops between steps, fails clearly, and still restores", async () => {

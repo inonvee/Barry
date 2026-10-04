@@ -1,6 +1,7 @@
 import { getBackend } from "@/lib/store";
 import { applyControlChange, loadControls } from "@/lib/hq/controls";
 import { listOwnerIdentities, revokeOwnerIdentity } from "@/lib/owner-channel/identity";
+import { listBusinessSummaries } from "@/lib/fixtures";
 import { listFounderIdentities, revokeFounderIdentity } from "@/lib/founder-channel/identity";
 import type { BusinessMode } from "@/lib/hq/controls";
 
@@ -50,21 +51,40 @@ export async function ensureRestorePoint(businessId: string, by: string, now = n
   return point;
 }
 
+export type SyntheticIdentityCount = { syntheticOwnersActive: number; syntheticFoundersActive: number };
+
+/** Active synthetic (999…) owner links across the fleet, and synthetic founder links. A real number never starts with 999. */
+export async function countSyntheticIdentities(): Promise<SyntheticIdentityCount> {
+  let owners = 0;
+  for (const b of listBusinessSummaries()) owners += (await listOwnerIdentities(b.id).catch(() => [])).filter((l) => l.status === "active" && l.channelUserId.startsWith(SYNTHETIC_PREFIX)).length;
+  const founders = (await listFounderIdentities()).filter((l) => l.status === "active" && l.channelUserId.startsWith(SYNTHETIC_PREFIX)).length;
+  return { syntheticOwnersActive: owners, syntheticFoundersActive: founders };
+}
+
+/**
+ * Revoke EVERY active synthetic (999…) owner link (every fleet business) and founder link — including stale ones left
+ * by an interrupted earlier run. Real owners and the real founder are never touched (their numbers never start 999).
+ */
+export async function revokeSyntheticIdentities(by: string, reason: string): Promise<{ owners: number; founders: number }> {
+  let owners = 0;
+  let founders = 0;
+  for (const b of listBusinessSummaries()) {
+    for (const l of await listOwnerIdentities(b.id).catch(() => [])) {
+      if (l.status === "active" && l.channelUserId.startsWith(SYNTHETIC_PREFIX) && (await revokeOwnerIdentity(b.id, l.id, `${by}: ${reason}`))) owners++;
+    }
+  }
+  for (const l of await listFounderIdentities()) {
+    if (l.status === "active" && l.channelUserId.startsWith(SYNTHETIC_PREFIX) && (await revokeFounderIdentity(l.id, `${by}: ${reason}`))) founders++;
+  }
+  return { owners, founders };
+}
+
 /** Put the business back exactly as the restore point says, revoke synthetic owner links, clear the point. Idempotent. */
 export async function restoreFromPoint(businessId: string, by: string, reason: string): Promise<RestoreResult> {
   const point = await readRestorePoint(businessId);
-  let revoked = 0;
-  for (const l of await listOwnerIdentities(businessId)) {
-    if (l.status === "active" && l.channelUserId.startsWith(SYNTHETIC_PREFIX)) {
-      if (await revokeOwnerIdentity(businessId, l.id, `${by}: ${reason}`)) revoked++;
-    }
-  }
-  // Synthetic founder links too (QA founder numbers are synthetic 999…; a real founder's link is never touched).
-  for (const l of await listFounderIdentities()) {
-    if (l.status === "active" && l.channelUserId.startsWith(SYNTHETIC_PREFIX)) {
-      if (await revokeFounderIdentity(l.id, `${by}: ${reason}`)) revoked++;
-    }
-  }
+  // Synthetic owner links (every fleet business) and synthetic founder links — a real link is never touched.
+  const swept = await revokeSyntheticIdentities(by, reason);
+  const revoked = swept.owners + swept.founders;
   if (point) await applyControlChange(businessId, { mode: point.mode, pausedBusiness: point.pausedBusiness, ...(point.levers ?? {}) }, { by, reason });
   const after = await loadControls(businessId);
   const same = (a: string[], b: string[]) => a.length === b.length && [...a].sort().every((x, i) => x === [...b].sort()[i]);

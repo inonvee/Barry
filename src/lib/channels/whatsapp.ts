@@ -225,6 +225,23 @@ export function parseWebhook(body: unknown, routes = whatsappConfig().routes, ow
   return out;
 }
 
+// ── Real-transport observation (QA evidence) ───────────────────────────────────────────────────────────────────
+/** Every attempt to send through the REAL WhatsApp Cloud API passes here first (customer, owner and founder senders). */
+export type GraphSendAttempt = { role: "customer" | "owner" | "founder"; to: string; at: string };
+type GraphSendObserver = (a: GraphSendAttempt) => "block" | void;
+const graphObservers = new Set<GraphSendObserver>();
+/** Observe real Graph send attempts (returns the unsubscribe). An observer returning "block" stops the send before any network call. */
+export function observeGraphSends(o: GraphSendObserver): () => void {
+  graphObservers.add(o);
+  return () => graphObservers.delete(o);
+}
+function graphSendAttempt(role: GraphSendAttempt["role"], to: string): void {
+  const a = { role, to, at: new Date().toISOString() };
+  let blocked = false;
+  for (const o of graphObservers) if (o(a) === "block") blocked = true;
+  if (blocked) throw new Error("WhatsApp send blocked by an acceptance guard (synthetic recipient) — nothing was sent");
+}
+
 /** Sends a text reply through the Graph API — only in live mode, only with a routed number. */
 export function whatsappSender(fetchImpl: typeof fetch = fetch): OutboundSender {
   const cfg = whatsappConfig();
@@ -235,6 +252,7 @@ export function whatsappSender(fetchImpl: typeof fetch = fetch): OutboundSender 
       const phoneNumberId = Object.entries(cfg.routes).find(([, b]) => b === context.businessId)?.[0];
       const token = process.env.WHATSAPP_ACCESS_TOKEN;
       if (!phoneNumberId || !token) throw new Error("WhatsApp sending is not configured for this business");
+      graphSendAttempt("customer", to);
       const version = process.env.WHATSAPP_GRAPH_VERSION || "v21.0";
       const res = await fetchImpl(`https://graph.facebook.com/${version}/${encodeURIComponent(phoneNumberId)}/messages`, {
         method: "POST",
@@ -274,6 +292,7 @@ function lineSender(cfg: { numbers: string[]; sendMode: "live" | "dry_run" }, li
       const phoneNumberId = cfg.numbers[0];
       const token = process.env.WHATSAPP_ACCESS_TOKEN;
       if (!phoneNumberId || !token) throw new Error(`The BARRY ${line} line is not configured`);
+      graphSendAttempt(line, to);
       const version = process.env.WHATSAPP_GRAPH_VERSION || "v21.0";
       const actions = (message.actions ?? []).slice(0, 3);
       const body = actions.length

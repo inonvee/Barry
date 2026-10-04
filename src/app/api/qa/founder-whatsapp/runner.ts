@@ -7,7 +7,7 @@ import { updateConversation } from "@/lib/state/update";
 import { getReasoner } from "@/lib/reasoner";
 import { isSupabaseConfigured } from "@/lib/store/supabase-client";
 import { listControlAudit, loadControls } from "@/lib/hq/controls";
-import { parseWebhook, whatsappConfig, whatsappFounderConfig, whatsappRoleRouting, whatsappSendModes } from "@/lib/channels/whatsapp";
+import { observeGraphSends, parseWebhook, whatsappConfig, whatsappFounderConfig, whatsappRoleRouting, whatsappSendModes, type GraphSendAttempt } from "@/lib/channels/whatsapp";
 import { setRoleSendersOverride } from "@/lib/channels/role-routing";
 import { createLinkCode, listOwnerIdentities, revokeOwnerIdentity } from "@/lib/owner-channel/identity";
 import { processOwnerInbound } from "@/lib/owner-channel/gateway";
@@ -21,7 +21,7 @@ import { monthPeriod } from "@/lib/commercial/cost";
 import { hasMoney } from "@/lib/format/money";
 import { resolveBusinessGraph } from "@/lib/business-graph-repository";
 import { databaseProjectRef } from "@/lib/qa/preview-acceptance-guard";
-import { ensureRestorePoint, readRestorePoint, restoreFromPoint } from "@/lib/qa/restore-point";
+import { countSyntheticIdentities, ensureRestorePoint, readRestorePoint, restoreFromPoint, revokeSyntheticIdentities } from "@/lib/qa/restore-point";
 import { ACCEPTANCE_BUSINESS } from "../acceptance/runner";
 
 const BIZ = ACCEPTANCE_BUSINESS;
@@ -137,6 +137,11 @@ export async function runFounderWhatsappAcceptance(creds: { appSecret: string },
     const rec = await restoreFromPoint(BIZ, by, `founder-whatsapp acceptance ${runId}: recover from an interrupted earlier run`);
     check("preflight", "recovered the test business from an interrupted earlier run (restore point)", rec.restored, rec);
   }
+  // Stale synthetic (999…) owner / founder identities from an interrupted earlier run — even one that left no restore
+  // point — are revoked before anything runs. Real owners and the real founder are never touched.
+  const stale = await revokeSyntheticIdentities(by, `founder-whatsapp acceptance ${runId}: stale synthetic identities from an earlier run`);
+  const clean = await countSyntheticIdentities();
+  check("preflight", "no synthetic owner or founder identity is active before the run (stale ones from an earlier run revoked)", clean.syntheticOwnersActive === 0 && clean.syntheticFoundersActive === 0, { staleRevoked: stale, ...clean });
   const original = await ensureRestorePoint(BIZ, by);
   check("preflight", "live reasoner", reasonerName === "llm", report.deployment.reasoner);
   check("preflight", "durable Supabase storage on the Preview project", isSupabaseConfigured() && report.deployment.databaseProject === "glqrfoljvdbyrmbvupym", report.deployment.databaseProject);
@@ -146,6 +151,14 @@ export async function runFounderWhatsappAcceptance(creds: { appSecret: string },
   check("preflight", "customer and owner sending is dry_run; founder replies in this run are dry run (synthetic founders only)", process.env.BARRY_WHATSAPP_SEND === "dry_run" && modes.customer === "dry_run" && modes.owner === "dry_run", modes);
 
   const fid = `whatsapp:${FOUNDER}`;
+  // ── Real-transport instrumentation: EVERY attempt to send through the real WhatsApp Cloud API (customer, owner or
+  //    founder sender) is counted for the report; one to a synthetic 999… recipient is blocked before any network call.
+  //    QA replies go through recording dry senders, so the run must end with realGraphSendAttempts = 0.
+  const graphAttempts: GraphSendAttempt[] = [];
+  const stopObserving = observeGraphSends((a) => {
+    graphAttempts.push(a);
+    return a.to.replace(/\D/g, "").startsWith("999") ? "block" : undefined;
+  });
   try {
     const { code } = await createFounderLinkCode({ label: `qa ${runId}` });
     const linked = await processFounderInbound(inbound(`LINK ${code}`, FOUNDER), dryLine);
@@ -302,6 +315,7 @@ export async function runFounderWhatsappAcceptance(creds: { appSecret: string },
           const SO = `99985${d6}2`;
           const SU = `99986${d6}3`;
           const SW = `99987${d6}4`;
+          const SD = `99988${d6}5`;
           let n = 0;
           const line = async (from: string, text: string, id = `wamid.fwa.line.${runId}.${++n}`) => {
             budget();
@@ -346,6 +360,28 @@ export async function runFounderWhatsappAcceptance(creds: { appSecret: string },
           if (fLink) await revokeFounderIdentity(fLink.id, `${by}: shared-line revocation check`);
           const after = await line(SF, "What do I need to know today?");
           check("shared_line", "revoked founder immediately falls back to the customer flow", after.roles.length === 0 && (await convo(SF))?.messages[0]?.role === "customer", { roles: after.roles });
+
+          // Dual role: the SAME verified sender holds an owner link (this line's business) AND a founder link.
+          const ownerLink = async () => (await listOwnerIdentities(BIZ)).find((l) => l.channelUserId === SD && l.status === "active");
+          const dLabel = `founder (whatsapp ···${SD.slice(-4)})`;
+          const doc = await createLinkCode(BIZ);
+          const dOwner = await line(SD, `LINK ${doc.code}`);
+          const dfc = await createFounderLinkCode({ label: `qa ${runId} dual` });
+          const dFounder = await line(SD, `LINK ${dfc.code}`);
+          const dLink = (await listFounderIdentities()).find((l) => l.channelUserId === SD && l.status === "active");
+          check("shared_line", "dual role: the same sender holds a valid owner identity AND a founder identity", dOwner.roles[0]?.role === "owner" && dOwner.roles[0]?.status === "linked" && dFounder.roles[0]?.role === "founder" && dFounder.roles[0]?.status === "linked" && Boolean(await ownerLink()) && Boolean(dLink), { owner: dOwner.roles, founder: dFounder.roles });
+          const ownerSeen = (await ownerLink())?.lastInboundAt;
+          const ownerSendsBefore = sends.filter((x) => x.role === "owner").length;
+          const d1 = await line(SD, "What needs me?");
+          const d1Cmd = await getFounderCommand(`whatsapp:${d1.id}`);
+          const d2 = await line(SD, "Pause BARRY for Rina Studio");
+          const d2Cmd = await getFounderCommand(`whatsapp:${d2.id}`);
+          check("shared_line", "dual role, founder access active → FOUNDER wins: Founder BARRY answers, the owner gateway is never chosen", d1.roles.length === 1 && d1.roles[0]?.role === "founder" && d1.roles[0]?.status === "processed" && d1Cmd?.founder === dLabel && d2.roles.length === 1 && d2.roles[0]?.role === "founder" && (await ownerLink())?.lastInboundAt === ownerSeen && sends.filter((x) => x.role === "owner").length === ownerSendsBefore && !(await convo(SD)), { ask: d1.roles, control: d2.roles, founderCommand: d1Cmd?.founder, ownerGatewayTouched: (await ownerLink())?.lastInboundAt !== ownerSeen });
+          check("shared_line", "dual role, founder access active → founder controls are available (pause asks for confirmation; nothing changed yet)", d2Cmd?.founder === dLabel && d2Cmd?.status === "needs_confirmation" && !(await loadControls(BIZ)).pausedBusiness, { status: d2Cmd?.status, intent: d2Cmd?.intent?.family });
+          if (dLink) await revokeFounderIdentity(dLink.id, `${by}: dual-role revocation check`);
+          const founderCountBefore = (await listFounderCommands(500)).filter((c) => c.founder === dLabel).length;
+          const d3 = await line(SD, "What needs me?");
+          check("shared_line", "dual role, founder access revoked → the same sender falls back to OWNER BARRY (not the customer flow)", d3.roles.length === 1 && d3.roles[0]?.role === "owner" && !d3.customer && (await ownerLink())?.lastInboundAt !== ownerSeen && sends.filter((x) => x.role === "owner").length > ownerSendsBefore && !(await convo(SD)) && (await listFounderCommands(500)).filter((c) => c.founder === dLabel).length === founderCountBefore && !(await loadControls(BIZ)).pausedBusiness, { roles: d3.roles, customer: d3.customer });
         } finally {
           setRoleSendersOverride(undefined);
         }
@@ -356,13 +392,18 @@ export async function runFounderWhatsappAcceptance(creds: { appSecret: string },
     else check("restore", "runner error", false, err instanceof Error ? err.message.slice(0, 300) : String(err));
   } finally {
     // ── Audit, then restore every lever and revoke every synthetic identity ──────────────────────────────
-    const ours = [`founder (whatsapp ${masked})`, `founder (whatsapp ···${SF.slice(-4)})`];
+    const ours = [`founder (whatsapp ${masked})`, `founder (whatsapp ···${SF.slice(-4)})`, `founder (whatsapp ···${d6.slice(-3)}5)`];
     const traces = (await listFounderCommands(500).catch(() => [])).filter((c) => c.createdAt >= startedAt && ours.includes(c.founder));
     check("audit", "every founder command of this run is a durable trace naming the WhatsApp founder identity", traces.length > 0 && traces.every((t) => t.trace[0]?.step === "identity" && /verified founder channel identity/.test(t.trace[0]?.detail ?? "")), { commands: traces.length });
     await restoreFromPoint(BIZ, by, `founder-whatsapp acceptance ${runId}: restore`).catch((e) => check("restore", "restore controls", false, e instanceof Error ? e.message : "failed"));
     const restored = await loadControls(BIZ);
-    const syntheticActive = (await listFounderIdentities()).filter((l) => l.status === "active" && l.channelUserId.startsWith("999"));
-    check("restore", "test business restored (mode, pause, approval, capabilities, safe mode); synthetic founder identities revoked; restore point cleared", restored.mode === original.mode && restored.pausedBusiness === original.pausedBusiness && restored.approvalRequiredForAll === (original.levers?.approvalRequiredForAll ?? false) && restored.pausedCapabilities.length === (original.levers?.pausedCapabilities.length ?? 0) && syntheticActive.length === 0 && !(await readRestorePoint(BIZ)), { mode: restored.mode, paused: restored.pausedBusiness, approvalForAll: restored.approvalRequiredForAll, capabilities: restored.pausedCapabilities, syntheticFoundersActive: syntheticActive.length });
+    check("restore", "test business restored (mode, pause, approval, capabilities, safe mode); restore point cleared", restored.mode === original.mode && restored.pausedBusiness === original.pausedBusiness && restored.approvalRequiredForAll === (original.levers?.approvalRequiredForAll ?? false) && restored.pausedCapabilities.length === (original.levers?.pausedCapabilities.length ?? 0) && !(await readRestorePoint(BIZ)), { mode: restored.mode, paused: restored.pausedBusiness, approvalForAll: restored.approvalRequiredForAll, capabilities: restored.pausedCapabilities });
+    // Every synthetic identity this run (or an earlier one) created is revoked — counted across the fleet, asserted explicitly.
+    const left = await countSyntheticIdentities().catch(() => ({ syntheticOwnersActive: -1, syntheticFoundersActive: -1 }));
+    check("restore", "syntheticFoundersActive === 0 (every synthetic founder identity revoked)", left.syntheticFoundersActive === 0, { syntheticFoundersActive: left.syntheticFoundersActive });
+    check("restore", "syntheticOwnersActive === 0 (every synthetic owner identity revoked, every fleet business)", left.syntheticOwnersActive === 0, { syntheticOwnersActive: left.syntheticOwnersActive });
+    stopObserving();
+    check("restore", "realGraphSendAttempts === 0 (no path bypassed the QA dry / recording senders to reach the real WhatsApp transport)", graphAttempts.length === 0, { realGraphSendAttempts: graphAttempts.length, blockedSynthetic: graphAttempts.filter((a) => a.to.startsWith("999")).length, byRole: graphAttempts.reduce<Record<string, number>>((acc, a) => ({ ...acc, [a.role]: (acc[a.role] ?? 0) + 1 }), {}) });
     report.finishedAt = new Date().toISOString();
     report.passed = report.checks.filter((c) => c.ok).length;
     report.failed = report.checks.length - report.passed;
