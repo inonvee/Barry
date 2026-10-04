@@ -10,6 +10,7 @@ import { humanHolds } from "@/lib/runtime/control";
 import { resolveReplyLanguage } from "@/lib/reasoner/language";
 import { money } from "@/lib/reasoner/deterministic-compose";
 import { loadControls, type BusinessControls } from "@/lib/hq/controls";
+import { proactiveGate } from "@/lib/runtime/operating-mode";
 import { CHANNEL_DELIVERY_KEY, type DeliveryRecord, type OutboundSender } from "@/lib/channels/gateway";
 import { reconcileObligations, isOpen, type Obligation } from "./obligations";
 import { followUpPolicyFor, ruleFor } from "./policy";
@@ -80,10 +81,13 @@ export async function runObligationExecutor(graph: BusinessGraph, opts: { now?: 
   const candidates = obligations.filter((o) => isOpen(o) && (!only || only.has(o.key)) && due(o) && ruleFor(policy, o.kind)?.enabled !== false && ruleFor(policy, o.kind)).slice(0, opts.limit ?? 10);
   const held = await ownerHeldKeys(businessId);
 
-  // Authority re-check: a paused business sends nothing proactive.
+  // Authority re-check, through the ONE operating-mode gate: paused / safe mode / writes paused send nothing;
+  // SUPERVISED sends only what the owner asked for (an owner operation); SIMULATOR only ever dry-runs.
   // The plan: proactive follow-ups are an Operator feature — a plan without them sends nothing proactive.
   const planBlocked = !hasFeature(await loadEntitlement(businessId), "proactive_followups") ? "proactive follow-ups are not included in this business's plan" : undefined;
-  const blocked = planBlocked ?? (controls.pauseConsequentialWrites ? "consequential actions are paused by the founder" : controls.pausedBusiness ? "the business is paused by the founder" : controls.safeMode ? "safe mode: proactive messages are off" : controls.disabledChannels.length && candidates.every((o) => controls.disabledChannels.includes(channelOf(o.conversationId))) && candidates.length ? "every channel is disabled" : undefined);
+  const gate = proactiveGate(controls, { ownerInitiated: Boolean(only) });
+  const blocked = planBlocked ?? (!gate.allowed ? gate.reason : controls.disabledChannels.length && candidates.every((o) => controls.disabledChannels.includes(channelOf(o.conversationId))) && candidates.length ? "every channel is disabled" : undefined);
+  const liveAllowed = gate.allowed && gate.live;
   if (blocked) return { businessId, at, considered: candidates.length, acted: 0, results: candidates.map((o) => ({ key: o.key, kind: o.kind, outcome: "skipped", why: blocked })), blocked };
 
   let acted = 0;
@@ -146,7 +150,11 @@ export async function runObligationExecutor(graph: BusinessGraph, opts: { now?: 
     const lang = resolveReplyLanguage({ customerMessages: conversation.messages.filter((m) => m.role === "customer").map((m) => m.content), stored: conversation.knownFields[SCRATCH_KEYS.conversationLanguage], businessLocale: graph.business.locale }).code;
     const text = followUpText(o.kind, o, lang);
     if (!text) return { key: o.key, kind: o.kind, outcome: "skipped", why: "no customer-facing follow-up exists for this kind; it stays on the owner's list" };
-    const sender = opts.senders?.(conversation) ?? dryRun(channel);
+    // Never a real send unless the mode allows it (a test / simulator business only ever dry-runs).
+    const resolved = opts.senders?.(conversation);
+    const sender = resolved && (liveAllowed || resolved.mode !== "live") ? resolved : dryRun(channel);
+    // Under the lock: another pass that already started this exact attempt wins — never a second send.
+    if ((await listAttempts(businessId)).some((a) => a.id === id)) return { key: o.key, kind: o.kind, outcome: "skipped", why: "this attempt already ran (idempotent)" };
     // WhatsApp's customer-service window: a free-form message only within 24h of the customer's last message.
     const lastCustomer = [...conversation.messages].reverse().find((m) => m.role === "customer")?.at;
     if (channel === "whatsapp" && sender.mode === "live" && (!lastCustomer || now.getTime() - Date.parse(lastCustomer) > WHATSAPP_WINDOW_MS)) return { key: o.key, kind: o.kind, outcome: "skipped", why: "outside WhatsApp's 24-hour window — an approved message template is needed" };

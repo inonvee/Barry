@@ -131,6 +131,8 @@ describe("obligation executor: re-check, act once, record evidence, never loop",
     const { g, model, id } = setup();
     const { payment } = await pendingLink(model, g, id);
     const later = new Date(Date.parse(payment!.createdAt) + 25 * H);
+    // A live send only ever happens in LIVE mode (a simulator business only dry-runs).
+    await applyControlChange(g.business.id, { mode: "live" }, { by: "founder", reason: "go live", now: NOW });
     const failing: OutboundSender = { channel: "web", mode: "live", send: async () => { throw new Error("provider down"); } };
     const messagesBefore = (await getConversationStore().get(id))!.messages.length;
     const run = await runObligationExecutor(g, { now: later, senders: () => failing });

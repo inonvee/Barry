@@ -1,5 +1,5 @@
-import crypto from "node:crypto";
 import { hqAuthError } from "@/lib/hq/auth";
+import { cronAuthorized } from "@/lib/hq/cron-auth";
 import { listTicks, runInitiativeTick } from "@/lib/initiative/scheduler";
 
 /**
@@ -9,14 +9,6 @@ import { listTicks, runInitiativeTick } from "@/lib/initiative/scheduler";
  * runInitiativeScan — never forced, nothing sent. Founder-only extras for proof: `?businessId=` limits the
  * tick to one business; `?at=<ISO>` evaluates another moment (slots and the engine's daily limit still apply).
  */
-function cronAuthorized(req: Request): boolean {
-  const secret = process.env.CRON_SECRET?.trim();
-  const bearer = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
-  if (!secret || secret.length < 16 || !bearer) return false;
-  const h = (s: string) => crypto.createHash("sha256").update(s).digest();
-  return crypto.timingSafeEqual(h(bearer), h(secret));
-}
-
 async function handle(req: Request) {
   // A cookie-only founder call must be a POST: a GET is reachable from a link on another site (Lax cookie),
   // so GET accepts only an Authorization header (the cron secret or the founder bearer token).

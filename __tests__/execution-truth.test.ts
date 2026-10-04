@@ -6,7 +6,7 @@ import { getConversationStore, type ConversationState } from "@/lib/state";
 import { setReasonerForTests } from "@/lib/reasoner";
 import { readLedger, appendLedger } from "@/lib/runtime/ledger";
 import { processInbound, readDeliveries, type OutboundSender } from "@/lib/channels/gateway";
-import { resetControlsCacheForTests } from "@/lib/hq/controls";
+import { applyControlChange, resetControlsCacheForTests } from "@/lib/hq/controls";
 import { runObligationExecutor } from "@/lib/operator/executor";
 import { attemptCounts, listAttempts, type ExecutionAttempt } from "@/lib/operator/attempts";
 import { deriveObligations } from "@/lib/operator/obligations";
@@ -112,6 +112,8 @@ describe("real send: only now is it sent / reached", () => {
   it("transcript, ledger, delivery (tied to its message) and every count agree", async () => {
     const { g, model, id } = setup();
     const payment = await pendingLink(model, g, id);
+    // Real sends happen only in LIVE mode (a simulator business only dry-runs).
+    await applyControlChange(g.business.id, { mode: "live" }, { by: "founder", reason: "go live" });
     const sender = live();
     const later = new Date(Date.parse(payment.createdAt) + 25 * H);
     const run = await runObligationExecutor(g, { now: later, senders: () => sender });
@@ -138,6 +140,8 @@ describe("failed send: the customer got nothing, and it says so", () => {
     const payment = await pendingLink(model, g, id);
     const before = (await getConversationStore().get(id))!.messages.length;
     const later = new Date(Date.parse(payment.createdAt) + 25 * H);
+    // Real sends happen only in LIVE mode (a simulator business only dry-runs).
+    await applyControlChange(g.business.id, { mode: "live" }, { by: "founder", reason: "go live" });
     const run = await runObligationExecutor(g, { now: later, senders: () => refusing });
     expect(run.results[0]).toMatchObject({ outcome: "failed" });
     const state = (await getConversationStore().get(id))!;

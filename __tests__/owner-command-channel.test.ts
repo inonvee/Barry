@@ -218,6 +218,8 @@ describe("bounded operations on a grounded cohort", () => {
     const customers = liveCustomers();
     setOperationSendersForTests(() => customers);
     const t = tenant();
+    // A pilot business: SUPERVISED — the owner asking is the approval for the outreach.
+    await applyControlChange(t.g.business.id, { mode: "supervised" }, { by: "founder", reason: "pilot" });
     const c1 = await cart(t);
     const c2 = await cart(t);
     await link(t);
@@ -270,6 +272,8 @@ describe("bounded operations on a grounded cohort", () => {
   it("stop: no new work for that cohort (the scheduled executor skips it too); sent messages are said to stay sent", async () => {
     setOperationSendersForTests(() => liveCustomers());
     const t = tenant();
+    // A pilot business: SUPERVISED — the owner asking is the approval for the outreach.
+    await applyControlChange(t.g.business.id, { mode: "supervised" }, { by: "founder", reason: "pilot" });
     await cart(t);
     await link(t);
     await processOwnerInbound(msg("Recover today's abandoned carts"), capture(), { businessIds: t.ids });
