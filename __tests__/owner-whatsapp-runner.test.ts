@@ -24,10 +24,14 @@ describe("guards", () => {
   });
 });
 
+/** Whether the scripted model hands a "speak with someone" request to a person (as the live model did on Preview). */
+let modelHandsOff = false;
+
 class FlowModel extends ScriptedModel {
   constructor() {
     super((ctx: ReasonerContext) => {
       const m = ctx.customerMessage ?? "";
+      if (modelHandsOff && /speak with someone/i.test(m)) return { handoff: { reason: "The customer asked to speak with a person.", urgency: "normal" }, advancesTransaction: false } as never;
       if (/buy the Midnight Wrap Dress/i.test(m)) return { commerce: { intent: "search", query: { text: "midnight" } }, advancesTransaction: true } as never;
       if (/add one to my cart/i.test(m)) return { commerce: { intent: "select", reference: { type: "previous_result", index: 0 }, variant: { size: "M" } }, purchaseDecision: false, advancesTransaction: true } as never;
       const name = m.match(/My name is (\p{L}+ \p{L}+)/u)?.[1];
@@ -55,6 +59,7 @@ describe("mechanics (real route handlers + owner gateway, scripted model)", () =
     setOwnerModelForTests({ interpret: null, draft: null });
   });
   afterEach(() => {
+    modelHandsOff = false;
     setReasonerForTests(undefined);
     setOwnerModelForTests(undefined);
     setLockStoreForTests(undefined);
@@ -121,4 +126,34 @@ describe("mechanics (real route handlers + owner gateway, scripted model)", () =
     expect(await readRestorePoint("fashion-retailer")).toBeUndefined();
     expect(await restoreFromPoint("fashion-retailer", "founder (qa test)", "again")).toMatchObject({ restored: true, hadRestorePoint: false });
   });
+
+  type Detail = { handoff?: string; handoffBy: string; notifiedBy: string; notices: { key: string; status: string; items?: string[] }[] };
+  const notifCheck = (report: { checks: { name: string; ok: boolean; detail?: unknown }[] }) => report.checks.find((c) => /exactly one durable owner attention notice/.test(c.name))!;
+
+  it("REGRESSION (deployed owa-1791136227220): the customer webhook hands off AND notifies before the runner's own call — exactly one durable notice, the stage passes", async () => {
+    modelHandsOff = true;
+    const report = await runOwnerWhatsappAcceptance({ appSecret: "test-app-secret" }, { phoneNumberId: "PNID-T", stages: ["notifications"], runId: `owa-${Date.now()}` });
+    const c = notifCheck(report);
+    const d = c.detail as Detail;
+    // The deployed path: the live model's handoff, notified by the webhook — the runner's later call returns [].
+    expect(d.handoffBy).toMatch(/live model/);
+    expect(d.notifiedBy).toBe("the customer webhook");
+    expect(c.ok).toBe(true);
+    expect(d.notices).toHaveLength(1);
+    expect(["dry_run", "blocked"]).toContain(d.notices[0].status);
+    expect(d.notices[0].items).toContain(`handoff:${d.handoff}`); // coalesced with anything else new for this owner
+    expect(report.checks.find((x) => /never sent twice/.test(x.name))).toMatchObject({ ok: true, detail: { againReturned: 0, durableForHandoff: 1 } });
+    expect(onlySupabase(report)).toEqual([expect.stringMatching(/^preflight: durable Supabase storage/)]);
+  }, 60_000);
+
+  it("the other path: the model does not hand off — the runner creates the handoff and its fallback call produces the one notice", async () => {
+    const report = await runOwnerWhatsappAcceptance({ appSecret: "test-app-secret" }, { phoneNumberId: "PNID-T", stages: ["notifications"], runId: `owa-${Date.now()}` });
+    const c = notifCheck(report);
+    const d = c.detail as Detail;
+    expect(d.handoffBy).toMatch(/runner/);
+    expect(d.notifiedBy).toMatch(/runner/);
+    expect(c.ok).toBe(true);
+    expect(d.notices).toHaveLength(1);
+    expect(report.checks.find((x) => /never sent twice/.test(x.name))?.ok).toBe(true);
+  }, 60_000);
 });

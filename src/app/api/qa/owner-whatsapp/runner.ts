@@ -8,8 +8,8 @@ import { getReasoner } from "@/lib/reasoner";
 import { isSupabaseConfigured } from "@/lib/store/supabase-client";
 import { applyControlChange, listControlAudit, loadControls } from "@/lib/hq/controls";
 import { operatingMode } from "@/lib/runtime/operating-mode";
-import { createHandoff } from "@/lib/runtime/handoff";
 import { readControl, readControlLog } from "@/lib/runtime/control";
+import { createHandoff, readHandoffs } from "@/lib/runtime/handoff";
 import { parseWebhook, whatsappConfig, whatsappOwnerConfig } from "@/lib/channels/whatsapp";
 import { createLinkCode, listOwnerIdentities, revokeOwnerIdentity } from "@/lib/owner-channel/identity";
 import { processOwnerInbound } from "@/lib/owner-channel/gateway";
@@ -315,14 +315,31 @@ export async function runOwnerWhatsappAcceptance(creds: Creds, opts: { phoneNumb
     // ── Notifications ────────────────────────────────────────────────────────────────────────────────────
     if (opts.stages.includes("notifications")) {
       await owner("What needs me?"); // keeps the synthetic owner inside WhatsApp's 24-hour window
+      // The durable outcome, not a call's return value: the customer webhook itself notifies the owner (the route
+      // calls notifyOwnerAttention after every customer turn), so the runner's own call is only a fallback.
+      const attention = async () => (await listBriefs(BIZ)).filter((b) => b.kind === "attention" && b.to === masked);
+      const baseline = new Set((await attention()).map((b) => b.key));
       const c = customer(qaName(runId, 4));
       await c.send("Hello, I need to speak with someone please");
-      await updateConversation(c.id, (s) => (readControl(s).holder === "human" ? undefined : createHandoff(graph, s, { trigger: "customer_asked", reason: "wants a person" })));
-      // The deployment's own owner line (dry run by configuration — or not configured, then truthfully blocked).
-      const first = (await notifyOwnerAttention(graph)).filter((r) => r.to === masked);
+      let handoff = readHandoffs((await state(c.id))!).find((h) => h.status !== "resolved");
+      const handoffBy = handoff ? "the live model (customer webhook)" : "the runner (deterministic fallback: the model did not hand off)";
+      if (!handoff) {
+        await updateConversation(c.id, (s) => createHandoff(graph, s, { trigger: "customer_asked", reason: "wants a person" }));
+        handoff = readHandoffs((await state(c.id))!).find((h) => h.status !== "resolved");
+      }
+      const item = `handoff:${handoff?.id}`;
+      const forHandoff = async () => (await attention()).filter((b) => (b.items ?? []).includes(item));
+      let notices = (await forHandoff()).filter((b) => !baseline.has(b.key));
+      const notifiedBy = notices.length ? "the customer webhook" : "the runner (fallback notifyOwnerAttention)";
+      if (!notices.length) {
+        await notifyOwnerAttention(graph);
+        notices = (await forHandoff()).filter((b) => !baseline.has(b.key));
+      }
+      check("notifications", "customer needs a person → exactly one durable owner attention notice for this handoff (coalesced) — dry run or truthfully blocked", Boolean(handoff) && notices.length === 1 && truthfulNotice(notices[0]) && notices[0].text.includes(c.name), { handoff: handoff?.id, handoffBy, notifiedBy, notices: notices.map((r) => ({ key: r.key, status: r.status, reason: r.reason, items: r.items, text: short(r.text) })) });
+      // Dedupe: another attempt creates nothing — no second durable notice for the same handoff, ever.
       const again = (await notifyOwnerAttention(graph)).filter((r) => r.to === masked);
-      check("notifications", "customer needs a person → the owner is notified once (coalesced) — dry run or truthfully blocked", first.length === 1 && truthfulNotice(first[0]) && first[0].text.includes(c.name), first.map((r) => ({ status: r.status, reason: r.reason, text: short(r.text) })));
-      check("notifications", "the same alert is never sent twice", again.length === 0);
+      const all = await forHandoff();
+      check("notifications", "the same alert is never sent twice (a further attempt creates no second durable notice)", Boolean(handoff) && again.length === 0 && all.length === 1, { againReturned: again.length, durableForHandoff: all.length });
       const runBriefs = (await listBriefs(BIZ)).filter((b) => b.at >= startedAt);
       check("notifications", "no real sends in dry run: every owner notice in this run is dry_run or blocked (none sent)", runBriefs.length > 0 && runBriefs.every((b) => b.status === "dry_run" || b.status === "blocked"), runBriefs.map((b) => `${b.kind}:${b.status}`));
     }
