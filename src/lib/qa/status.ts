@@ -53,8 +53,20 @@ export async function buildQaStatus(businessId?: string) {
       ? { mode: reasoner.name === "llm" ? "live model" : "simulator (scripted)", model: reasoner.model ?? null, effort: reasoner.reasoningEffort ?? null, composer: reasoner.composerModel ?? null, ...(reasoner.configError ? { configError: reasoner.configError } : {}) }
       : { mode: "unavailable", error: reasonerError },
     storage: isSupabaseConfigured() ? "durable (Supabase)" : "memory (lost on restart)",
+    // Which database this deployment writes to (the project ref is part of the public URL — not a secret):
+    // proves a Preview deployment is isolated from Production's database.
+    databaseProject: databaseProject(),
+    cron: process.env.CRON_SECRET && process.env.CRON_SECRET.trim().length >= 16 ? "secret configured" : "missing",
     ownerAccess: ownerAccessConfigured() ? { configured: true, businesses: businessesWithOwnerAccess() } : { configured: false, businesses: [] },
     whatsapp: wa.configured ? { state: wa.sendMode === "live" ? "live sending" : "configured, dry run", routedBusinesses: [...new Set(Object.values(wa.routes))] } : { state: "missing", missing: wa.missing, qaDryRunAvailable: qaEnabled() },
     ...(business ? { business } : {}),
   };
+}
+
+function databaseProject(): string | null {
+  try {
+    return process.env.SUPABASE_URL ? new URL(process.env.SUPABASE_URL).hostname.split(".")[0] : null;
+  } catch {
+    return null;
+  }
 }

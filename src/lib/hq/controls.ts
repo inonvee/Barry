@@ -4,6 +4,7 @@ import { ACTION_REQUIREMENTS } from "@/lib/capabilities/model";
 import { getCapability } from "@/lib/fabric/capability";
 import { INVOKE_CAPABILITY } from "@/lib/tools/capability-tool";
 import { withConversationLock } from "@/lib/state/lock";
+import { supervisedLowRisk } from "@/lib/runtime/action-risk";
 
 /**
  * FOUNDER CONTROLS — the bounded, audited levers the founder holds over ONE business from HQ.
@@ -233,9 +234,10 @@ export function applyFounderControls(controls: BusinessControls, action: string,
   if ((controls.approvalRequiredForAll || controls.safeMode) && base.status === "allowed") {
     return { status: "requires_approval", reason: controls.safeMode ? "Safe mode: every consequential action needs the owner's approval right now." : "Founder supervision: every consequential action needs the owner's approval right now.", policyId: controls.safeMode ? "founder_control:safe_mode" : "founder_control:supervised" };
   }
-  // SUPERVISED: BARRY may prepare and recommend; every consequential action waits for the owner.
-  if (controls.mode === "supervised" && base.status === "allowed") {
-    return { status: "requires_approval", reason: "Supervised mode: every consequential action needs the owner's approval.", policyId: "operating_mode:supervised" };
+  // SUPERVISED: reversible, low-risk operational work (a cart, a support case) runs on the business's own
+  // rules; money, checkout, orders, bookings, refunds and anything else consequential wait for the owner.
+  if (controls.mode === "supervised" && base.status === "allowed" && !supervisedLowRisk(action, params)) {
+    return { status: "requires_approval", reason: "Supervised mode: this action involves money or a commitment, so it needs the owner's approval.", policyId: "operating_mode:supervised" };
   }
   return { status: "allowed" };
 }

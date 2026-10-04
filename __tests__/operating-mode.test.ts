@@ -7,8 +7,9 @@ import { setReasonerForTests } from "@/lib/reasoner";
 import { MemoryLockStore, setLockStoreForTests } from "@/lib/state/lock";
 import { MemoryInboxStore, setInboxStoreForTests } from "@/lib/channels/inbox";
 import { processInbound, type OutboundSender } from "@/lib/channels/gateway";
-import { DEFAULT_CONTROLS, applyControlChange, listControlAudit, loadControls, resetControlsCacheForTests } from "@/lib/hq/controls";
+import { DEFAULT_CONTROLS, applyControlChange, applyFounderControls, listControlAudit, loadControls, resetControlsCacheForTests } from "@/lib/hq/controls";
 import { operatingMode, proactiveGate, replyGate } from "@/lib/runtime/operating-mode";
+import { SUPERVISED_AUTONOMOUS } from "@/lib/runtime/action-risk";
 import { OwnerModeError, ownerMode, ownerPause, ownerResume } from "@/lib/owner/mode";
 import { interpretCommand } from "@/lib/owner/command";
 import { executeOwnerCommand } from "@/lib/owner/command-service";
@@ -82,14 +83,37 @@ describe("the one gate", () => {
   });
 });
 
+describe("SUPERVISED: what runs on its own vs. what needs the owner", () => {
+  it("only reversible, low-risk work is autonomous; money, commitments and unknown capabilities need approval", () => {
+    const sup = { ...DEFAULT_CONTROLS, mode: "supervised" as const };
+    const allowed = { status: "allowed" as const };
+    const verdict = (action: string, params: Record<string, unknown> = {}) => applyFounderControls(sup, action, params, allowed).status;
+    expect(verdict("addToCart", { productId: "p1", quantity: 1 })).toBe("allowed");
+    expect(verdict("updateCartLine", { lineId: "l1", quantity: 2 })).toBe("allowed");
+    expect(verdict("invokeCapability", { capability: "support.ticket.create", input: { subject: "late parcel" } })).toBe("allowed");
+    for (const a of ["createCommerceCheckout", "createPaymentRequest", "createCommerceOrder", "createBooking"]) expect(verdict(a)).toBe("requires_approval");
+    for (const c of ["payments.refund", "shipping.shipment.create", "messaging.send", "some.future.capability"]) expect(verdict("invokeCapability", { capability: c, input: {} })).toBe("requires_approval");
+    // A price / discount in the request is a policy exception — never "low-risk".
+    expect(verdict("updateCartLine", { lineId: "l1", quantity: 1, discountPct: 10 })).toBe("requires_approval");
+    // Reads are never gated; the business's own denials are never loosened.
+    expect(verdict("searchProducts")).toBe("allowed");
+    expect(applyFounderControls(sup, "createBooking", {}, { status: "requires_approval" }).status).toBe("allowed"); // (no extra tightening: the base already asks)
+    expect(SUPERVISED_AUTONOMOUS).toEqual({ actions: ["addToCart", "updateCartLine"], capabilities: ["commerce.cart.create", "commerce.cart.update", "support.ticket.create"] });
+  });
+});
+
 describe("SUPERVISED vs LIVE in the customer runtime", () => {
-  it("SUPERVISED: BARRY still answers, but the checkout waits for the owner; LIVE: the business's own rules decide", async () => {
+  it("SUPERVISED: reversible cart work runs on its own; the checkout (money) waits for the owner; LIVE: the business's own rules decide", async () => {
     const a = business();
     await applyControlChange(a.g.business.id, { mode: "supervised" }, { by: "founder", reason: "pilot" });
     const ida = conv("sup");
-    const first = await inCart(a.model, a.g, ida);
-    expect(first.response.length).toBeGreaterThan(0);
-    expect(first.turn.trace?.steps[0]?.policy).toMatchObject({ status: "requires_approval", policyId: "operating_mode:supervised" });
+    const cart = await inCart(a.model, a.g, ida);
+    expect(cart.response.length).toBeGreaterThan(0);
+    expect(cart.turn.trace?.steps[0]).toMatchObject({ action: "addToCart", policy: { status: "allowed" } });
+    a.model.plan = checkoutPlan;
+    const pay = await handleCustomerMessage(a.g, ida, "c", "checkout, Adi 0505550114");
+    expect(pay.turn.trace?.steps[0]).toMatchObject({ action: "createCommerceCheckout", policy: { status: "requires_approval", policyId: "operating_mode:supervised" } });
+    expect(pay.state.knownFields.__paymentRequestId).toBeUndefined();
 
     const b = business();
     await applyControlChange(b.g.business.id, { mode: "live" }, { by: "founder", reason: "live" });
