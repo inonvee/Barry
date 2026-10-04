@@ -1,6 +1,7 @@
 import { getBackend } from "@/lib/store";
 import { applyControlChange, loadControls } from "@/lib/hq/controls";
 import { listOwnerIdentities, revokeOwnerIdentity } from "@/lib/owner-channel/identity";
+import { listFounderIdentities, revokeFounderIdentity } from "@/lib/founder-channel/identity";
 import type { BusinessMode } from "@/lib/hq/controls";
 
 /**
@@ -22,8 +23,16 @@ const KIND = "founder_state" as const;
 const KEY = "qa_restore_point";
 export const SYNTHETIC_PREFIX = "999";
 
-export type RestorePoint = { businessId: string; mode: BusinessMode; pausedBusiness: boolean; createdAt: string; by: string };
-export type RestoreResult = { restored: boolean; hadRestorePoint: boolean; mode: BusinessMode; pausedBusiness: boolean; revokedSyntheticOwners: number };
+export type RestorePoint = {
+  businessId: string;
+  mode: BusinessMode;
+  pausedBusiness: boolean;
+  /** Every other founder lever a QA run may move (absent on points recorded before they were captured). */
+  levers?: { approvalRequiredForAll: boolean; pauseConsequentialWrites: boolean; pausedCapabilities: string[]; disabledChannels: string[]; safeMode: boolean };
+  createdAt: string;
+  by: string;
+};
+export type RestoreResult = { restored: boolean; hadRestorePoint: boolean; mode: BusinessMode; pausedBusiness: boolean; /** Synthetic (999…) owner AND founder links revoked. */ revokedSyntheticOwners: number };
 
 export async function readRestorePoint(businessId: string): Promise<RestorePoint | undefined> {
   const r = (await getBackend().listOperatorRecords(businessId, KIND)).find((x) => x.key === KEY);
@@ -36,7 +45,7 @@ export async function ensureRestorePoint(businessId: string, by: string, now = n
   const existing = await readRestorePoint(businessId);
   if (existing) return existing;
   const c = await loadControls(businessId);
-  const point: RestorePoint = { businessId, mode: c.mode, pausedBusiness: c.pausedBusiness, createdAt: now.toISOString(), by };
+  const point: RestorePoint = { businessId, mode: c.mode, pausedBusiness: c.pausedBusiness, levers: { approvalRequiredForAll: c.approvalRequiredForAll, pauseConsequentialWrites: c.pauseConsequentialWrites, pausedCapabilities: [...c.pausedCapabilities], disabledChannels: [...c.disabledChannels], safeMode: c.safeMode }, createdAt: now.toISOString(), by };
   await getBackend().upsertOperatorRecord({ businessId, kind: KIND, key: KEY, data: point as unknown as Record<string, unknown> });
   return point;
 }
@@ -50,9 +59,16 @@ export async function restoreFromPoint(businessId: string, by: string, reason: s
       if (await revokeOwnerIdentity(businessId, l.id, `${by}: ${reason}`)) revoked++;
     }
   }
-  if (point) await applyControlChange(businessId, { mode: point.mode, pausedBusiness: point.pausedBusiness }, { by, reason });
+  // Synthetic founder links too (QA founder numbers are synthetic 999…; a real founder's link is never touched).
+  for (const l of await listFounderIdentities()) {
+    if (l.status === "active" && l.channelUserId.startsWith(SYNTHETIC_PREFIX)) {
+      if (await revokeFounderIdentity(l.id, `${by}: ${reason}`)) revoked++;
+    }
+  }
+  if (point) await applyControlChange(businessId, { mode: point.mode, pausedBusiness: point.pausedBusiness, ...(point.levers ?? {}) }, { by, reason });
   const after = await loadControls(businessId);
-  const restored = !point || (after.mode === point.mode && after.pausedBusiness === point.pausedBusiness);
+  const same = (a: string[], b: string[]) => a.length === b.length && [...a].sort().every((x, i) => x === [...b].sort()[i]);
+  const restored = !point || (after.mode === point.mode && after.pausedBusiness === point.pausedBusiness && (!point.levers || (after.approvalRequiredForAll === point.levers.approvalRequiredForAll && after.pauseConsequentialWrites === point.levers.pauseConsequentialWrites && after.safeMode === point.levers.safeMode && same(after.pausedCapabilities, point.levers.pausedCapabilities) && same(after.disabledChannels, point.levers.disabledChannels))));
   if (point && restored) await getBackend().deleteOperatorRecords(businessId, KIND, [KEY]);
   return { restored, hadRestorePoint: Boolean(point), mode: after.mode, pausedBusiness: after.pausedBusiness, revokedSyntheticOwners: revoked };
 }

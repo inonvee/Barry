@@ -113,3 +113,16 @@ Stages: `identity`, `reads`, `decisions`, `conversation`, `mode`, `notifications
   is killed anyway leaves the point in place: the next run recovers from it first, and `POST {"restore":true}`
   (called by the page before and after every run, retrying while a killed stage's lock expires) applies it.
   `GET ?state=1` shows the business's current controls and any pending restore point.
+
+## 7. Founder WhatsApp V1
+
+- Founder line: `BARRY_WHATSAPP_FOUNDER_NUMBERS` (phone_number_ids, Preview-scoped) — distinct from customer routes and
+  owner lines (a number configured as either is ignored as a founder line). Same live / dry-run rule
+  (`BARRY_WHATSAPP_SEND`). Optional `BARRY_FOUNDER_TIMEZONE` for the daily founder brief window (default UTC).
+- Linking: `/hq/founder-whatsapp` (HQ founder session) → "Get a link code" → send `LINK <code>` from the phone to the
+  founder line. Founder links are bound to `BARRY_FOUNDER_TOKEN` (rotation ends them) and revocable there.
+- Acceptance: `/hq/qa/founder-whatsapp` → one click runs `identity → reads → context → mutations → notifications`, one
+  POST to `/api/qa/founder-whatsapp` per stage, same guards / restore point / time budget as section 6. Founder controls
+  touch only the test business; every lever (mode, pause, approval-for-all, paused capabilities, safe mode) is
+  restored, and synthetic 999… founder / owner identities are revoked after every stage. Reports:
+  `qa_founder_whatsapp:<runId>`. Temporary: remove `src/app/api/qa/founder-whatsapp/` and `src/app/hq/qa/founder-whatsapp/`.

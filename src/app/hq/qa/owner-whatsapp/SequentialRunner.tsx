@@ -8,7 +8,7 @@ type Status = "pending" | "running" | "pass" | "fail" | "timeout" | "error" | "s
 type StageRun = { stage: string; status: Status; startedAt?: number; ms?: number; httpStatus?: number; runId?: string; report?: Report; why?: string };
 type RestoreState = { status: "idle" | "running" | "done" | "failed"; detail?: unknown; attempts?: number };
 
-const ENDPOINT = "/api/qa/owner-whatsapp";
+const DEFAULT_ENDPOINT = "/api/qa/owner-whatsapp";
 /** The client gives a stage a little longer than Vercel's 300s limit before calling it a timeout. */
 const CLIENT_TIMEOUT_MS = 320_000;
 const RESTORE_RETRY_MS = 15_000;
@@ -19,8 +19,8 @@ const word: Record<Status, string> = { pending: "pending", running: "running", p
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const secs = (ms?: number) => (ms === undefined ? "" : `${Math.round(ms / 1000)}s`);
 
-async function post(body: Record<string, unknown>, signal?: AbortSignal): Promise<{ status: number; json: Report; text?: string }> {
-  const res = await fetch(ENDPOINT, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal });
+async function post(endpoint: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<{ status: number; json: Report; text?: string }> {
+  const res = await fetch(endpoint, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal });
   const text = await res.text();
   try {
     return { status: res.status, json: JSON.parse(text) as Report };
@@ -35,7 +35,7 @@ async function post(body: Record<string, unknown>, signal?: AbortSignal): Promis
  * at the first failure or timeout, then restore the test business (retrying while a killed stage's lock expires).
  * No logic of its own beyond sequencing — every check runs on the server; this page only sends the HQ cookie.
  */
-export function SequentialRunner({ stages }: { stages: readonly string[] }) {
+export function SequentialRunner({ stages, endpoint = DEFAULT_ENDPOINT, label = "Run full Owner WhatsApp acceptance" }: { stages: readonly string[]; endpoint?: string; label?: string }) {
   const [runs, setRuns] = useState<StageRun[]>(() => stages.map((stage) => ({ stage, status: "pending" })));
   const [active, setActive] = useState(false);
   const [restore, setRestore] = useState<RestoreState>({ status: "idle" });
@@ -61,7 +61,7 @@ export function SequentialRunner({ stages }: { stages: readonly string[] }) {
     const until = Date.now() + RESTORE_MAX_MS;
     for (let attempt = 1; ; attempt++) {
       try {
-        const r = await post({ restore: true });
+        const r = await post(endpoint, { restore: true });
         if (r.status === 200) return setRestore({ status: "done", detail: r.json, attempts: attempt });
         if (r.status !== 409 || Date.now() > until) return setRestore({ status: "failed", detail: { http: r.status, ...r.json }, attempts: attempt });
         setRestore({ status: "running", detail: { waiting: "a stage still holds the lock — retrying", state: r.json.state }, attempts: attempt });
@@ -89,7 +89,7 @@ export function SequentialRunner({ stages }: { stages: readonly string[] }) {
       const timer = setTimeout(() => controller.abort(), CLIENT_TIMEOUT_MS);
       let patch: Partial<StageRun>;
       try {
-        const r = await post({ stages: [stage] }, controller.signal);
+        const r = await post(endpoint, { stages: [stage] }, controller.signal);
         const ms = Date.now() - startedAt;
         if (r.status === 200 && r.json.verdict === "PASS") patch = { status: "pass", ms, httpStatus: r.status, runId: r.json.runId, report: r.json };
         else if (r.status === 504 || r.json.timedOut || /FUNCTION_INVOCATION_TIMEOUT|timed out/i.test(r.text ?? "")) patch = { status: "timeout", ms, httpStatus: r.status, runId: r.json.runId, report: r.json, why: r.json.error ?? "the function hit its time limit" };
@@ -116,7 +116,7 @@ export function SequentialRunner({ stages }: { stages: readonly string[] }) {
   const cleanAll = async () => {
     const ids = runsRef.current.map((r) => r.runId).filter((x): x is string => Boolean(x));
     let deleted = 0;
-    for (const id of ids) deleted += ((await post({ cleanup: id })).json as { conversationsDeleted?: number }).conversationsDeleted ?? 0;
+    for (const id of ids) deleted += ((await post(endpoint, { cleanup: id })).json as { conversationsDeleted?: number }).conversationsDeleted ?? 0;
     setCleanup(`Deleted ${deleted} synthetic conversation(s) across ${ids.length} stage run(s).`);
   };
 
@@ -131,7 +131,7 @@ export function SequentialRunner({ stages }: { stages: readonly string[] }) {
     <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12 }}>
       <div>
         <button style={{ ...btn, fontWeight: 600 }} disabled={active} onClick={() => void runAll()}>
-          Run full Owner WhatsApp acceptance
+          {label}
         </button>
       </div>
       {preflight && <p role="status">{preflight}</p>}
