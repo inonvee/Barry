@@ -117,8 +117,11 @@ Stages: `identity`, `reads`, `decisions`, `conversation`, `mode`, `notifications
 ## 7. Founder WhatsApp V1
 
 - Founder line: `BARRY_WHATSAPP_FOUNDER_NUMBERS` (phone_number_ids, Preview-scoped) — distinct from customer routes and
-  owner lines (a number configured as either is ignored as a founder line). Same live / dry-run rule
-  (`BARRY_WHATSAPP_SEND`). Optional `BARRY_FOUNDER_TIMEZONE` for the daily founder brief window (default UTC).
+  owner lines (a number configured as either is ignored as a founder line).
+- Founder send mode: `BARRY_WHATSAPP_FOUNDER_SEND=live` (Preview only) makes ONLY founder replies / founder notices
+  live; customer and owner lines keep `BARRY_WHATSAPP_SEND=dry_run`. Anything but exactly `live` is dry run. The three
+  modes are logged at startup and shown in `GET /api/qa/status` (`whatsappSendModes`) and on `/hq/founder-whatsapp`.
+  The founder line answers ONLY verified founders: an unknown sender (or a wrong link code) gets no reply at all. Optional `BARRY_FOUNDER_TIMEZONE` for the daily founder brief window (default UTC).
 - Linking: `/hq/founder-whatsapp` (HQ founder session) → "Get a link code" → send `LINK <code>` from the phone to the
   founder line. Founder links are bound to `BARRY_FOUNDER_TOKEN` (rotation ends them) and revocable there.
 - Acceptance: `/hq/qa/founder-whatsapp` → one click runs `identity → reads → context → mutations → notifications`, one

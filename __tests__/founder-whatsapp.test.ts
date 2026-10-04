@@ -60,12 +60,12 @@ async function founder() {
 }
 
 describe("founder identity — explicit, verified, revocable; owners and customers never reach it", () => {
-  it("an unknown number is rejected with one neutral line and nothing runs", async () => {
+  it("an unknown number is rejected — it gets NO reply at all (the founder line may be live) and nothing runs", async () => {
     const l = line();
     const before = (await listFounderCommands(500)).length;
     const r = await processFounderInbound(msg("pause BARRY for Rina Studio", phone()), l, opts);
     expect(r.status).toBe("rejected");
-    expect(l.sent[0].text).toMatch(/isn't authorized for BARRY founder access/);
+    expect(l.sent).toHaveLength(0);
     expect((await listFounderCommands(500)).length).toBe(before);
     expect((await loadControls(RINA)).pausedBusiness).toBe(false);
   });

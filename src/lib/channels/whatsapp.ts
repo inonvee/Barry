@@ -53,13 +53,24 @@ export function whatsappOwnerConfig(): { configured: boolean; numbers: string[];
 /**
  * BARRY's FOUNDER line(s) (BARRY_WHATSAPP_FOUNDER_NUMBERS: phone_number_ids) — the founder command channel. Distinct
  * from every customer line AND every owner line: a number configured as either is never a founder line (fail closed).
+ *
+ * Its send mode is its OWN: BARRY_WHATSAPP_FOUNDER_SEND=live makes founder replies live while customer and owner lines
+ * keep following BARRY_WHATSAPP_SEND (dry run by default). Anything but exactly "live" is dry run. It never widens the
+ * other lines: neither whatsappConfig() nor whatsappOwnerConfig() reads it.
  */
 export function whatsappFounderConfig(): { configured: boolean; numbers: string[]; sendMode: "live" | "dry_run" } {
   const base = whatsappConfig();
   const taken = new Set([...Object.keys(base.routes), ...whatsappOwnerConfig().numbers, ...(process.env.BARRY_WHATSAPP_OWNER_NUMBERS ?? "").split(",").map((x) => x.trim())]);
   const numbers = (process.env.BARRY_WHATSAPP_FOUNDER_NUMBERS ?? "").split(",").map((x) => x.trim()).filter((n) => n && !taken.has(n));
   const tokens = ["WHATSAPP_APP_SECRET", "WHATSAPP_ACCESS_TOKEN"].every((k) => process.env[k]?.trim());
-  return { configured: tokens && numbers.length > 0, numbers, sendMode: base.sendMode };
+  return { configured: tokens && numbers.length > 0, numbers, sendMode: process.env.BARRY_WHATSAPP_FOUNDER_SEND?.trim() === "live" ? "live" : "dry_run" };
+}
+
+/** The three outbound send modes, separately (startup / preflight status; never a secret). */
+export function whatsappSendModes(): { customer: "live" | "dry_run"; owner: "live" | "dry_run"; founder: "live" | "dry_run"; ownerLine: "configured" | "not configured"; founderLine: "configured" | "not configured" } {
+  const owner = whatsappOwnerConfig();
+  const founder = whatsappFounderConfig();
+  return { customer: whatsappConfig().sendMode, owner: owner.sendMode, founder: founder.sendMode, ownerLine: owner.configured ? "configured" : "not configured", founderLine: founder.configured ? "configured" : "not configured" };
 }
 
 /** The phone number(s) routed to a business. */

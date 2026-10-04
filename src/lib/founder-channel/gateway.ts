@@ -26,7 +26,6 @@ const KIND = "founder_state" as const;
 const SESSION = "founder_session:";
 const INBOUND = "founder_inbound:";
 const LINK = /^\s*link\s+([A-Za-z0-9]{6,14})\s*$/i;
-const NOT_FOUNDER = "This number isn't authorized for BARRY founder access.";
 
 export type FounderSession = { identityId: string; lastKey?: string; businessId?: string; updatedAt: string };
 
@@ -71,8 +70,10 @@ export async function processFounderInbound(inbound: OwnerInbound, sender: Owner
   if (code) {
     const r = await redeemFounderLinkCode({ code, channel: inbound.channel, channelUserId: inbound.channelUserId, verifiedIdentifier: inbound.verifiedIdentifier, now });
     if (!r.ok) {
+      // No reply: the founder line answers only verified founders (it may be LIVE while every other line is dry run).
+      // The founder sees the failure in HQ (no new linked number) and simply gets a new code.
       console.warn("[barry:founder-channel] link refused", { reason: r.reason });
-      return { status: "rejected", reason: `link: ${r.reason}`, delivery: await reply({ text: "That code isn't valid or has expired. Get a new one in HQ." }) };
+      return { status: "rejected", reason: `link: ${r.reason}` };
     }
     return { status: "linked", delivery: await reply({ text: "Linked. This number now has founder access to BARRY.\nTry: “What do I need to know today?” / “מה קורה היום?”" }) };
   }
@@ -80,8 +81,9 @@ export async function processFounderInbound(inbound: OwnerInbound, sender: Owner
   // 2) Identity: exact, provider-verified, active, bound to the current founder credential.
   const who = await resolveFounderIdentity(inbound.channel, inbound.channelUserId, inbound.verifiedIdentifier);
   if (who.status !== "resolved") {
+    // An unknown, unverified or revoked sender gets NOTHING back — not even a neutral line — and nothing runs.
     console.warn("[barry:founder-channel] sender is not an active founder", { status: who.status, detail: who.detail });
-    return { status: "rejected", reason: `${who.status}: ${who.detail}`, delivery: await reply({ text: NOT_FOUNDER }) };
+    return { status: "rejected", reason: `${who.status}: ${who.detail}` };
   }
   const link: FounderIdentity = who.link;
   const masked = maskedFounder(link);

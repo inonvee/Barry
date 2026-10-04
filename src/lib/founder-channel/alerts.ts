@@ -112,9 +112,9 @@ async function founderLang(link: FounderIdentity): Promise<"en" | "he"> {
 }
 
 /** New system-level items → ONE coalesced message per founder identity; each item at most once, ever. */
-export async function notifyFounderAlerts(opts: { sender?: OwnerSender; now?: Date; items?: FounderAlertItem[] } = {}): Promise<FounderNotice[]> {
+export async function notifyFounderAlerts(opts: { sender?: OwnerSender; now?: Date; items?: FounderAlertItem[]; /** Limit to these identities (QA: synthetic founders only — never a real founder's notices). */ only?: (link: FounderIdentity) => boolean } = {}): Promise<FounderNotice[]> {
   const now = opts.now ?? new Date();
-  const to = await activeFounders();
+  const to = (await activeFounders()).filter((l) => !opts.only || opts.only(l));
   if (!to.length) return [];
   const items = opts.items ?? (await founderAlertItems({ now, observe: true }));
   if (!items.length) return [];
@@ -136,9 +136,9 @@ export async function notifyFounderAlerts(opts: { sender?: OwnerSender; now?: Da
 }
 
 /** The concise daily founder brief — the SAME brief Founder BARRY gives in HQ; nothing when the fleet is quiet. */
-export async function sendFounderDailyBrief(opts: { sender?: OwnerSender; now?: Date; composer?: FounderComposer | null } = {}): Promise<FounderNotice[]> {
+export async function sendFounderDailyBrief(opts: { sender?: OwnerSender; now?: Date; composer?: FounderComposer | null; only?: (link: FounderIdentity) => boolean } = {}): Promise<FounderNotice[]> {
   const now = opts.now ?? new Date();
-  const to = await activeFounders();
+  const to = (await activeFounders()).filter((l) => !opts.only || opts.only(l));
   if (!to.length) return [];
   const brief = founderBrief(await loadFounderFleet({ now }));
   if (brief.quiet) return [];

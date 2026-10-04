@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { parseWebhook, verifySignature, verifyWebhookSubscription, whatsappConfig, whatsappFounderConfig, whatsappFounderSender, whatsappOwnerConfig, whatsappOwnerSender, whatsappSender } from "@/lib/channels/whatsapp";
+import { parseWebhook, verifySignature, verifyWebhookSubscription, whatsappConfig, whatsappFounderConfig, whatsappFounderSender, whatsappOwnerConfig, whatsappOwnerSender, whatsappSendModes, whatsappSender } from "@/lib/channels/whatsapp";
 import { processFounderInbound } from "@/lib/founder-channel/gateway";
 import { processInbound } from "@/lib/channels/gateway";
 import { arrivalClock } from "@/lib/channels/inbox";
@@ -13,6 +13,9 @@ import { resolveBusinessGraph } from "@/lib/business-graph-repository";
  * Unsigned or wrongly signed POSTs are rejected before anything is parsed. Replies are sent only
  * when BARRY_WHATSAPP_SEND=live; otherwise they are recorded as dry runs.
  */
+// Startup status: the three send modes, separately (no secrets) — once per server instance.
+console.info("[barry:whatsapp] send modes", whatsappSendModes());
+
 export async function GET(req: NextRequest) {
   const v = verifyWebhookSubscription(req.nextUrl.searchParams);
   return v.ok ? new Response(v.challenge, { status: 200, headers: { "content-type": "text/plain" } }) : new Response("Forbidden", { status: 403 });

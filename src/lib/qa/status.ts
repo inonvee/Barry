@@ -2,7 +2,7 @@ import { getReasoner } from "@/lib/reasoner";
 import { isSupabaseConfigured } from "@/lib/store/supabase-client";
 import { runtimeCommit, BARRY_RUNTIME_VERSION } from "@/lib/runtime/version";
 import { ownerAccessConfigured, businessesWithOwnerAccess } from "@/lib/owner-auth";
-import { whatsappConfig, whatsappNumbersFor } from "@/lib/channels/whatsapp";
+import { whatsappConfig, whatsappNumbersFor, whatsappSendModes } from "@/lib/channels/whatsapp";
 import { resolveCapabilityProfiles } from "@/lib/capabilities";
 import { getConversationStore } from "@/lib/state";
 import { graphOrNull } from "@/lib/learn-business/http";
@@ -58,6 +58,8 @@ export async function buildQaStatus(businessId?: string) {
     databaseProject: databaseProject(),
     cron: process.env.CRON_SECRET && process.env.CRON_SECRET.trim().length >= 16 ? "secret configured" : "missing",
     ownerAccess: ownerAccessConfigured() ? { configured: true, businesses: businessesWithOwnerAccess() } : { configured: false, businesses: [] },
+    /** The three outbound send modes, separately: customer / owner (BARRY_WHATSAPP_SEND) and founder (BARRY_WHATSAPP_FOUNDER_SEND). */
+    whatsappSendModes: whatsappSendModes(),
     whatsapp: wa.configured ? { state: wa.sendMode === "live" ? "live sending" : "configured, dry run", routedBusinesses: [...new Set(Object.values(wa.routes))] } : { state: "missing", missing: wa.missing, qaDryRunAvailable: qaEnabled() },
     ...(business ? { business } : {}),
   };

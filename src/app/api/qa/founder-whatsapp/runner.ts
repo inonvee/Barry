@@ -7,7 +7,7 @@ import { updateConversation } from "@/lib/state/update";
 import { getReasoner } from "@/lib/reasoner";
 import { isSupabaseConfigured } from "@/lib/store/supabase-client";
 import { listControlAudit, loadControls } from "@/lib/hq/controls";
-import { parseWebhook, whatsappConfig, whatsappFounderConfig, whatsappOwnerConfig } from "@/lib/channels/whatsapp";
+import { parseWebhook, whatsappConfig, whatsappFounderConfig, whatsappSendModes } from "@/lib/channels/whatsapp";
 import { createLinkCode, listOwnerIdentities, revokeOwnerIdentity } from "@/lib/owner-channel/identity";
 import { processOwnerInbound } from "@/lib/owner-channel/gateway";
 import type { OwnerInbound, OwnerSender } from "@/lib/owner-channel/transport";
@@ -87,7 +87,7 @@ export async function runFounderWhatsappAcceptance(creds: { appSecret: string },
     runId,
     startedAt,
     stages: opts.stages,
-    deployment: { environment: process.env.VERCEL_ENV, databaseProject: databaseProjectRef(), commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 12) ?? null, reasoner: reasonerName === "llm" ? "live model" : reasonerName, founderModel: liveModel ? "live model (interpreter + composer, checked)" : "deterministic only", storage: isSupabaseConfigured() ? "durable (Supabase)" : "memory", sendMode: process.env.BARRY_WHATSAPP_SEND, founderLine: whatsappFounderConfig().configured ? `configured (${whatsappFounderConfig().sendMode})` : "not configured — replies recorded as dry run here" },
+    deployment: { environment: process.env.VERCEL_ENV, databaseProject: databaseProjectRef(), commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 12) ?? null, reasoner: reasonerName === "llm" ? "live model" : reasonerName, founderModel: liveModel ? "live model (interpreter + composer, checked)" : "deterministic only", storage: isSupabaseConfigured() ? "durable (Supabase)" : "memory", sendMode: process.env.BARRY_WHATSAPP_SEND, founderLine: whatsappFounderConfig().configured ? `configured (${whatsappFounderConfig().sendMode}; this run uses a dry-run line)` : "not configured — replies recorded as dry run here" },
     founder: `synthetic founder ${masked} (linked for this run, revoked at the end)`,
     conversations: [],
     checks: [],
@@ -136,7 +136,10 @@ export async function runFounderWhatsappAcceptance(creds: { appSecret: string },
   const original = await ensureRestorePoint(BIZ, by);
   check("preflight", "live reasoner", reasonerName === "llm", report.deployment.reasoner);
   check("preflight", "durable Supabase storage on the Preview project", isSupabaseConfigured() && report.deployment.databaseProject === "glqrfoljvdbyrmbvupym", report.deployment.databaseProject);
-  check("preflight", "WhatsApp sending is dry_run (customer, owner and founder lines)", process.env.BARRY_WHATSAPP_SEND === "dry_run" && whatsappFounderConfig().sendMode === "dry_run" && whatsappOwnerConfig().sendMode === "dry_run");
+  // Customer and owner lines must be dry run. The founder line may be live for the real founder; in THIS run every
+  // founder reply and notice goes to a dry-run line (synthetic founders only), so nothing is sent either way.
+  const modes = whatsappSendModes();
+  check("preflight", "customer and owner sending is dry_run; founder replies in this run are dry run (synthetic founders only)", process.env.BARRY_WHATSAPP_SEND === "dry_run" && modes.customer === "dry_run" && modes.owner === "dry_run", modes);
 
   const fid = `whatsapp:${FOUNDER}`;
   try {
@@ -268,14 +271,17 @@ export async function runFounderWhatsappAcceptance(creds: { appSecret: string },
       check("notifications", "alert items derive from the real fleet records (incidents, health, launch gate, cost guardrail), deterministically", JSON.stringify(real.map((i) => i.category).sort()) === JSON.stringify(reread.map((i) => i.category).sort()), { items: real.map((i) => `${i.category}: ${short(i.text, 120)}`) });
       // The delivery pipeline (coalesce → dedupe → 24h window → dry run) with ONE clearly labelled QA item.
       const qaItem = { key: `qa:${runId}`, category: "critical_incident" as const, businessId: BIZ, businessName: "Rina Studio", text: `QA acceptance ${runId}: synthetic alert item (delivery-pipeline proof only)` };
-      const first = (await notifyFounderAlerts({ sender: dryLine, items: [qaItem] })).filter((n) => n.ref === ref);
-      const again = (await notifyFounderAlerts({ sender: dryLine, items: [qaItem] })).filter((n) => n.ref === ref);
+      const synthetic = (l: { channelUserId: string }) => l.channelUserId.startsWith("999");
+      const first = (await notifyFounderAlerts({ sender: dryLine, items: [qaItem], only: synthetic })).filter((n) => n.ref === ref);
+      const again = (await notifyFounderAlerts({ sender: dryLine, items: [qaItem], only: synthetic })).filter((n) => n.ref === ref);
       check("notifications", "a founder notice is delivered once (dry run — nothing sent) and never twice", first.length === 1 && first[0].status === "dry_run" && again.length === 0 && (await listFounderNotices()).filter((n) => n.ref === ref && (n.items ?? []).includes(qaItem.key)).length === 1, { first: first.map((n) => n.status), again: again.length });
-      const brief1 = (await sendFounderDailyBrief({ sender: dryLine })).filter((n) => n.ref === ref);
-      const brief2 = (await sendFounderDailyBrief({ sender: dryLine })).filter((n) => n.ref === ref);
+      const brief1 = (await sendFounderDailyBrief({ sender: dryLine, only: synthetic })).filter((n) => n.ref === ref);
+      const brief2 = (await sendFounderDailyBrief({ sender: dryLine, only: synthetic })).filter((n) => n.ref === ref);
       check("notifications", "the daily founder brief goes at most once a day (nothing when the fleet is quiet)", brief1.length <= 1 && brief2.length === 0 && brief1.every((n) => n.status === "dry_run"), { first: brief1.map((n) => n.status), second: brief2.length });
-      const all = (await listFounderNotices()).filter((n) => n.at >= startedAt);
-      check("notifications", "no real WhatsApp sends: every founder notice in this run is dry_run or blocked", all.every((n) => n.status === "dry_run" || n.status === "blocked"), all.map((n) => `${n.kind}:${n.status}`));
+      const all = (await listFounderNotices()).filter((n) => n.at >= startedAt && n.to === masked);
+      const realFounders = (await listFounderIdentities()).filter((l) => l.status === "active" && !synthetic(l)).map((l) => founderRef(l.id));
+      const touchedReal = (await listFounderNotices()).filter((n) => n.at >= startedAt && realFounders.includes(n.ref) && (n.items ?? []).includes(qaItem.key));
+      check("notifications", "no real WhatsApp sends: every founder notice in this run is dry_run or blocked, and no real founder's notices were touched", all.every((n) => n.status === "dry_run" || n.status === "blocked") && touchedReal.length === 0, { run: all.map((n) => `${n.kind}:${n.status}`), realFounderNoticesTouched: touchedReal.length });
     }
   } catch (err) {
     if (err instanceof StageBudgetExceeded) check("restore", `stage stopped: it exceeded its ${Math.round((opts.budgetMs ?? FWA_STAGE_BUDGET_MS) / 1000)}s time budget (Vercel's limit is 300s) — the business is restored below`, false);

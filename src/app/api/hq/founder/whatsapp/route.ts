@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { hqAuthError } from "@/lib/hq/auth";
+import { whatsappSendModes } from "@/lib/channels/whatsapp";
 import { createFounderLinkCode, founderLinkActive, founderRef, listFounderIdentities, maskedFounder, revokeFounderIdentity } from "@/lib/founder-channel/identity";
 
 /**
@@ -15,7 +16,7 @@ export async function GET(req: Request) {
   const denied = hqAuthError(req);
   if (denied) return denied;
   const links = await listFounderIdentities();
-  return Response.json({ identities: links.map((l) => ({ ref: founderRef(l.id), number: maskedFounder(l), status: l.status, active: founderLinkActive(l).ok, linkedAt: l.linkedAt, lastInboundAt: l.lastInboundAt ?? null, revokedAt: l.revokedAt ?? null, label: l.label ?? null })) }, { headers: { "cache-control": "no-store" } });
+  return Response.json({ sendModes: whatsappSendModes(), identities: links.map((l) => ({ ref: founderRef(l.id), number: maskedFounder(l), status: l.status, active: founderLinkActive(l).ok, linkedAt: l.linkedAt, lastInboundAt: l.lastInboundAt ?? null, revokedAt: l.revokedAt ?? null, label: l.label ?? null })) }, { headers: { "cache-control": "no-store" } });
 }
 
 export async function POST(req: Request) {
