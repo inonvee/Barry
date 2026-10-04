@@ -63,4 +63,6 @@ business's own rules.
 
 ## 4. Preview environment refresh
 
+Current Preview acceptance route is configured for `1315221915012159=fashion-retailer`, with WhatsApp sending forced to `dry_run` for the first deployed gate.
+
 Preview database credentials are intentionally isolated from Production. After changing Preview-scoped Vercel environment variables, trigger a fresh Preview deployment before running the acceptance gate so the deployment picks up the new values.
