@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getBusinessGraph } from "@/lib/fixtures";
 import { handleCustomerMessage } from "@/lib/runtime";
+import { loadControls } from "@/lib/hq/controls";
+import { replyGate } from "@/lib/runtime/operating-mode";
 import { ConversationScopeError } from "@/lib/state";
 import { ConcurrencyGuardMissingError } from "@/lib/state/lock";
 import { notifyOwnerDecisions } from "@/lib/owner/briefs";
@@ -31,6 +33,10 @@ export async function POST(req: NextRequest) {
   } catch {
     return NextResponse.json({ error: `Unknown business: ${businessId}` }, { status: 404 });
   }
+
+  // PAUSED: BARRY answers no one for this business — the test tool included (the mode is the real one).
+  const gate = replyGate(await loadControls(graph.business.id), "web");
+  if (!gate.allowed) return NextResponse.json({ error: `BARRY is paused for this business (${gate.reason}). Resume it to continue.`, code: "business_paused" }, { status: 423 });
 
   try {
     const outcome = await handleCustomerMessage(graph, conversationId, customerId, message);

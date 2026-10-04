@@ -4,6 +4,7 @@ import { getBackend } from "@/lib/store";
 import { getConversationStore } from "@/lib/state";
 import { HumanHoldsConversationError, resumeAfterApproval } from "@/lib/runtime";
 import { humanHolds } from "@/lib/runtime/control";
+import { OwnerModeError, ownerPause, ownerResume } from "./mode";
 import { moneyWords, hasMoney } from "@/lib/format/money";
 import type { OwnerOutbound } from "@/lib/owner-channel/transport";
 import { getOwnerWorkspace, type OwnerWorkspace } from "./service";
@@ -490,6 +491,25 @@ async function dispatch(input: ExecuteInput, record: OwnerCommandRecord, now: Da
       step("verification", "ok", "approval resolved through the runtime resume path (revalidation, final-write gate, compare-and-set)");
       if (held) return { text: T(`Not carried out: ${held.reason}. The customer was asked to confirm first.`, "לא בוצע: הלקוח התבקש לאשר קודם."), intent: intent.kind };
       return { text: intent.decision === "approve" ? T(`Approved. BARRY told ${prompt.customer}: “${outcome.response.slice(0, 220)}”`, `אושר. BARRY כתב ל${/^[\u0590-\u05FF]/.test(prompt.customer) ? "" : "־"}${prompt.customer}: “${outcome.response.slice(0, 220)}”`) : T(`Declined — ${prompt.customer} was told; nothing was sent or charged.`, `נדחה — ${prompt.customer} קיבל עדכון; שום דבר לא נשלח ולא נגבה.`), links: links(source, [{ label: T("Conversation", "לשיחה"), path: `/owner?tab=${source === "web" ? "customers" : "inbox"}&conversation=${encodeURIComponent(approval.conversationId)}` }]), intent: intent.kind };
+    }
+
+    case "mode_change": {
+      // Channel-independent: the same owner pause as the web control (durable, audited, this business only).
+      try {
+        const view = intent.to === "paused" ? await ownerPause(graph, actorLabel(actor)) : await ownerResume(graph, actorLabel(actor));
+        step("execution", "ok", `mode ${view.mode}${view.pausedBy ? ` (paused by ${view.pausedBy})` : ""}`);
+        return {
+          text:
+            intent.to === "paused"
+              ? T("Paused. BARRY won't answer customers, send anything or change anything for this business until you resume it (say “resume BARRY”). Nothing was deleted.", "הושהה. BARRY לא יענה ללקוחות, לא ישלח ולא ישנה כלום בעסק הזה עד שתחדש (כתוב ״תחזור לעבוד״). שום דבר לא נמחק.")
+              : T(`Resumed. BARRY is back in ${view.mode === "live" ? "live" : view.mode === "supervised" ? "supervised" : "practice"} mode.`, `חזרנו. BARRY חזר למצב ${view.mode === "live" ? "פעיל" : view.mode === "supervised" ? "מפוקח" : "תרגול"}.`),
+          intent: intent.kind,
+        };
+      } catch (err) {
+        if (!(err instanceof OwnerModeError)) throw err;
+        step("execution", "blocked", err.code);
+        return { text: T(err.message, "צוות BARRY השהה את העסק — הם יחדשו אותו איתך. שום דבר לא השתנה."), intent: intent.kind };
+      }
     }
 
     case "policy_change_request": {

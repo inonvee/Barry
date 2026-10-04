@@ -4,7 +4,9 @@ import type { OwnerWorkspace } from "@/lib/owner/service";
 import type { useOwnerApi } from "../useOwnerApi";
 import { useOwnerLang } from "../lang";
 import { LanguageSwitch, OWNER_MORE_GROUPS } from "../OwnerShell";
-import { Button, Chip, Group, Lead, PageHeader, Row, SectionLabel } from "../os-ui";
+import { useCallback, useEffect, useState } from "react";
+import type { OwnerModeView } from "@/lib/owner/mode";
+import { Button, Chip, ConfirmButton, Group, Lead, PageHeader, Row, SectionLabel } from "../os-ui";
 
 /**
  * MORE — the index of the OS, grouped the way an owner thinks: the business (customers, what BARRY
@@ -41,6 +43,7 @@ export function MoreView({ ws, api }: { ws: OwnerWorkspace; api: Api }) {
           </Group>
         </section>
       ))}
+      <ModeControl api={api} />
       <section className="flex flex-col gap-2">
         <SectionLabel>{t("You", "אתה")}</SectionLabel>
         <Group>
@@ -58,5 +61,49 @@ export function MoreView({ ws, api }: { ws: OwnerWorkspace; api: Api }) {
         </div>
       </section>
     </div>
+  );
+}
+
+/** BARRY's real operating mode for this business (read from the controls), and the owner's own pause. */
+function ModeControl({ api }: { api: Api }) {
+  const { t } = useOwnerLang();
+  const { businessId, call } = api;
+  const [view, setView] = useState<OwnerModeView | null>(null);
+  const [error, setError] = useState("");
+  const load = useCallback(() => {
+    call<OwnerModeView>(`/api/owner/mode?businessId=${encodeURIComponent(businessId)}`).then(setView, (e: Error) => setError(e.message));
+  }, [businessId, call]);
+  useEffect(load, [load]);
+  if (!view) return error ? <p className="px-1 text-[13px] text-o-bad" role="alert">{error}</p> : null;
+  const act = async (action: "pause" | "resume") => {
+    setError("");
+    try {
+      setView(await call<OwnerModeView>("/api/owner/mode", { body: { businessId, action } }));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+  const label = { paused: t("Paused", "מושהה"), simulator: t("Practice mode", "מצב תרגול"), supervised: t("Supervised", "מפוקח"), live: t("Live", "פעיל") }[view.mode];
+  const meaning = {
+    paused: view.pausedBy === "founder" ? t("The BARRY team paused BARRY for your business: it answers no one, sends nothing and changes nothing. They resume it with you.", "צוות BARRY השהה את BARRY בעסק שלך: הוא לא עונה, לא שולח ולא משנה כלום. הם יחדשו אותו איתך.") : t("You paused BARRY: it answers no one, sends nothing and changes nothing. Customer messages are kept.", "השהית את BARRY: הוא לא עונה, לא שולח ולא משנה כלום. הודעות לקוחות נשמרות."),
+    simulator: t("Practice: BARRY answers, but nothing proactive reaches a customer — follow-ups are test runs.", "תרגול: BARRY עונה, אבל שום דבר יזום לא מגיע ללקוח — מעקבים הם הרצות בדיקה."),
+    supervised: t("BARRY answers and prepares; every consequential action and every follow-up waits for you.", "BARRY עונה ומכין; כל פעולה משמעותית וכל מעקב מחכים לך."),
+    live: t("BARRY does what your rules allow on its own.", "BARRY עושה לבד מה שהכללים שלך מתירים."),
+  }[view.mode];
+  return (
+    <section className="flex flex-col gap-2" data-testid="mode-control">
+      <SectionLabel>{t("BARRY's mode", "המצב של BARRY")}</SectionLabel>
+      <Group>
+        <Row lead={<Lead icon="shield" tone={view.mode === "paused" ? "warn" : "neutral"} />} title={label} sub={meaning} chip={<Chip tone={view.mode === "paused" ? "warn" : view.mode === "live" ? "ok" : "info"}>{label}</Chip>} />
+      </Group>
+      <div className="px-1">
+        {view.mode === "paused" ? (
+          view.pausedBy === "owner" && <Button kind="secondary" onClick={() => void act("resume")}>{t("Resume BARRY", "לחדש את BARRY")}</Button>
+        ) : (
+          <ConfirmButton label={t("Pause BARRY", "להשהות את BARRY")} confirmLabel={t("Pause now", "להשהות עכשיו")} consequence={t("BARRY stops answering customers, sending and changing anything for this business until you resume it. Nothing is deleted.", "BARRY יפסיק לענות, לשלוח ולשנות כל דבר בעסק הזה עד שתחדש. שום דבר לא נמחק.")} kind="secondary" onConfirm={() => act("pause")} />
+        )}
+        {error && <p className="mt-2 text-[13px] text-o-bad" role="alert">{error}</p>}
+      </div>
+    </section>
   );
 }

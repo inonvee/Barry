@@ -1,4 +1,5 @@
 import { channelDisabled, loadControls } from "@/lib/hq/controls";
+import { replyGate } from "@/lib/runtime/operating-mode";
 import { renderRichText } from "./rich";
 import { resolveCustomerIdentity } from "./identity";
 import { resolveBusinessGraph } from "@/lib/business-graph-repository";
@@ -93,9 +94,9 @@ type Inbound = NormalizedInboundMessage & { inboundId: string; profileName?: str
  */
 export async function processInbound(message: Inbound, sender: OutboundSender, opts: { waitMs?: number } = {}): Promise<InboundResult> {
   const graph = resolveBusinessGraph(message.businessId);
-  // A channel the founder disabled is not answered on: nothing is processed, nothing is sent.
   const controls = await loadControls(graph.business.id);
-  if (channelDisabled(controls, message.identity.channel)) {
+  // A channel the founder disabled is not answered on: nothing is processed, nothing is sent.
+  if (channelDisabled(controls, message.identity.channel) && !controls.pausedBusiness) {
     return { status: "failed", conversationId: message.conversationId, error: `channel ${message.identity.channel} is disabled by the founder` };
   }
   // Verified cross-channel identity: a linked identity resolves to its canonical customer; never by name.
@@ -106,6 +107,21 @@ export async function processInbound(message: Inbound, sender: OutboundSender, o
   // Without the inbox (migration 0019) this throws ConcurrencyGuardMissingError: nothing runs, nothing is sent.
   const claimed = await inbox.claim({ businessId: graph.business.id, conversationId, channel: message.identity.channel, providerMessageId: message.inboundId, customerId, body: message.text, meta: { to: message.identity.channelUserId, ...(message.profileName ? { profileName: message.profileName.slice(0, 80) } : {}) }, receivedAt: message.receivedAt });
   if (!claimed.created && INBOX_DONE.includes(claimed.row.status)) return { status: "duplicate", conversationId };
+  // PAUSED (operating mode): the customer's message is kept — in the inbox and in the conversation the owner
+  // reads — and nothing is answered, run or sent. Checked through the one operating-mode gate.
+  const gate = replyGate(controls, message.identity.channel);
+  if (!gate.allowed) {
+    await withConversationLock(conversationId, async () => {
+      const store = getConversationStore();
+      const state = await store.getOrCreate(conversationId, graph.business.id, customerId);
+      if (!state.messages.some((m) => m.role === "customer" && m.content === message.text && sameInstant(m.at, message.receivedAt))) {
+        state.messages.push({ role: "customer", content: message.text, at: message.receivedAt });
+        await store.save(state);
+      }
+      await inbox.update(claimed.row.id, { status: "skipped", error: `not answered: ${gate.reason}` });
+    }, opts);
+    return { status: "held", conversationId };
+  }
   let advanced = new Set<string>();
   try {
     advanced = await withConversationLock(conversationId, () => drainConversation(conversationId, graph.business.id, sender), { waitMs: opts.waitMs ?? 20_000 });

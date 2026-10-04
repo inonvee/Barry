@@ -1,3 +1,4 @@
+import { operatingMode } from "@/lib/runtime/operating-mode";
 import type { BusinessGraph } from "@/lib/business-graph";
 import "@/lib/fabric";
 import { getCapability } from "@/lib/fabric/capability";
@@ -161,6 +162,8 @@ export async function getOwnerOs(staticGraph: BusinessGraph, lang: OwnerLang = "
   return {
     business: { id: businessId, name: graph.business.name, locale: graph.business.locale },
     mode: controls.mode,
+    /** The runtime mode (PAUSED wins over the configured mode) — what the shell shows. */
+    operatingMode: operatingMode(controls),
     rules,
     systems: [...channelRows, ...systems],
     setup: setupView({ readiness, mode: controls.mode, rulesActive: rules.rules.length, signedIn: true }, lang),

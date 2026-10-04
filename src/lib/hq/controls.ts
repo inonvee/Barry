@@ -3,12 +3,14 @@ import type { OperatorRecord } from "@/lib/store/types";
 import { ACTION_REQUIREMENTS } from "@/lib/capabilities/model";
 import { getCapability } from "@/lib/fabric/capability";
 import { INVOKE_CAPABILITY } from "@/lib/tools/capability-tool";
+import { withConversationLock } from "@/lib/state/lock";
 
 /**
  * FOUNDER CONTROLS — the bounded, audited levers the founder holds over ONE business from HQ.
  *
- *  - mode: SIMULATOR (mock systems only) / SUPERVISED (real systems may be connected; the founder watches
- *    closely) / LIVE. The mode never loosens authority by itself: it changes readiness and visibility.
+ *  - mode: SIMULATOR (test: proactive work only dry-runs) / SUPERVISED (BARRY answers and prepares; every
+ *    consequential action and proactive message waits for the owner) / LIVE (what the rules permit). Read
+ *    at runtime through lib/runtime/operating-mode; the mode never loosens authority by itself.
  *  - pauseConsequentialWrites: every consequential action is DENIED (reads still work). Approval creation
  *    is a write toward an effect and is paused too.
  *  - approvalRequiredForAll: every consequential action the business's own rules would allow needs the
@@ -34,6 +36,8 @@ export type BusinessControls = {
   pausedBusiness: boolean;
   /** SAFE MODE: every consequential action needs approval and proactive messages are off (reads and answers continue). */
   safeMode: boolean;
+  /** Who paused the business (the identity on the change). An owner may lift only an owner's pause. */
+  pausedBy: string | null;
   reason: string;
   updatedAt: string | null;
   updatedBy: string | null;
@@ -57,6 +61,7 @@ export const DEFAULT_CONTROLS: BusinessControls = {
   disabledChannels: [],
   pausedBusiness: false,
   safeMode: false,
+  pausedBy: null,
   reason: "",
   updatedAt: null,
   updatedBy: null,
@@ -76,6 +81,7 @@ function fromRecord(r: OperatorRecord | undefined): BusinessControls {
     disabledChannels: Array.isArray(d.disabledChannels) ? d.disabledChannels.filter((x): x is string => typeof x === "string") : [],
     pausedBusiness: d.pausedBusiness === true,
     safeMode: d.safeMode === true,
+    pausedBy: d.pausedBusiness === true ? (typeof d.pausedBy === "string" ? d.pausedBy : "founder") : null,
     reason: typeof d.reason === "string" ? d.reason : "",
     updatedAt: typeof d.updatedAt === "string" ? d.updatedAt : r.updatedAt,
     updatedBy: typeof d.updatedBy === "string" ? d.updatedBy : null,
@@ -90,8 +96,10 @@ export async function loadControls(businessId: string): Promise<BusinessControls
     cache.set(businessId, c);
     return c;
   } catch (err) {
-    console.error("[barry:controls] unavailable — using the last known controls", err instanceof Error ? err.message : err);
-    return cache.get(businessId) ?? { ...DEFAULT_CONTROLS };
+    // Fail safe: the last controls this process saw; with none, SAFE MODE (every consequential action
+    // waits for approval, nothing proactive) — never a looser reading than the stored record could be.
+    console.error("[barry:controls] unavailable — using the last known controls (or safe mode)", err instanceof Error ? err.message : err);
+    return cache.get(businessId) ?? { ...DEFAULT_CONTROLS, safeMode: true, reason: "controls unavailable — safe mode until they can be read" };
   }
 }
 
@@ -104,7 +112,7 @@ export function resetControlsCacheForTests(): void {
   cache.clear();
 }
 
-const strip = (c: BusinessControls): ControlAudit["before"] => ({ mode: c.mode, pauseConsequentialWrites: c.pauseConsequentialWrites, approvalRequiredForAll: c.approvalRequiredForAll, pausedCapabilities: [...c.pausedCapabilities], disabledChannels: [...c.disabledChannels], pausedBusiness: c.pausedBusiness, safeMode: c.safeMode });
+const strip = (c: BusinessControls): ControlAudit["before"] => ({ mode: c.mode, pauseConsequentialWrites: c.pauseConsequentialWrites, approvalRequiredForAll: c.approvalRequiredForAll, pausedCapabilities: [...c.pausedCapabilities], disabledChannels: [...c.disabledChannels], pausedBusiness: c.pausedBusiness, safeMode: c.safeMode, pausedBy: c.pausedBy });
 
 export type ControlChange = Partial<Pick<BusinessControls, "mode" | "pauseConsequentialWrites" | "approvalRequiredForAll" | "pausedCapabilities" | "disabledChannels" | "pausedBusiness" | "safeMode">>;
 
@@ -114,6 +122,11 @@ export type ControlChange = Partial<Pick<BusinessControls, "mode" | "pauseConseq
  */
 export async function applyControlChange(businessId: string, change: ControlChange, meta: { by: string; reason: string; now?: Date }): Promise<{ controls: BusinessControls; audit: ControlAudit | null; changed: boolean }> {
   if (!meta.reason.trim()) throw new Error("A reason is required for every founder control change");
+  // One change at a time per business (a database lease): two changes never overwrite each other.
+  return withConversationLock(`controls:${businessId}`, () => applyControlChangeLocked(businessId, change, meta), { waitMs: 10_000 });
+}
+
+async function applyControlChangeLocked(businessId: string, change: ControlChange, meta: { by: string; reason: string; now?: Date }): Promise<{ controls: BusinessControls; audit: ControlAudit | null; changed: boolean }> {
   const before = await loadControls(businessId);
   const at = (meta.now ?? new Date()).toISOString();
   // NO-OP: a change that leaves every lever where it is writes nothing — no controls record, no audit entry.
@@ -125,7 +138,7 @@ export async function applyControlChange(businessId: string, change: ControlChan
     ...(typeof change.approvalRequiredForAll === "boolean" ? { approvalRequiredForAll: change.approvalRequiredForAll } : {}),
     ...(change.pausedCapabilities ? { pausedCapabilities: [...new Set(change.pausedCapabilities.map((s) => s.trim()).filter(Boolean))] } : {}),
     ...(change.disabledChannels ? { disabledChannels: [...new Set(change.disabledChannels.map((s) => s.trim().toLowerCase()).filter(Boolean))] } : {}),
-    ...(typeof change.pausedBusiness === "boolean" ? { pausedBusiness: change.pausedBusiness } : {}),
+    ...(typeof change.pausedBusiness === "boolean" ? { pausedBusiness: change.pausedBusiness, pausedBy: change.pausedBusiness ? (before.pausedBusiness ? before.pausedBy : meta.by) : null } : {}),
     ...(typeof change.safeMode === "boolean" ? { safeMode: change.safeMode } : {}),
     reason: meta.reason.trim().slice(0, 500),
     updatedAt: at,
@@ -161,7 +174,7 @@ export const CONTROL_ACTIONS = {
   disable_channel: { title: "Disable a channel", effect: "BARRY stops answering on that channel; inbound messages are refused and logged. Nothing is sent.", reversibility: "Enable the channel again." },
   pause_business: { title: "Pause the business", effect: "BARRY stops answering on every channel, refuses every consequential action and sends nothing proactive. Nothing is deleted.", reversibility: "Resume with one action; the audit shows both." },
   safe_mode: { title: "Safe mode", effect: "Every consequential action needs the owner's approval, and BARRY sends nothing proactive. Reads and answers continue.", reversibility: "Leave safe mode with one action." },
-  change_mode: { title: "Change the operating mode", effect: "SIMULATOR / SUPERVISED / LIVE change readiness and how aggressively incidents reach you. The mode never loosens authority by itself.", reversibility: "Set another mode." },
+  change_mode: { title: "Change the operating mode", effect: "SIMULATOR: test only — proactive work is a dry run, nothing reaches a customer or owner line on its own. SUPERVISED: BARRY answers and prepares; every consequential action and every proactive message waits for the owner. LIVE: what the business's rules permit. The mode never loosens the rules themselves.", reversibility: "Set another mode." },
 } as const;
 
 export async function listControlAudit(businessId: string): Promise<ControlAudit[]> {
@@ -219,6 +232,10 @@ export function applyFounderControls(controls: BusinessControls, action: string,
   }
   if ((controls.approvalRequiredForAll || controls.safeMode) && base.status === "allowed") {
     return { status: "requires_approval", reason: controls.safeMode ? "Safe mode: every consequential action needs the owner's approval right now." : "Founder supervision: every consequential action needs the owner's approval right now.", policyId: controls.safeMode ? "founder_control:safe_mode" : "founder_control:supervised" };
+  }
+  // SUPERVISED: BARRY may prepare and recommend; every consequential action waits for the owner.
+  if (controls.mode === "supervised" && base.status === "allowed") {
+    return { status: "requires_approval", reason: "Supervised mode: every consequential action needs the owner's approval.", policyId: "operating_mode:supervised" };
   }
   return { status: "allowed" };
 }

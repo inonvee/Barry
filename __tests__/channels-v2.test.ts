@@ -109,7 +109,7 @@ describe("channel health is observable and secret-free; a paused business answer
     expect(readDeliveries(state.knownFields)).toHaveLength(1);
   });
 
-  it("pause business: every channel is refused at the gateway and nothing is processed", async () => {
+  it("pause business: nothing is answered, run or sent — the customer's message is kept for the owner", async () => {
     const business = "barry-logistics-demo";
     setReasonerForTests(new ScriptedModel(() => undefined));
     await applyControlChange(business, { pausedBusiness: true }, { by: "founder", reason: "emergency", now: NOW });
@@ -117,9 +117,10 @@ describe("channel health is observable and secret-free; a paused business answer
       const sender: OutboundSender = { channel: "web", mode: "dry_run", send: async () => ({}) };
       const id = `web:${business}:p-${Date.now()}`;
       const out = await processInbound({ businessId: business, conversationId: id, identity: { channel: "web", channelUserId: "p1" }, text: "hello", receivedAt: NOW.toISOString(), inboundId: `in-${id}` }, sender);
-      expect(out.status).toBe("failed");
-      expect(out.status === "failed" && out.error).toMatch(/disabled by the founder/);
-      expect(await getConversationStore().get(id)).toBeUndefined();
+      expect(out.status).toBe("held");
+      const kept = await getConversationStore().get(id);
+      expect(kept?.messages.map((m) => `${m.role}:${m.content}`)).toEqual(["customer:hello"]);
+      expect(kept?.turns).toHaveLength(0);
     } finally {
       await applyControlChange(business, { pausedBusiness: false }, { by: "founder", reason: "resume", now: NOW });
     }

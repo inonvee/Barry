@@ -215,7 +215,7 @@ function OwnerDashboard() {
   const active: OwnerSection = tab;
 
   return (
-    <OwnerShell api={api} active={active} badge={badge} onNavigate={onNavigate} presence={presence} ops={live ? { syncedAt, syncing, commands: ws ? commandSuggestions(ws) : [], mode: os?.mode === "simulator" ? t("Practice mode", "מצב תרגול") : os?.mode === "supervised" ? t("Supervised", "מפוקח") : undefined } : undefined}>
+    <OwnerShell api={api} active={active} badge={badge} onNavigate={onNavigate} presence={presence} ops={live ? { syncedAt, syncing, commands: ws ? commandSuggestions(ws) : [], mode: os?.operatingMode === "paused" ? t("Paused", "מושהה") : os?.mode === "simulator" ? t("Practice mode", "מצב תרגול") : os?.mode === "supervised" ? t("Supervised", "מפוקח") : undefined } : undefined}>
       <div className="flex flex-col gap-4">
         {authorized && error && <ErrorState title={t("BARRY couldn't load your business right now", "BARRY לא הצליח לטעון את העסק כרגע")} detail={error} onRetry={() => void load()} />}
         {ws?.unavailable.length ? <Notice tone="warn">{t(`Some records couldn't be read (${ws.unavailable.join(", ")}) — the figures leave them out rather than guess.`, `חלק מהרשומות לא נקראו (${ws.unavailable.join(", ")}) — המספרים לא כוללים אותן במקום לנחש.`)}</Notice> : null}

@@ -20,6 +20,7 @@ import { PROACTIVE, workflowState, workflows } from "./control-room";
  *   operation_stop        stop an active operation (or all BARRY-initiated outreach)
  *   approval_response     approve / decline a request — resolved only against an exact, current request
  *   policy_change_request a rule or limit ("don't offer more than 5% today") → the reviewed Train BARRY path
+ *   mode_change           pause BARRY for this business / lift the owner's own pause
  *   unsupported           something BARRY can't do (e.g. broadcast to people who never wrote in)
  */
 
@@ -34,6 +35,7 @@ export type CommandIntent =
   | { kind: "operation_stop"; workflow?: ObligationKind; everything?: boolean }
   | { kind: "approval_response"; decision: "approve" | "decline"; subject?: string }
   | { kind: "policy_change_request"; text: string }
+  | { kind: "mode_change"; to: "paused" | "resumed" }
   | { kind: "unsupported"; reason: string };
 
 export type OwnerCommand = { text: string; source: CommandSource; intent: CommandIntent };
@@ -53,6 +55,9 @@ const DECIDE = /^(?:please\s+|barry,?\s+)*(approve|accept|yes,? approve|ok(?:ay)
 const QUESTION = /\?\s*$|^(?:barry,?\s+)?(what|who|where|when|why|how|which|is|are|did|do|does|has|have|can|could|show|tell me|list|give me|any)\b|^(מה|מי|איפה|מתי|למה|איך|כמה|האם|תראה|תגיד)/i;
 const RULE = /\b(don'?t|do not|never|always|only|no more than|not more than|at most|max(?:imum)?|limit|up to|from now on|until (?:tomorrow|monday|further notice)|stop offering|no discounts?)\b|^(אל|לעולם|תמיד|רק|לא יותר)/i;
 const OUTBOUND = /\b(campaign|broadcast|blast|newsletter|(?:message|text|email) (?:all|every(?:one)?) (?:my )?customers?(?! who))\b|קמפיין|דיוור/i;
+// Pausing BARRY itself (not one workflow): "pause BARRY", "stop yourself", "freeze the business".
+const PAUSE_ALL = /^(?:please\s+|barry,?\s+)*(?:pause|stop|freeze|halt)\s+(?:barry|yourself|the business|all (?:of )?barry|all activity|everything you(?:'re| are)? doing)\b|^(?:please\s+)?(?:barry,?\s+)?(?:go quiet|take a break)\b|^(?:תשהה|השהה|תעצור|עצור) את (?:בארי|barry|העסק)/i;
+const RESUME_ALL = /^(?:please\s+|barry,?\s+)*(?:resume|unpause|un-pause|start again|back to work|you can (?:continue|resume|start again))\b|^(?:תחזור לעבוד|תמשיך לעבוד|בטל השהיה)/i;
 const SCOPE_TODAY = /\btoday\b|\bthis morning\b|היום/i;
 
 const TOPICS: { topic: QueryTopic; about: RegExp }[] = [
@@ -85,6 +90,8 @@ export function interpretCommand(text: string, source: CommandSource = "web"): O
       const named = customerHint(t) ?? t.slice(decide[0].length).match(/^\s+(?:it\b|the request\b|that\b)?\s*(?:for\s+)?([A-Z\u0590-\u05FF][\p{L}'-]{1,30})/u)?.[1];
       return { kind: "approval_response", decision: /approve|accept|אשר/i.test(decide[1]) ? "approve" : "decline", ...(named ? { subject: named } : {}) };
     }
+    if (PAUSE_ALL.test(t) && !QUESTION.test(t)) return { kind: "mode_change", to: "paused" };
+    if (RESUME_ALL.test(t) && !QUESTION.test(t)) return { kind: "mode_change", to: "resumed" };
     if (CONFIRM.test(t)) return { kind: "operation_confirm" };
     if (STOP.test(t) && !QUESTION.test(t)) return { kind: "operation_stop", ...(work ? { workflow: work } : {}), ...(/\b(everything|all|anyone|anybody|any more|anyone else)\b|הכל/i.test(t) && !work ? { everything: true } : {}) };
     if (OUTBOUND.test(t)) return { kind: "unsupported", reason: "BARRY only messages customers who are already talking to the business, inside their conversation — campaigns or broadcasts to other people aren't something BARRY can run." };
