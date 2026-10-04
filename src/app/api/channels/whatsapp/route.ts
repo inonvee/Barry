@@ -2,7 +2,8 @@ import type { NextRequest } from "next/server";
 import { parseWebhook, verifySignature, verifyWebhookSubscription, whatsappConfig, whatsappOwnerConfig, whatsappOwnerSender, whatsappSender } from "@/lib/channels/whatsapp";
 import { processInbound } from "@/lib/channels/gateway";
 import { processOwnerInbound } from "@/lib/owner-channel/gateway";
-import { notifyOwnerDecisions } from "@/lib/owner/briefs";
+import { notifyOwnerAlert, notifyOwnerDecisions } from "@/lib/owner/briefs";
+import { mediaAlertText } from "@/lib/channels/media";
 import { resolveBusinessGraph } from "@/lib/business-graph-repository";
 
 /**
@@ -38,6 +39,13 @@ export async function POST(req: NextRequest) {
   // Owner line: the owner command channel (never a customer conversation).
   const ownerResults = [];
   for (const m of parsed.owner) ownerResults.push(await processOwnerInbound(m, whatsappOwnerSender()).catch((err) => ({ status: "failed" as const, error: err instanceof Error ? err.message.slice(0, 120) : "error" })));
+  // A customer sent something BARRY can't open: tell the owner once (the customer was already answered honestly).
+  for (const [i, m] of parsed.messages.entries()) {
+    const r = results[i];
+    if (!m.media || (r.status !== "processed" && r.status !== "held")) continue;
+    const who = m.profileName?.trim() || `the customer on •••${m.identity.channelUserId.slice(-4)}`;
+    await notifyOwnerAlert(resolveBusinessGraph(m.businessId), `media:${m.inboundId}`, mediaAlertText(who, m.media.type, m.media.caption), { conversationId: m.conversationId }).catch((err) => console.warn("[barry:owner-brief] media alert failed", err instanceof Error ? err.message : err));
+  }
   // A customer turn may have created a request for the owner: announce it once on the owner line.
   for (const businessId of new Set(parsed.messages.map((m) => m.businessId))) await notifyOwnerDecisions(resolveBusinessGraph(businessId)).catch((err) => console.warn("[barry:owner-brief] decision notice failed", err instanceof Error ? err.message : err));
   if (parsed.unrouted.length) console.warn("[barry:whatsapp] message for an unrouted number", { count: parsed.unrouted.length });

@@ -30,6 +30,7 @@ import { linkActive, listOwnerIdentities, maskedIdentity } from "@/lib/owner-cha
 import { listInitiatives } from "@/lib/initiative/store";
 import { toView, type Initiative, type InitiativeView } from "@/lib/initiative/model";
 import { humanHolds } from "@/lib/runtime/control";
+import { mediaPlaceholder, readMediaEvents } from "@/lib/channels/media";
 
 /**
  * THE OWNER'S VIEW OF THEIR BUSINESS — read model for the owner dashboard (and for Owner Barry).
@@ -40,7 +41,7 @@ import { humanHolds } from "@/lib/runtime/control";
  * No internal ids, capability names, traces or secrets are exposed at this level.
  */
 
-export type AttentionReason = "approval_waiting" | "approval_held" | "handoff_open" | "ai_unavailable" | "action_failed" | "blocked";
+export type AttentionReason = "approval_waiting" | "approval_held" | "handoff_open" | "ai_unavailable" | "action_failed" | "blocked" | "unreadable_media";
 
 export type OwnerConversationRow = {
   id: string;
@@ -373,6 +374,10 @@ export async function getOwnerWorkspace(staticGraph: BusinessGraph, opts: { sinc
       // A person holds it (open handoff, or the owner took it): BARRY is silent, so the customer waits on you.
       if (handoffs.some((h) => h.status !== "resolved") || humanHolds(c)) attention.push("handoff_open");
       if (lastTurn?.trace?.understanding?.valid === false) attention.push("ai_unavailable");
+      // The customer's latest message is something BARRY can't open (and no person has answered since).
+      const lastMedia = readMediaEvents(c).at(-1);
+      const lastCustomer = [...c.messages].reverse().find((m) => m.role === "customer");
+      if (lastMedia && lastCustomer?.at === lastMedia.at && lastCustomer.content.startsWith(mediaPlaceholder(lastMedia.type)) && !c.messages.some((m) => m.role === "owner" && m.at > lastMedia.at)) attention.push("unreadable_media");
       const lastEffect = ledger.at(-1);
       if (lastEffect?.status === "failed" && lastEffect.operation !== "understand") attention.push("action_failed");
       if (lastEffect?.effect === "write.blocked") attention.push("blocked");

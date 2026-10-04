@@ -1,5 +1,6 @@
 import { channelDisabled, loadControls } from "@/lib/hq/controls";
 import { replyGate } from "@/lib/runtime/operating-mode";
+import { recordUnsupportedMedia } from "./media";
 import { renderRichText } from "./rich";
 import { resolveCustomerIdentity } from "./identity";
 import { resolveBusinessGraph } from "@/lib/business-graph-repository";
@@ -105,7 +106,7 @@ export async function processInbound(message: Inbound, sender: OutboundSender, o
   const conversationId = message.conversationId;
   const inbox = getInboxStore();
   // Without the inbox (migration 0019) this throws ConcurrencyGuardMissingError: nothing runs, nothing is sent.
-  const claimed = await inbox.claim({ businessId: graph.business.id, conversationId, channel: message.identity.channel, providerMessageId: message.inboundId, customerId, body: message.text, meta: { to: message.identity.channelUserId, ...(message.profileName ? { profileName: message.profileName.slice(0, 80) } : {}) }, receivedAt: message.receivedAt });
+  const claimed = await inbox.claim({ businessId: graph.business.id, conversationId, channel: message.identity.channel, providerMessageId: message.inboundId, customerId, body: message.text, meta: { to: message.identity.channelUserId, ...(message.profileName ? { profileName: message.profileName.slice(0, 80) } : {}), ...(message.media ? { mediaType: message.media.type, ...(message.media.caption ? { caption: message.media.caption } : {}) } : {}) }, receivedAt: message.receivedAt });
   if (!claimed.created && INBOX_DONE.includes(claimed.row.status)) return { status: "duplicate", conversationId };
   // PAUSED (operating mode): the customer's message is kept — in the inbox and in the conversation the owner
   // reads — and nothing is answered, run or sent. Checked through the one operating-mode gate.
@@ -208,28 +209,38 @@ async function processInboxRow(start: InboxRow, businessId: string, sender: Outb
         });
       }
       row = await inbox.update(row.id, { status: "processing", attempts: row.attempts + 1 }, row.status);
-      let out: Awaited<ReturnType<typeof handleCustomerMessage>>;
-      try {
-        out = await handleCustomerMessage(graph, row.conversationId, row.customerId, row.body, { inboundId: row.providerMessageId });
-      } catch (err) {
-        const error = err instanceof Error ? err.message.slice(0, 200) : "runtime error";
-        const final = row.attempts >= MAX_INBOUND_ATTEMPTS;
-        console.error("[barry:channel] inbound processing failed", { channel: row.channel, conversationId: row.conversationId, attempt: row.attempts, final, error });
-        // Only if this request still owns the stage (a request that lost its lease never overwrites the one that took over).
-        if (!(await inbox.update(row.id, { status: final ? "failed_final" : "failed", error }, "processing").then(() => true, () => false))) return;
-        // Nothing was sent. The owner sees it; a provider retry may process it again (bounded).
-        await recordDelivery(row.conversationId, { at: new Date().toISOString(), channel: sender.channel, inboundId: row.providerMessageId, status: "failed", error: `not processed: ${error}` }).catch(() => undefined);
-        return;
+      // Media BARRY can't read: no model call — the message is kept and answered honestly (or held for a person).
+      if (typeof row.meta.mediaType === "string") {
+        const media = await recordUnsupportedMedia(graph, { conversationId: row.conversationId, customerId: row.customerId, inboundId: row.providerMessageId, type: row.meta.mediaType, caption: typeof row.meta.caption === "string" ? row.meta.caption : undefined, receivedAt: row.receivedAt });
+        if (media.held || !media.reply) {
+          await inbox.update(row.id, { status: "skipped", error: "a person holds this conversation — BARRY did not reply" }, "processing");
+          return;
+        }
+        row = await inbox.update(row.id, { status: "reply_ready", reply: media.reply, ...(media.replyAt ? { replyAt: media.replyAt } : {}) }, "processing");
+      } else {
+        let out: Awaited<ReturnType<typeof handleCustomerMessage>>;
+        try {
+          out = await handleCustomerMessage(graph, row.conversationId, row.customerId, row.body, { inboundId: row.providerMessageId });
+        } catch (err) {
+          const error = err instanceof Error ? err.message.slice(0, 200) : "runtime error";
+          const final = row.attempts >= MAX_INBOUND_ATTEMPTS;
+          console.error("[barry:channel] inbound processing failed", { channel: row.channel, conversationId: row.conversationId, attempt: row.attempts, final, error });
+          // Only if this request still owns the stage (a request that lost its lease never overwrites the one that took over).
+          if (!(await inbox.update(row.id, { status: final ? "failed_final" : "failed", error }, "processing").then(() => true, () => false))) return;
+          // Nothing was sent. The owner sees it; a provider retry may process it again (bounded).
+          await recordDelivery(row.conversationId, { at: new Date().toISOString(), channel: sender.channel, inboundId: row.providerMessageId, status: "failed", error: `not processed: ${error}` }).catch(() => undefined);
+          return;
+        }
+        // A person holds the conversation: the message is kept, BARRY sends nothing.
+        if (out.held) {
+          await inbox.update(row.id, { status: "skipped", error: "a person holds this conversation — BARRY did not reply" }, "processing");
+          return;
+        }
+        // The turn is saved (and stamped with this message's id). If this write fails, the request fails and a
+        // retry recovers the reply from that stamp — the turn is never run twice.
+        const replyAt = [...out.state.messages].reverse().find((m) => m.role === "barry")?.at;
+        row = await inbox.update(row.id, { status: "reply_ready", reply: renderForTextChannel({ conversationId: row.conversationId, text: out.response, rich: out.rich }), ...(replyAt ? { replyAt } : {}) }, "processing");
       }
-      // A person holds the conversation: the message is kept, BARRY sends nothing.
-      if (out.held) {
-        await inbox.update(row.id, { status: "skipped", error: "a person holds this conversation — BARRY did not reply" }, "processing");
-        return;
-      }
-      // The turn is saved (and stamped with this message's id). If this write fails, the request fails and a
-      // retry recovers the reply from that stamp — the turn is never run twice.
-      const replyAt = [...out.state.messages].reverse().find((m) => m.role === "barry")?.at;
-      row = await inbox.update(row.id, { status: "reply_ready", reply: renderForTextChannel({ conversationId: row.conversationId, text: out.response, rich: out.rich }), ...(replyAt ? { replyAt } : {}) }, "processing");
     }
   }
 

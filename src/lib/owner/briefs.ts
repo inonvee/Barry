@@ -1,3 +1,5 @@
+import { loadControls } from "@/lib/hq/controls";
+import { operatingMode } from "@/lib/runtime/operating-mode";
 import type { BusinessGraph } from "@/lib/business-graph";
 import { getBackend } from "@/lib/store";
 import { getConversationStore } from "@/lib/state";
@@ -18,7 +20,7 @@ import { listOperations, operationView } from "./operations";
  * BARRY fails closed and records the blocker instead of sending.
  */
 
-export type BriefRecord = { key: string; businessId: string; kind: "decision" | "operation_done" | "daily"; to: string; at: string; status: "sent" | "dry_run" | "failed" | "blocked"; reason?: string; text: string };
+export type BriefRecord = { key: string; businessId: string; kind: "decision" | "operation_done" | "daily" | "alert"; to: string; at: string; status: "sent" | "dry_run" | "failed" | "blocked"; reason?: string; text: string };
 
 const WINDOW_MS = 24 * 3600_000;
 
@@ -120,6 +122,24 @@ export async function sendDailyBrief(graph: BusinessGraph, opts: { sender?: Owne
   const out: BriefRecord[] = [];
   for (const l of to) {
     const rec = await deliverOnce(graph.business.id, l, `daily:${day}:${l.id}`, "daily", { text, ...(link ? { links: [{ label: "Today", href: link }] } : {}) }, opts.sender ?? ownerSenderOrUndefined(), now);
+    if (rec) out.push(rec);
+  }
+  return out;
+}
+
+/**
+ * A one-off alert to the owner line (e.g. a customer sent something BARRY can't open), once per `key`.
+ * Only for a business in SUPERVISED or LIVE mode — a test / practice business never messages a real owner.
+ */
+export async function notifyOwnerAlert(graph: BusinessGraph, key: string, text: string, opts: { sender?: OwnerSender; now?: Date; conversationId?: string } = {}): Promise<BriefRecord[]> {
+  const mode = operatingMode(await loadControls(graph.business.id));
+  if (mode !== "supervised" && mode !== "live") return [];
+  const now = opts.now ?? new Date();
+  const to = await recipients(graph.business.id);
+  const link = opts.conversationId ? ownerLink(`/owner?tab=customers&conversation=${encodeURIComponent(opts.conversationId)}`, "whatsapp") : undefined;
+  const out: BriefRecord[] = [];
+  for (const l of to) {
+    const rec = await deliverOnce(graph.business.id, l, `alert:${key}:${l.id}`, "alert", { text, ...(link ? { links: [{ label: "Conversation", href: link }] } : {}) }, opts.sender ?? ownerSenderOrUndefined(), now);
     if (rec) out.push(rec);
   }
   return out;

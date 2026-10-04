@@ -14,6 +14,8 @@ export type NormalizedInboundMessage = {
   text: string;
   receivedAt: string;
   attachments?: { type: "image" | "video" | "document"; url: string; contentType?: string }[];
+  /** Something BARRY can't read (voice note, image, file…): `text` is a placeholder; never sent to a model. */
+  media?: { type: string; caption?: string };
 };
 
 export type NormalizedOutboundMessage = {

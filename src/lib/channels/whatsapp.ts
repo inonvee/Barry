@@ -3,6 +3,7 @@ import type { NormalizedInboundMessage } from "./types";
 import type { OwnerInbound, OwnerOutbound, OwnerSender } from "@/lib/owner-channel/transport";
 import { renderOwnerText } from "@/lib/owner-channel/transport";
 import { conversationIdFor, type OutboundSender } from "./gateway";
+import { mediaPlaceholder } from "./media";
 
 /**
  * WHATSAPP (Meta WhatsApp Cloud API) channel adapter.
@@ -82,7 +83,7 @@ type WaPayload = {
       value?: {
         metadata?: { phone_number_id?: string };
         contacts?: { wa_id?: string; profile?: { name?: string } }[];
-        messages?: { id?: string; from?: string; timestamp?: string; type?: string; text?: { body?: string }; interactive?: { type?: string; button_reply?: { id?: string; title?: string }; list_reply?: { id?: string; title?: string } }; button?: { payload?: string; text?: string } }[];
+        messages?: { id?: string; from?: string; timestamp?: string; type?: string; text?: { body?: string }; image?: { caption?: string }; video?: { caption?: string }; document?: { caption?: string; filename?: string }; interactive?: { type?: string; button_reply?: { id?: string; title?: string }; list_reply?: { id?: string; title?: string } }; button?: { payload?: string; text?: string } }[];
         statuses?: { id?: string; status?: string; recipient_id?: string; errors?: { code?: number; title?: string }[] }[];
       };
     }[];
@@ -94,7 +95,8 @@ export type ParsedWebhook = {
   messages: ParsedInbound[];
   /** Inbound on a number no business is routed to (reported, never processed). */
   unrouted: string[];
-  /** Message types BARRY doesn't handle yet (e.g. images/voice) — reported to the owner, not guessed at. */
+  /** Messages ignored on purpose (reactions, unknown owner-line types) — logged only. Media a customer sends
+   *  (voice, image, file…) is NOT here: it is a message with `media` set, kept and answered honestly. */
   unsupported: { inboundId: string; businessId: string; type: string }[];
   statuses: { providerMessageId: string; status: string; error?: string }[];
   /** Messages to BARRY's OWNER line — owner command channel only, never a customer conversation. */
@@ -131,11 +133,29 @@ export function parseWebhook(body: unknown, routes = whatsappConfig().routes, ow
           out.unrouted.push(phoneNumberId);
           continue;
         }
+        const profileName = change.value.contacts?.find((c) => c.wa_id === m.from)?.profile?.name;
         if (m.type !== "text" || !m.text?.body?.trim()) {
-          out.unsupported.push({ inboundId: m.id, businessId, type: m.type ?? "unknown" });
+          // A reaction is not a message to answer.
+          if (m.type === "reaction" || (m.type === "text" && !m.text?.body?.trim())) {
+            out.unsupported.push({ inboundId: m.id, businessId, type: m.type ?? "unknown" });
+            continue;
+          }
+          // Media BARRY can't read: kept as a message (placeholder + the customer's caption), answered honestly.
+          const type = m.type ?? "unknown";
+          const caption = (m.image?.caption ?? m.video?.caption ?? m.document?.caption)?.trim().slice(0, 1000) || undefined;
+          out.messages.push({
+            inboundId: m.id,
+            businessId,
+            conversationId: conversationIdFor("whatsapp", businessId, m.from),
+            customerId: `wa:${m.from}`,
+            identity: { channel: "whatsapp", channelUserId: m.from, verifiedIdentifier: `phone:${m.from}` },
+            text: mediaPlaceholder(type, caption),
+            media: { type, ...(caption ? { caption } : {}) },
+            receivedAt: m.timestamp ? new Date(Number(m.timestamp) * 1000).toISOString() : new Date().toISOString(),
+            ...(profileName ? { profileName } : {}),
+          });
           continue;
         }
-        const profileName = change.value.contacts?.find((c) => c.wa_id === m.from)?.profile?.name;
         out.messages.push({
           inboundId: m.id,
           businessId,

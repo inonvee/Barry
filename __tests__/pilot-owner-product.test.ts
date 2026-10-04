@@ -216,7 +216,7 @@ describe("WhatsApp channel gateway", () => {
     expect(verifySignature(raw, null)).toBe(false);
   });
 
-  it("normalizes a routed text message; unrouted numbers and non-text types are reported, not processed", () => {
+  it("normalizes a routed text message; unrouted numbers are reported; media is a message marked as media (never read as text)", () => {
     configure();
     const parsed = parseWebhook(payload("m1", "Where is my parcel?"));
     expect(parsed.messages[0]).toMatchObject({ inboundId: "m1", businessId: "barry-logistics-demo", conversationId: "wa:barry-logistics-demo:972500000001", customerId: "wa:972500000001", text: "Where is my parcel?", profileName: "Noa" });
@@ -225,7 +225,7 @@ describe("WhatsApp channel gateway", () => {
     expect(parseWebhook(other).unrouted).toEqual(["999"]);
     const image = payload("m3", "");
     (image.entry[0].changes[0].value.messages[0] as { type: string }).type = "image";
-    expect(parseWebhook(image).unsupported[0]).toMatchObject({ type: "image" });
+    expect(parseWebhook(image).messages[0]).toMatchObject({ media: { type: "image" }, text: "[image — not opened]" });
   });
 
   it("the same WhatsApp message is processed at most once; dry run sends nothing and records it", async () => {
