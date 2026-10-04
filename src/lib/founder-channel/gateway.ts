@@ -30,7 +30,7 @@ const LINK = /^\s*link\s+([A-Za-z0-9]{6,14})\s*$/i;
 export type FounderSession = { identityId: string; lastKey?: string; businessId?: string; updatedAt: string };
 
 export type FounderInboundResult =
-  | { status: "linked"; delivery: Awaited<ReturnType<typeof deliverOwner>> }
+  | { status: "linked"; delivery?: Awaited<ReturnType<typeof deliverOwner>> }
   | { status: "rejected"; reason: string; delivery?: Awaited<ReturnType<typeof deliverOwner>> }
   | { status: "processed" | "duplicate"; key: string; reply: FounderReply; outbound: OwnerOutbound; delivery?: Awaited<ReturnType<typeof deliverOwner>> };
 
@@ -60,7 +60,7 @@ export function founderOutbound(reply: FounderReply): OwnerOutbound {
   };
 }
 
-export async function processFounderInbound(inbound: OwnerInbound, sender: OwnerSender, opts: { now?: Date; interpreter?: FounderInterpreter | null; composer?: FounderComposer | null } = {}): Promise<FounderInboundResult> {
+export async function processFounderInbound(inbound: OwnerInbound, sender: OwnerSender, opts: { now?: Date; interpreter?: FounderInterpreter | null; composer?: FounderComposer | null; /** The WhatsApp line it arrived on (shared-line role routing) — remembered for proactive notices. */ lineId?: string } = {}): Promise<FounderInboundResult> {
   const now = opts.now ?? new Date();
   const at = now.toISOString();
   const reply = (m: OwnerOutbound) => deliverOwner(sender, inbound.channelUserId, m, now);
@@ -68,6 +68,8 @@ export async function processFounderInbound(inbound: OwnerInbound, sender: Owner
   // 1) Linking: a one-time code from the HQ-authenticated founder, sent FROM the number being linked.
   const code = inbound.text?.match(LINK)?.[1];
   if (code) {
+    // A retried LINK delivery (Meta re-sends on a slow 2xx) never links or replies twice.
+    if ((await getBackend().listOperatorRecords(FLEET_SCOPE, KIND)).some((r) => r.key === `${INBOUND}${inbound.messageId}`)) return { status: "linked" };
     const r = await redeemFounderLinkCode({ code, channel: inbound.channel, channelUserId: inbound.channelUserId, verifiedIdentifier: inbound.verifiedIdentifier, now });
     if (!r.ok) {
       // No reply: the founder line answers only verified founders (it may be LIVE while every other line is dry run).
@@ -75,6 +77,8 @@ export async function processFounderInbound(inbound: OwnerInbound, sender: Owner
       console.warn("[barry:founder-channel] link refused", { reason: r.reason });
       return { status: "rejected", reason: `link: ${r.reason}` };
     }
+    await getBackend().upsertOperatorRecord({ businessId: FLEET_SCOPE, kind: KIND, key: `${INBOUND}${inbound.messageId}`, data: { key: "link", at, by: `···${inbound.channelUserId.slice(-4)}` } });
+    if (opts.lineId) await touchFounderInbound(r.link, at, opts.lineId);
     return { status: "linked", delivery: await reply({ text: "Linked. This number now has founder access to BARRY.\nTry: “What do I need to know today?” / “מה קורה היום?”" }) };
   }
 
@@ -100,7 +104,7 @@ export async function processFounderInbound(inbound: OwnerInbound, sender: Owner
     return { status: "duplicate", key: d.confirmKey ?? d.key, reply: r, outbound: founderOutbound(r) };
   }
   await getBackend().upsertOperatorRecord({ businessId: FLEET_SCOPE, kind: KIND, key: `${INBOUND}${inbound.messageId}`, data: { key, ...(tap ? { confirmKey: tap[1] } : {}), at, by: masked } });
-  await touchFounderInbound(link, at);
+  await touchFounderInbound(link, at, opts.lineId);
 
   // 4) Context: the business in focus and the previous turn — only while fresh.
   const session = await loadSession(link.id, now);

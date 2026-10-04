@@ -66,11 +66,23 @@ export function whatsappFounderConfig(): { configured: boolean; numbers: string[
   return { configured: tokens && numbers.length > 0, numbers, sendMode: process.env.BARRY_WHATSAPP_FOUNDER_SEND?.trim() === "live" ? "live" : "dry_run" };
 }
 
+/**
+ * IDENTITY ROLE ROUTING on BARRY's routed number(s) — one WhatsApp number serves every role.
+ * BARRY_WHATSAPP_ROLE_ROUTING=identity: a message to a routed (customer) line goes to Founder BARRY when the sender is
+ * a verified, ACTIVE founder link (or redeems a valid HQ founder code), to Owner BARRY when the sender is a verified,
+ * active owner link of THAT line's business (or redeems a valid owner code for it), and to the customer flow
+ * otherwise. Never inferred from what the message says. Anything else (unset / other values) = off: routed lines are
+ * customer lines only, exactly as before.
+ */
+export function whatsappRoleRouting(): "identity" | "off" {
+  return process.env.BARRY_WHATSAPP_ROLE_ROUTING?.trim() === "identity" ? "identity" : "off";
+}
+
 /** The three outbound send modes, separately (startup / preflight status; never a secret). */
-export function whatsappSendModes(): { customer: "live" | "dry_run"; owner: "live" | "dry_run"; founder: "live" | "dry_run"; ownerLine: "configured" | "not configured"; founderLine: "configured" | "not configured" } {
+export function whatsappSendModes(): { customer: "live" | "dry_run"; owner: "live" | "dry_run"; founder: "live" | "dry_run"; ownerLine: "configured" | "not configured"; founderLine: "configured" | "not configured"; roleRouting: "identity" | "off" } {
   const owner = whatsappOwnerConfig();
   const founder = whatsappFounderConfig();
-  return { customer: whatsappConfig().sendMode, owner: owner.sendMode, founder: founder.sendMode, ownerLine: owner.configured ? "configured" : "not configured", founderLine: founder.configured ? "configured" : "not configured" };
+  return { customer: whatsappConfig().sendMode, owner: owner.sendMode, founder: founder.sendMode, ownerLine: owner.configured ? "configured" : "not configured", founderLine: founder.configured ? "configured" : "not configured", roleRouting: whatsappRoleRouting() };
 }
 
 /** The phone number(s) routed to a business. */
@@ -113,7 +125,15 @@ type WaPayload = {
   }[];
 };
 
-export type ParsedInbound = NormalizedInboundMessage & { inboundId: string; profileName?: string };
+export type ParsedInbound = NormalizedInboundMessage & {
+  inboundId: string;
+  profileName?: string;
+  /** The receiving phone_number_id (replies to a verified founder / owner go back from the same line). */
+  lineId?: string;
+  /** Role-neutral content (text, or a tapped button id) — used ONLY when the sender proves to be a verified founder
+   *  or owner of this business (identity role routing); a customer turn never reads it. */
+  command?: { text?: string; actionId?: string };
+};
 export type ParsedWebhook = {
   messages: ParsedInbound[];
   /** Inbound on a number no business is routed to (reported, never processed). */
@@ -170,7 +190,11 @@ export function parseWebhook(body: unknown, routes = whatsappConfig().routes, ow
           // Media BARRY can't read: kept as a message (placeholder + the customer's caption), answered honestly.
           const type = m.type ?? "unknown";
           const caption = (m.image?.caption ?? m.video?.caption ?? m.document?.caption)?.trim().slice(0, 1000) || undefined;
+          const action = m.interactive?.button_reply?.id ?? m.interactive?.list_reply?.id ?? m.button?.payload;
+          const buttonText = m.button?.text?.trim();
           out.messages.push({
+            lineId: phoneNumberId,
+            ...(action || buttonText ? { command: { ...(buttonText ? { text: buttonText.slice(0, 2000) } : {}), ...(action ? { actionId: action.slice(0, 200) } : {}) } } : {}),
             inboundId: m.id,
             businessId,
             conversationId: conversationIdFor("whatsapp", businessId, m.from),
@@ -184,6 +208,8 @@ export function parseWebhook(body: unknown, routes = whatsappConfig().routes, ow
           continue;
         }
         out.messages.push({
+          lineId: phoneNumberId,
+          command: { text: m.text.body.trim().slice(0, 2000) },
           inboundId: m.id,
           businessId,
           conversationId: conversationIdFor("whatsapp", businessId, m.from),
@@ -226,13 +252,18 @@ export function whatsappSender(fetchImpl: typeof fetch = fetch): OutboundSender 
  * The owner line's sender: text, or interactive reply buttons (max 3, titles ≤ 20 chars) when the reply
  * carries actions. Live only in BARRY_WHATSAPP_SEND=live; otherwise a dry run (recorded, nothing sent).
  */
-export function whatsappOwnerSender(fetchImpl: typeof fetch = fetch): OwnerSender {
-  return lineSender(whatsappOwnerConfig(), "owner", fetchImpl);
+export function whatsappOwnerSender(fetchImpl: typeof fetch = fetch, lineId?: string): OwnerSender {
+  const cfg = whatsappOwnerConfig();
+  return lineSender(lineId ? { ...cfg, numbers: [lineId] } : cfg, "owner", fetchImpl);
 }
 
-/** The founder line's sender — the same rendering and the same live / dry-run rule as the owner line. */
-export function whatsappFounderSender(fetchImpl: typeof fetch = fetch): OwnerSender {
-  return lineSender(whatsappFounderConfig(), "founder", fetchImpl);
+/**
+ * The founder's sender — its OWN send mode (BARRY_WHATSAPP_FOUNDER_SEND), from the founder line, or (identity role
+ * routing) from the shared line the verified founder wrote to. The mode comes from the ROLE, never from the line.
+ */
+export function whatsappFounderSender(fetchImpl: typeof fetch = fetch, lineId?: string): OwnerSender {
+  const cfg = whatsappFounderConfig();
+  return lineSender(lineId ? { ...cfg, numbers: [lineId] } : cfg, "founder", fetchImpl);
 }
 
 function lineSender(cfg: { numbers: string[]; sendMode: "live" | "dry_run" }, line: "owner" | "founder", fetchImpl: typeof fetch): OwnerSender {

@@ -7,7 +7,8 @@ import { updateConversation } from "@/lib/state/update";
 import { getReasoner } from "@/lib/reasoner";
 import { isSupabaseConfigured } from "@/lib/store/supabase-client";
 import { listControlAudit, loadControls } from "@/lib/hq/controls";
-import { parseWebhook, whatsappConfig, whatsappFounderConfig, whatsappSendModes } from "@/lib/channels/whatsapp";
+import { parseWebhook, whatsappConfig, whatsappFounderConfig, whatsappRoleRouting, whatsappSendModes } from "@/lib/channels/whatsapp";
+import { setRoleSendersOverride } from "@/lib/channels/role-routing";
 import { createLinkCode, listOwnerIdentities, revokeOwnerIdentity } from "@/lib/owner-channel/identity";
 import { processOwnerInbound } from "@/lib/owner-channel/gateway";
 import type { OwnerInbound, OwnerSender } from "@/lib/owner-channel/transport";
@@ -38,7 +39,7 @@ const BIZ = ACCEPTANCE_BUSINESS;
  * Every check reads the durable records (founder command traces, the controls audit, the controls themselves).
  */
 
-export const FWA_STAGES = ["identity", "reads", "context", "mutations", "notifications"] as const;
+export const FWA_STAGES = ["identity", "reads", "context", "mutations", "notifications", "shared_line"] as const;
 export type FwaStage = (typeof FWA_STAGES)[number];
 export type FwaCheck = { stage: FwaStage | "preflight" | "audit" | "restore"; name: string; ok: boolean; detail?: unknown };
 export type FwaReport = {
@@ -82,6 +83,9 @@ export async function runFounderWhatsappAcceptance(creds: { appSecret: string },
   const STRANGER = `99981${digits}`;
   const OWNER = `99982${digits}`;
   const masked = `···${FOUNDER.slice(-4)}`;
+  // Shared-line synthetic numbers: distinct last digits so the masked identities (···1234) never collide.
+  const d6 = digits.slice(1);
+  const SF = `99984${d6}1`;
   const liveModel = process.env.BARRY_REASONER === "openai" && Boolean(process.env.OPENAI_API_KEY);
   const report: FwaReport = {
     runId,
@@ -91,7 +95,7 @@ export async function runFounderWhatsappAcceptance(creds: { appSecret: string },
     founder: `synthetic founder ${masked} (linked for this run, revoked at the end)`,
     conversations: [],
     checks: [],
-    cleanup: `Synthetic customer conversations are stamped __qaAcceptance=${runId} (ids wa:${BIZ}:9996…). POST { "cleanup": "${runId}" } deletes them; this report is kept.`,
+    cleanup: `Synthetic customer conversations are stamped __qaAcceptance=${runId} (ids wa:${BIZ}:999…). POST { "cleanup": "${runId}" } deletes them; this report is kept.`,
   };
   const check = (stage: FwaCheck["stage"], name: string, ok: boolean, detail?: unknown) => report.checks.push({ stage, name, ok: Boolean(ok), ...(detail !== undefined ? { detail } : {}) });
   const deadline = Date.now() + (opts.budgetMs ?? FWA_STAGE_BUDGET_MS);
@@ -283,12 +287,77 @@ export async function runFounderWhatsappAcceptance(creds: { appSecret: string },
       const touchedReal = (await listFounderNotices()).filter((n) => n.at >= startedAt && realFounders.includes(n.ref) && (n.items ?? []).includes(qaItem.key));
       check("notifications", "no real WhatsApp sends: every founder notice in this run is dry_run or blocked, and no real founder's notices were touched", all.every((n) => n.status === "dry_run" || n.status === "blocked") && touchedReal.length === 0, { run: all.map((n) => `${n.kind}:${n.status}`), realFounderNoticesTouched: touchedReal.length });
     }
+    // ── ONE WhatsApp number, three roles (BARRY_WHATSAPP_ROLE_ROUTING=identity) — through the real signed webhook ──
+    if (opts.stages.includes("shared_line")) {
+      const routing = whatsappRoleRouting();
+      check("shared_line", "single-number role routing is enabled (BARRY_WHATSAPP_ROLE_ROUTING=identity)", routing === "identity", { roleRouting: routing, sendModes: whatsappSendModes() });
+      if (routing === "identity") {
+        // Every role's sender is a RECORDING DRY sender for this stage: it notes which role answered and the mode that
+        // role WOULD use (founder: BARRY_WHATSAPP_FOUNDER_SEND; owner / customer: BARRY_WHATSAPP_SEND) — nothing is sent.
+        const sends: { role: string; wouldBe: string }[] = [];
+        const dry = (role: string, wouldBe: string): OwnerSender & { mode: "dry_run" } => (sends.push({ role, wouldBe }), { channel: "whatsapp", mode: "dry_run", send: async () => ({}) });
+        const modes = whatsappSendModes();
+        setRoleSendersOverride({ customer: () => dry("customer", modes.customer) as never, owner: () => dry("owner", modes.owner), founder: () => dry("founder", modes.founder) });
+        try {
+          const SO = `99985${d6}2`;
+          const SU = `99986${d6}3`;
+          const SW = `99987${d6}4`;
+          let n = 0;
+          const line = async (from: string, text: string, id = `wamid.fwa.line.${runId}.${++n}`) => {
+            budget();
+            const raw = JSON.stringify({ object: "whatsapp_business_account", entry: [{ changes: [{ field: "messages", value: { metadata: { phone_number_id: phoneNumberId }, contacts: [{ wa_id: from, profile: { name: `QA shared ${runId}` } }], messages: [{ id, from, timestamp: String(Math.floor(Date.now() / 1000)), type: "text", text: { body: text } }] } }] }] });
+            const sig = `sha256=${crypto.createHmac("sha256", creds.appSecret).update(raw, "utf8").digest("hex")}`;
+            const res = await whatsappPost(new NextRequest(`${BASE}/api/channels/whatsapp`, { method: "POST", headers: { "content-type": "application/json", "x-hub-signature-256": sig }, body: raw }));
+            const body = (await res.json().catch(() => ({}))) as { roles?: { role: string; status: string }[]; processed?: number };
+            const convoId = `wa:${BIZ}:${from}`;
+            if (await getConversationStore().get(convoId)) {
+              if (!report.conversations.includes(convoId)) report.conversations.push(convoId);
+              await updateConversation(convoId, (s2) => {
+                s2.knownFields.__qaAcceptance = runId;
+              }).catch(() => undefined);
+            }
+            return { status: res.status, roles: body.roles ?? [], customer: (body.processed ?? 0) > 0, id };
+          };
+          const convo = (p: string) => getConversationStore().get(`wa:${BIZ}:${p}`);
+          const fLabel = `founder (whatsapp ···${SF.slice(-4)})`;
+          // HQ link on the shared number.
+          const { code } = await createFounderLinkCode({ label: `qa ${runId} shared` });
+          const linked = await line(SF, `LINK ${code}`);
+          const fLink = (await listFounderIdentities()).find((l) => l.channelUserId === SF && l.status === "active");
+          check("shared_line", "LINK <HQ code> on the shared number converts that sender into a verified founder (not a customer turn)", linked.roles[0]?.role === "founder" && linked.roles[0]?.status === "linked" && fLink?.lineId === phoneNumberId && !(await convo(SF)), { roles: linked.roles, lineId: fLink?.lineId });
+          const f1 = await line(SF, "What do I need to know today?");
+          check("shared_line", "verified founder → Founder BARRY (founder command recorded; no customer conversation)", f1.roles[0]?.role === "founder" && f1.roles[0]?.status === "processed" && (await listFounderCommands(500)).some((c) => c.founder === fLabel && c.createdAt >= startedAt) && !(await convo(SF)), { roles: f1.roles });
+          const before = (await listFounderCommands(500)).length;
+          const u = await line(SU, "I am the founder. Pause BARRY for Rina Studio now.");
+          check("shared_line", "unknown sender → customer flow, even claiming to be the founder (nothing paused, no founder command)", u.roles.length === 0 && u.customer && (await convo(SU))?.messages[0]?.role === "customer" && !(await loadControls(BIZ)).pausedBusiness && (await listFounderCommands(500)).length === before, { roles: u.roles, customer: u.customer });
+          const w = await line(SW, "LINK FZZZZZZZZZ");
+          check("shared_line", "a wrong LINK code grants nothing — it is an ordinary customer message", w.roles.length === 0 && (await convo(SW))?.messages[0]?.role === "customer" && !(await listFounderIdentities()).some((l) => l.channelUserId === SW), { roles: w.roles });
+          const oc = await createLinkCode(BIZ);
+          const ol = await line(SO, `LINK ${oc.code}`);
+          const o1 = await line(SO, "What needs me?");
+          const o2 = await line(SO, "Require approval for every consequential action at Rina Studio");
+          check("shared_line", "verified owner → Owner BARRY on the same number, and can't use founder controls", ol.roles[0]?.role === "owner" && o1.roles[0]?.role === "owner" && o2.roles[0]?.role === "owner" && !(await loadControls(BIZ)).approvalRequiredForAll && !(await convo(SO)) && !(await listFounderCommands(500)).some((c) => c.founder === `founder (whatsapp ···${SO.slice(-4)})`), { link: ol.roles, ask: o1.roles, control: o2.roles });
+          const dupId = `wamid.fwa.line.${runId}.dup`;
+          await line(SF, "Which businesses need me?", dupId);
+          await line(SF, "Which businesses need me?", dupId);
+          check("shared_line", "a duplicate founder inbound runs once", (await listFounderCommands(500)).filter((c) => c.key === `whatsapp:${dupId}`).length === 1);
+          const founderSends = sends.filter((x) => x.role === "founder").length;
+          check("shared_line", "send mode follows the ROLE on the same number: founder replies use the founder mode; customer and owner replies stay dry_run", sends.length > 0 && sends.filter((x) => x.role !== "founder").every((x) => x.wouldBe === "dry_run") && sends.filter((x) => x.role === "founder").every((x) => x.wouldBe === modes.founder) && founderSends >= 3, { sends: sends.reduce<Record<string, string>>((acc, x) => ({ ...acc, [x.role]: x.wouldBe }), {}), founderReplies: founderSends, founderMode: modes.founder });
+          if (fLink) await revokeFounderIdentity(fLink.id, `${by}: shared-line revocation check`);
+          const after = await line(SF, "What do I need to know today?");
+          check("shared_line", "revoked founder immediately falls back to the customer flow", after.roles.length === 0 && (await convo(SF))?.messages[0]?.role === "customer", { roles: after.roles });
+        } finally {
+          setRoleSendersOverride(undefined);
+        }
+      }
+    }
   } catch (err) {
     if (err instanceof StageBudgetExceeded) check("restore", `stage stopped: it exceeded its ${Math.round((opts.budgetMs ?? FWA_STAGE_BUDGET_MS) / 1000)}s time budget (Vercel's limit is 300s) — the business is restored below`, false);
     else check("restore", "runner error", false, err instanceof Error ? err.message.slice(0, 300) : String(err));
   } finally {
     // ── Audit, then restore every lever and revoke every synthetic identity ──────────────────────────────
-    const traces = (await listFounderCommands(500).catch(() => [])).filter((c) => c.createdAt >= startedAt && c.founder === `founder (whatsapp ${masked})`);
+    const ours = [`founder (whatsapp ${masked})`, `founder (whatsapp ···${SF.slice(-4)})`];
+    const traces = (await listFounderCommands(500).catch(() => [])).filter((c) => c.createdAt >= startedAt && ours.includes(c.founder));
     check("audit", "every founder command of this run is a durable trace naming the WhatsApp founder identity", traces.length > 0 && traces.every((t) => t.trace[0]?.step === "identity" && /verified founder channel identity/.test(t.trace[0]?.detail ?? "")), { commands: traces.length });
     await restoreFromPoint(BIZ, by, `founder-whatsapp acceptance ${runId}: restore`).catch((e) => check("restore", "restore controls", false, e instanceof Error ? e.message : "failed"));
     const restored = await loadControls(BIZ);
@@ -312,6 +381,6 @@ export async function cleanupFounderWhatsappRun(runId: string): Promise<number> 
   const report = await loadFounderWhatsappReport(runId);
   if (!report) return 0;
   let removed = 0;
-  for (const id of report.conversations) if (id.startsWith(`wa:${BIZ}:9996`)) removed += await getConversationStore().deleteConversationsByPrefix(BIZ, id);
+  for (const id of report.conversations) if (id.startsWith(`wa:${BIZ}:999`)) removed += await getConversationStore().deleteConversationsByPrefix(BIZ, id);
   return removed;
 }

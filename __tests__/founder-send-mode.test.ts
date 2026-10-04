@@ -84,7 +84,7 @@ async function linkFounder() {
 
 describe("three send modes, separately", () => {
   it("founder live leaves customer and owner dry run; the status shows all three", () => {
-    expect(whatsappSendModes()).toEqual({ customer: "dry_run", owner: "dry_run", founder: "live", ownerLine: "configured", founderLine: "configured" });
+    expect(whatsappSendModes()).toEqual({ customer: "dry_run", owner: "dry_run", founder: "live", ownerLine: "configured", founderLine: "configured", roleRouting: "off" });
     expect(whatsappSender().mode).toBe("dry_run");
     expect(whatsappOwnerSender().mode).toBe("dry_run");
     expect(whatsappFounderSender().mode).toBe("live");

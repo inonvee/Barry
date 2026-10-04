@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 type Identity = { ref: string; number: string; status: string; active: boolean; linkedAt: string; lastInboundAt: string | null; revokedAt: string | null; label: string | null };
-type Modes = { customer: string; owner: string; founder: string; ownerLine: string; founderLine: string };
+type Modes = { customer: string; owner: string; founder: string; ownerLine: string; founderLine: string; roleRouting: string };
 const btn: React.CSSProperties = { padding: "6px 12px", border: "1px solid #999", borderRadius: 6, background: "transparent", color: "inherit", cursor: "pointer", fontSize: 14 };
 
 /** Same-origin calls with the HQ session cookie only. */
@@ -46,7 +46,9 @@ export function FounderWhatsappAccess() {
     <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 12 }}>
       {modes && (
         <p style={{ fontSize: 13 }}>
-          Send modes — founder line: <strong>{modes.founder}</strong> ({modes.founderLine}) · owner line: <strong>{modes.owner}</strong> · customers: <strong>{modes.customer}</strong>
+          Send modes — founder: <strong>{modes.founder}</strong> · owner: <strong>{modes.owner}</strong> · customers: <strong>{modes.customer}</strong>
+          <br />
+          {modes.roleRouting === "identity" ? "Single number: send the code to BARRY's existing WhatsApp number (the verified sender decides the role)." : modes.founderLine === "configured" ? "Send the code to BARRY's founder WhatsApp line." : "No founder entry point is enabled yet (set BARRY_WHATSAPP_ROLE_ROUTING=identity to use BARRY's existing number)."}
         </p>
       )}
       <div>

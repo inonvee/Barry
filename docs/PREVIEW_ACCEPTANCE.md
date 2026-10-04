@@ -129,3 +129,14 @@ Stages: `identity`, `reads`, `decisions`, `conversation`, `mode`, `notifications
   touch only the test business; every lever (mode, pause, approval-for-all, paused capabilities, safe mode) is
   restored, and synthetic 999… founder / owner identities are revoked after every stage. Reports:
   `qa_founder_whatsapp:<runId>`. Temporary: remove `src/app/api/qa/founder-whatsapp/` and `src/app/hq/qa/founder-whatsapp/`.
+
+### Single WhatsApp number for every role
+
+`BARRY_WHATSAPP_ROLE_ROUTING=identity` (Preview): on BARRY's routed number(s) the VERIFIED SENDER decides — an active
+founder link (or a valid HQ founder `LINK` code) → Founder BARRY; an active owner link of that line's business (or a
+valid owner code for it) → Owner BARRY; everyone else → the customer flow. Never inferred from message text; a wrong /
+expired code is an ordinary customer message; a revoked founder falls back at once. No `BARRY_WHATSAPP_FOUNDER_NUMBERS`
+is needed. Each role keeps its own send mode (founder: `BARRY_WHATSAPP_FOUNDER_SEND`; owner / customer:
+`BARRY_WHATSAPP_SEND`), chosen by the gateway, never by the receiving number. Founder proactive notices go back from
+the line the founder last wrote to. Deployed acceptance: stage `shared_line` of `/hq/qa/founder-whatsapp` (real signed
+webhook on the routed number; every role's sender is a recording dry sender for the stage — nothing is sent).

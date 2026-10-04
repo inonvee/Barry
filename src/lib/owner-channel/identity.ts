@@ -110,6 +110,15 @@ export async function redeemLinkCode(input: { code: string; channel: OwnerChanne
   return { ok: false, reason: "invalid_or_expired" };
 }
 
+/** Would this code link THIS sender as an owner of `businessId` right now? Read-only (never consumes the code). */
+export async function ownerLinkCodeUsable(businessId: string, code: string, channel: OwnerChannelKind, channelUserId: string, now = new Date()): Promise<boolean> {
+  const rec = (await getBackend().listOperatorRecords(businessId, "owner_link_code")).find((r) => r.key === hash(code.trim().toUpperCase()));
+  if (!rec) return false;
+  const c = rec.data as unknown as LinkCode;
+  if (c.usedAt) return c.usedBy === identityKey(channel, channelUserId);
+  return Date.parse(c.expiresAt) >= now.getTime() && c.accessFingerprint === ownerAccessFingerprint(businessId);
+}
+
 export async function revokeOwnerIdentity(businessId: string, id: string, by: string, now = new Date()): Promise<boolean> {
   const link = (await listOwnerIdentities(businessId)).find((l) => l.id === id);
   if (!link) return false;

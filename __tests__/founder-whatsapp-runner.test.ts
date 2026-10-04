@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@/lib/fabric";
 import { setReasonerForTests } from "@/lib/reasoner";
 import { MemoryLockStore, setLockStoreForTests } from "@/lib/state/lock";
@@ -23,16 +23,26 @@ describe("guards", () => {
   });
 });
 
+let graphCalls = 0;
+
 describe("mechanics", () => {
   const saved = { ...process.env };
   beforeEach(() => {
     resetControlsCacheForTests();
     setLockStoreForTests(new MemoryLockStore());
     setInboxStoreForTests(new MemoryInboxStore());
-    Object.assign(process.env, { WHATSAPP_VERIFY_TOKEN: "v", WHATSAPP_APP_SECRET: "test-app-secret", WHATSAPP_ACCESS_TOKEN: "t", BARRY_WHATSAPP_ROUTES: "PNID-T=fashion-retailer", BARRY_WHATSAPP_SEND: "dry_run", BARRY_OWNER_TOKEN: "test-owner-token-0123456789", BARRY_FOUNDER_TOKEN: "test-founder-token-0123456789abcdefXYZ" });
+    Object.assign(process.env, { WHATSAPP_VERIFY_TOKEN: "v", WHATSAPP_APP_SECRET: "test-app-secret", WHATSAPP_ACCESS_TOKEN: "t", BARRY_WHATSAPP_ROUTES: "PNID-T=fashion-retailer", BARRY_WHATSAPP_SEND: "dry_run", BARRY_OWNER_TOKEN: "test-owner-token-0123456789", BARRY_FOUNDER_TOKEN: "test-founder-token-0123456789abcdefXYZ", BARRY_WHATSAPP_ROLE_ROUTING: "identity", BARRY_WHATSAPP_FOUNDER_SEND: "live" });
     setReasonerForTests(new ScriptedModel(() => undefined));
+    // Founder sending is LIVE here: any call to the WhatsApp API would be a real send — the acceptance must make none.
+    graphCalls = 0;
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (/graph\.facebook\.com/.test(String(url))) graphCalls++;
+      throw new Error(`no network in this test: ${url}`);
+    });
   });
   afterEach(() => {
+    vi.unstubAllGlobals();
+    expect(graphCalls).toBe(0);
     setReasonerForTests(undefined);
     setLockStoreForTests(undefined);
     setInboxStoreForTests(undefined);
@@ -69,5 +79,12 @@ describe("mechanics", () => {
     const report = await runFounderWhatsappAcceptance({ appSecret: "test-app-secret" }, { phoneNumberId: "PNID-T", stages: ["mutations"], runId: `fwa-${Date.now()}`, budgetMs: 0 });
     expect(report.checks.some((c) => !c.ok && /exceeded its 0s time budget/.test(c.name))).toBe(true);
     expect(report.checks.find((c) => /test business restored/.test(c.name))?.ok).toBe(true);
+  }, 60_000);
+
+  it("shared_line fails clearly (and changes nothing) when single-number role routing is off", async () => {
+    process.env.BARRY_WHATSAPP_ROLE_ROUTING = "off";
+    const report = await runFounderWhatsappAcceptance({ appSecret: "test-app-secret" }, { phoneNumberId: "PNID-T", stages: ["shared_line"], runId: `fwa-${Date.now()}` });
+    expect(report.checks.find((c) => /role routing is enabled/.test(c.name))?.ok).toBe(false);
+    expect(report.checks.filter((c) => c.stage === "shared_line")).toHaveLength(1);
   }, 60_000);
 });

@@ -32,6 +32,8 @@ export type FounderIdentity = {
   accessFingerprint: string;
   label?: string;
   lastInboundAt?: string;
+  /** The WhatsApp line (phone_number_id) the founder last wrote to — proactive notices go back from it. */
+  lineId?: string;
   revokedAt?: string;
   revokedBy?: string;
 };
@@ -101,6 +103,18 @@ export async function redeemFounderLinkCode(input: { code: string; channel: Foun
   return { ok: true, link };
 }
 
+/**
+ * Would this code link THIS sender as a founder right now? (A real, unexpired, unused HQ founder code — or one this
+ * same sender already redeemed.) Read-only: never consumes the code. Used to route a "LINK …" message on a shared line.
+ */
+export async function founderLinkCodeUsable(code: string, channel: FounderChannelKind, channelUserId: string, now = new Date()): Promise<boolean> {
+  const rec = (await getBackend().listOperatorRecords(FLEET_SCOPE, KIND)).find((r) => r.key === `${CODE}${hash(code.trim().toUpperCase())}`);
+  if (!rec) return false;
+  const c = rec.data as unknown as FounderLinkCode;
+  if (c.usedAt) return c.usedBy === founderIdentityKey(channel, channelUserId);
+  return Date.parse(c.expiresAt) >= now.getTime() && c.accessFingerprint === founderAccessFingerprint();
+}
+
 export async function revokeFounderIdentity(id: string, by: string, now = new Date()): Promise<boolean> {
   const link = (await listFounderIdentities()).find((l) => l.id === id);
   if (!link || link.status === "revoked") return false;
@@ -108,8 +122,8 @@ export async function revokeFounderIdentity(id: string, by: string, now = new Da
   return true;
 }
 
-export async function touchFounderInbound(link: FounderIdentity, at: string): Promise<void> {
-  await saveIdentity({ ...link, lastInboundAt: at });
+export async function touchFounderInbound(link: FounderIdentity, at: string, lineId?: string): Promise<void> {
+  await saveIdentity({ ...link, lastInboundAt: at, ...(lineId ? { lineId } : {}) });
 }
 
 export type FounderResolution = { status: "unknown" | "inactive"; detail: string } | { status: "resolved"; link: FounderIdentity };

@@ -5,7 +5,7 @@ import { withConversationLock, ConversationBusyError } from "@/lib/state/lock";
 import { fleetTenant } from "@/lib/hq/fleet";
 import { launchChecklist, type LaunchGate } from "@/lib/hq/launch";
 import { getCommercialFleet } from "@/lib/commercial/service";
-import { whatsappFounderConfig, whatsappFounderSender } from "@/lib/channels/whatsapp";
+import { whatsappFounderConfig, whatsappFounderSender, whatsappRoleRouting } from "@/lib/channels/whatsapp";
 import { deliverOwner, type OwnerOutbound, type OwnerSender } from "@/lib/owner-channel/transport";
 import { loadFounderFleet, founderBrief, type FounderHealthState } from "@/lib/founder/read-model";
 import { executeFounderCommand, listFounderCommands } from "@/lib/founder/command-service";
@@ -101,7 +101,8 @@ async function deliverOnce(link: FounderIdentity, key: string, kind: FounderNoti
   return rec;
 }
 
-const founderSenderOrUndefined = () => (whatsappFounderConfig().configured ? whatsappFounderSender() : undefined);
+/** The founder's sender: the founder line, or (identity role routing) the shared line this founder last wrote to. */
+const founderSenderOrUndefined = (link?: FounderIdentity) => (whatsappFounderConfig().configured ? whatsappFounderSender() : whatsappRoleRouting() === "identity" && link?.lineId ? whatsappFounderSender(fetch, link.lineId) : undefined);
 const activeFounders = async () => (await listFounderIdentities()).filter((l) => founderLinkActive(l).ok);
 
 /** The language the founder last used with Founder BARRY on this identity (default English). */
@@ -129,7 +130,7 @@ export async function notifyFounderAlerts(opts: { sender?: OwnerSender; now?: Da
     const head = fresh.length === 1 ? (he ? "לתשומת לבך:" : "Heads up:") : he ? `${fresh.length} דברים ברמת המערכת:` : `${fresh.length} system-level things:`;
     const text = `${head}\n${fresh.slice(0, 6).map((i) => `• ${i.text}`).join("\n")}${fresh.length > 6 ? (he ? `\n…ועוד ${fresh.length - 6}.` : `\n…and ${fresh.length - 6} more.`) : ""}`;
     const keys = fresh.map((i) => i.key);
-    const rec = await deliverOnce(link, `alert:${h(keys.join("|"))}:${ref}`, "alert", { text }, opts.sender ?? founderSenderOrUndefined(), now, keys);
+    const rec = await deliverOnce(link, `alert:${h(keys.join("|"))}:${ref}`, "alert", { text }, opts.sender ?? founderSenderOrUndefined(link), now, keys);
     if (rec) out.push(rec);
   }
   return out;
@@ -151,7 +152,7 @@ export async function sendFounderDailyBrief(opts: { sender?: OwnerSender; now?: 
     const he = (await founderLang(link)) === "he";
     const composer = opts.composer === null ? undefined : (opts.composer ?? modelFounderComposer());
     const reply = await executeFounderCommand({ actor: { kind: "founder", via: "whatsapp", identity: maskedFounder(link) }, key: `founder-daily:${day}:${ref}`, text: he ? "מה אני צריך לדעת היום?" : "What do I need to know today?", now, ...(composer ? { composer } : {}) });
-    const rec = await deliverOnce(link, key, "daily", founderOutbound(reply), opts.sender ?? founderSenderOrUndefined(), now);
+    const rec = await deliverOnce(link, key, "daily", founderOutbound(reply), opts.sender ?? founderSenderOrUndefined(link), now);
     if (rec) out.push(rec);
   }
   return out;
