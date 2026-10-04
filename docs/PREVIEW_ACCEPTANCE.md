@@ -80,3 +80,22 @@ database is `glqrfoljvdbyrmbvupym` and `BARRY_WHATSAPP_SEND=dry_run` — otherwi
 - `GET ?runId=qa-…` → the stored report (operator record `qa_acceptance:<runId>` on business `fashion-retailer`).
 - `POST {"cleanup":"qa-…"}` → deletes that run's synthetic conversations (customer numbers `999…`); the report stays.
 - Temporary: remove `src/app/api/qa/acceptance/` once the gate has passed.
+
+## 6. Owner WhatsApp V1 acceptance (in-deployment)
+
+`POST /api/qa/owner-whatsapp` (or the page `/hq/qa/owner-whatsapp`) — the same guards as section 5 (Preview on the
+Preview database with dry-run sending, else 404; founder bearer token or HQ session; one acceptance run at a time).
+Stages: `identity`, `reads`, `decisions`, `conversation`, `mode`, `notifications` (`POST {"stages":[…]}` for a subset).
+
+- Customers write through the real signed webhook route (synthetic `9997…` numbers). The owner writes through the
+  real owner gateway with a synthetic `9999…` number linked by a one-time code for the run and revoked at the end;
+  the owner line's replies are dry run (or recorded as blocked when no owner line is configured) — nothing is sent.
+- It checks: verified owner vs unknown phone; owner/customer path separation; Hebrew + English reads (needs me,
+  handling, waiting on, money today / stuck / awaiting / failed against the records); ambiguous "approve" asks;
+  unrelated requests clear context; explain → "yes" approves the request in context (live model reached checkout
+  under SUPERVISED); duplicate owner message id runs once; Hebrew decline; take over → customer held → draft →
+  "send it" (dry run) → no double send → give back; Hebrew pause → customer stored not answered → mode → resume;
+  founder pause not overridable; notification once, never twice, never sent; audit (command records, controls
+  audit, control log). Controls are restored afterwards.
+- `GET ?runId=owa-…` → stored report (`qa_owner_whatsapp:<runId>`); `POST {"cleanup":"owa-…"}` → deletes the
+  run's synthetic conversations. Temporary: remove `src/app/api/qa/owner-whatsapp/` and `src/app/hq/qa/owner-whatsapp/`.

@@ -169,8 +169,9 @@ export type AttentionItem = { key: string; category: "customer_needs_human" | "i
 export function attentionItems(ws: Awaited<ReturnType<typeof getOwnerWorkspace>>): AttentionItem[] {
   const out: AttentionItem[] = [];
   for (const i of ws.interventions) {
-    if (i.kind === "handoff") out.push({ key: i.id, category: "customer_needs_human", customer: i.customer, conversationId: i.conversationId, en: `${i.customer} needs a person: ${i.title}`, he: `${i.customer} צריך/ה אדם: ${i.title}` });
-    else if (i.kind === "failed_action" || i.kind === "delivery_failed" || i.kind === "blocked_write" || i.kind === "not_understood") out.push({ key: i.id, category: "important_failure", customer: i.customer, conversationId: i.conversationId, en: `${i.customer}: ${i.title}`, he: `${i.customer}: ${i.title}` });
+    const about = i.title.includes(i.customer) ? i.title : `${i.customer}: ${i.title}`;
+    if (i.kind === "handoff") out.push({ key: i.id, category: "customer_needs_human", customer: i.customer, conversationId: i.conversationId, en: `${i.customer} needs a person — ${i.title.includes(i.customer) ? i.why : i.title}`, he: `${i.customer} צריך/ה אדם — ${i.title.includes(i.customer) ? i.why : i.title}` });
+    else if (i.kind === "failed_action" || i.kind === "delivery_failed" || i.kind === "blocked_write" || i.kind === "not_understood") out.push({ key: i.id, category: "important_failure", customer: i.customer, conversationId: i.conversationId, en: about, he: about });
   }
   for (const o of ws.opportunities.items) {
     if (o.kind !== "payment_failed" || o.simulated) continue;

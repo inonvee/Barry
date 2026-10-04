@@ -5,11 +5,11 @@ import { useState } from "react";
 type Check = { stage: string; name: string; ok: boolean; detail?: unknown };
 type Report = { runId?: string; verdict?: "PASS" | "FAIL"; passed?: number; failed?: number; startedAt?: string; finishedAt?: string; deployment?: Record<string, unknown>; conversations?: string[]; checks?: Check[]; error?: string; missing?: string[] };
 
-const STAGES = ["channel", "handoff", "supervised", "mode", "cron"] as const;
+const STAGES = ["channel", "handoff", "supervised", "mode", "cron"];
 const btn: React.CSSProperties = { padding: "6px 12px", border: "1px solid #999", borderRadius: 6, background: "transparent", color: "inherit", cursor: "pointer", fontSize: 14 };
 
 /** Calls the same-origin acceptance API with the HQ session cookie; renders what it returns. No logic here. */
-export function QaRunner() {
+export function QaRunner({ endpoint = "/api/qa/acceptance", stages = STAGES, label = "Run full Preview acceptance" }: { endpoint?: string; stages?: readonly string[]; label?: string } = {}) {
   const [running, setRunning] = useState<string | null>(null);
   const [report, setReport] = useState<Report | null>(null);
   const [status, setStatus] = useState<number | null>(null);
@@ -19,7 +19,7 @@ export function QaRunner() {
     setRunning(label);
     const started = Date.now();
     try {
-      const res = await fetch("/api/qa/acceptance", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const res = await fetch(endpoint, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       const json = (await res.json().catch(() => ({ error: `HTTP ${res.status}` }))) as Report & { conversationsDeleted?: number };
       if ("cleanup" in body) setCleanup(`Deleted ${json.conversationsDeleted ?? 0} synthetic conversation(s) for ${String(body.cleanup)} (${res.status}).`);
       else {
@@ -39,8 +39,8 @@ export function QaRunner() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 12 }}>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-        <button style={{ ...btn, fontWeight: 600 }} disabled={Boolean(running)} onClick={() => void call("full", {})}>Run full Preview acceptance</button>
-        {STAGES.map((s) => (
+        <button style={{ ...btn, fontWeight: 600 }} disabled={Boolean(running)} onClick={() => void call("full", {})}>{label}</button>
+        {stages.map((s) => (
           <button key={s} style={btn} disabled={Boolean(running)} onClick={() => void call(s, { stages: [s] })}>{s}</button>
         ))}
       </div>
