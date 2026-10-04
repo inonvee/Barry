@@ -13,7 +13,10 @@ import { guardMissing } from "@/lib/state/lock";
  *  - a retry of a message whose turn already ran never runs it again (the turn is found by its inbound id);
  *  - a reply is sent at most once: "sending" is written BEFORE the provider call, so a crash between
  *    the call and its result leaves "sending" — which is never re-sent (delivery_unknown, said so);
- *  - messages of one conversation are processed in arrival order (seq).
+ *  - messages of one conversation are processed in INBOUND ORDER (inboxOrder): the provider's own timestamp,
+ *    then the moment the request reached BARRY (a high-resolution arrival key captured at the webhook's entry,
+ *    stored with the claim so a provider retry keeps it), then the insert sequence. Never by which concurrent
+ *    claim happened to reach the database first — same-second bursts are ordered by arrival, not by races.
  */
 
 export type InboxStatus = "received" | "processing" | "failed" | "reply_ready" | "sending" | "sent" | "dry_run" | "send_failed" | "failed_final" | "delivery_unknown" | "skipped";
@@ -70,6 +73,28 @@ export interface InboxStore {
   listByConversation(conversationId: string): Promise<InboxRow[]>;
 }
 
+/** meta key holding the arrival key (ms since epoch, sub-ms resolution) captured when the request arrived. */
+export const ARRIVAL_KEY = "arrival";
+
+let lastArrival = 0;
+/** A strictly increasing, high-resolution arrival clock (ms since epoch). Capture it before any await. */
+export function arrivalClock(): number {
+  let t = performance.timeOrigin + performance.now();
+  if (t <= lastArrival) t = lastArrival + 0.001;
+  lastArrival = t;
+  return t;
+}
+
+export function arrivalOf(r: Pick<InboxRow, "meta" | "receivedAt">): number {
+  const v = Number(r.meta?.[ARRIVAL_KEY]);
+  return Number.isFinite(v) && v > 0 ? v : Date.parse(r.receivedAt);
+}
+
+/** The intended order of a conversation's inbound messages: provider timestamp, then arrival, then insert sequence. */
+export function inboxOrder(a: InboxRow, b: InboxRow): number {
+  return Date.parse(a.receivedAt) - Date.parse(b.receivedAt) || arrivalOf(a) - arrivalOf(b) || a.seq - b.seq;
+}
+
 /** Still needs work: not done, and a failure is retried only under the attempt limit. */
 export const needsWork = (r: InboxRow) => r.status === "received" || r.status === "processing" || r.status === "reply_ready" || r.status === "sending" || (r.status === "failed" && r.attempts < MAX_INBOUND_ATTEMPTS);
 
@@ -94,7 +119,7 @@ export class MemoryInboxStore implements InboxStore {
   }
 
   async nextOpen(conversationId: string) {
-    const r = [...this.rows.values()].filter((x) => x.conversationId === conversationId && needsWork(x)).sort((a, b) => a.seq - b.seq)[0];
+    const r = [...this.rows.values()].filter((x) => x.conversationId === conversationId && needsWork(x)).sort(inboxOrder)[0];
     return r ? structuredClone(r) : undefined;
   }
 
@@ -111,7 +136,7 @@ export class MemoryInboxStore implements InboxStore {
   }
 
   async listByConversation(conversationId: string) {
-    return [...this.rows.values()].filter((x) => x.conversationId === conversationId).sort((a, b) => a.seq - b.seq).map((x) => structuredClone(x));
+    return [...this.rows.values()].filter((x) => x.conversationId === conversationId).sort(inboxOrder).map((x) => structuredClone(x));
   }
 
   reset(): void {
@@ -173,9 +198,9 @@ export class SupabaseInboxStore implements InboxStore {
   }
 
   async nextOpen(conversationId: string) {
-    const { data, error } = await getSupabaseClient().from("conversation_inbox").select("*").eq("conversation_id", conversationId).in("status", ["received", "processing", "reply_ready", "sending", "failed"]).order("seq", { ascending: true }).limit(20);
+    const { data, error } = await getSupabaseClient().from("conversation_inbox").select("*").eq("conversation_id", conversationId).in("status", ["received", "processing", "reply_ready", "sending", "failed"]).order("seq", { ascending: true }).limit(200);
     this.check(error, "read");
-    return (data ?? []).map(fromRow).find(needsWork);
+    return (data ?? []).map(fromRow).sort(inboxOrder).find(needsWork);
   }
 
   async update(id: string, patch: Partial<Omit<InboxRow, "id" | "seq">>, from?: InboxStatus) {
@@ -195,7 +220,7 @@ export class SupabaseInboxStore implements InboxStore {
   async listByConversation(conversationId: string) {
     const { data, error } = await getSupabaseClient().from("conversation_inbox").select("*").eq("conversation_id", conversationId).order("seq", { ascending: true });
     this.check(error, "read");
-    return (data ?? []).map(fromRow);
+    return (data ?? []).map(fromRow).sort(inboxOrder);
   }
 }
 

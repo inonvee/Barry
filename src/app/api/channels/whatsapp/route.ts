@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { parseWebhook, verifySignature, verifyWebhookSubscription, whatsappConfig, whatsappOwnerConfig, whatsappOwnerSender, whatsappSender } from "@/lib/channels/whatsapp";
 import { processInbound } from "@/lib/channels/gateway";
+import { arrivalClock } from "@/lib/channels/inbox";
 import { processOwnerInbound } from "@/lib/owner-channel/gateway";
 import { notifyOwnerAlert, notifyOwnerDecisions } from "@/lib/owner/briefs";
 import { mediaAlertText } from "@/lib/channels/media";
@@ -17,6 +18,8 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  // When this request reached BARRY — taken before any await, so concurrent deliveries keep their arrival order.
+  const arrivedAt = arrivalClock();
   const cfg = whatsappConfig();
   const owner = whatsappOwnerConfig();
   if (!cfg.configured && !owner.configured) return Response.json({ error: "WhatsApp channel is not configured" }, { status: 503 });
@@ -31,10 +34,10 @@ export async function POST(req: NextRequest) {
   const parsed = parseWebhook(body, cfg.routes);
   const sender = whatsappSender();
   const results = [];
-  for (const message of parsed.messages) {
+  for (const [i, message] of parsed.messages.entries()) {
     // An error mid-way leaves the message's inbox record at its last persisted stage: a retry resumes it there.
     // (Without the concurrency guard — migration 0019 — this fails closed: nothing runs, nothing is sent, Meta retries later.)
-    results.push(await processInbound(message, sender).catch((err) => ({ status: "failed" as const, conversationId: message.conversationId, error: err instanceof Error ? err.message.slice(0, 160) : "error", retry: true })));
+    results.push(await processInbound(message, sender, { arrivedAt: arrivedAt + i * 0.0001 }).catch((err) => ({ status: "failed" as const, conversationId: message.conversationId, error: err instanceof Error ? err.message.slice(0, 160) : "error", retry: true })));
   }
   // Owner line: the owner command channel (never a customer conversation).
   const ownerResults = [];

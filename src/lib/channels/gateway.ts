@@ -8,7 +8,7 @@ import { handleCustomerMessage, readInboundTurns } from "@/lib/runtime";
 import { getConversationStore } from "@/lib/state";
 import { ConversationBusyError, withConversationLock } from "@/lib/state/lock";
 import { updateConversation } from "@/lib/state/update";
-import { getInboxStore, INBOX_DONE, MAX_INBOUND_ATTEMPTS, needsWork, type InboxRow } from "./inbox";
+import { ARRIVAL_KEY, arrivalClock, getInboxStore, INBOX_DONE, MAX_INBOUND_ATTEMPTS, needsWork, type InboxRow } from "./inbox";
 import type { ChannelKind, NormalizedInboundMessage, NormalizedOutboundMessage } from "./types";
 import { CHANNEL_DELIVERY_KEY, type DeliveryStatus } from "@/lib/operator/execution-state";
 
@@ -93,7 +93,10 @@ type Inbound = NormalizedInboundMessage & { inboundId: string; profileName?: str
  *     (processing → reply_ready → sending → sent), every stage persisted before the next step, so a
  *     crash at any point is resumed without repeating a turn or re-sending a reply.
  */
-export async function processInbound(message: Inbound, sender: OutboundSender, opts: { waitMs?: number } = {}): Promise<InboundResult> {
+export async function processInbound(message: Inbound, sender: OutboundSender, opts: { waitMs?: number; arrivedAt?: number } = {}): Promise<InboundResult> {
+  // The arrival key: when this message reached BARRY (the webhook passes the moment its request arrived,
+  // before any await). It orders a same-second burst; a provider retry keeps the key of the first claim.
+  const arrivedAt = opts.arrivedAt ?? arrivalClock();
   const graph = resolveBusinessGraph(message.businessId);
   const controls = await loadControls(graph.business.id);
   // A channel the founder disabled is not answered on: nothing is processed, nothing is sent.
@@ -106,7 +109,7 @@ export async function processInbound(message: Inbound, sender: OutboundSender, o
   const conversationId = message.conversationId;
   const inbox = getInboxStore();
   // Without the inbox (migration 0019) this throws ConcurrencyGuardMissingError: nothing runs, nothing is sent.
-  const claimed = await inbox.claim({ businessId: graph.business.id, conversationId, channel: message.identity.channel, providerMessageId: message.inboundId, customerId, body: message.text, meta: { to: message.identity.channelUserId, ...(message.profileName ? { profileName: message.profileName.slice(0, 80) } : {}), ...(message.media ? { mediaType: message.media.type, ...(message.media.caption ? { caption: message.media.caption } : {}) } : {}) }, receivedAt: message.receivedAt });
+  const claimed = await inbox.claim({ businessId: graph.business.id, conversationId, channel: message.identity.channel, providerMessageId: message.inboundId, customerId, body: message.text, meta: { to: message.identity.channelUserId, ...(message.profileName ? { profileName: message.profileName.slice(0, 80) } : {}), ...(message.media ? { mediaType: message.media.type, ...(message.media.caption ? { caption: message.media.caption } : {}) } : {}), [ARRIVAL_KEY]: arrivedAt }, receivedAt: message.receivedAt });
   if (!claimed.created && INBOX_DONE.includes(claimed.row.status)) return { status: "duplicate", conversationId };
   // PAUSED (operating mode): the customer's message is kept — in the inbox and in the conversation the owner
   // reads — and nothing is answered, run or sent. Checked through the one operating-mode gate.
@@ -123,6 +126,11 @@ export async function processInbound(message: Inbound, sender: OutboundSender, o
     }, opts);
     return { status: "held", conversationId };
   }
+  // Settle: messages that arrive together (a burst) are claimed concurrently and their inserts can land in any
+  // order. Wait until this message's arrival is SETTLE ms old before draining, so every message that arrived
+  // before it has been claimed — then the drain takes them in inbound order (inboxOrder), not claim order.
+  const settle = arrivedAt + inboundSettleMs() - arrivalClockNow();
+  if (settle > 0) await new Promise((r) => setTimeout(r, Math.min(settle, inboundSettleMs())));
   let advanced = new Set<string>();
   try {
     advanced = await withConversationLock(conversationId, () => drainConversation(conversationId, graph.business.id, sender), { waitMs: opts.waitMs ?? 20_000 });
@@ -148,6 +156,19 @@ export async function processInbound(message: Inbound, sender: OutboundSender, o
       return { status: "failed", conversationId, error: mine.error ?? mine.status, retry: false };
   }
 }
+
+let settleOverride: number | undefined;
+/** How long a burst may take to be fully claimed (ms). 0 in unit tests unless a test sets it. */
+export function inboundSettleMs(): number {
+  if (settleOverride !== undefined) return settleOverride;
+  const env = Number(process.env.BARRY_INBOUND_SETTLE_MS);
+  if (Number.isFinite(env) && env >= 0) return Math.min(env, 5000);
+  return process.env.NODE_ENV === "test" ? 0 : 750;
+}
+export function setInboundSettleMsForTests(ms: number | undefined): void {
+  settleOverride = ms;
+}
+const arrivalClockNow = () => performance.timeOrigin + performance.now();
 
 /** Work through every open inbound message of one conversation, oldest first. Caller holds the lock. Returns the rows it advanced. */
 async function drainConversation(conversationId: string, businessId: string, sender: OutboundSender): Promise<Set<string>> {
