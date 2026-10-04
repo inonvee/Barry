@@ -15,6 +15,7 @@ import { getReasoner } from "@/lib/reasoner";
 import { isSupabaseConfigured } from "@/lib/store/supabase-client";
 import { applyControlChange, listControlAudit, loadControls } from "@/lib/hq/controls";
 import { databaseProjectRef } from "@/lib/qa/preview-acceptance-guard";
+import { ensureRestorePoint, readRestorePoint, restoreFromPoint } from "@/lib/qa/restore-point";
 
 /** The routed WhatsApp test business the acceptance runs against (synthetic customers only). */
 export const ACCEPTANCE_BUSINESS = "fashion-retailer";
@@ -119,7 +120,12 @@ export async function runPreviewAcceptance(creds: Creds, opts: { phoneNumberId: 
   };
 
   // ── Preflight ─────────────────────────────────────────────────────────────────────────────────────────
-  const original = await loadControls(BIZ);
+  // Durable restore point: recover from a run that was killed, then record the true original (see lib/qa/restore-point).
+  if (await readRestorePoint(BIZ)) {
+    const rec = await restoreFromPoint(BIZ, `founder (qa acceptance ${runId})`, `acceptance ${runId}: recover from an interrupted earlier run`);
+    check("preflight", "recovered the test business from an interrupted earlier run (restore point)", rec.restored, rec);
+  }
+  const original = await ensureRestorePoint(BIZ, `founder (qa acceptance ${runId})`);
   check("preflight", "live reasoner", reasonerName === "llm", report.deployment.reasoner);
   check("preflight", "durable Supabase storage on the Preview project", isSupabaseConfigured() && report.deployment.databaseProject === "glqrfoljvdbyrmbvupym", report.deployment.databaseProject);
   check("preflight", "WhatsApp sending is dry_run", process.env.BARRY_WHATSAPP_SEND === "dry_run");
@@ -280,7 +286,7 @@ export async function runPreviewAcceptance(creds: Creds, opts: { phoneNumberId: 
     check("restore", "runner error", false, err instanceof Error ? err.message.slice(0, 300) : String(err));
   } finally {
     // ── Restore the test business exactly as it was, then reconstruct the audit trail ─────────────────────
-    await applyControlChange(BIZ, { mode: original.mode, pausedBusiness: original.pausedBusiness }, { by: `founder (qa acceptance ${runId})`, reason: `acceptance ${runId}: restore` }).catch((e) => check("restore", "restore controls", false, e instanceof Error ? e.message : "failed"));
+    await restoreFromPoint(BIZ, `founder (qa acceptance ${runId})`, `acceptance ${runId}: restore`).catch((e) => check("restore", "restore controls", false, e instanceof Error ? e.message : "failed"));
     const restored = await loadControls(BIZ);
     check("restore", "test business restored to its original mode", restored.mode === original.mode && restored.pausedBusiness === original.pausedBusiness, { mode: restored.mode, paused: restored.pausedBusiness });
     const audit = (await listControlAudit(BIZ)).filter((a) => a.at >= startedAt).sort((x, y) => x.at.localeCompare(y.at));

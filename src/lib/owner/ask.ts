@@ -169,12 +169,17 @@ export function checkOwnerAnswer(answer: string, briefing: OwnerBriefing, questi
 }
 
 /** The same verification for any read-only briefing (owner or founder): figures must come from the briefing; no action claims. */
+// Machine timestamps in the briefing are not facts to quote: their parts (the hour, minute, day) must never make an
+// invented figure look verified (e.g. "17 businesses are down" accepted because it is 17:xx).
+const ISO_TIMESTAMP = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?/g;
+
 export function checkAnswerAgainstBriefing(answer: string, briefing: unknown, question: string): string | undefined {
-  const allowed = new Set([...numbersIn(JSON.stringify(briefing)), ...numbersIn(question)]);
+  const facts = JSON.stringify(briefing).replace(ISO_TIMESTAMP, " ");
+  const allowed = new Set([...numbersIn(facts), ...numbersIn(question)]);
   const stray = numbersIn(answer).filter((n) => !allowed.has(n) && !allowed.has(String(Number(n))));
   if (stray.length) return `figures not in the briefing: ${[...new Set(stray)].join(", ")}`;
   const none: ClaimEvidence = { kinds: new Set(), ownerRequestExists: false, ownerRequestWaiting: false, amounts: [], mentioned: [], percentages: [], factText: "", customerText: "", reportedText: "", knownItems: [], addedThisTurn: [], times: [] };
-  const claims = findUnsupportedClaims(answer, { ...none, amounts: numbersIn(JSON.stringify(briefing)).map(Number), times: [] }).filter((c) => c.why.startsWith("claims a"));
+  const claims = findUnsupportedClaims(answer, { ...none, amounts: numbersIn(facts).map(Number), times: [] }).filter((c) => c.why.startsWith("claims a"));
   if (claims.length) return `claims an action: ${claims[0].why}`;
   // Owner Barry is read-only: a first-person claim of having DONE something is never true.
   if (FIRST_PERSON_ACTION.test(answer)) return "claims an action: a read-only assistant can't have done that";

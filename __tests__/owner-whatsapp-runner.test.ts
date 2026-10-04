@@ -3,7 +3,8 @@ import "@/lib/fabric";
 import { setReasonerForTests, type ReasonerContext } from "@/lib/reasoner";
 import { MemoryLockStore, setLockStoreForTests } from "@/lib/state/lock";
 import { MemoryInboxStore, setInboxStoreForTests } from "@/lib/channels/inbox";
-import { resetControlsCacheForTests, loadControls } from "@/lib/hq/controls";
+import { applyControlChange, resetControlsCacheForTests, loadControls } from "@/lib/hq/controls";
+import { ensureRestorePoint, readRestorePoint, restoreFromPoint } from "@/lib/qa/restore-point";
 import { listOwnerIdentities } from "@/lib/owner-channel/identity";
 import { setOwnerModelForTests } from "@/lib/owner/command-llm";
 import { OWA_STAGES, loadOwnerWhatsappReport, runOwnerWhatsappAcceptance } from "@/app/api/qa/owner-whatsapp/runner";
@@ -75,4 +76,49 @@ describe("mechanics (real route handlers + owner gateway, scripted model)", () =
     const text = JSON.stringify(await loadOwnerWhatsappReport(report.runId));
     for (const secret of ["test-app-secret", "test-owner-token-0123456789"]) expect(text).not.toContain(secret);
   }, 120_000);
+
+  const onlySupabase = (report: { checks: { ok: boolean; stage: string; name: string; detail?: unknown }[] }) => report.checks.filter((c) => !c.ok).map((c) => `${c.stage}: ${c.name} ${JSON.stringify(c.detail ?? "").slice(0, 300)}`);
+
+  it("each stage run ALONE (as the QA page does, one request per stage) passes on its own and leaves the business restored", async () => {
+    const before = await loadControls("fashion-retailer");
+    for (const stage of OWA_STAGES) {
+      const report = await runOwnerWhatsappAcceptance({ appSecret: "test-app-secret" }, { phoneNumberId: "PNID-T", stages: [stage], runId: `owa-${Date.now()}` });
+      expect(onlySupabase(report), stage).toEqual([expect.stringMatching(/^preflight: durable Supabase storage on the Preview project/)]);
+      expect(await loadControls("fashion-retailer")).toMatchObject({ mode: before.mode, pausedBusiness: before.pausedBusiness });
+      expect(await readRestorePoint("fashion-retailer")).toBeUndefined();
+    }
+  }, 180_000);
+
+  it("a run that died mid-way (SUPERVISED + paused, synthetic owner still linked) is recovered by the next run, to the TRUE original", async () => {
+    const original = await loadControls("fashion-retailer");
+    // A previous run recorded the original, changed the business, and was killed before its restore.
+    await ensureRestorePoint("fashion-retailer", "founder (qa test)");
+    await applyControlChange("fashion-retailer", { mode: "supervised", pausedBusiness: true }, { by: "founder (qa test)", reason: "simulated killed run" });
+    const report = await runOwnerWhatsappAcceptance({ appSecret: "test-app-secret" }, { phoneNumberId: "PNID-T", stages: ["identity"], runId: `owa-${Date.now()}` });
+    expect(report.checks.find((c) => /recovered the test business/.test(c.name))?.ok).toBe(true);
+    expect(await loadControls("fashion-retailer")).toMatchObject({ mode: original.mode, pausedBusiness: original.pausedBusiness });
+    expect(await readRestorePoint("fashion-retailer")).toBeUndefined();
+  }, 60_000);
+
+  it("a stage that runs out of its time budget stops between steps, FAILS clearly, and still restores", async () => {
+    const original = await loadControls("fashion-retailer");
+    const report = await runOwnerWhatsappAcceptance({ appSecret: "test-app-secret" }, { phoneNumberId: "PNID-T", stages: ["decisions"], runId: `owa-${Date.now()}`, budgetMs: 0 });
+    expect(report.verdict).toBe("FAIL");
+    expect(report.checks.some((c) => !c.ok && /exceeded its 0s time budget/.test(c.name))).toBe(true);
+    expect(report.checks.find((c) => /restored to its original mode/.test(c.name))?.ok).toBe(true);
+    expect(await loadControls("fashion-retailer")).toMatchObject({ mode: original.mode, pausedBusiness: original.pausedBusiness });
+    expect((await listOwnerIdentities("fashion-retailer")).filter((l) => l.status === "active" && l.channelUserId.startsWith("999"))).toHaveLength(0);
+  }, 60_000);
+
+  it("restore on demand: original controls back, synthetic owner links revoked, point cleared; idempotent", async () => {
+    const original = await loadControls("fashion-retailer");
+    await ensureRestorePoint("fashion-retailer", "founder (qa test)");
+    // A second ensure (e.g. the next stage) never overwrites the true original.
+    await applyControlChange("fashion-retailer", { mode: "supervised", pausedBusiness: true }, { by: "founder (qa test)", reason: "changed" });
+    expect((await ensureRestorePoint("fashion-retailer", "founder (qa test)")).mode).toBe(original.mode);
+    const r = await restoreFromPoint("fashion-retailer", "founder (qa test)", "restore");
+    expect(r).toMatchObject({ restored: true, hadRestorePoint: true, mode: original.mode, pausedBusiness: original.pausedBusiness });
+    expect(await readRestorePoint("fashion-retailer")).toBeUndefined();
+    expect(await restoreFromPoint("fashion-retailer", "founder (qa test)", "again")).toMatchObject({ restored: true, hadRestorePoint: false });
+  });
 });

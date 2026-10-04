@@ -99,3 +99,17 @@ Stages: `identity`, `reads`, `decisions`, `conversation`, `mode`, `notifications
   audit, control log). Controls are restored afterwards.
 - `GET ?runId=owa-…` → stored report (`qa_owner_whatsapp:<runId>`); `POST {"cleanup":"owa-…"}` → deletes the
   run's synthetic conversations. Temporary: remove `src/app/api/qa/owner-whatsapp/` and `src/app/hq/qa/owner-whatsapp/`.
+
+### One click, one stage per request, safe restore
+
+- `/hq/qa/owner-whatsapp` → **Run full Owner WhatsApp acceptance** runs `identity → reads → decisions → conversation →
+  mode → notifications`, each as its own `POST {"stages":[…]}` (each fits Vercel's 300s limit), one after another,
+  with live progress, each stage's runId and report kept, all checks aggregated into one verdict. It stops at the
+  first FAIL / TIMEOUT / ERROR and shows the failing checks.
+- Restore point (`src/lib/qa/restore-point.ts`, both QA runners): before changing anything a run records the test
+  business's original mode + pause state once (`founder_state` / `qa_restore_point`). Every stage restores from it
+  (original controls, every synthetic `999…` owner link revoked, point cleared). A stage stops itself at a 230s
+  budget; the route answers by 280s (restoring first) if a step hangs; the acceptance lock lease is 300s. A run that
+  is killed anyway leaves the point in place: the next run recovers from it first, and `POST {"restore":true}`
+  (called by the page before and after every run, retrying while a killed stage's lock expires) applies it.
+  `GET ?state=1` shows the business's current controls and any pending restore point.

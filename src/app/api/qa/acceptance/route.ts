@@ -48,7 +48,7 @@ export async function POST(req: Request) {
   const runId = `qa-${Date.now()}`;
   try {
     // One run at a time (it changes the test business's mode and restores it).
-    const report = await withConversationLock(`qa-acceptance:${ACCEPTANCE_BUSINESS}`, () => runPreviewAcceptance(creds, { phoneNumberId, stages: parsed.data.stages ?? [...STAGES], runId }), { waitMs: 0, ttlMs: 330_000 });
+    const report = await withConversationLock(`qa-acceptance:${ACCEPTANCE_BUSINESS}`, () => runPreviewAcceptance(creds, { phoneNumberId, stages: parsed.data.stages ?? [...STAGES], runId }), { waitMs: 0, ttlMs: 300_000 });
     return Response.json(report, { status: report.verdict === "PASS" ? 200 : 422 });
   } catch (err) {
     if (err instanceof ConversationBusyError) return Response.json({ error: "Another acceptance run is in progress" }, { status: 409 });

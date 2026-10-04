@@ -20,6 +20,7 @@ import { getOwnerWorkspace } from "@/lib/owner/service";
 import { hasMoney } from "@/lib/format/money";
 import { resolveBusinessGraph } from "@/lib/business-graph-repository";
 import { databaseProjectRef } from "@/lib/qa/preview-acceptance-guard";
+import { ensureRestorePoint, readRestorePoint, restoreFromPoint } from "@/lib/qa/restore-point";
 import { ACCEPTANCE_BUSINESS } from "../acceptance/runner";
 
 const BIZ = ACCEPTANCE_BUSINESS;
@@ -72,7 +73,15 @@ const truthfulNotice = (b: { status: string; reason?: string }) => b.status === 
 /** The owner line in this run: dry-run (recorded, never sent). */
 const dryOwnerLine: OwnerSender = { channel: "whatsapp", mode: "dry_run", send: async () => ({}) };
 
-export async function runOwnerWhatsappAcceptance(creds: Creds, opts: { phoneNumberId: string; stages: OwaStage[]; runId: string }): Promise<OwaReport> {
+/** A stage stops itself before Vercel's function limit (300s) so it always reaches its own restore. */
+export const STAGE_BUDGET_MS = 230_000;
+class StageBudgetExceeded extends Error {
+  constructor() {
+    super("the stage ran out of its time budget");
+  }
+}
+
+export async function runOwnerWhatsappAcceptance(creds: Creds, opts: { phoneNumberId: string; stages: OwaStage[]; runId: string; budgetMs?: number }): Promise<OwaReport> {
   const { runId, phoneNumberId } = opts;
   const startedAt = new Date().toISOString();
   let reasonerName = "unavailable";
@@ -106,6 +115,11 @@ export async function runOwnerWhatsappAcceptance(creds: Creds, opts: { phoneNumb
   };
   const check = (stage: OwaCheck["stage"], name: string, ok: boolean, detail?: unknown) => report.checks.push({ stage, name, ok: Boolean(ok), ...(detail !== undefined ? { detail } : {}) });
   const graph = resolveBusinessGraph(BIZ);
+  // Cooperative time budget: every customer / owner step checks it, so an over-long stage stops between steps.
+  const deadline = Date.now() + (opts.budgetMs ?? STAGE_BUDGET_MS);
+  const budget = () => {
+    if (Date.now() > deadline) throw new StageBudgetExceeded();
+  };
 
   // ── Customers: the real signed webhook route ────────────────────────────────────────────────────────────
   let seq = 0;
@@ -114,6 +128,7 @@ export async function runOwnerWhatsappAcceptance(creds: Creds, opts: { phoneNumb
     const phone = `9997${customerN++}${digits}`;
     const id = `wa:${BIZ}:${phone}`;
     const send = async (text: string) => {
+      budget();
       const wamid = `wamid.owa.${runId}.${++seq}`;
       const raw = JSON.stringify({ object: "whatsapp_business_account", entry: [{ changes: [{ field: "messages", value: { metadata: { phone_number_id: phoneNumberId }, contacts: [{ wa_id: phone, profile: { name } }], messages: [{ id: wamid, from: phone, timestamp: String(Math.floor(Date.now() / 1000)), type: "text", text: { body: text } }] } }] }] });
       const sig = `sha256=${crypto.createHmac("sha256", creds.appSecret).update(raw, "utf8").digest("hex")}`;
@@ -140,18 +155,24 @@ export async function runOwnerWhatsappAcceptance(creds: Creds, opts: { phoneNumb
   let ownerSeq = 0;
   const inbound = (text: string, from = OWNER, messageId = `wamid.owa.owner.${runId}.${++ownerSeq}`, actionId?: string): OwnerInbound => ({ channel: "whatsapp", messageId, channelUserId: from, verifiedIdentifier: `phone:${from}`, receivedAt: new Date().toISOString(), ...(actionId ? { actionId } : { text }) });
   const owner = async (text: string, o: { from?: string; messageId?: string; actionId?: string } = {}) => {
+    budget();
     const r = await processOwnerInbound(inbound(text, o.from ?? OWNER, o.messageId, o.actionId), dryOwnerLine, { businessIds: [BIZ] });
     const reply = r.status === "processed" || r.status === "duplicate" ? r.command.reply : undefined;
     return { status: r.status, text: reply?.text ?? "", actions: reply?.actions ?? [], intent: r.status === "processed" || r.status === "duplicate" ? r.command.intent?.kind : undefined, delivery: r.status === "processed" ? r.delivery?.status : undefined };
   };
   const said = (x: { status: string; intent?: string; text: string }) => ({ status: x.status, intent: x.intent, reply: short(x.text) });
 
-  // ── Preflight ─────────────────────────────────────────────────────────────────────────────────────────
-  const original = await loadControls(BIZ);
+  // ── Restore point: recover from a run that died (timeout / killed), then record the true original ─────────
+  const by = `founder (qa owner-whatsapp ${runId})`;
+  if (await readRestorePoint(BIZ)) {
+    const rec = await restoreFromPoint(BIZ, by, `owner-whatsapp acceptance ${runId}: recover from an interrupted earlier run`);
+    check("preflight", "recovered the test business from an interrupted earlier run (restore point)", rec.restored, rec);
+  }
+  const original = await ensureRestorePoint(BIZ, by);
   check("preflight", "live reasoner", reasonerName === "llm", report.deployment.reasoner);
   check("preflight", "durable Supabase storage on the Preview project", isSupabaseConfigured() && report.deployment.databaseProject === "glqrfoljvdbyrmbvupym", report.deployment.databaseProject);
   check("preflight", "WhatsApp sending is dry_run (customer and owner lines)", process.env.BARRY_WHATSAPP_SEND === "dry_run" && whatsappOwnerConfig().sendMode === "dry_run");
-  await applyControlChange(BIZ, { mode: "supervised", pausedBusiness: false }, { by: `founder (qa owner-whatsapp ${runId})`, reason: `owner-whatsapp acceptance ${runId}: known starting point (SUPERVISED)` });
+  await applyControlChange(BIZ, { mode: "supervised", pausedBusiness: false }, { by, reason: `owner-whatsapp acceptance ${runId}: known starting point (SUPERVISED)` });
 
   let linkId: string | undefined;
   try {
@@ -306,12 +327,15 @@ export async function runOwnerWhatsappAcceptance(creds: Creds, opts: { phoneNumb
       check("notifications", "no real sends in dry run: every owner notice in this run is dry_run or blocked (none sent)", runBriefs.length > 0 && runBriefs.every((b) => b.status === "dry_run" || b.status === "blocked"), runBriefs.map((b) => `${b.kind}:${b.status}`));
     }
   } catch (err) {
-    check("restore", "runner error", false, err instanceof Error ? err.message.slice(0, 300) : String(err));
+    if (err instanceof StageBudgetExceeded) check("restore", `stage stopped: it exceeded its ${Math.round((opts.budgetMs ?? STAGE_BUDGET_MS) / 1000)}s time budget (Vercel's limit is 300s) — the business is restored below`, false);
+    else check("restore", "runner error", false, err instanceof Error ? err.message.slice(0, 300) : String(err));
   } finally {
     // ── Audit, then restore ──────────────────────────────────────────────────────────────────────────────
     const records = (await listCommandRecords(BIZ).catch(() => [])).filter((r) => r.createdAt >= startedAt && r.actor.includes(masked));
     const mutations = records.filter((r) => ["approval_response", "conversation_takeover", "conversation_reply", "conversation_giveback", "mode_change", "affirm", "negate"].includes(r.intent?.kind ?? ""));
-    check("audit", "every owner mutation is a durable command record with its actor and trace", mutations.length > 0 && mutations.every((r) => r.status === "done" && r.trace.length >= 3), mutations.map((r) => `${r.intent?.kind}: ${r.trace.map((t) => `${t.step}/${t.outcome}`).join(" ")}`));
+    const mutating = opts.stages.some((x) => x === "decisions" || x === "conversation" || x === "mode");
+    if (mutating) check("audit", "every owner mutation is a durable command record with its actor and trace", mutations.length > 0 && mutations.every((r) => r.status === "done" && r.trace.length >= 3), mutations.map((r) => `${r.intent?.kind}: ${r.trace.map((t) => `${t.step}/${t.outcome}`).join(" ")}`));
+    else check("audit", "read-only stages: the owner's commands mutated nothing (no decision, takeover, reply, give back or mode change)", records.length > 0 && mutations.length === 0, { commands: records.length, mutations: mutations.map((r) => r.intent?.kind) });
     if (opts.stages.includes("mode")) {
       const audit = (await listControlAudit(BIZ)).filter((a) => a.at >= startedAt && a.by.includes(masked));
       check("audit", "the owner's pause / resume are in the controls audit (who, when, before → after)", audit.length >= 2, audit.map((a) => `${a.at} ${a.by}: ${a.before.pausedBusiness ? "paused" : "running"} → ${a.after.pausedBusiness ? "paused" : "running"}`));
@@ -319,9 +343,10 @@ export async function runOwnerWhatsappAcceptance(creds: Creds, opts: { phoneNumb
     const held = report.conversations.length ? await Promise.all(report.conversations.map(async (id) => readControlLog((await state(id)) ?? ({ knownFields: {} } as never)))) : [];
     if (opts.stages.includes("conversation")) check("audit", "conversation ownership changes are in the stored control log", held.some((log) => log.some((e) => /owner on WhatsApp/.test(e.by))), held.flat().map((e) => `${e.from}->${e.to} by ${e.by}`));
     if (linkId) await revokeOwnerIdentity(BIZ, linkId, `qa owner-whatsapp ${runId}: end of run`).catch(() => undefined);
-    await applyControlChange(BIZ, { mode: original.mode, pausedBusiness: original.pausedBusiness }, { by: `founder (qa owner-whatsapp ${runId})`, reason: `owner-whatsapp acceptance ${runId}: restore` }).catch((e) => check("restore", "restore controls", false, e instanceof Error ? e.message : "failed"));
+    // Through the durable restore point (original mode + pause, every synthetic owner link revoked, point cleared).
+    await restoreFromPoint(BIZ, by, `owner-whatsapp acceptance ${runId}: restore`).catch((e) => check("restore", "restore controls", false, e instanceof Error ? e.message : "failed"));
     const restored = await loadControls(BIZ);
-    check("restore", "test business restored to its original mode; synthetic owner revoked", restored.mode === original.mode && restored.pausedBusiness === original.pausedBusiness && !(await listOwnerIdentities(BIZ)).some((l) => l.channelUserId === OWNER && l.status === "active"), { mode: restored.mode, paused: restored.pausedBusiness });
+    check("restore", "test business restored to its original mode; synthetic owner revoked; restore point cleared", restored.mode === original.mode && restored.pausedBusiness === original.pausedBusiness && !(await listOwnerIdentities(BIZ)).some((l) => l.channelUserId === OWNER && l.status === "active") && !(await readRestorePoint(BIZ)), { mode: restored.mode, paused: restored.pausedBusiness, original: { mode: original.mode, paused: original.pausedBusiness } });
     report.finishedAt = new Date().toISOString();
     report.passed = report.checks.filter((c) => c.ok).length;
     report.failed = report.checks.length - report.passed;
