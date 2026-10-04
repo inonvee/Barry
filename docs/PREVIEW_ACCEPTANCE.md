@@ -60,3 +60,17 @@ business's own rules.
 - any request carrying a price / discount / amount / override (a policy exception)
 - any consequential capability not on the autonomous list, including ones added later (fail safe)
 - proactive follow-ups (sent only when the owner runs them)
+
+## 4. In-deployment runner (no secrets leave the Preview)
+
+`POST /api/qa/acceptance` runs the same checks **inside** the Preview deployment, through the real route handlers,
+with the deployment's own WhatsApp app secret, owner / founder tokens and CRON_SECRET. Founder-authenticated
+(`Authorization: Bearer <BARRY_FOUNDER_TOKEN>` or an HQ session). It exists only when `VERCEL_ENV=preview`, the
+database is `glqrfoljvdbyrmbvupym` and `BARRY_WHATSAPP_SEND=dry_run` — otherwise 404 (Production included).
+
+- `POST {}` → every stage (channel, handoff, supervised, mode, cron); `POST {"stages":["channel"]}` → a subset
+  (use stages if a full run would exceed the function's time limit).
+- 200 = PASS, 422 = FAIL; the body is the report (`runId`, per-check PASS/FAIL, deployment facts, conversation ids).
+- `GET ?runId=qa-…` → the stored report (operator record `qa_acceptance:<runId>` on business `fashion-retailer`).
+- `POST {"cleanup":"qa-…"}` → deletes that run's synthetic conversations (customer numbers `999…`); the report stays.
+- Temporary: remove `src/app/api/qa/acceptance/` once the gate has passed.
