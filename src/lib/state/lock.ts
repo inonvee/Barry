@@ -61,7 +61,9 @@ export class MemoryLockStore implements LockStore {
         set.delete(done);
         resolve();
       };
-      const timer = setTimeout(done, ms);
+      // Bounded: a release that lands between a failed tryAcquire and this registration must not be a
+      // lost wakeup (the caller re-checks the lease after every wait).
+      const timer = setTimeout(done, Math.min(ms, 250));
       set.add(done);
       this.waiters.set(conversationId, set);
     });
@@ -85,8 +87,8 @@ export class MemoryLockStore implements LockStore {
  */
 export class ConcurrencyGuardMissingError extends Error {
   readonly code = "concurrency_guard_missing";
-  constructor(readonly what: string) {
-    super(`Conversation writes are blocked: the database concurrency guard (migration 0019) is not installed (${what}). Apply migration 0019 to this environment's database.`);
+  constructor(readonly what: string, readonly migration = "0019") {
+    super(`Conversation writes are blocked: the database concurrency guard (migration ${migration}) is not installed (${what}). Apply migration ${migration} to this environment's database.`);
     this.name = "ConcurrencyGuardMissingError";
   }
 }

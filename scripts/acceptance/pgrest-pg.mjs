@@ -88,6 +88,13 @@ http.createServer(async (req, res) => {
       return send(res, status, out, headers);
     };
     if (req.method === "GET" || req.method === "HEAD") {
+      // Like PostgREST: selecting a column the table doesn't have is an error (42703), never silently null.
+      const sel = params.get("select");
+      if (sel && sel !== "*") {
+        const have = new Set((await pool.query(`select column_name from information_schema.columns where table_schema = 'public' and table_name = $1`, [table])).rows.map((r) => r.column_name));
+        const bad = sel.split(",").map((c) => c.trim().split(":").pop().split("->")[0]).find((c) => c && c !== "*" && !have.has(c));
+        if (bad) return send(res, 400, { code: "42703", message: `column ${table}.${bad} does not exist`, details: null, hint: null });
+      }
       const args = [];
       const w = where(params, args);
       const rows = (await pool.query(`select to_jsonb(t) as r from public.${ident(table)} t ${w}${orderLimit(params)}`, args)).rows.map((x) => x.r);

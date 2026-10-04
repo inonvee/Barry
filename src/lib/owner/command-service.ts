@@ -2,7 +2,8 @@ import crypto from "node:crypto";
 import type { BusinessGraph } from "@/lib/business-graph";
 import { getBackend } from "@/lib/store";
 import { getConversationStore } from "@/lib/state";
-import { resumeAfterApproval } from "@/lib/runtime";
+import { HumanHoldsConversationError, resumeAfterApproval } from "@/lib/runtime";
+import { humanHolds } from "@/lib/runtime/control";
 import { moneyWords, hasMoney } from "@/lib/format/money";
 import type { OwnerOutbound } from "@/lib/owner-channel/transport";
 import { getOwnerWorkspace, type OwnerWorkspace } from "./service";
@@ -465,10 +466,25 @@ async function dispatch(input: ExecuteInput, record: OwnerCommandRecord, now: Da
         const again = approval?.actionable && current ? await approvalPrompt(ws, current.id, actorId(actor), source, now, lang) : undefined;
         return { text: `${T("That request changed or was already decided since I sent it — nothing was done.", "הבקשה השתנתה או כבר הוחלטה מאז ששלחתי אותה — לא נעשה כלום.")}${again ? `\n\n${T("Here's the current one:", "הנה הבקשה העדכנית:")}\n\n${again.text}` : ""}`, actions: again?.actions, links: again?.links, intent: intent.kind };
       }
+      // A person holds this conversation: BARRY can't act in it until it's returned (the request stays open).
+      const convo = await getConversationStore().get(approval.conversationId);
+      if (convo && humanHolds(convo)) {
+        step("approval", "blocked", "a person holds the conversation");
+        return { text: T(`You (or your team) hold the conversation with ${prompt.customer} — return it to BARRY first, then decide. Nothing was done.`, `השיחה עם ${prompt.customer} אצלך (או אצל הצוות) — החזירו אותה ל-BARRY ואז תחליטו. לא נעשה כלום.`), intent: intent.kind };
+      }
       // Single use, marked BEFORE execution: a double tap or replay finds it used.
       await savePrompt({ ...prompt, usedAt: now.toISOString(), usedFor: `${intent.decision} by ${actorLabel(actor)}` });
       step("approval", "ok", `${intent.decision} ${approval.id} rev ${approval.revision}`);
-      const outcome = await resumeAfterApproval(graph, approval.id, intent.decision === "approve" ? "approved" : "declined", actorLabel(actor));
+      const heldText = T(`You (or your team) hold the conversation with ${prompt.customer} — return it to BARRY first, then decide. Nothing was done.`, `השיחה עם ${prompt.customer} אצלך (או אצל הצוות) — החזירו אותה ל-BARRY ואז תחליטו. לא נעשה כלום.`);
+      const outcome = await resumeAfterApproval(graph, approval.id, intent.decision === "approve" ? "approved" : "declined", actorLabel(actor)).catch((err) => {
+        // Taken over between the check above and the resume (which re-checks under the lock): nothing ran.
+        if (err instanceof HumanHoldsConversationError) return undefined;
+        throw err;
+      });
+      if (!outcome) {
+        step("execution", "blocked", "a person holds the conversation");
+        return { text: heldText, intent: intent.kind };
+      }
       const held = outcome.turn.trace?.hold;
       step("execution", held ? "blocked" : "ok", held ? `held: ${held.reason}` : `${outcome.turn.trace?.stop.reason ?? "resumed"}`);
       step("verification", "ok", "approval resolved through the runtime resume path (revalidation, final-write gate, compare-and-set)");

@@ -124,8 +124,9 @@ describe("owner workspace reflects authoritative state", () => {
     const model = new ScriptedModel(() => "FAIL");
     model.failure = { kind: "provider_quota_exhausted", status: 429, code: "insufficient_quota", message: "quota", transient: false };
     setReasonerForTests(model);
-    const id = conv("ws-ai");
-    for (const m of ["hi", "hello?", "anyone?"]) await handleCustomerMessage(g, id, "c", m);
+    // Two failed turns hand a conversation to a person (BARRY then stays silent in it), so the failures
+    // here come from several customers.
+    for (const m of ["hi", "hello?", "anyone?"]) await handleCustomerMessage(g, conv("ws-ai"), "c", m);
     const ws = await getOwnerWorkspace(g);
     expect(ws.health.ai).toMatchObject({ status: "unavailable", lastFailure: { kind: "provider_quota_exhausted", status: 429, code: "insufficient_quota" } });
     expect(ws.health.ai.summary).toMatch(/out of credit/);

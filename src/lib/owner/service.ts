@@ -29,6 +29,7 @@ import { whatsappOwnerConfig } from "@/lib/channels/whatsapp";
 import { linkActive, listOwnerIdentities, maskedIdentity } from "@/lib/owner-channel/identity";
 import { listInitiatives } from "@/lib/initiative/store";
 import { toView, type Initiative, type InitiativeView } from "@/lib/initiative/model";
+import { humanHolds } from "@/lib/runtime/control";
 
 /**
  * THE OWNER'S VIEW OF THEIR BUSINESS — read model for the owner dashboard (and for Owner Barry).
@@ -46,7 +47,7 @@ export type OwnerConversationRow = {
   customer: string;
   channel: "whatsapp" | "web" | "instagram" | "simulator";
   lastActivityAt: string;
-  lastMessage: { from: "customer" | "barry" | "system"; text: string } | null;
+  lastMessage: { from: "customer" | "barry" | "system" | "owner"; text: string } | null;
   status: "needs_you" | "waiting_on_customer" | "completed" | "lost" | "in_progress";
   attention: AttentionReason[];
   outcomes: OutcomeEvent["kind"][];
@@ -369,7 +370,8 @@ export async function getOwnerWorkspace(staticGraph: BusinessGraph, opts: { sinc
       const attention: AttentionReason[] = [];
       if (mine.some((a) => a.lifecycle === "active")) attention.push("approval_waiting");
       if (mine.some((a) => a.lifecycle === "held")) attention.push("approval_held");
-      if (handoffs.some((h) => h.status !== "resolved")) attention.push("handoff_open");
+      // A person holds it (open handoff, or the owner took it): BARRY is silent, so the customer waits on you.
+      if (handoffs.some((h) => h.status !== "resolved") || humanHolds(c)) attention.push("handoff_open");
       if (lastTurn?.trace?.understanding?.valid === false) attention.push("ai_unavailable");
       const lastEffect = ledger.at(-1);
       if (lastEffect?.status === "failed" && lastEffect.operation !== "understand") attention.push("action_failed");
@@ -378,7 +380,7 @@ export async function getOwnerWorkspace(staticGraph: BusinessGraph, opts: { sinc
       const completed = kinds.some((k) => k === "paid" || k === "booked" || k === "order_created" || k === "case_created") || c.outcome === "won";
       const lastMsg = lastSaid(c);
       const status: OwnerConversationRow["status"] =
-        attention.length > 0 ? "needs_you" : c.outcome === "lost" || ledger.at(-1)?.status === "withdrawn" ? "lost" : completed ? "completed" : lastMsg?.role === "barry" ? "waiting_on_customer" : "in_progress";
+        attention.length > 0 ? "needs_you" : c.outcome === "lost" || ledger.at(-1)?.status === "withdrawn" ? "lost" : completed ? "completed" : lastMsg?.role === "barry" || lastMsg?.role === "owner" ? "waiting_on_customer" : "in_progress";
       return {
         id: c.id,
         customer: customerLabel(c),

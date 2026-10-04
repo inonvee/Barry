@@ -7,6 +7,7 @@ import { getBackend } from "@/lib/store";
 import { withLifecycle } from "@/lib/runtime/owner-requests";
 import { readHandoffs, transactionSnapshot } from "@/lib/runtime/handoff";
 import { readDeliveries } from "@/lib/channels/gateway";
+import { readControl, readControlLog } from "@/lib/runtime/control";
 import { outcomeEvents } from "./revenue";
 import { channelOf, customerLabel } from "./service";
 import { conversationStory } from "./story";
@@ -32,7 +33,10 @@ export async function getOwnerConversation(graph: BusinessGraph, conversationId:
     customer: customerLabel(state, lang),
     channel: channelOf(state),
     // BARRY messages that never reached the customer (test mode / failed send) are marked, never shown as said.
-    messages: truthfulTranscript(state).map((m) => ({ from: m.role, text: m.content, at: m.at, ...(m.notSent ? { notSent: m.notSent } : {}) })),
+    messages: truthfulTranscript(state).map((m) => ({ from: m.role, text: m.content, at: m.at, ...(m.author ? { author: m.author } : {}), ...(m.notSent ? { notSent: m.notSent } : {}) })),
+    /** Who holds the conversation right now (BARRY, or a person after a handoff / take-over) and every change. */
+    control: readControl(state),
+    controlLog: readControlLog(state),
     outcomes: outcomeEvents({ graph, conversations: [state], payments, bookings, orders, approvals }),
     transaction: lang === "he" ? conversationStory(state, "he").standing : transactionSnapshot(state),
     /** What the customer asked, what BARRY did, and what became of it — turn by turn, from records. */

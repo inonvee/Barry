@@ -578,7 +578,8 @@ function earlierTurns(turns: NonNullable<ComposeSummaryContext["recentConversati
 /** The recent conversation, as the composer sees it (text only — rich payloads are the channel's). */
 export function recentConversation(ctx: ReasonerContext, limit = COMPOSE_HISTORY): NonNullable<ComposeSummaryContext["recentConversation"]> {
   return ctx.state.messages
-    .filter((m) => m.role === "customer" || m.role === "barry")
+    // The owner's own replies (after a handoff) are the business speaking too.
+    .filter((m) => m.role === "customer" || m.role === "barry" || m.role === "owner")
     .slice(-limit)
     .map((m) => ({ from: m.role === "customer" ? ("customer" as const) : ("business" as const), text: m.content }));
 }

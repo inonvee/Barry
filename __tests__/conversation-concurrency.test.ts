@@ -221,12 +221,9 @@ describe("inbound burst during a handoff", () => {
     const state = (await store.get(t.id))!;
     createHandoff(t.g, state, { trigger: "customer_asked", reason: "wants a person", urgency: "normal", unresolved: [] });
     await store.save(state);
-    const gate = t.model.gate("one");
-    const burst = [processInbound(t.msg("one"), sender)];
-    await gate.entered;
-    burst.push(processInbound(t.msg("two"), sender), processInbound(t.msg("three"), sender));
-    gate.release();
-    await Promise.all(burst);
+    // A person holds the conversation now (Phase 4): the burst is stored and held — no model call, no reply.
+    const burst = await Promise.all(["one", "two", "three"].map((x) => processInbound(t.msg(x), sender)));
+    expect(burst.map((r) => r.status)).toEqual(["held", "held", "held"]);
     const after = (await store.get(t.id))!;
     expect(readHandoffs(after).filter((h) => h.status === "open")).toHaveLength(1);
     expect(await customerTexts(t.id)).toEqual(["hello", "one", "two", "three"]);

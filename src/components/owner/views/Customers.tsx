@@ -27,7 +27,9 @@ type ConversationDetail = {
   customer: string;
   channel: string;
   /** notSent: a BARRY message that never reached the customer (test mode, or the channel refused it). */
-  messages: { from: string; text: string; at: string; notSent?: "dry_run" | "failed" }[];
+  messages: { from: string; text: string; at: string; author?: string; notSent?: "dry_run" | "failed" }[];
+  /** Who holds the conversation: BARRY, or a person (after a handoff or your take-over — BARRY stays silent). */
+  control?: { holder: "barry" | "human"; since: string; by: string; reason: string };
   outcomes: OutcomeEvent[];
   transaction: string[];
   story?: ConversationStory;
@@ -69,7 +71,7 @@ export function CustomersView({ ws, onOpen, onDecision }: { ws: OwnerWorkspace; 
         <Group label={label(filter)}>
           {shown.map(({ c, state }) => {
             const st = CONVERSATION_STATE[state];
-            const last = c.lastMessage ? `${c.lastMessage.from === "barry" ? "BARRY: " : ""}${c.lastMessage.text}` : CHANNEL[c.channel]?.[lang];
+            const last = c.lastMessage ? `${c.lastMessage.from === "barry" ? "BARRY: " : c.lastMessage.from === "owner" ? t("You: ", "אתה: ") : ""}${c.lastMessage.text}` : CHANNEL[c.channel]?.[lang];
             return (
               <Row
                 key={c.id}
@@ -105,7 +107,25 @@ export function ConversationSheet({ id, ws, api, onClose, onDecision }: { id: st
   const [data, setData] = useState<ConversationDetail | null>(null);
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState("");
   const { businessId, call } = api;
+  /** Take over / reply / give back — the same owner service the owner WhatsApp line uses. */
+  const act = async (action: "take_over" | "reply" | "resume") => {
+    setBusy(true);
+    setActionError("");
+    try {
+      const body = { businessId, conversationId: id, action, ...(action === "reply" ? { text: draft, requestId: `web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` } : {}) };
+      await call(`/api/owner/handoffs`, { body });
+      if (action === "reply") setDraft("");
+    } catch (e) {
+      setActionError((e as Error).message);
+    } finally {
+      setBusy(false);
+      setAttempt((a) => a + 1);
+    }
+  };
   useEffect(() => {
     let cancelled = false;
     call<ConversationDetail>(`/api/owner/conversation?businessId=${encodeURIComponent(businessId)}&conversationId=${encodeURIComponent(id)}&lang=${lang}`)
@@ -189,13 +209,28 @@ export function ConversationSheet({ id, ws, api, onClose, onDecision }: { id: st
                   {data.messages.map((m, i) => (
                     <li key={i} className={`flex flex-col ${m.from === "customer" ? "items-start" : "items-end"}`}>
                       <p dir="auto" className={`max-w-[88%] whitespace-pre-wrap break-words rounded-2xl px-3 py-2 text-[14px] leading-6 ${m.from === "customer" ? "rounded-ss-md bg-o-sunken text-o-ink" : "rounded-se-md bg-o-accent/15 text-o-ink"}`}>{m.text}</p>
-                      <span className="mt-0.5 px-1 text-[11px] text-o-faint">{m.from === "customer" ? name : m.from === "barry" ? "BARRY" : t("System", "מערכת")} · {ago(lang, m.at)}{m.notSent === "dry_run" ? t(" · test mode — not sent", " · מצב בדיקה — לא נשלח") : m.notSent === "failed" ? t(" · not delivered", " · לא נמסר") : ""}</span>
+                      <span className="mt-0.5 px-1 text-[11px] text-o-faint">{m.from === "customer" ? name : m.from === "barry" ? "BARRY" : m.from === "owner" ? t("You (your team)", "אתה (הצוות שלך)") : t("System", "מערכת")} · {ago(lang, m.at)}{m.notSent === "dry_run" ? t(" · test mode — not sent", " · מצב בדיקה — לא נשלח") : m.notSent === "failed" ? t(" · not delivered", " · לא נמסר") : ""}</span>
                     </li>
                   ))}
                 </ol>
               </Disclosure>
             </div>
-            <p className="text-[12.5px] leading-5 text-o-faint">{t("Read-only here: BARRY talks to the customer; you decide what it may do.", "כאן רק לקריאה: BARRY מדבר עם הלקוח, ואתה מחליט מה מותר לו לעשות.")}</p>
+            {data.control?.holder === "human" ? (
+              <section className="flex flex-col gap-2" data-testid="human-control">
+                <p className="text-[13px] leading-5 text-o-ink-2">{t("You have this conversation — BARRY won't reply to this customer until you give it back.", "השיחה אצלך — BARRY לא יענה ללקוח הזה עד שתחזיר לו אותה.")}</p>
+                <textarea dir="auto" value={draft} onChange={(e) => setDraft(e.target.value)} rows={3} maxLength={4000} aria-label={t("Reply to the customer", "תשובה ללקוח")} placeholder={t("Write to the customer…", "כתוב ללקוח…")} className="w-full rounded-xl bg-o-sunken px-3 py-2 text-[14px] leading-6 text-o-ink ring-1 ring-inset ring-o-line" />
+                <div className="flex flex-wrap gap-2">
+                  <Button onClick={() => void act("reply")} disabled={busy || !draft.trim()}>{t("Send", "שליחה")}</Button>
+                  <Button kind="quiet" onClick={() => void act("resume")} disabled={busy}>{t("Give back to BARRY", "להחזיר ל־BARRY")}</Button>
+                </div>
+              </section>
+            ) : (
+              <div className="flex flex-col gap-2">
+                <p className="text-[12.5px] leading-5 text-o-faint">{t("BARRY is handling this customer. Take over to reply yourself — BARRY stops until you give it back.", "BARRY מטפל בלקוח הזה. אפשר לקחת את השיחה ולענות בעצמך — BARRY יעצור עד שתחזיר לו אותה.")}</p>
+                <Button kind="quiet" onClick={() => void act("take_over")} disabled={busy}>{t("Take over", "לקחת את השיחה")}</Button>
+              </div>
+            )}
+            {actionError && <p className="text-[13px] text-o-bad" role="alert">{actionError}</p>}
           </>
         )}
         <Button kind="quiet" onClick={onClose}>{t("Close", "סגירה")}</Button>

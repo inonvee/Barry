@@ -70,6 +70,8 @@ export interface OutboundSender {
 export type InboundResult =
   | { status: "processed"; conversationId: string; reply: string; delivery: DeliveryRecord }
   | { status: "duplicate"; conversationId: string }
+  /** Kept, not answered: a person holds this conversation. */
+  | { status: "held"; conversationId: string }
   /** Another request is working on this conversation and it didn't free up in time: nothing ran for this message yet — the provider should retry (a retry is deduplicated). */
   | { status: "queued"; conversationId: string; retry: true }
   /** retry=true: nothing was sent and the message can safely be processed again on a provider retry. */
@@ -121,6 +123,8 @@ export async function processInbound(message: Inbound, sender: OutboundSender, o
     case "dry_run":
     case "send_failed":
       return { status: "processed", conversationId, reply: mine.reply ?? "", delivery: delivery ?? { at: mine.updatedAt, channel: sender.channel, inboundId: message.inboundId, status: mine.status === "send_failed" ? "failed" : mine.status } };
+    case "skipped":
+      return { status: "held", conversationId };
     case "failed":
       return { status: "failed", conversationId, error: mine.error ?? "not processed", retry: mine.attempts < MAX_INBOUND_ATTEMPTS };
     default:
@@ -167,6 +171,10 @@ async function processInboxRow(start: InboxRow, businessId: string, sender: Outb
     // Did a turn for this exact message already run and save (e.g. we crashed right after it)? Then never run it again.
     const state = await store.get(row.conversationId);
     const stamp = state ? readInboundTurns(state.knownFields)[row.providerMessageId] : undefined;
+    if (state && stamp?.held) {
+      await inbox.update(row.id, { status: "skipped", error: "a person holds this conversation — BARRY did not reply" }, row.status);
+      return;
+    }
     if (state && stamp) {
       const reply = state.messages.find((m) => m.role === "barry" && sameInstant(m.at, stamp.replyAt));
       if (!reply) {
@@ -195,6 +203,11 @@ async function processInboxRow(start: InboxRow, businessId: string, sender: Outb
         if (!(await inbox.update(row.id, { status: final ? "failed_final" : "failed", error }, "processing").then(() => true, () => false))) return;
         // Nothing was sent. The owner sees it; a provider retry may process it again (bounded).
         await recordDelivery(row.conversationId, { at: new Date().toISOString(), channel: sender.channel, inboundId: row.providerMessageId, status: "failed", error: `not processed: ${error}` }).catch(() => undefined);
+        return;
+      }
+      // A person holds the conversation: the message is kept, BARRY sends nothing.
+      if (out.held) {
+        await inbox.update(row.id, { status: "skipped", error: "a person holds this conversation — BARRY did not reply" }, "processing");
         return;
       }
       // The turn is saved (and stamped with this message's id). If this write fails, the request fails and a

@@ -37,7 +37,7 @@ export function consoleRows(input: { businessId: string; businessName: string; c
     const paid = input.payments.some((p) => p.conversationId === c.id && isVerifiedPaid(p));
     const lastMsg = lastSaid(c);
     const needsOwner = active.length > 0 || handoff;
-    const status: ConsoleRow["status"] = needsOwner ? "needs_owner" : paid ? "completed" : lastMsg?.role === "barry" ? "waiting_on_customer" : "in_progress";
+    const status: ConsoleRow["status"] = needsOwner ? "needs_owner" : paid ? "completed" : lastMsg?.role === "barry" || lastMsg?.role === "owner" ? "waiting_on_customer" : "in_progress";
     return {
       businessId: input.businessId,
       businessName: input.businessName,

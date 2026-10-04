@@ -22,6 +22,7 @@ import { resolveReplyLanguage, type ReplyLanguage } from "@/lib/reasoner/languag
 import { checkInfoRequest, infoRequestFields } from "@/lib/reasoner/reply-contract";
 import { composeDeterministic, handoffText, understandingUnavailableText, intentHeldText, revalidatedChangeText } from "@/lib/reasoner/deterministic-compose";
 import { createHandoff, handoffPath } from "./handoff";
+import { humanHolds, readControl } from "./control";
 import { loadControls } from "@/lib/hq/controls";
 import { loadEntitlement } from "@/lib/commercial/account";
 import { withUsageMeter } from "@/lib/commercial/usage-meter";
@@ -289,7 +290,9 @@ export function buildRichPayload(outcome: CompileOutcome, toolResult: ToolCallRe
 export type TurnOutcome = {
   state: ConversationState;
   turn: TurnLog;
+  /** Empty when held: a person holds the conversation and BARRY did not reply. */
   response: string;
+  held?: "human_in_control";
   /** Channel-neutral rich content (product cards, payment link) accompanying `response`. */
   rich?: NormalizedOutboundMessage["rich"];
 };
@@ -347,7 +350,7 @@ function buildSchedulingDisplay(
 /** Which inbound channel message (if any) the current turn answers — stamped into the turn's own save. */
 const inboundTurn = new AsyncLocalStorage<{ inboundId?: string }>();
 export const INBOUND_TURNS_KEY = "__inboundTurns";
-export type InboundTurnStamp = { turnId: string; replyAt?: string };
+export type InboundTurnStamp = { turnId: string; replyAt?: string; /** a person held the conversation: no reply by design */ held?: boolean };
 
 /** inbound message id → the turn that answered it (and its reply's transcript time). Bounded. */
 export function readInboundTurns(knownFields: Record<string, string>): Record<string, InboundTurnStamp> {
@@ -359,14 +362,48 @@ export function readInboundTurns(knownFields: Record<string, string>): Record<st
   }
 }
 
-/** Record, in the SAME save as the turn, that this turn answered the current inbound message. */
-function stampInbound(state: ConversationState, turn: TurnLog): void {
+/** Record, in the SAME save as the turn, that this turn answered the current inbound message (or held it for a person). */
+function stampInbound(state: ConversationState, turn: TurnLog, held = false): void {
   const inboundId = inboundTurn.getStore()?.inboundId;
   if (!inboundId) return;
   const map = readInboundTurns(state.knownFields);
-  const replyAt = [...state.messages].reverse().find((m) => m.role === "barry")?.at;
-  map[inboundId] = { turnId: turn.id, ...(replyAt ? { replyAt } : {}) };
+  const replyAt = held ? undefined : [...state.messages].reverse().find((m) => m.role === "barry")?.at;
+  map[inboundId] = { turnId: turn.id, ...(replyAt ? { replyAt } : {}), ...(held ? { held: true } : {}) };
   state.knownFields[INBOUND_TURNS_KEY] = JSON.stringify(Object.fromEntries(Object.entries(map).slice(-200)));
+}
+
+/** BARRY was asked to act in a conversation a person holds — refused; nothing ran. */
+export class HumanHoldsConversationError extends Error {
+  constructor(readonly conversationId: string) {
+    super("You (or your team) hold this conversation — return it to BARRY first, then BARRY can act on this.");
+    this.name = "HumanHoldsConversationError";
+  }
+}
+
+/** The customer wrote while a person holds the conversation: keep the message, reply nothing, record why. */
+async function humanHeldTurn(state: ConversationState, message: string): Promise<TurnOutcome> {
+  const control = readControl(state);
+  const turn: TurnLog = {
+    id: turnId(),
+    at: new Date().toISOString(),
+    customerMessage: message,
+    understood: { intent: "human_in_control", entities: {} },
+    retrieved: { offerIds: [], knowledgeIds: [] },
+    response: "",
+    stateAfter: { stage: state.stage, outcome: state.outcome },
+    reasoner: getReasoner().name,
+    trace: {
+      runtime: runtimeTrace(getReasoner()),
+      rejectedClaims: [],
+      steps: [],
+      stop: { reason: "human_in_control", outcome: `held by ${control.by === "barry" ? "a handoff" : control.by}` },
+      effects: [],
+    },
+  };
+  state.turns.push(turn);
+  stampInbound(state, turn, true);
+  await getConversationStore().save(state);
+  return { state, turn, response: "", held: "human_in_control" };
 }
 
 /**
@@ -417,6 +454,9 @@ async function handleCustomerMessageUnmetered(
     businessLocale: graph.business.locale,
   });
   if (language.basis === "current_turn" || language.basis === "recent_turn") state.knownFields[SCRATCH_KEYS.conversationLanguage] = language.code;
+  // A person holds this conversation: the customer's message is kept (and shown to them), BARRY does not
+  // reply, plan or act — no model call. Checked on the latest copy, under the conversation's lock.
+  if (humanHolds(state)) return humanHeldTurn(state, message);
 
   const reasoner = getReasoner();
   const ctx: ToolContext = { graph, conversationId, customerId };
@@ -1597,6 +1637,11 @@ export async function handlePaymentWebhook(
       processed.payment.customerId,
       "(payment received)"
     );
+    // A person holds the conversation: the verified payment is recorded; BARRY continues only when given it back.
+    if (result.held) {
+      await markPaymentWebhookCompleted(processed);
+      return { ...processed, result };
+    }
     if (result.turn.toolResult && !result.turn.toolResult.ok) {
       throw new Error(result.turn.toolResult.error ?? "Payment webhook resume failed");
     }
@@ -1662,7 +1707,13 @@ export async function resumeAfterApproval(
 ): Promise<TurnOutcome> {
   // The owner's decision resumes the conversation under the same per-conversation lock as customer turns.
   const approval = await getBackend().getApproval(approvalId);
-  const run = () => meteredTurn(staticGraph.business.id, `approval:${approvalId}`, () => resumeAfterApprovalUnmetered(staticGraph, approvalId, decision, decidedBy, alternateValue));
+  const run = async () => {
+    // A person holds the conversation: BARRY must not act or reply in it. The owner returns it to BARRY
+    // first. Checked under the conversation's lock, so a take-over can't slip in between check and act.
+    const convo = approval ? await getConversationStore().get(approval.conversationId) : undefined;
+    if (approval && convo && humanHolds(convo)) throw new HumanHoldsConversationError(approval.conversationId);
+    return meteredTurn(staticGraph.business.id, `approval:${approvalId}`, () => resumeAfterApprovalUnmetered(staticGraph, approvalId, decision, decidedBy, alternateValue));
+  };
   return approval ? withConversationLock(approval.conversationId, run) : run();
 }
 

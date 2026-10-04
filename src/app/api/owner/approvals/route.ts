@@ -4,7 +4,7 @@ import { ownerFailure, ownerGraph } from "@/lib/owner/http";
 import { getBackend } from "@/lib/store";
 import { getConversationStore } from "@/lib/state";
 import { ConversationBusyError, withConversationLock } from "@/lib/state/lock";
-import { resumeAfterApproval } from "@/lib/runtime";
+import { HumanHoldsConversationError, resumeAfterApproval } from "@/lib/runtime";
 import { revalidateUnresolvedTurns } from "@/lib/runtime/engine";
 import { revalidatedChangeText } from "@/lib/reasoner/deterministic-compose";
 import { SCRATCH_KEYS } from "@/lib/runtime/compiler";
@@ -41,6 +41,7 @@ export async function POST(req: NextRequest) {
     return Response.json({ result: outcome.turn.trace?.stop.reason ?? outcome.turn.understood.intent, message: outcome.response, held: outcome.turn.trace?.hold ?? null });
   } catch (err) {
     if (err instanceof ConversationBusyError) return Response.json({ error: "BARRY is answering this customer right now — try again in a moment." }, { status: 409 });
+    if (err instanceof HumanHoldsConversationError) return Response.json({ error: err.message, code: "human_holds_conversation" }, { status: 409 });
     return ownerFailure("approval", err);
   }
 }

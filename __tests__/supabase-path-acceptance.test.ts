@@ -11,6 +11,8 @@ import { acknowledgeHandoff, createHandoff, readHandoffs } from "@/lib/runtime/h
 import { setBusinessGraphResolverForTests } from "@/lib/business-graph-repository";
 import { getBusinessGraph } from "@/lib/fixtures";
 import { getSupabaseClient } from "@/lib/store/supabase-client";
+import { ownerReply, ownerReturnToBarry, setOwnerReplySenderForTests } from "@/lib/owner/human-control";
+import { giveToHuman, readControl, readControlLog } from "@/lib/runtime/control";
 import { ScriptedModel, isolatedRetailer } from "./support/scripted-model";
 
 /**
@@ -27,6 +29,8 @@ import { ScriptedModel, isolatedRetailer } from "./support/scripted-model";
 const MODE = process.env.BARRY_SUPABASE_ACCEPTANCE;
 const run = MODE === "1" && Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
 const runGuardMissing = MODE === "guard-missing" && Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
+/** A database with 0019 but WITHOUT 0020 (human handoff): owner replies must refuse before sending. */
+const runOwnerGuardMissing = MODE === "owner-guard-missing" && Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
 
 class GatedModel extends ScriptedModel {
   private gates = new Map<string, { entered: () => void; release: Promise<boolean> }>();
@@ -168,19 +172,22 @@ describe.runIf(run)("Supabase path: the real stores against a Preview database w
     const id = `wa:${g.business.id}:${phone}`;
     const out = sender();
     expect((await processInbound(msg("first message"), out)).status).toBe("processed");
-    const created = await updateConversation(id, (s) => createHandoff(g, s, { trigger: "customer_asked", reason: "wants a person", urgency: "normal", unresolved: [] }).handoff);
-    const handoffId = created!.result.id;
     const gate = model.gate("still there?");
     const turn = processInbound(msg("still there?"), out);
     await gate.entered;
-    await expect(updateConversation(id, (s) => acknowledgeHandoff(s, handoffId, "owner"), { waitMs: 50 })).rejects.toBeInstanceOf(ConversationBusyError);
-    const owner = updateConversation(id, (s) => acknowledgeHandoff(s, handoffId, "owner"), { waitMs: 30_000 });
+    // The owner takes the conversation while BARRY's turn holds it: refused when it can't wait…
+    await expect(updateConversation(id, (s) => giveToHuman(s, "owner", "taking over"), { waitMs: 50 })).rejects.toBeInstanceOf(ConversationBusyError);
+    // …applied right after the turn when it can.
+    const owner = updateConversation(id, (s) => createHandoff(g, s, { trigger: "customer_asked", reason: "owner took over", urgency: "normal", unresolved: [] }).handoff, { waitMs: 30_000 });
     await new Promise((r) => setTimeout(r, 300));
     gate.release();
-    await Promise.all([turn, owner]);
+    const [, created] = await Promise.all([turn, owner]);
+    const handoffId = created!.result.id;
+    await updateConversation(id, (s) => acknowledgeHandoff(s, handoffId, "owner"));
     const [convo] = await rows<{ known_fields: Record<string, string> }>("conversations", "id", id);
     const state = { knownFields: convo.known_fields } as never;
     expect(readHandoffs(state).find((h) => h.id === handoffId)?.status).toBe("acknowledged");
+    expect(readControl(state).holder).toBe("human");
     const customer = (await rows<{ role: string; content: string }>("messages", "conversation_id", id)).filter((m) => m.role === "customer").map((m) => m.content);
     expect(customer).toEqual(["first message", "still there?"]);
     evidence.ownerWhileBusy = { refusedWhenNoWait: true, appliedAfterTurn: true, handoff: "acknowledged", customerMessages: customer.length };
@@ -263,6 +270,51 @@ describe.runIf(run)("Supabase path: the real stores against a Preview database w
     evidence.database = { lock: "acquire/contend/re-enter/holder-only release/expired takeover", inbox: "unique claim + forward-only stage", version: { stored: row.version, staleSaveRefused: true } };
   });
 
+  it("human handoff (0020): held messages stored, owner reply stored as the owner's, BARRY silent until returned, control log kept", async () => {
+    const phone = phoneOf();
+    const msg = msgFor(phone);
+    const id = `wa:${g.business.id}:${phone}`;
+    const out = sender();
+    setOwnerReplySenderForTests(() => out);
+    try {
+      expect((await processInbound(msg("hello"), out)).status).toBe("processed");
+      await updateConversation(id, (s) => createHandoff(g, s, { trigger: "customer_asked", reason: "wants a person" }));
+      const seen = model.seen.length;
+      const held = await Promise.all(["one", "two", "three"].map((x) => processInbound(msg(x), out)));
+      expect(held.map((r) => r.status)).toEqual(["held", "held", "held"]);
+      expect(model.seen).toHaveLength(seen);
+      const [reply, racing] = await Promise.all([ownerReply(g, id, { requestId: `acc-${phone}-1`, text: "Hi, Dana here", by: "owner (web)" }), processInbound(msg("are you there?"), out)]);
+      expect(reply.status).toBe("sent");
+      expect(racing.status).toBe("held");
+      // The same owner request again: no second send.
+      expect((await ownerReply(g, id, { requestId: `acc-${phone}-1`, text: "Hi, Dana here", by: "owner (web)" })).status).toBe("sent");
+      expect(out.sent.filter((x) => x.text === "Hi, Dana here")).toHaveLength(1);
+      await ownerReturnToBarry(g, id, "owner (web)");
+      expect((await processInbound(msg("one more thing"), out)).status).toBe("processed");
+
+      const msgs = await rows<{ role: string; content: string; author: string | null }>("messages", "conversation_id", id);
+      const owner = msgs.filter((m) => m.role === "owner");
+      expect(owner).toEqual([expect.objectContaining({ content: "Hi, Dana here", author: "owner (web)" })]);
+      expect(msgs.filter((m) => m.role === "customer").map((m) => m.content).sort()).toEqual(["are you there?", "hello", "one", "one more thing", "three", "two"].sort());
+      const inboxRows = await rows<{ status: string }>("conversation_inbox", "conversation_id", id);
+      expect(inboxRows.filter((r) => r.status === "skipped")).toHaveLength(4);
+      const state = (await getConversationStore().get(id))!;
+      expect(readControl(state).holder).toBe("barry");
+      expect(readControlLog(state).map((e) => `${e.from}->${e.to}`)).toEqual(["barry->human", "human->barry"]);
+      expect(readDeliveries(state.knownFields).filter((d) => d.inboundId.startsWith("owner:"))).toHaveLength(1);
+      evidence.handoff = {
+        customerMessages: msgs.filter((m) => m.role === "customer").length,
+        heldInboxRows: inboxRows.filter((r) => r.status === "skipped").length,
+        ownerMessages: owner.length,
+        barryMessages: msgs.filter((m) => m.role === "barry").length,
+        sends: out.sent.length,
+        controlLog: readControlLog(state).map((e) => `${e.from}->${e.to} by ${e.by}`),
+      };
+    } finally {
+      setOwnerReplySenderForTests(undefined);
+    }
+  });
+
   it("a plain web/simulator turn on the same path also stores everything", async () => {
     const id = `sim-acc-${Date.now()}`;
     await handleCustomerMessage(g, id, "c-web", "hello from the web chat");
@@ -286,6 +338,25 @@ describe.runIf(runGuardMissing)("Supabase path WITHOUT the concurrency guard: fa
     expect(model.seen).toEqual([]);
     expect(out.sent).toEqual([]);
     console.log("[acceptance evidence] guard missing: refused, model calls 0, sent 0");
+    setReasonerForTests(undefined);
+    setBusinessGraphResolverForTests(undefined);
+    r.dispose();
+  });
+});
+
+describe.runIf(runOwnerGuardMissing)("Supabase path WITHOUT migration 0020: owner replies fail closed", () => {
+  it("refuses the owner reply before anything is sent", async () => {
+    const r = isolatedRetailer();
+    setBusinessGraphResolverForTests((id) => (id === r.g.business.id ? r.g : getBusinessGraph(id)));
+    setReasonerForTests(new GatedModel());
+    const out = sender();
+    setOwnerReplySenderForTests(() => out);
+    const id = `sim-owner-guard-${Date.now()}`;
+    await handleCustomerMessage(r.g, id, "c", "hi");
+    await expect(ownerReply(r.g, id, { requestId: "x", text: "hello", by: "owner (web)" })).rejects.toBeInstanceOf(ConcurrencyGuardMissingError);
+    expect(out.sent).toEqual([]);
+    console.log("[acceptance evidence] 0020 missing: owner reply refused, sent 0");
+    setOwnerReplySenderForTests(undefined);
     setReasonerForTests(undefined);
     setBusinessGraphResolverForTests(undefined);
     r.dispose();

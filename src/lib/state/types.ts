@@ -16,7 +16,10 @@ export type ConversationStage =
   | "closed";
 
 export type ConversationMessage = {
-  role: "customer" | "barry" | "system";
+  /** owner = a person on the business's side (the owner/team), sending through BARRY's channel — never BARRY. */
+  role: "customer" | "barry" | "system" | "owner";
+  /** Who sent an owner message (never set for BARRY's own messages). */
+  author?: string;
   /** Plain text only — never markdown/image syntax. Rich content travels in `rich`. */
   content: string;
   at: string;
@@ -255,6 +258,8 @@ export interface ConversationStore {
   getOrCreate(id: string, businessId: string, customerId: string): Promise<ConversationState>;
   /** Compare-and-swap on `state.version`: throws ConversationConflictError (and writes nothing) if it moved. */
   save(state: ConversationState): Promise<void>;
+  /** Fails closed (ConcurrencyGuardMissingError) when the store can't keep an owner's message as theirs (migration 0020). */
+  assertOwnerMessages?(): Promise<void>;
   listByBusiness(businessId: string): Promise<ConversationState[]>;
   /** The business's conversations, most recently active first, WITHOUT messages/turns; `total` counts all of them. */
   listSummariesByBusiness(businessId: string, limit: number): Promise<{ total: number; conversations: ConversationSummary[] }>;

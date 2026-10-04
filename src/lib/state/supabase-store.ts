@@ -1,6 +1,6 @@
 import { getSupabaseClient } from "@/lib/store/supabase-client";
 import { ConversationConflictError, ConversationScopeError, createInitialConversationState } from "./types";
-import { guardMissing, isMissingFunction } from "./lock";
+import { ConcurrencyGuardMissingError, guardMissing, isMissingFunction } from "./lock";
 import type { ConversationMessage, ConversationState, ConversationStore, ConversationSummary, TurnActivity, TurnLog } from "./types";
 
 // Tracks, per in-memory ConversationState object, how many messages/turns
@@ -37,7 +37,21 @@ function rowToState(
   };
 }
 
+let ownerMessagesReady = false;
+
 export class SupabaseConversationStore implements ConversationStore {
+  /** Owner messages need messages.role 'owner' + messages.author (0020). Probed once per process; never assumed. */
+  async assertOwnerMessages(): Promise<void> {
+    if (ownerMessagesReady) return;
+    const { error } = await getSupabaseClient().from("messages").select("author").limit(0);
+    if (error && (error.code === "42703" || /column .*author.* does not exist|Could not find the 'author' column/i.test(error.message ?? ""))) {
+      console.error("[barry:handoff] messages.author is missing — migration 0020 (human handoff) is NOT applied. Owner replies are BLOCKED until it is.");
+      throw new ConcurrencyGuardMissingError("owner messages unavailable", "0020");
+    }
+    if (error) throw new Error(`Couldn't verify the message store: ${error.message}`);
+    ownerMessagesReady = true;
+  }
+
   async get(id: string): Promise<ConversationState | undefined> {
     const client = getSupabaseClient();
     const { data: convoRow, error: convoError } = await client
@@ -61,6 +75,7 @@ export class SupabaseConversationStore implements ConversationStore {
       content: m.content,
       at: m.at,
       ...(m.rich ? { rich: m.rich } : {}),
+      ...(m.author ? { author: m.author } : {}),
     }));
     const turns: TurnLog[] = (turnRows ?? []).map((t) => ({
       id: t.id,
@@ -129,7 +144,7 @@ export class SupabaseConversationStore implements ConversationStore {
     const prev = persistedCounts.get(state) ?? { messages: 0, turns: 0 };
     const updatedAt = new Date().toISOString();
     const row = { stage: state.stage, detected_intent: state.detectedIntent ?? null, selected_offer_id: state.selectedOfferId ?? null, known_fields: state.knownFields, missing_fields: state.missingFields, objections: state.objections, pending_action: state.pendingAction ?? null, pending_approval_id: state.pendingApprovalId ?? null, outcome: state.outcome ?? null, updated_at: updatedAt };
-    const messages = state.messages.slice(prev.messages).map((m) => ({ role: m.role, content: m.content, at: m.at, ...(m.rich ? { rich: m.rich } : {}) }));
+    const messages = state.messages.slice(prev.messages).map((m) => ({ role: m.role, content: m.content, at: m.at, ...(m.rich ? { rich: m.rich } : {}), ...(m.author ? { author: m.author } : {}) }));
     const turns = state.turns.slice(prev.turns).map((t) => ({ id: t.id, at: t.at, customer_message: t.customerMessage, understood: t.understood, retrieved: t.retrieved, goal: t.goal ?? null, selected_action: t.selectedAction ?? null, policy_decision: t.policyDecision ?? null, tool_result: t.toolResult ?? null, response: t.response, state_after: t.stateAfter, reasoner: t.reasoner, trace: t.trace ?? null, verification: t.verification ?? null, compiled: t.compiled ?? null }));
     const { data, error } = await getSupabaseClient().rpc("barry_save_conversation", { p_id: state.id, p_expected_version: state.version, p_row: row, p_messages: messages, p_turns: turns });
     if (isMissingFunction(error)) guardMissing("atomic conversation save unavailable");

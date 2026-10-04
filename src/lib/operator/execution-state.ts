@@ -94,7 +94,7 @@ export type TranscriptMessage = ConversationState["messages"][number] & { notSen
 export function truthfulTranscript(state: Pick<ConversationState, "messages" | "knownFields">): TranscriptMessage[] {
   const undelivered = undeliveredMessages(state.knownFields);
   return state.messages.map((m) => {
-    const notSent = m.role === "barry" ? undelivered.get(instant(m.at)) : undefined;
+    const notSent = m.role === "barry" || m.role === "owner" ? undelivered.get(instant(m.at)) : undefined;
     return notSent ? { ...m, notSent } : m;
   });
 }
@@ -104,7 +104,7 @@ export function lastSaid(state: Pick<ConversationState, "messages" | "knownField
   const undelivered = undeliveredMessages(state.knownFields);
   for (let i = state.messages.length - 1; i >= 0; i--) {
     const m = state.messages[i];
-    if (m.role === "barry" && undelivered.has(instant(m.at))) continue;
+    if ((m.role === "barry" || m.role === "owner") && undelivered.has(instant(m.at))) continue;
     return m;
   }
   return undefined;

@@ -6,7 +6,7 @@ import { getConversationStore, type ConversationState } from "@/lib/state";
 import { withLifecycle } from "@/lib/runtime/owner-requests";
 import { appendLedger } from "@/lib/runtime/ledger";
 import { SCRATCH_KEYS } from "@/lib/runtime/compiler";
-import { readHandoffs } from "@/lib/runtime/handoff";
+import { humanHolds } from "@/lib/runtime/control";
 import { resolveReplyLanguage } from "@/lib/reasoner/language";
 import { money } from "@/lib/reasoner/deterministic-compose";
 import { loadControls, type BusinessControls } from "@/lib/hq/controls";
@@ -142,8 +142,7 @@ export async function runObligationExecutor(graph: BusinessGraph, opts: { now?: 
     const conversation = await store.get(o.conversationId);
     if (!conversation) return { key: o.key, kind: o.kind, outcome: "cancelled", why: "the conversation no longer exists" };
     const channel = channelOf(conversation.id);
-    const handoffOpen = readHandoffs(conversation).some((h) => h.status !== "resolved");
-    if (handoffOpen && o.kind !== "unresolved_handoff") return { key: o.key, kind: o.kind, outcome: "skipped", why: "a person has this conversation (open handoff); BARRY stays quiet" };
+    if (humanHolds(conversation) && o.kind !== "unresolved_handoff") return { key: o.key, kind: o.kind, outcome: "skipped", why: "a person holds this conversation; BARRY stays quiet" };
     const lang = resolveReplyLanguage({ customerMessages: conversation.messages.filter((m) => m.role === "customer").map((m) => m.content), stored: conversation.knownFields[SCRATCH_KEYS.conversationLanguage], businessLocale: graph.business.locale }).code;
     const text = followUpText(o.kind, o, lang);
     if (!text) return { key: o.key, kind: o.kind, outcome: "skipped", why: "no customer-facing follow-up exists for this kind; it stays on the owner's list" };

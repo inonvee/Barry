@@ -1,6 +1,7 @@
 import type { BusinessGraph } from "@/lib/business-graph";
 import type { ConversationState } from "@/lib/state";
 import { appendLedger, ledgerView, readLedger } from "./ledger";
+import { giveToHuman } from "./control";
 
 /**
  * HUMAN HANDOFF — a real, recorded state, never a phrase.
@@ -125,6 +126,9 @@ export function createHandoff(
     status: "open",
     createdAt: new Date().toISOString(),
   };
+  // From now on a person holds the conversation: BARRY does not reply on its own until it is given back.
+  // (Recorded before the handoff itself, so the log reads BARRY → person.)
+  giveToHuman(state, "barry", `handoff: ${handoff.reason}`, handoff.id);
   writeHandoffs(state, [...readHandoffs(state), handoff]);
   appendLedger(state, {
     operation: "handoff",
