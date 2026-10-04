@@ -15,7 +15,7 @@ Development). Leave every Production value as it is.
 | `CRON_SECRET` | a new random value, ≥ 32 chars (`openssl rand -hex 32`) — Preview only |
 | `BARRY_FOUNDER_TOKEN` / `BARRY_OWNER_TOKEN` (or `BARRY_OWNER_TOKENS`) | Preview-only values (founder ≥ 32 chars, different from owner) |
 | `WHATSAPP_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_ACCESS_TOKEN` | the existing WhatsApp **test** app |
-| `BARRY_WHATSAPP_ROUTES` | `<test phone_number_id>=<test business id>` (e.g. `fashion-retailer`) |
+| `BARRY_WHATSAPP_ROUTES` | Preview test route: `1315221915012159=fashion-retailer` |
 | `BARRY_WHATSAPP_SEND` | `dry_run` for the first pass; `live` only to reach your own test recipient |
 | `BARRY_REASONER=openai`, `OPENAI_API_KEY` | as today (the approval flow needs the live model) |
 
