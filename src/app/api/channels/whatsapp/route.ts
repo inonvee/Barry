@@ -3,7 +3,7 @@ import { parseWebhook, verifySignature, verifyWebhookSubscription, whatsappConfi
 import { processInbound } from "@/lib/channels/gateway";
 import { arrivalClock } from "@/lib/channels/inbox";
 import { processOwnerInbound } from "@/lib/owner-channel/gateway";
-import { notifyOwnerAlert, notifyOwnerDecisions } from "@/lib/owner/briefs";
+import { notifyOwnerAlert, notifyOwnerAttention, notifyOwnerDecisions } from "@/lib/owner/briefs";
 import { mediaAlertText } from "@/lib/channels/media";
 import { resolveBusinessGraph } from "@/lib/business-graph-repository";
 
@@ -50,7 +50,11 @@ export async function POST(req: NextRequest) {
     await notifyOwnerAlert(resolveBusinessGraph(m.businessId), `media:${m.inboundId}`, mediaAlertText(who, m.media.type, m.media.caption), { conversationId: m.conversationId }).catch((err) => console.warn("[barry:owner-brief] media alert failed", err instanceof Error ? err.message : err));
   }
   // A customer turn may have created a request for the owner: announce it once on the owner line.
-  for (const businessId of new Set(parsed.messages.map((m) => m.businessId))) await notifyOwnerDecisions(resolveBusinessGraph(businessId)).catch((err) => console.warn("[barry:owner-brief] decision notice failed", err instanceof Error ? err.message : err));
+  for (const businessId of new Set(parsed.messages.map((m) => m.businessId))) {
+    const graph = resolveBusinessGraph(businessId);
+    await notifyOwnerDecisions(graph).catch((err) => console.warn("[barry:owner-brief] decision notice failed", err instanceof Error ? err.message : err));
+    await notifyOwnerAttention(graph).catch((err) => console.warn("[barry:owner-brief] attention notice failed", err instanceof Error ? err.message : err));
+  }
   if (parsed.unrouted.length) console.warn("[barry:whatsapp] message for an unrouted number", { count: parsed.unrouted.length });
   if (parsed.unsupported.length) console.warn("[barry:whatsapp] unsupported message types", parsed.unsupported.map((u) => u.type));
   for (const s of parsed.statuses) if (s.status === "failed") console.warn("[barry:whatsapp] delivery failed", { error: s.error });

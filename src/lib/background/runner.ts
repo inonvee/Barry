@@ -7,7 +7,7 @@ import { isDemoBusiness } from "@/lib/fixtures";
 import { operatingMode, proactiveGate, type OperatingMode } from "@/lib/runtime/operating-mode";
 import { runObligationExecutor, type SenderResolver } from "@/lib/operator/executor";
 import { listAttempts } from "@/lib/operator/attempts";
-import { sendDailyBrief } from "@/lib/owner/briefs";
+import { notifyOwnerAttention, notifyOwnerDecisions, sendDailyBrief } from "@/lib/owner/briefs";
 import { runInitiativeTick, localMoment } from "@/lib/initiative/scheduler";
 import { whatsappConfig, whatsappSender } from "@/lib/channels/whatsapp";
 import { ConversationBusyError, withConversationLock } from "@/lib/state/lock";
@@ -17,6 +17,8 @@ import { ConversationBusyError, withConversationLock } from "@/lib/state/lock";
  *
  *   followups        payment follow-ups, abandoned-checkout recovery, reminders (the obligation executor)
  *   owner_brief      the owner's daily brief (owner line)
+ *   owner_alerts     hourly safety net for owner notifications (decisions waiting, a customer needs a person,
+ *                    an important failure, a failed payment) — each item announced once, ever
  *   initiative_scan  the Initiative Engine's scans (its own slot scheduler; reads only)
  *
  * Built on what exists: the obligation executor (authority, idempotent attempts, 24h window, handoffs),
@@ -38,7 +40,7 @@ import { ConversationBusyError, withConversationLock } from "@/lib/state/lock";
  *  - Demo businesses are never run.
  */
 
-export type JobId = "followups" | "owner_brief" | "initiative_scan";
+export type JobId = "followups" | "owner_brief" | "owner_alerts" | "initiative_scan";
 export const FOLLOWUP_HOURS = { start: 9, end: 20 } as const;
 export const BRIEF_HOURS = { start: 8, end: 11 } as const;
 export const RUN_LIMIT = 5;
@@ -137,6 +139,21 @@ const JOBS: Record<Exclude<JobId, "initiative_scan">, { slot: (tz: string, now: 
       return { summary: { briefs: { sent: n("sent"), dryRun: n("dry_run"), blocked: n("blocked"), failed: n("failed") } } };
     },
   },
+  owner_alerts: {
+    window: "hourly",
+    slot: (tz, now) => {
+      const m = localMoment(tz, now);
+      return `${m.date}T${String(m.hour).padStart(2, "0")}`;
+    },
+    run: async ({ graph, controls, now }) => {
+      const mode = operatingMode(controls);
+      if (mode !== "supervised" && mode !== "live") return { summary: {}, note: `${mode}: no owner alerts are sent` };
+      // Most notices go out right after the customer message that caused them; this catches anything missed.
+      const recs = [...(await notifyOwnerDecisions(graph, { now })), ...(await notifyOwnerAttention(graph, { now }))];
+      const n = (s: string) => recs.filter((r) => r.status === s).length;
+      return { summary: { briefs: { sent: n("sent"), dryRun: n("dry_run"), blocked: n("blocked"), failed: n("failed") } } };
+    },
+  },
 };
 
 async function evaluateJob(graph: BusinessGraph, controls: BusinessControls, job: Exclude<JobId, "initiative_scan">, now: Date): Promise<JobOutcome> {
@@ -182,7 +199,7 @@ async function evaluateJob(graph: BusinessGraph, controls: BusinessControls, job
 export async function runBusinessJobs(graph: BusinessGraph, opts: { now?: Date; jobs?: JobId[] } = {}): Promise<JobOutcome[]> {
   const now = opts.now ?? new Date();
   const id = graph.business.id;
-  const jobs = opts.jobs ?? ["followups", "owner_brief", "initiative_scan"];
+  const jobs = opts.jobs ?? ["followups", "owner_brief", "owner_alerts", "initiative_scan"];
   if (isDemoBusiness(id)) return [{ businessId: id, job: "followups", slot: null, decision: "skipped", reason: "demo business (never run)" }];
   let controls: BusinessControls;
   try {
@@ -213,7 +230,7 @@ export async function runBusinessJobs(graph: BusinessGraph, opts: { now?: Date; 
  */
 export async function runBackgroundTick(opts: { now?: Date; businessId?: string; jobs?: JobId[] } = {}): Promise<BackgroundTick> {
   const now = opts.now ?? new Date();
-  const jobs = opts.jobs ?? ["followups", "owner_brief", "initiative_scan"];
+  const jobs = opts.jobs ?? ["followups", "owner_brief", "owner_alerts", "initiative_scan"];
   const ids = (opts.businessId ? [opts.businessId] : fleetTenantIds()).filter((id, i, a) => a.indexOf(id) === i);
   const outcomes: JobOutcome[] = [];
   for (const id of ids) {

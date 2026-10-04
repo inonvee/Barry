@@ -4,13 +4,18 @@ import { getBackend } from "@/lib/store";
 import { getConversationStore } from "@/lib/state";
 import { HumanHoldsConversationError, resumeAfterApproval } from "@/lib/runtime";
 import { humanHolds } from "@/lib/runtime/control";
-import { OwnerModeError, ownerPause, ownerResume } from "./mode";
+import { OwnerModeError, ownerMode, ownerPause, ownerResume } from "./mode";
+import { OwnerControlError, ownerReply, ownerReturnToBarry, ownerTakeOver } from "./human-control";
+import { isContextRecordKey, loadSession, saveSession, type OwnerSession } from "./session";
+import { draftCustomerReply, interpretWithModel } from "./command-llm";
+import { readControl } from "@/lib/runtime/control";
+import { listJobRuns } from "@/lib/background/runner";
 import { moneyWords, hasMoney } from "@/lib/format/money";
 import type { OwnerOutbound } from "@/lib/owner-channel/transport";
 import { getOwnerWorkspace, type OwnerWorkspace } from "./service";
 import { askOwnerBarry } from "./ask";
 import { nowWorking } from "./control-room";
-import { interpretCommand, type CommandIntent, type CommandSource } from "./command";
+import { interpretCommand, type CommandIntent, type CommandSource, type MoneyFocus } from "./command";
 import { STARTABLE, STATE_WORDS, operationTitle, type OwnerOperation, type OwnerOperationView } from "./operation-model";
 import { ACTIVE, CONFIRM_ABOVE, listOperations, operationView, proposeOperation, runOperation, saveOperation, stopOperation } from "./operations";
 import { proactiveWords } from "./control-room";
@@ -72,7 +77,7 @@ export async function getCommandRecord(businessId: string, key: string): Promise
   return (await getBackend().listOperatorRecords(businessId, "owner_command")).map((r) => r.data as unknown as OwnerCommandRecord).find((c) => c.key === key);
 }
 export async function listCommandRecords(businessId: string): Promise<OwnerCommandRecord[]> {
-  return (await getBackend().listOperatorRecords(businessId, "owner_command")).map((r) => r.data as unknown as OwnerCommandRecord).filter((c) => c && c.key).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return (await getBackend().listOperatorRecords(businessId, "owner_command")).map((r) => r.data as unknown as OwnerCommandRecord).filter((c) => c && c.key && !isContextRecordKey(c.key)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 async function saveCommand(c: OwnerCommandRecord): Promise<void> {
   await getBackend().upsertOperatorRecord({ businessId: c.businessId, kind: "owner_command", key: c.key, data: c as unknown as Record<string, unknown> });
@@ -118,7 +123,7 @@ function nameMatches(label: string, subject: string): boolean {
   return label.toLowerCase().split(/[^\p{L}]+/u).includes(s);
 }
 
-async function answerQuery(intent: Extract<CommandIntent, { kind: "query" }>, ws: OwnerWorkspace, ops: OwnerOperationView[], ctx: { graph: BusinessGraph; source: CommandSource; actor: OwnerActor; text: string; now: Date; lang: OwnerLang }): Promise<OwnerOutbound> {
+async function answerQuery(intent: Extract<CommandIntent, { kind: "query" }>, ws: OwnerWorkspace, ops: OwnerOperationView[], ctx: { graph: BusinessGraph; source: CommandSource; actor: OwnerActor; text: string; now: Date; lang: OwnerLang; session: OwnerSession }): Promise<OwnerOutbound> {
   const lang = ctx.lang;
   const T = (en: string, he: string) => L(lang, en, he);
   const m = (x: Record<string, number>, empty = "none") => (lang === "he" ? moneyIn("he", x, empty === "none" ? "אין" : empty) : moneyWords(x, { empty }));
@@ -140,6 +145,9 @@ async function answerQuery(intent: Extract<CommandIntent, { kind: "query" }>, ws
       const lines = ws.interventions.slice(0, 5).map((i, n) => `${n + 1}. ${i.customer} — ${i.title}`);
       const first = ws.interventions.find((i) => i.refs.approvalId && ws.approvals.some((a) => a.id === i.refs.approvalId && a.actionable));
       const prompt = first ? await approvalPrompt(ws, first.id, actorId(ctx.actor), ctx.source, ctx.now, lang) : undefined;
+      // "Yes" / "approve" next refers to the request shown here; otherwise to the first customer waiting on the owner.
+      if (prompt && first) focusApproval(ctx.session, ws, first.id, prompt);
+      else if (ws.interventions[0]) ctx.session.focus = { kind: "conversation", conversationId: ws.interventions[0].conversationId, customer: ws.interventions[0].customer };
       const more = ws.interventions.length > 5 ? T(`\n…and ${ws.interventions.length - 5} more.`, `\n…ועוד ${ws.interventions.length - 5}.`) : "";
       // The first decidable request carries its why / consequence and Approve / Decline (no repeated title).
       const marker = T("\n\nWhy you:", "\n\nלמה אתה:");
@@ -150,10 +158,17 @@ async function answerQuery(intent: Extract<CommandIntent, { kind: "query" }>, ws
     case "working": {
       const lines = nowWorking(ws, lang).map((l) => `• ${l.text}`);
       const active = ops.filter((o) => (ACTIVE as readonly string[]).includes(o.derivedState));
+      const owned = ws.conversations.filter((c) => c.status === "in_progress" || c.status === "waiting_on_customer").length;
+      const withPeople = ws.conversations.filter((c) => c.attention.includes("handoff_open")).length;
+      if (owned) lines.push(T(`• Handling ${plural(owned, "customer conversation")} myself`, `• מטפל בעצמי ב־${owned === 1 ? "שיחה אחת" : `${owned} שיחות`} עם לקוחות`));
+      if (withPeople) lines.push(T(`• ${plural(withPeople, "conversation")} with you or your team — I stay quiet there`, `• ${withPeople === 1 ? "שיחה אחת" : `${withPeople} שיחות`} אצלך או אצל הצוות — שם אני שותק`));
+      const scheduled = (await listJobRuns(ctx.graph.business.id).catch(() => [])).filter((j) => j.job === "followups").slice(0, 1);
+      for (const j of scheduled) lines.push(T(`• Scheduled follow-ups last ran ${hoursAgo(j.finishedAt ?? j.claimedAt, ctx.now, lang)} ago${j.status === "failed" ? " — it failed and is visible in Work" : j.summary ? ` (sent ${j.summary.sent ?? 0}${j.summary.dryRun ? `, test runs ${j.summary.dryRun}` : ""})` : ""}${j.note ? ` — ${j.note}` : ""}`, `• מעקבים מתוזמנים רצו לאחרונה ${hoursAgo(j.finishedAt ?? j.claimedAt, ctx.now, lang)}${j.status === "failed" ? " — נכשלו, מופיע ב״עבודה״" : j.summary ? ` (נשלחו ${j.summary.sent ?? 0}${j.summary.dryRun ? `, הרצות בדיקה ${j.summary.dryRun}` : ""})` : ""}`));
       for (const o of active) lines.unshift(lang === "he" ? `• ${proactiveWords(o.workflow, "he").title} (ביקשת${o.requestedBy.source === "whatsapp" ? " בוואטסאפ" : ""}) — ${STATE_WORDS_HE[o.derivedState]}: ${progressWords(o, lang)}` : `• ${o.title} (you asked${o.requestedBy.source === "whatsapp" ? " on WhatsApp" : ""}) — ${STATE_WORDS[o.derivedState].toLowerCase()}: ${progressWords(o)}`);
       return { text: lines.length ? `${T("Right now:", "כרגע:")}\n${lines.join("\n")}` : T("Nothing open right now — I'm watching for the next customer.", "אין כרגע משהו פתוח — אני מחכה ללקוח הבא."), links: links(ctx.source, [{ label: T("Work", "עבודה"), path: "/owner?tab=work" }]) };
     }
     case "money": {
+      if (intent.money) return moneyDetail(intent.money, ws, ctx.source, lang);
       const r = ws.revenue;
       const s = ws.opportunities.summary;
       const lines = [T(`Made (verified by your payment provider): ${m(r.direct, "nothing yet")}${r.directPayments ? ` from ${plural(r.directPayments, "payment")}` : ""}.`, `נגבה (אומת מול ספק התשלומים): ${m(r.direct, "עוד כלום")}${r.directPayments ? ` מ־${r.directPayments === 1 ? "תשלום אחד" : `${r.directPayments} תשלומים`}` : ""}.`)];
@@ -172,12 +187,18 @@ async function answerQuery(intent: Extract<CommandIntent, { kind: "query" }>, ws
       const lines = [onYou.length ? `${T("Waiting on you", "מחכים לך")}: ${onYou.slice(0, 5).map(name).join(", ")}` : T("Nobody is waiting on you.", "אף אחד לא מחכה לך."), live.length ? `${T("Talking with BARRY now", "מדברים עם BARRY עכשיו")}: ${live.slice(0, 5).map(name).join(", ")}` : "", onThem.length ? `${T("BARRY is waiting to hear back from", "BARRY מחכה לתשובה מ")}: ${onThem.slice(0, 5).map(name).join(", ")}` : ""].filter(Boolean);
       return { text: lines.join("\n"), links: links(ctx.source, [{ label: T("Customers", "לקוחות"), path: "/owner?tab=customers" }]) };
     }
+    case "waiting":
+      return waitingOn(ws, ops, ctx.source, ctx.now, lang);
     case "customer": {
+      const focused = !intent.subject ? focusConversationId(ctx.session) : undefined;
+      if (!intent.subject && !focused) return { text: T("Which customer? Tell me their name.", "על איזה לקוח? תגיד לי את השם.") };
       const subject = intent.subject ?? "";
-      const found = ws.conversations.filter((c) => nameMatches(c.customer, subject));
+      const found = focused ? ws.conversations.filter((c) => c.id === focused) : ws.conversations.filter((c) => nameMatches(c.customer, subject));
       if (found.length === 0) return { text: T(`I don't see a customer called ${subject} in your conversations.`, `אני לא רואה לקוח בשם ${subject} בשיחות שלך.`) };
       if (found.length > 1) return { text: T(`${plural(found.length, "customer")} match “${subject}”: ${found.slice(0, 5).map((c) => c.customer).join(", ")}. Which one?`, `${found.length} לקוחות מתאימים ל“${subject}”: ${found.slice(0, 5).map((c) => c.customer).join(", ")}. איזה מהם?`) };
       const c = found[0];
+      ctx.session.focus = { kind: "conversation", conversationId: c.id, customer: c.customer };
+      ctx.session.draft = undefined;
       const money = ws.revenueEvidence.filter((e) => e.conversationId === c.id);
       const paid = money.filter((e) => e.category === "collected");
       const pending = money.filter((e) => e.category === "open_opportunity");
@@ -186,7 +207,9 @@ async function answerQuery(intent: Extract<CommandIntent, { kind: "query" }>, ws
       const needs = ws.interventions.filter((i) => i.conversationId === c.id).map((i) => `${T("Needs you", "מחכה לך")}: ${i.title}`);
       const state = await getConversationStore().get(c.id);
       const story = state ? (await import("./story")).conversationStory(state, lang) : undefined;
-      const lines = [`${c.customer} — ${(lang === "he" ? STATUS_WORDS_HE : STATUS_WORDS)[c.status]}`, ...(story?.standing.slice(0, 2) ?? []), payment, ...needs];
+      const lastSaid = state ? [...state.messages].reverse().find((x) => x.role === "customer") : undefined;
+      const holder = state ? readControl(state).holder : "barry";
+      const lines = [`${c.customer} — ${(lang === "he" ? STATUS_WORDS_HE : STATUS_WORDS)[c.status]}${holder === "human" ? T(" (you hold this conversation)", " (השיחה אצלך)") : ""}`, ...(story?.standing.slice(0, 2) ?? []), ...(lastSaid ? [T(`Last from them: “${lastSaid.content.slice(0, 160)}”`, `ההודעה האחרונה שלהם: “${lastSaid.content.slice(0, 160)}”`)] : []), payment, ...needs];
       return { text: lines.join("\n"), links: links(ctx.source, [{ label: T("Open conversation", "לפתוח את השיחה"), path: `/owner?tab=customers&conversation=${encodeURIComponent(c.id)}` }]) };
     }
     case "operation": {
@@ -210,6 +233,100 @@ async function answerQuery(intent: Extract<CommandIntent, { kind: "query" }>, ws
       return { text: ctx.source === "web" ? a.answer : a.answer.slice(0, 1500), links: a.links.interventions[0] ? links(ctx.source, [{ label: T(`Decide: ${a.links.interventions[0].customer}`, `להחליט: ${a.links.interventions[0].customer}`), path: `/owner?tab=work&intervention=${encodeURIComponent(a.links.interventions[0].id)}` }]) : undefined };
     }
   }
+}
+
+// ── The owner's context (what "yes" / "send it" / "give it back" refer to) ───────────────────────
+
+/** Point the owner's context at the exact request just shown (its stored, single-use prompt). */
+function focusApproval(session: OwnerSession, ws: OwnerWorkspace, interventionId: string, prompt: OwnerOutbound): void {
+  const item = ws.interventions.find((i) => i.id === interventionId);
+  const promptKey = prompt.actions?.[0]?.id.match(/^d:(pr_[a-f0-9]{16}):/)?.[1];
+  if (!item?.refs.approvalId || !promptKey) return;
+  session.focus = { kind: "approval", approvalId: item.refs.approvalId, promptKey, customer: item.customer, conversationId: item.conversationId };
+  session.draft = undefined;
+}
+const focusConversationId = (s: OwnerSession) => (s.focus?.kind === "conversation" || s.focus?.kind === "approval" ? s.focus.conversationId : undefined);
+
+/**
+ * A notification just showed this owner a request: a short "approve" / "yes" may now refer to it — but only
+ * when the owner isn't in the middle of something else (a reply draft, another request, a proposed operation).
+ */
+export async function focusFromNotification(businessId: string, actor: string, ws: OwnerWorkspace, interventionId: string, prompt: OwnerOutbound, now = new Date()): Promise<void> {
+  const session = await loadSession(businessId, actor, now);
+  if (session.focus || session.draft) return;
+  focusApproval(session, ws, interventionId, prompt);
+  if (session.focus) await saveSession(session, now);
+}
+
+type ConvoRow = OwnerWorkspace["conversations"][number];
+/**
+ * Which conversation the owner means: a name grounded against records, else the one in context, else the
+ * only candidate. Never a guess — zero or several matches come back as a question.
+ */
+function resolveConversation(subject: string | undefined, session: OwnerSession, ws: OwnerWorkspace, candidates: ConvoRow[], lang: OwnerLang, none: string): { c: { id: string; customer: string } } | { ask: string } {
+  const T = (en: string, he: string) => L(lang, en, he);
+  if (subject) {
+    const found = ws.conversations.filter((c) => nameMatches(c.customer, subject));
+    if (found.length === 1) return { c: found[0] };
+    if (!found.length) return { ask: T(`I don't see a customer called ${subject} in your conversations.`, `אני לא רואה לקוח בשם ${subject} בשיחות שלך.`) };
+    return { ask: T(`${plural(found.length, "customer")} match “${subject}”: ${found.slice(0, 5).map((c) => c.customer).join(", ")}. Which one?`, `${found.length} לקוחות מתאימים ל“${subject}”: ${found.slice(0, 5).map((c) => c.customer).join(", ")}. איזה מהם?`) };
+  }
+  const focused = focusConversationId(session);
+  if (focused) return { c: { id: focused, customer: session.focus && "customer" in session.focus ? session.focus.customer : ws.conversations.find((c) => c.id === focused)?.customer ?? "the customer" } };
+  if (candidates.length === 1) return { c: candidates[0] };
+  if (!candidates.length) return { ask: none };
+  return { ask: T(`Which customer? ${candidates.slice(0, 5).map((c) => c.customer).join(", ")}`, `איזה לקוח? ${candidates.slice(0, 5).map((c) => c.customer).join(", ")}`) };
+}
+
+// ── Money detail and "what are we waiting on" (records only) ────────────────────────────────────
+
+function moneyDetail(focus: MoneyFocus, ws: OwnerWorkspace, source: CommandSource, lang: OwnerLang): OwnerOutbound {
+  const T = (en: string, he: string) => L(lang, en, he);
+  const m = (x: Record<string, number>) => (lang === "he" ? moneyIn("he", x, "אין") : moneyWords(x, { empty: "none" }));
+  const amount = (o: { amount?: number; currency?: string }) => (o.amount !== undefined && o.currency ? m({ [o.currency]: o.amount }) : T("amount not recorded", "סכום לא רשום"));
+  const real = ws.opportunities.items.filter((o) => !o.simulated);
+  const test = ws.opportunities.items.filter((o) => o.simulated);
+  const line = (o: (typeof real)[number]) => `• ${o.customer} — ${amount(o)} — ${o.next.action}`;
+  const link = links(source, [{ label: T("Money", "כסף"), path: "/owner?tab=money" }]);
+  const testNote = (rows: unknown[]) => (rows.length ? T(`\n(${plural(rows.length, "test item")} on a simulator — never counted.)`, `\n(${rows.length} פריטי בדיקה בסימולטור — לא נספרים.)`) : "");
+  if (focus === "stuck") {
+    const s = ws.opportunities.summary;
+    if (!real.length) return { text: `${T("No money is stuck right now — nothing unpaid, failed or waiting on a decision in your records.", "אין כרגע כסף תקוע — אין ברשומות שום דבר שלא שולם, נכשל או מחכה להחלטה.")}${testNote(test)}`, links: link };
+    const head = [hasMoney(s.stuckWithYou) ? T(`Waiting on you: ${m(s.stuckWithYou)}`, `מחכה לך: ${m(s.stuckWithYou)}`) : "", hasMoney(s.waitingOnCustomer) ? T(`Waiting on customers: ${m(s.waitingOnCustomer)}`, `מחכה ללקוחות: ${m(s.waitingOnCustomer)}`) : "", hasMoney(s.atRisk) ? T(`At risk: ${m(s.atRisk)}`, `בסיכון: ${m(s.atRisk)}`) : ""].filter(Boolean);
+    return { text: `${T("Money not in yet (not revenue):", "כסף שעוד לא נכנס (לא הכנסה):")}\n${head.join("\n")}\n${real.slice(0, 5).map(line).join("\n")}${real.length > 5 ? T(`\n…and ${real.length - 5} more.`, `\n…ועוד ${real.length - 5}.`) : ""}${testNote(test)}`, links: link };
+  }
+  if (focus === "awaiting") {
+    const awaiting = real.filter((o) => o.kind === "unpaid_link" || o.kind === "unpaid_deposit");
+    if (!awaiting.length) return { text: `${T("Nothing is awaiting payment — no open payment links in your records.", "שום דבר לא ממתין לתשלום — אין ברשומות קישורי תשלום פתוחים.")}${testNote(test.filter((o) => o.kind === "unpaid_link" || o.kind === "unpaid_deposit"))}`, links: link };
+    return { text: `${T(`Awaiting payment (${awaiting.length}):`, `ממתינים לתשלום (${awaiting.length}):`)}\n${awaiting.slice(0, 6).map((o) => `• ${o.customer} — ${amount(o)} — ${T(`open ${o.ageHours < 1 ? "<1h" : `${Math.floor(o.ageHours)}h`}`, `פתוח ${o.ageHours < 1 ? "פחות משעה" : `${Math.floor(o.ageHours)} שע׳`}`)}`).join("\n")}${testNote(test.filter((o) => o.kind === "unpaid_link" || o.kind === "unpaid_deposit"))}`, links: link };
+  }
+  const failedPayments = real.filter((o) => o.kind === "payment_failed");
+  const failedActions = ws.outcomes.filter((o) => o.kind === "failed" && !o.simulated);
+  if (!failedPayments.length && !failedActions.length) return { text: T("Nothing failed — no failed payments or actions in your records for this period.", "שום דבר לא נכשל — אין ברשומות תשלומים או פעולות שנכשלו בתקופה הזאת."), links: link };
+  const name = (id: string) => ws.conversations.find((c) => c.id === id)?.customer ?? T("a customer", "לקוח");
+  const lines = [...failedPayments.map((o) => `• ${o.customer} — ${T("payment failed", "התשלום נכשל")} — ${amount(o)}`), ...failedActions.slice(0, 5).map((o) => `• ${name(o.conversationId)} — ${o.label}`)];
+  return { text: `${T("What failed:", "מה נכשל:")}\n${lines.slice(0, 6).join("\n")}`, links: links(source, [{ label: T("Work", "עבודה"), path: "/owner?tab=work" }]) };
+}
+
+function waitingOn(ws: OwnerWorkspace, ops: OwnerOperationView[], source: CommandSource, now: Date, lang: OwnerLang): OwnerOutbound {
+  const T = (en: string, he: string) => L(lang, en, he);
+  const names = (rows: { customer: string }[]) => rows.slice(0, 4).map((r) => r.customer).join(", ") + (rows.length > 4 ? T(` +${rows.length - 4} more`, ` ועוד ${rows.length - 4}`) : "");
+  const approvals = ws.interventions.filter((i) => i.refs.approvalId && ws.approvals.some((a) => a.id === i.refs.approvalId && a.actionable));
+  const withYou = ws.conversations.filter((c) => c.attention.includes("handoff_open"));
+  const onCustomers = ws.conversations.filter((c) => c.status === "waiting_on_customer");
+  const payments = ws.opportunities.items.filter((o) => !o.simulated && (o.kind === "unpaid_link" || o.kind === "unpaid_deposit"));
+  const unresolved = ws.interventions.filter((i) => !i.refs.approvalId);
+  const opsWaiting = ops.filter((o) => o.derivedState === "waiting_on_customers");
+  const lines = [
+    approvals.length ? T(`Your approval: ${names(approvals)}`, `האישור שלך: ${names(approvals)}`) : "",
+    withYou.length ? T(`Conversations you hold (BARRY is quiet): ${names(withYou)}`, `שיחות אצלך (BARRY שותק): ${names(withYou)}`) : "",
+    onCustomers.length ? T(`Customer replies: ${onCustomers.slice(0, 4).map((c) => `${c.customer} (${hoursAgo(c.lastActivityAt, now, lang)})`).join(", ")}`, `תשובה מלקוחות: ${onCustomers.slice(0, 4).map((c) => `${c.customer} (${hoursAgo(c.lastActivityAt, now, lang)})`).join(", ")}`) : "",
+    payments.length ? T(`Payments: ${names(payments)}`, `תשלומים: ${names(payments)}`) : "",
+    ...opsWaiting.map((o) => T(`${o.title}: waiting on ${o.progress.stillTalking || o.progress.contacted} customers`, `${proactiveWords(o.workflow, "he").title}: מחכה ל־${o.progress.stillTalking || o.progress.contacted} לקוחות`)),
+    unresolved.length ? T(`Open items: ${unresolved.slice(0, 3).map((i) => `${i.customer} — ${i.title}`).join("; ")}`, `פריטים פתוחים: ${unresolved.slice(0, 3).map((i) => `${i.customer} — ${i.title}`).join("; ")}`) : "",
+  ].filter(Boolean);
+  if (!lines.length) return { text: T("We're not waiting on anything right now — no open approvals, replies or payments.", "אנחנו לא מחכים כרגע לשום דבר — אין אישורים, תשובות או תשלומים פתוחים.") };
+  return { text: `${T("We're waiting on:", "אנחנו מחכים ל:")}\n${lines.map((l) => `• ${l}`).join("\n")}`, links: links(source, [{ label: T("Work", "עבודה"), path: "/owner?tab=work" }]) };
 }
 
 const HELP = "You can ask me things like:\n• Who needs me?\n• What are you working on?\n• How much did we make today?\n• What happened with Maya?\nOr tell me: “Recover today's abandoned carts”, “Stop the recovery”, “Don't offer more than 5% today”.";
@@ -322,8 +439,23 @@ export async function executeOwnerCommand(input: ExecuteInput): Promise<{ record
 }
 
 async function dispatch(input: ExecuteInput, record: OwnerCommandRecord, now: Date): Promise<OwnerReply> {
+  const session = await loadSession(input.graph.business.id, actorId(input.actor), now);
+  try {
+    return await dispatchIn(input, record, now, session);
+  } finally {
+    await saveSession(session, now).catch(() => undefined);
+  }
+}
+
+const HEBREW = /[\u0590-\u05FF]/;
+/** What a language-model interpretation may become (never a decision, a confirmation, outreach or a rule). */
+const MODEL_INTENTS = ["query", "mode_query", "mode_change", "approval_explain", "conversation_takeover", "conversation_giveback", "conversation_reply"] as const;
+
+async function dispatchIn(input: ExecuteInput, record: OwnerCommandRecord, now: Date, session: OwnerSession): Promise<OwnerReply> {
   const { graph, source, actor } = input;
-  const lang: OwnerLang = input.lang ?? "en";
+  // The owner's language: chosen on the web; on a message channel, the language they wrote in (else the last one).
+  const lang: OwnerLang = input.lang ?? (input.text && HEBREW.test(input.text) ? "he" : input.text && /[a-z]{2}/i.test(input.text) ? "en" : session.lang ?? "en");
+  session.lang = lang;
   const T = (en: string, he: string) => L(lang, en, he);
   const t = () => new Date().toISOString();
   const step = (s: TraceStep["step"], outcome: TraceStep["outcome"], detail: string) => record.trace.push({ step: s, outcome, detail, at: t() });
@@ -334,18 +466,43 @@ async function dispatch(input: ExecuteInput, record: OwnerCommandRecord, now: Da
     step("interpretation", "blocked", "unrecognised action id");
     return { text: T("I couldn't match that button to anything I sent you — nothing was done.", "לא מצאתי למה הכפתור הזה שייך — לא נעשה כלום."), intent: "unsupported" };
   }
-  const intent: CommandIntent = action ? (action.type === "decision" ? { kind: "approval_response", decision: action.decision } : action.type === "start" ? { kind: "operation_confirm" } : { kind: "operation_stop" }) : interpretCommand(input.text ?? "", source).intent;
+  let intent: CommandIntent = action ? (action.type === "decision" ? { kind: "approval_response", decision: action.decision } : action.type === "reply" ? (action.send ? { kind: "affirm" } : { kind: "negate" }) : action.type === "start" ? { kind: "operation_confirm" } : { kind: "operation_stop" }) : interpretCommand(input.text ?? "", source).intent;
+  let byModel = false;
+  // Only what the deterministic interpreter couldn't place goes to the model — into a closed set of intents that
+  // can never decide, start outreach or change a rule. Execution below is the same deterministic path.
+  if (!action && intent.kind === "query" && intent.topic === "general" && (input.text ?? "").trim().length > 2) {
+    const m = await interpretWithModel(input.text ?? "");
+    // The service enforces the closed set itself (whatever an adapter returns): a model never decides a request,
+    // confirms anything, starts or stops outreach, or changes a rule — and a reply it read is always shown first.
+    if (m && (MODEL_INTENTS as readonly string[]).includes(m.kind)) {
+      intent = m.kind === "conversation_reply" ? { ...m, exact: false } : m;
+      byModel = true;
+    } else if (m) step("interpretation", "blocked", `language model proposed ${m.kind} — not allowed from a model; ignored`);
+  }
+  // A bare "yes" / "no" means something only against the owner's current, fresh context: the request just shown
+  // (→ the exact approval path), or a proposed operation / a reply draft (handled below). Never a guess.
+  if ((intent.kind === "affirm" || intent.kind === "negate") && !action && !session.draft && session.focus?.kind === "approval") {
+    step("interpretation", "info", `short reply "${(input.text ?? "").slice(0, 20)}" → the request in context`);
+    intent = { kind: "approval_response", decision: intent.kind === "affirm" ? "approve" : "decline" };
+  }
   record.intent = intent;
-  step("interpretation", "ok", `${intent.kind}${"topic" in intent ? `:${intent.topic}` : ""}${"workflow" in intent && intent.workflow ? `:${intent.workflow}` : ""}${action ? " (exact action)" : ""}`);
+  step("interpretation", "ok", `${intent.kind}${"topic" in intent ? `:${intent.topic}` : ""}${"workflow" in intent && intent.workflow ? `:${intent.workflow}` : ""}${action ? " (exact action)" : ""}${byModel ? " (language model, validated)" : ""}`);
 
   const ws = await getOwnerWorkspace(graph, { now, lang });
   step("state", ws.unavailable.length ? "info" : "ok", ws.unavailable.length ? `records unavailable: ${ws.unavailable.join(", ")}` : "current records loaded");
   const conversations = await getConversationStore().listByBusiness(graph.business.id);
   const views = (await listOperations(graph.business.id)).map((o) => operationView(o, ws.obligations, conversations));
 
+  // A new, unrelated request replaces the owner's context — a later "yes" can never land on an earlier action.
+  const keepsContext = (["affirm", "negate", "approval_response", "approval_explain", "operation_confirm", "conversation_takeover", "conversation_reply", "conversation_giveback"] as CommandIntent["kind"][]).includes(intent.kind) || (intent.kind === "query" && intent.topic === "customer" && !intent.subject);
+  if (!keepsContext) {
+    session.focus = undefined;
+    session.draft = undefined;
+  }
+
   switch (intent.kind) {
     case "query":
-      return { ...(await answerQuery(intent, ws, views, { graph, source, actor, text: input.text ?? "", now, lang })), intent: "query" };
+      return { ...(await answerQuery(intent, ws, views, { graph, source, actor, text: input.text ?? "", now, lang, session })), intent: "query" };
 
     case "operation_request": {
       if (!STARTABLE.includes(intent.workflow)) {
@@ -375,6 +532,7 @@ async function dispatch(input: ExecuteInput, record: OwnerCommandRecord, now: Da
       }
       if (eligible > CONFIRM_ABOVE) {
         step("plan", "info", `waiting for the owner's go (${eligible} > ${CONFIRM_ABOVE})`);
+        session.focus = { kind: "operation", opId: op.id };
         return { text: `${summary}\n\n${lang === "he" ? `להתחיל עם ${eligible} הלקוחות המתאימים?` : `${op.plannedAction}\nShall I start with the ${eligible} eligible customers?`}`, actions: [{ id: `o:${op.id}:${op.actionToken}:start`, title: T("Start", "להתחיל") }, { id: `o:${op.id}:${op.actionToken}:stop`, title: T("Cancel", "לבטל") }], links: link, intent: intent.kind, operation: operationView(op, ws.obligations, conversations) };
       }
       step("plan", "ok", `starting now with ${eligible}`);
@@ -383,7 +541,9 @@ async function dispatch(input: ExecuteInput, record: OwnerCommandRecord, now: Da
 
     case "operation_confirm": {
       const ops = await listOperations(graph.business.id);
-      const target = action?.type === "start" ? ops.find((o) => o.id === action.opId) : ops.filter((o) => o.state === "proposed" && Date.parse(o.createdAt) > now.getTime() - 30 * 60_000)[0];
+      const inContext = session.focus?.kind === "operation" ? session.focus.opId : undefined;
+      const target = action?.type === "start" ? ops.find((o) => o.id === action.opId) : inContext ? ops.find((o) => o.id === inContext) : ops.filter((o) => o.state === "proposed" && Date.parse(o.createdAt) > now.getTime() - 30 * 60_000)[0];
+      session.focus = undefined;
       if (action?.type === "start" && (!target || target.actionToken !== action.token)) {
         step("grounding", "blocked", "start action does not match a stored operation token");
         return { text: T("That button doesn't match anything waiting for you — nothing was started.", "הכפתור הזה לא מתאים לשום דבר שמחכה לך — שום דבר לא התחיל."), intent: intent.kind };
@@ -439,19 +599,29 @@ async function dispatch(input: ExecuteInput, record: OwnerCommandRecord, now: Da
           return { text: T("That decision doesn't match a request I sent you — nothing was done.", "ההחלטה הזאת לא מתאימה לבקשה ששלחתי לך — לא נעשה כלום."), intent: intent.kind };
         }
       } else {
-        // Text decides only a request this owner was shown, still current, unambiguous.
-        const mine = prompts.filter((p) => p.to === actorId(actor) && !p.usedAt && Date.parse(p.expiresAt) > now.getTime() && ws.approvals.some((a) => a.id === p.approvalId && a.actionable && a.revision === p.revision));
-        const bySubject = intent.subject ? mine.filter((p) => nameMatches(p.customer, intent.subject!)) : mine;
-        const distinct = [...new Map(bySubject.map((p) => [p.approvalId, p])).values()];
-        if (distinct.length === 1 && source !== "web") prompt = distinct.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-        else {
+        // Text decides only the exact request in the owner's current context ("approve" / "yes" right after it
+        // was shown), or — when the owner names the customer — the one request for that customer they were
+        // shown. Anything else is SHOWN, never decided: a stale or ambiguous "yes" never acts.
+        const current = (p: OwnerPrompt) => p.to === actorId(actor) && !p.usedAt && Date.parse(p.expiresAt) > now.getTime() && ws.approvals.some((a) => a.id === p.approvalId && a.actionable && a.revision === p.revision);
+        const focus = session.focus?.kind === "approval" ? session.focus : undefined;
+        if (!intent.subject && focus) {
+          prompt = prompts.find((p) => p.key === focus.promptKey && p.to === actorId(actor));
+          if (prompt) step("grounding", "ok", `the request in context: ${prompt.approvalId}`);
+        } else if (intent.subject && source !== "web") {
+          const distinct = [...new Map(prompts.filter((p) => current(p) && nameMatches(p.customer, intent.subject!)).map((p) => [p.approvalId, p])).values()];
+          if (distinct.length === 1) prompt = distinct[0];
+        }
+        if (!prompt) {
           const pending = ws.interventions.filter((i) => i.refs.approvalId && ws.approvals.some((a) => a.id === i.refs.approvalId && a.actionable) && (!intent.subject || nameMatches(i.customer, intent.subject)));
-          step("approval", "info", pending.length ? "shown the exact request to decide" : "no matching request");
+          step("approval", "info", pending.length ? `shown the exact request to decide (${pending.length} pending; nothing decided)` : "no matching request");
           if (!pending.length) return { text: intent.subject ? T(`Nothing from ${intent.subject} is waiting for your decision.`, `שום דבר מ־${intent.subject} לא מחכה להחלטה שלך.`) : T("Nothing is waiting for your decision right now.", "שום דבר לא מחכה להחלטה שלך כרגע."), intent: intent.kind };
           const p = await approvalPrompt(ws, pending[0].id, actorId(actor), source, now, lang);
-          return { ...(p ?? { text: T("That request isn't open any more.", "הבקשה הזאת כבר לא פתוחה.") }), text: `${pending.length > 1 ? T(`${pending.length} requests are waiting — here's the first.\n\n`, `${pending.length} בקשות מחכות — הנה הראשונה.\n\n`) : ""}${p?.text ?? ""}`, intent: intent.kind };
+          if (p) focusApproval(session, ws, pending[0].id, p);
+          const several = pending.length > 1 ? T(`${pending.length} requests are waiting (${pending.slice(0, 5).map((i) => i.customer).join(", ")}) — I won't guess which. Here's ${pending[0].customer}'s; decide it, or name the customer you meant.\n\n`, `${pending.length} בקשות מחכות (${pending.slice(0, 5).map((i) => i.customer).join(", ")}) — אני לא מנחש. הנה של ${pending[0].customer}; תחליט עליה, או תגיד לאיזה לקוח התכוונת.\n\n`) : T("Here's the request — nothing was decided yet:\n\n", "הנה הבקשה — עוד לא הוחלט כלום:\n\n");
+          return { ...(p ?? { text: T("That request isn't open any more.", "הבקשה הזאת כבר לא פתוחה.") }), text: `${several}${p?.text ?? ""}`, intent: intent.kind };
         }
       }
+      session.focus = undefined;
       if (prompt.usedAt) {
         step("approval", "info", "prompt already used (duplicate)");
         return { text: T("Already done — that decision was made once and won't run again.", "כבר בוצע — ההחלטה הזאת התקבלה פעם אחת ולא תרוץ שוב."), intent: intent.kind };
@@ -465,6 +635,7 @@ async function dispatch(input: ExecuteInput, record: OwnerCommandRecord, now: Da
         step("approval", "blocked", !approval ? "request not found" : !approval.actionable ? `request is ${approval.lifecycle}` : `revision changed ${prompt.revision} → ${approval.revision}`);
         const current = ws.interventions.find((i) => i.refs.approvalId === prompt!.approvalId);
         const again = approval?.actionable && current ? await approvalPrompt(ws, current.id, actorId(actor), source, now, lang) : undefined;
+        if (again && current) focusApproval(session, ws, current.id, again);
         return { text: `${T("That request changed or was already decided since I sent it — nothing was done.", "הבקשה השתנתה או כבר הוחלטה מאז ששלחתי אותה — לא נעשה כלום.")}${again ? `\n\n${T("Here's the current one:", "הנה הבקשה העדכנית:")}\n\n${again.text}` : ""}`, actions: again?.actions, links: again?.links, intent: intent.kind };
       }
       // A person holds this conversation: BARRY can't act in it until it's returned (the request stays open).
@@ -512,6 +683,132 @@ async function dispatch(input: ExecuteInput, record: OwnerCommandRecord, now: Da
       }
     }
 
+    case "mode_query": {
+      const v = await ownerMode(graph);
+      step("state", "ok", `mode ${v.mode}${v.pausedBy ? ` (paused by ${v.pausedBy})` : ""}`);
+      const words: Record<Exclude<typeof v.mode, "paused">, [string, string]> = {
+        simulator: ["Practice mode — BARRY talks with customers, but payments, bookings and orders run on a simulator; nothing real is charged or committed.", "מצב תרגול — BARRY מדבר עם לקוחות, אבל תשלומים, הזמנות ותורים רצים על סימולטור; שום דבר אמיתי לא נגבה או מתחייב."],
+        supervised: ["Supervised — BARRY handles routine, reversible steps on its own and asks you before anything that moves money or commits the business.", "מפוקח — BARRY מטפל לבד בצעדים שגרתיים והפיכים, ושואל אותך לפני כל דבר שמזיז כסף או מחייב את העסק."],
+        live: ["Live — BARRY acts within your rules; anything your rules flag still comes to you first.", "פעיל — BARRY פועל בתוך הכללים שלך; כל מה שהכללים מסמנים עדיין מגיע אליך קודם."],
+      };
+      const text =
+        v.mode === "paused"
+          ? v.pausedBy === "owner"
+            ? T("Paused — by you. BARRY isn't answering customers, sending or changing anything; customer messages are kept. Say “resume BARRY” to continue.", "מושהה — על ידך. BARRY לא עונה ללקוחות, לא שולח ולא משנה כלום; הודעות של לקוחות נשמרות. כתוב ״תחזור לעבוד״ כדי להמשיך.")
+            : T("Paused by the BARRY team. BARRY isn't answering customers or sending anything; customer messages are kept. The team resumes it with you.", "מושהה על ידי צוות BARRY. BARRY לא עונה ללקוחות ולא שולח כלום; הודעות של לקוחות נשמרות. הצוות יחדש את זה איתך.")
+          : T(words[v.mode][0], words[v.mode][1]);
+      return { text, intent: intent.kind, links: links(source, [{ label: T("Settings", "הגדרות"), path: "/owner?tab=more" }]) };
+    }
+
+    case "approval_explain": {
+      const pending = ws.interventions.filter((i) => i.refs.approvalId && ws.approvals.some((a) => a.id === i.refs.approvalId && a.actionable));
+      const focus = session.focus?.kind === "approval" ? session.focus : undefined;
+      const matching = intent.subject ? pending.filter((i) => nameMatches(i.customer, intent.subject!)) : focus ? pending.filter((i) => i.refs.approvalId === focus.approvalId) : pending;
+      if (!matching.length) {
+        step("grounding", "info", "no matching request");
+        return { text: focus && !intent.subject ? T(`The request for ${focus.customer} isn't open any more — nothing is waiting on it.`, `הבקשה של ${focus.customer} כבר לא פתוחה — שום דבר לא מחכה לה.`) : T("Nothing is waiting for your decision right now.", "שום דבר לא מחכה להחלטה שלך כרגע."), intent: intent.kind };
+      }
+      if (matching.length > 1) {
+        step("grounding", "info", `ambiguous: ${matching.length} requests`);
+        return { text: T(`${matching.length} requests are waiting: ${matching.slice(0, 5).map((i) => `${i.customer} — ${i.title}`).join("; ")}. Which one?`, `${matching.length} בקשות מחכות: ${matching.slice(0, 5).map((i) => `${i.customer} — ${i.title}`).join("; ")}. איזו מהן?`), intent: intent.kind };
+      }
+      const item = matching[0];
+      const p = await approvalPrompt(ws, item.id, actorId(actor), source, now, lang);
+      if (!p) return { text: T("That request isn't open any more.", "הבקשה הזאת כבר לא פתוחה."), intent: intent.kind };
+      focusApproval(session, ws, item.id, p);
+      step("grounding", "ok", `explained ${item.refs.approvalId}`);
+      const tried = item.tried.slice(-3);
+      return { ...p, text: `${p.text}${tried.length ? `\n\n${T("What BARRY did so far", "מה BARRY עשה עד עכשיו")}:\n${tried.map((x) => `• ${x}`).join("\n")}` : ""}`, intent: intent.kind };
+    }
+
+    case "affirm":
+    case "negate": {
+      const yes = intent.kind === "affirm";
+      const draft = session.draft;
+      if (action?.type === "reply" && (!draft || draft.requestId !== action.requestId)) {
+        step("grounding", "blocked", "reply button does not match the draft in context");
+        return { text: T("That message isn't waiting to be sent any more — nothing was sent.", "ההודעה הזאת כבר לא מחכה לשליחה — שום דבר לא נשלח."), intent: intent.kind };
+      }
+      if (draft) {
+        session.draft = undefined;
+        if (!yes) {
+          step("plan", "info", "reply draft discarded");
+          return { text: T(`OK — not sent. Nothing went to ${draft.customer}.`, `בסדר — לא נשלח. שום דבר לא הגיע ל${draft.customer}.`), intent: intent.kind };
+        }
+        return { ...(await sendReply(draft.conversationId, draft.customer, draft.text, draft.requestId)), intent: intent.kind };
+      }
+      if (session.focus?.kind === "operation") {
+        const opId = session.focus.opId;
+        session.focus = undefined;
+        const op = (await listOperations(graph.business.id)).find((o) => o.id === opId);
+        if (!op || op.state !== "proposed") {
+          step("grounding", "info", op ? `operation already ${op.state}` : "operation not found");
+          return { text: op ? T(`That one is already ${STATE_WORDS[op.state].toLowerCase()} — nothing new was started.`, `זה כבר במצב "${STATE_WORDS_HE[op.state]}" — שום דבר חדש לא התחיל.`) : T("Nothing is waiting for your go right now.", "שום דבר לא מחכה לאישור שלך כרגע."), intent: intent.kind };
+        }
+        if (yes) return { ...(await start(op.id, T(`Starting ${op.title.toLowerCase()} for ${op.targets.filter((x) => x.eligibility === "eligible").length} customers.`, `מתחיל: ${proactiveWords(op.workflow, "he").command}, ל־${op.targets.filter((x) => x.eligibility === "eligible").length} לקוחות.`))), intent: intent.kind };
+        await stopOperation(graph.business.id, op.id, actorLabel(actor), now);
+        step("execution", "ok", `cancelled proposed ${op.id}`);
+        return { text: T("Cancelled — nothing was sent.", "בוטל — שום דבר לא נשלח."), intent: intent.kind };
+      }
+      step("grounding", "info", "a short reply with nothing in context — nothing done");
+      return { text: yes ? T("I'm not sure what that refers to, so I didn't do anything. Tell me what you'd like — e.g. “what needs me?”", "אני לא בטוח למה זה מתייחס, אז לא עשיתי כלום. תגיד לי מה אתה רוצה — למשל ״מה צריך אותי?״") : T("OK — nothing changed.", "בסדר — שום דבר לא השתנה."), intent: intent.kind };
+    }
+
+    case "conversation_takeover": {
+      const r = resolveConversation(intent.subject, session, ws, ws.conversations.filter((c) => c.status === "needs_you"), lang, T("Which conversation? Tell me the customer's name.", "איזו שיחה? תגיד לי את שם הלקוח."));
+      if ("ask" in r) {
+        step("grounding", "info", "conversation not resolved — asked");
+        return { text: r.ask, intent: intent.kind };
+      }
+      try {
+        await ownerTakeOver(graph, r.c.id, actorLabel(actor));
+      } catch (err) {
+        if (!(err instanceof OwnerControlError)) throw err;
+        step("execution", "blocked", err.code);
+        return { text: T("I couldn't find that conversation — nothing changed.", "לא מצאתי את השיחה הזאת — שום דבר לא השתנה."), intent: intent.kind };
+      }
+      session.focus = { kind: "conversation", conversationId: r.c.id, customer: r.c.customer };
+      session.draft = undefined;
+      step("execution", "ok", `taken over ${r.c.id}`);
+      step("verification", "ok", "conversation control: human (the same handoff state as the web)");
+      return { text: T(`You have the conversation with ${r.c.customer}. BARRY won't reply to them until you give it back — their messages are kept. Tell me what to send (“tell her …”), or say “give it back to BARRY”.`, `השיחה עם ${r.c.customer} אצלך. BARRY לא יענה להם עד שתחזיר אותה — ההודעות שלהם נשמרות. תגיד לי מה לשלוח (״תענה לה ש…״), או ״תחזיר לברי״.`), intent: intent.kind, links: links(source, [{ label: T("Open conversation", "לפתוח את השיחה"), path: `/owner?tab=customers&conversation=${encodeURIComponent(r.c.id)}` }]) };
+    }
+
+    case "conversation_giveback": {
+      const r = resolveConversation(intent.subject, session, ws, ws.conversations.filter((c) => c.attention.includes("handoff_open")), lang, T("You're not holding any conversation right now.", "אין כרגע שיחה שאצלך."));
+      if ("ask" in r) {
+        step("grounding", "info", "conversation not resolved — asked");
+        return { text: r.ask, intent: intent.kind };
+      }
+      try {
+        await ownerReturnToBarry(graph, r.c.id, actorLabel(actor));
+      } catch (err) {
+        if (!(err instanceof OwnerControlError)) throw err;
+        step("execution", "blocked", err.code);
+        return { text: T("I couldn't find that conversation — nothing changed.", "לא מצאתי את השיחה הזאת — שום דבר לא השתנה."), intent: intent.kind };
+      }
+      session.draft = undefined;
+      step("execution", "ok", `returned ${r.c.id} to BARRY`);
+      step("verification", "ok", "conversation control: barry; open handoffs closed");
+      return { text: T(`BARRY has the conversation with ${r.c.customer} again and will handle their next message.`, `השיחה עם ${r.c.customer} חזרה ל־BARRY, והוא יטפל בהודעה הבאה שלהם.`), intent: intent.kind };
+    }
+
+    case "conversation_reply": {
+      const r = resolveConversation(intent.subject, session, ws, ws.conversations.filter((c) => c.attention.includes("handoff_open") || c.status === "needs_you"), lang, T("Who should I send that to? Tell me the customer's name.", "למי לשלוח את זה? תגיד לי את שם הלקוח."));
+      if ("ask" in r) {
+        step("grounding", "info", "recipient not resolved — asked, nothing sent");
+        return { text: r.ask, intent: intent.kind };
+      }
+      session.focus = { kind: "conversation", conversationId: r.c.id, customer: r.c.customer };
+      // The owner's exact words (after a colon) go as written; anything else is drafted and shown first.
+      if (intent.exact) return { ...(await sendReply(r.c.id, r.c.customer, intent.text, record.id)), intent: intent.kind };
+      const text = await draftCustomerReply(intent.text, r.c.customer, lang);
+      const requestId = `rq_${crypto.randomBytes(8).toString("hex")}`;
+      session.draft = { conversationId: r.c.id, customer: r.c.customer, text, requestId, at: now.toISOString() };
+      step("plan", "info", `reply drafted for ${r.c.id} — waiting for the owner's send`);
+      return { text: T(`I'll send ${r.c.customer}:\n“${text}”\n\nSend it?`, `אשלח ל${r.c.customer}:\n“${text}”\n\nלשלוח?`), actions: [{ id: `r:${requestId}:send`, title: T("Send", "לשלוח") }, { id: `r:${requestId}:cancel`, title: T("Don't send", "לא לשלוח") }], intent: intent.kind };
+    }
+
     case "policy_change_request": {
       step("plan", "info", `rule proposal prepared (not applied): ${intent.text.slice(0, 120)}`);
       return { text: T(`I've prepared this as a rule: “${intent.text.replace(/[.!]+$/, "")}”.\nRules take effect only after you review how I'll apply them — nothing has changed yet.`, `הכנתי את זה ככלל: “${intent.text.replace(/[.!]+$/, "")}”.\nכלל נכנס לתוקף רק אחרי שתבדוק איך אני אפעל לפיו — עוד שום דבר לא השתנה.`), links: links(source, [{ label: T("Review the rule", "לבדוק את הכלל"), path: `/owner/train?rule=${encodeURIComponent(intent.text)}#teach-rule` }]), intent: intent.kind };
@@ -520,6 +817,30 @@ async function dispatch(input: ExecuteInput, record: OwnerCommandRecord, now: Da
     case "unsupported":
       step("plan", "blocked", "unsupported");
       return { text: lang === "he" ? "BARRY שולח הודעות רק ללקוחות שכבר מדברים עם העסק, בתוך השיחה שלהם — קמפיינים או הודעות תפוצה הוא לא יכול להריץ. שום דבר לא התחיל." : `${intent.reason} Nothing was started.`, intent: intent.kind };
+  }
+
+  /** The owner's message to the customer — the same service (and at-most-once request id) as the web reply box. */
+  async function sendReply(conversationId: string, customer: string, text: string, requestId: string): Promise<Omit<OwnerReply, "intent">> {
+    try {
+      const r = await ownerReply(graph, conversationId, { requestId, text, by: actorLabel(actor) }, { now });
+      session.focus = { kind: "conversation", conversationId, customer };
+      step("execution", r.status === "failed" ? "failed" : r.status === "unknown" ? "info" : "ok", `owner reply ${requestId}: ${r.status}${r.error ? ` — ${r.error}` : ""}`);
+      step("verification", "ok", "recorded as the owner's message with its delivery; the owner holds the conversation");
+      const tail = T("\nYou hold the conversation — BARRY stays quiet there until you say “give it back to BARRY”.", "\nהשיחה אצלך — BARRY שותק שם עד שתגיד ״תחזיר לברי״.");
+      const words: Record<typeof r.status, string> = {
+        sent: T(`Sent to ${customer}: “${r.text.slice(0, 300)}”`, `נשלח ל${customer}: “${r.text.slice(0, 300)}”`),
+        dry_run: T(`Test mode — recorded in ${customer}'s conversation but NOT sent (WhatsApp sending is off): “${r.text.slice(0, 300)}”`, `מצב בדיקה — נרשם בשיחה עם ${customer} אבל לא נשלח (שליחה בוואטסאפ כבויה): “${r.text.slice(0, 300)}”`),
+        failed: T(`Couldn't send it — nothing reached ${customer}${r.error ? ` (${r.error})` : ""}.`, `לא הצלחתי לשלוח — שום דבר לא הגיע ל${customer}.`),
+        unknown: T(`That send was interrupted — I can't confirm it reached ${customer}, and I won't send it again. Check the conversation.`, `השליחה נקטעה — אני לא יכול לאשר שהגיעה ל${customer}, ולא אשלח שוב. בדוק את השיחה.`),
+        sending: T("Still sending — check the conversation.", "עדיין נשלח — בדוק את השיחה."),
+      };
+      return { text: `${words[r.status]}${r.status === "failed" || r.status === "unknown" ? "" : tail}`, links: links(source, [{ label: T("Open conversation", "לפתוח את השיחה"), path: `/owner?tab=customers&conversation=${encodeURIComponent(conversationId)}` }]) };
+    } catch (err) {
+      if (!(err instanceof OwnerControlError)) throw err;
+      step("execution", "blocked", err.code);
+      const text = err.code === "outside_whatsapp_window" ? T(err.message, "עברו יותר מ־24 שעות מאז שהלקוח כתב, אז וואטסאפ מאפשר רק הודעת תבנית מאושרת. שום דבר לא נשלח.") : err.code === "not_found" ? T("I couldn't find that conversation — nothing was sent.", "לא מצאתי את השיחה הזאת — שום דבר לא נשלח.") : T("There's nothing to send — nothing was sent.", "אין מה לשלוח — שום דבר לא נשלח.");
+      return { text };
+    }
   }
 
   async function start(opId: string, lead: string): Promise<Omit<OwnerReply, "intent">> {
@@ -542,11 +863,13 @@ async function dispatch(input: ExecuteInput, record: OwnerCommandRecord, now: Da
   }
 }
 
-type ParsedAction = { type: "decision"; promptKey: string; decision: "approve" | "decline" } | { type: "start" | "stop"; opId: string; token: string };
+type ParsedAction = { type: "decision"; promptKey: string; decision: "approve" | "decline" } | { type: "start" | "stop"; opId: string; token: string } | { type: "reply"; requestId: string; send: boolean };
 export function parseAction(id: string): ParsedAction | undefined {
   const d = id.match(/^d:(pr_[a-f0-9]{16}):(approve|decline)$/);
   if (d) return { type: "decision", promptKey: d[1], decision: d[2] as "approve" | "decline" };
   const o = id.match(/^o:(op_[a-f0-9]{12}):([A-Za-z0-9_-]{8,20}):(start|stop)$/);
   if (o) return { type: o[3] as "start" | "stop", opId: o[1], token: o[2] };
+  const r = id.match(/^r:(rq_[a-f0-9]{16}):(send|cancel)$/);
+  if (r) return { type: "reply", requestId: r[1], send: r[2] === "send" };
   return undefined;
 }

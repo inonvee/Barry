@@ -82,6 +82,27 @@ export function giveToHuman(state: ConversationState, by: string, reason: string
   return setControl(state, "human", by, reason, handoffId);
 }
 
+/**
+ * The owner (or team) explicitly takes the conversation. Unlike `giveToHuman`, a conversation BARRY handed to
+ * "a person" becomes held by THIS person (who, from when, why), and its open handoff is acknowledged by them.
+ * Idempotent: taking a conversation you already hold changes nothing.
+ */
+export function takeOverBy(state: ConversationState, by: string, reason: string): ConversationControl {
+  const cur = readControl(state);
+  const all = readHandoffs(state);
+  let acknowledged = false;
+  for (const h of all) {
+    if (h.status !== "open") continue;
+    h.status = "acknowledged";
+    h.acknowledgedAt = new Date().toISOString();
+    h.resolvedBy = by;
+    acknowledged = true;
+  }
+  if (acknowledged) state.knownFields[HANDOFFS_KEY] = JSON.stringify(all);
+  if (cur.holder === "human" && state.knownFields[CONTROL_KEY] && cur.by === by) return cur;
+  return setControl(state, "human", by, reason, cur.handoffId);
+}
+
 /** Explicit return to BARRY. Any handoff still open is closed (resolved by the same person). */
 export function returnToBarry(state: ConversationState, by: string, reason = "returned to BARRY"): { control: ConversationControl; closed: HandoffRecord[] } {
   const all = readHandoffs(state);

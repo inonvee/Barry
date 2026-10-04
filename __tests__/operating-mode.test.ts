@@ -185,7 +185,7 @@ describe("owner commands — one service on every surface", () => {
     expect(interpretCommand("Please stop yourself").intent).toEqual({ kind: "mode_change", to: "paused" });
     expect(interpretCommand("resume").intent).toEqual({ kind: "mode_change", to: "resumed" });
     expect(interpretCommand("stop the recovery").intent.kind).toBe("operation_stop");
-    expect(interpretCommand("is BARRY paused?").intent.kind).toBe("query");
+    expect(interpretCommand("is BARRY paused?").intent.kind).toBe("mode_query") // a question about the mode, never a change;
     const t = business();
     const web = await executeOwnerCommand({ graph: t.g, source: "web", actor: { kind: "web" }, key: "web:pause-1", text: "pause BARRY" });
     expect(web.reply.text).toMatch(/^Paused\./);

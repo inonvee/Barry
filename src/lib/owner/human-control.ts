@@ -2,7 +2,7 @@ import type { BusinessGraph } from "@/lib/business-graph";
 import { getConversationStore, type ConversationState } from "@/lib/state";
 import { withConversationLock } from "@/lib/state/lock";
 import { updateConversation } from "@/lib/state/update";
-import { giveToHuman, readControl, readOwnerReplies, returnToBarry, writeOwnerReply, type ConversationControl, type OwnerReplyRecord } from "@/lib/runtime/control";
+import { giveToHuman, readControl, readOwnerReplies, returnToBarry, takeOverBy, writeOwnerReply, type ConversationControl, type OwnerReplyRecord } from "@/lib/runtime/control";
 import { CHANNEL_DELIVERY_KEY, type DeliveryRecord, type OutboundSender } from "@/lib/channels/gateway";
 import { whatsappConfig, whatsappSender } from "@/lib/channels/whatsapp";
 import { WHATSAPP_WINDOW_MS } from "@/lib/operator/executor";
@@ -49,9 +49,9 @@ function scoped(state: ConversationState | undefined, graph: BusinessGraph): Con
   return state;
 }
 
-/** The owner (or team) takes the conversation: BARRY stops replying to it. Idempotent. */
+/** The owner (or team) takes the conversation: BARRY stops replying to it; a handoff BARRY opened is acknowledged by them. Idempotent. */
 export async function ownerTakeOver(graph: BusinessGraph, conversationId: string, by: string, reason = "taken over by the owner"): Promise<ConversationControl> {
-  const done = await updateConversation(conversationId, (s) => giveToHuman(scoped(s, graph), by, reason));
+  const done = await updateConversation(conversationId, (s) => takeOverBy(scoped(s, graph), by, reason));
   if (!done) throw new OwnerControlError("not_found", "Conversation not found");
   return done.result;
 }
