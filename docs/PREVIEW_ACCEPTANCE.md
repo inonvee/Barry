@@ -60,3 +60,7 @@ business's own rules.
 - any request carrying a price / discount / amount / override (a policy exception)
 - any consequential capability not on the autonomous list, including ones added later (fail safe)
 - proactive follow-ups (sent only when the owner runs them)
+
+## 4. Preview environment refresh
+
+Preview database credentials are intentionally isolated from Production. After changing Preview-scoped Vercel environment variables, trigger a fresh Preview deployment before running the acceptance gate so the deployment picks up the new values.
