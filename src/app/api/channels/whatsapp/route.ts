@@ -50,7 +50,12 @@ export async function POST(req: NextRequest) {
       if ("delivery" in result && result.delivery?.status === "failed") console.warn("[barry:whatsapp] founder reply delivery failed", { error: result.delivery.error });
       roleResults.push({ role, status: result.status });
     }
-    else if (role === "owner") roleResults.push({ role, status: (await processOwnerInbound(asCommandInbound(m), roleSenders.owner(m.lineId), { businessIds: [m.businessId] }).catch((err) => ({ status: `failed: ${err instanceof Error ? err.message.slice(0, 80) : "error"}` }))).status });
+    else if (role === "owner") {
+      const result = await processOwnerInbound(asCommandInbound(m), roleSenders.owner(m.lineId), { businessIds: [m.businessId], lineId: m.lineId }).catch((err) => ({ status: `failed: ${err instanceof Error ? err.message.slice(0, 80) : "error"}` }));
+      // Delivery truth: a Graph failure (e.g. 401 / 190) is recorded on the owner command and logged — never "sent".
+      if ("delivery" in result && result.delivery?.status === "failed") console.warn("[barry:whatsapp] owner reply delivery failed", { businessId: m.businessId, error: result.delivery.error });
+      roleResults.push({ role, status: result.status });
+    }
     else {
       const { lineId: _l, command: _c, ...customerOnly } = m;
       void _l;
@@ -67,7 +72,11 @@ export async function POST(req: NextRequest) {
   }
   // Owner line: the owner command channel (never a customer conversation).
   const ownerResults = [];
-  for (const m of parsed.owner) ownerResults.push(await processOwnerInbound(m, whatsappOwnerSender()).catch((err) => ({ status: "failed" as const, error: err instanceof Error ? err.message.slice(0, 120) : "error" })));
+  for (const m of parsed.owner) {
+    const result = await processOwnerInbound(m, whatsappOwnerSender(), { lineId: owner.numbers[0] }).catch((err) => ({ status: "failed" as const, error: err instanceof Error ? err.message.slice(0, 120) : "error" }));
+    if ("delivery" in result && result.delivery?.status === "failed") console.warn("[barry:whatsapp] owner reply delivery failed", { error: result.delivery.error });
+    ownerResults.push(result);
+  }
   // Founder line: the Founder BARRY command channel (verified founder identities only; never a customer or owner path).
   const founderResults = [];
   for (const m of parsed.founder) founderResults.push(await processFounderInbound(m, whatsappFounderSender()).catch((err) => ({ status: "failed" as const, error: err instanceof Error ? err.message.slice(0, 120) : "error" })));

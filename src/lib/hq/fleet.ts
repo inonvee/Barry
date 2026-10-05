@@ -1,3 +1,6 @@
+import { businessProblems, listOwnerDeliveries, listPaymentHealthEvents, type OwnerDeliveryEvidence } from "@/lib/owner/problems";
+import type { PaymentHealthEvent } from "@/lib/payments/health";
+import { listJobRuns, type JobRecord } from "@/lib/background/runner";
 import type { BusinessGraph } from "@/lib/business-graph";
 import { resolveBusinessGraph } from "@/lib/business-graph-repository";
 import { listBusinessSummaries } from "@/lib/fixtures";
@@ -132,7 +135,15 @@ export async function getBusinessStatus(graph: BusinessGraph, opts: { now?: Date
   const connections = await safe("connections", () => describeBusinessConnections(id, profiles), [] as ConnectionView[]);
   const approvals = withLifecycle(approvalsRaw, new Map(conversations.map((c) => [c.id, c])));
   const ai = aiHealth(conversations, now);
-  const incidents = deriveIncidents({ graph, conversations, approvals, payments, connections, ai, now, states: incidentStates });
+  const problems = businessProblems({
+    connections,
+    jobs: await safe("background jobs", () => listJobRuns(id), [] as JobRecord[]),
+    ownerDeliveries: await safe("owner deliveries", () => listOwnerDeliveries(id), [] as OwnerDeliveryEvidence[]),
+    conversations,
+    payments: await safe("payment health", () => listPaymentHealthEvents(id), [] as PaymentHealthEvent[]),
+    now,
+  });
+  const incidents = deriveIncidents({ graph, conversations, approvals, payments, connections, ai, now, states: incidentStates, problems });
   const interventions = buildInterventions({ graph, conversations, approvals, payments, customerLabel, now });
   const opportunities = revenueOpportunities({ graph, conversations, approvals, payments, bookings, orders, customerLabel, now });
   const obligations = await safe("obligations", () => reconcileObligations({ graph, conversations, approvals, payments, bookings, carts, policy: followUpPolicyFor(graph), attempts: attemptCounts(attempts), now }), [] as Obligation[]);

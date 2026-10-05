@@ -8,6 +8,7 @@ import { OwnerModeError, ownerMode, ownerPause, ownerResume } from "./mode";
 import { OwnerControlError, ownerReply, ownerReturnToBarry, ownerTakeOver } from "./human-control";
 import { isContextRecordKey, loadSession, saveSession, type OwnerSession } from "./session";
 import { draftCustomerReply, interpretWithModel } from "./command-llm";
+import { problemText } from "./problems";
 import { readControl } from "@/lib/runtime/control";
 import { listJobRuns } from "@/lib/background/runner";
 import { moneyWords, hasMoney } from "@/lib/format/money";
@@ -141,7 +142,9 @@ async function answerQuery(intent: Extract<CommandIntent, { kind: "query" }>, ws
       return { text: `${T(`What I noticed${money ? " about money" : ""}:`, `מה ששמתי לב${money ? " לגבי כסף" : ""}:`)}\n${lines.join("\n")}${list.length > 3 ? T(`\n…and ${list.length - 3} more in Work.`, `\n…ועוד ${list.length - 3} ב״עבודה״.`) : ""}`, links: links(ctx.source, [{ label: T("See it in Work", "לראות ב״עבודה״"), path: "/owner?tab=work#noticed" }]) };
     }
     case "needs_you": {
-      if (!ws.interventions.length) return { text: T("Nothing needs you right now. I'm handling everything inside your rules.", "שום דבר לא מחכה לך כרגע. אני מטפל בהכול בתוך הכללים שלך.") };
+      // Something broken for the whole business is told first, with what happened / what's affected / the next step.
+      const broken = problemsBlock(ws, lang);
+      if (!ws.interventions.length) return { text: broken ? `${T("No customer is waiting on you, but something isn't working:", "אף לקוח לא מחכה לך, אבל משהו לא עובד:")}\n${broken}` : T("Nothing needs you right now. I'm handling everything inside your rules.", "שום דבר לא מחכה לך כרגע. אני מטפל בהכול בתוך הכללים שלך.") };
       const lines = ws.interventions.slice(0, 5).map((i, n) => `${n + 1}. ${i.customer} — ${i.title}`);
       const first = ws.interventions.find((i) => i.refs.approvalId && ws.approvals.some((a) => a.id === i.refs.approvalId && a.actionable));
       const prompt = first ? await approvalPrompt(ws, first.id, actorId(ctx.actor), ctx.source, ctx.now, lang) : undefined;
@@ -153,7 +156,7 @@ async function answerQuery(intent: Extract<CommandIntent, { kind: "query" }>, ws
       const marker = T("\n\nWhy you:", "\n\nלמה אתה:");
       const detail = prompt ? `${marker}${prompt.text.split(marker)[1] ?? ""}` : "";
       const head = T(`${plural(ws.interventions.length, "thing")} need${ws.interventions.length === 1 ? "s" : ""} you:`, ws.interventions.length === 1 ? "דבר אחד מחכה לך:" : `${ws.interventions.length} דברים מחכים לך:`);
-      return { text: `${head}\n${lines.join("\n")}${more}${detail}`, actions: prompt?.actions, links: [...(prompt?.links ?? []), ...links(ctx.source, [{ label: T("All decisions", "כל ההחלטות"), path: "/owner?tab=work" }])].slice(0, 2) };
+      return { text: `${head}\n${lines.join("\n")}${more}${detail}${broken ? `\n\n${T("Also not working:", "וגם לא עובד:")}\n${broken}` : ""}`, actions: prompt?.actions, links: [...(prompt?.links ?? []), ...links(ctx.source, [{ label: T("All decisions", "כל ההחלטות"), path: "/owner?tab=work" }])].slice(0, 2) };
     }
     case "working": {
       const lines = nowWorking(ws, lang).map((l) => `• ${l.text}`);
@@ -187,8 +190,11 @@ async function answerQuery(intent: Extract<CommandIntent, { kind: "query" }>, ws
       const lines = [onYou.length ? `${T("Waiting on you", "מחכים לך")}: ${onYou.slice(0, 5).map(name).join(", ")}` : T("Nobody is waiting on you.", "אף אחד לא מחכה לך."), live.length ? `${T("Talking with BARRY now", "מדברים עם BARRY עכשיו")}: ${live.slice(0, 5).map(name).join(", ")}` : "", onThem.length ? `${T("BARRY is waiting to hear back from", "BARRY מחכה לתשובה מ")}: ${onThem.slice(0, 5).map(name).join(", ")}` : ""].filter(Boolean);
       return { text: lines.join("\n"), links: links(ctx.source, [{ label: T("Customers", "לקוחות"), path: "/owner?tab=customers" }]) };
     }
-    case "waiting":
-      return waitingOn(ws, ops, ctx.source, ctx.now, lang);
+    case "waiting": {
+      const w = waitingOn(ws, ops, ctx.source, ctx.now, lang);
+      const broken = problemsBlock(ws, lang);
+      return broken ? { ...w, text: `${w.text}\n\n${T("Not working right now:", "לא עובד כרגע:")}\n${broken}` } : w;
+    }
     case "customer": {
       const focused = !intent.subject ? focusConversationId(ctx.session) : undefined;
       if (!intent.subject && !focused) return { text: T("Which customer? Tell me their name.", "על איזה לקוח? תגיד לי את השם.") };
@@ -306,6 +312,15 @@ function moneyDetail(focus: MoneyFocus, ws: OwnerWorkspace, source: CommandSourc
   const name = (id: string) => ws.conversations.find((c) => c.id === id)?.customer ?? T("a customer", "לקוח");
   const lines = [...failedPayments.map((o) => `• ${o.customer} — ${T("payment failed", "התשלום נכשל")} — ${amount(o)}`), ...failedActions.slice(0, 5).map((o) => `• ${name(o.conversationId)} — ${o.label}`)];
   return { text: `${T("What failed:", "מה נכשל:")}\n${lines.slice(0, 6).join("\n")}`, links: links(source, [{ label: T("Work", "עבודה"), path: "/owner?tab=work" }]) };
+}
+
+/** Business-level problems (a system down, WhatsApp refusing messages…) with the six owner answers — at most two in full. */
+function problemsBlock(ws: OwnerWorkspace, lang: OwnerLang): string {
+  const list = ws.problems ?? [];
+  if (!list.length) return "";
+  const full = list.slice(0, 2).map((p) => problemText(p, lang).split("\n").map((l, i) => (i === 0 ? `• ${l}` : `  ${l}`)).join("\n"));
+  const rest = list.length > 2 ? L(lang, `\n…and ${list.length - 2} more.`, `\n…ועוד ${list.length - 2}.`) : "";
+  return `${full.join("\n")}${rest}`;
 }
 
 function waitingOn(ws: OwnerWorkspace, ops: OwnerOperationView[], source: CommandSource, now: Date, lang: OwnerLang): OwnerOutbound {
@@ -628,7 +643,15 @@ async function dispatchIn(input: ExecuteInput, record: OwnerCommandRecord, now: 
       }
       if (Date.parse(prompt.expiresAt) < now.getTime()) {
         step("approval", "blocked", "prompt expired");
-        return { text: T("That request is too old to decide from here — open it to see where it stands.", "הבקשה הזאת ישנה מדי כדי להחליט עליה מכאן — פתח אותה כדי לראות איפה היא עומדת."), links: links(source, [{ label: T("Review", "לפרטים"), path: `/owner?tab=actions&intervention=${encodeURIComponent(prompt.interventionId)}` }]), intent: intent.kind };
+        // An expired button never decides anything. If the request is still open, offer it again (a fresh, single-use prompt).
+        const open = ws.approvals.find((a) => a.id === prompt!.approvalId && a.actionable);
+        const current = open ? ws.interventions.find((i) => i.refs.approvalId === open.id) : undefined;
+        const again = current ? await approvalPrompt(ws, current.id, actorId(actor), source, now, lang) : undefined;
+        if (again && current) {
+          focusApproval(session, ws, current.id, again);
+          return { text: `${T("That button expired — nothing was done. The request is still open:", "הכפתור הזה פג תוקף — לא נעשה כלום. הבקשה עדיין פתוחה:")}\n\n${again.text}`, actions: again.actions, links: again.links, intent: intent.kind };
+        }
+        return { text: T("That button expired and the request is no longer open — nothing was done.", "הכפתור הזה פג תוקף והבקשה כבר לא פתוחה — לא נעשה כלום."), links: links(source, [{ label: T("Review", "לפרטים"), path: `/owner?tab=actions&intervention=${encodeURIComponent(prompt.interventionId)}` }]), intent: intent.kind };
       }
       const approval = ws.approvals.find((a) => a.id === prompt!.approvalId);
       if (!approval || !approval.actionable || approval.revision !== prompt.revision) {
@@ -698,6 +721,22 @@ async function dispatchIn(input: ExecuteInput, record: OwnerCommandRecord, now: 
             : T("Paused by the BARRY team. BARRY isn't answering customers or sending anything; customer messages are kept. The team resumes it with you.", "מושהה על ידי צוות BARRY. BARRY לא עונה ללקוחות ולא שולח כלום; הודעות של לקוחות נשמרות. הצוות יחדש את זה איתך.")
           : T(words[v.mode][0], words[v.mode][1]);
       return { text, intent: intent.kind, links: links(source, [{ label: T("Settings", "הגדרות"), path: "/owner?tab=more" }]) };
+    }
+
+    case "mode_switch_request": {
+      // The operating mode (practice / supervised / live) is set by the BARRY team through the launch checklist — the
+      // existing authority rule. The owner's own control is pause / resume (instant). Nothing changes here.
+      const v = await ownerMode(graph);
+      step("authority", "blocked", `mode switch to ${intent.to} requested; current ${v.mode} — operating mode is set by the BARRY team`);
+      const name = (m: string) => (m === "live" ? T("live", "פעיל") : m === "supervised" ? T("supervised", "מפוקח") : m === "paused" ? T("paused", "מושהה") : T("practice", "תרגול"));
+      if (v.mode === intent.to) return { text: T(`BARRY is already in ${name(v.mode)} mode — nothing changed.`, `BARRY כבר במצב ${name(v.mode)} — שום דבר לא השתנה.`), intent: intent.kind };
+      return {
+        text: T(
+          `BARRY is in ${name(v.mode)} mode. Switching to ${name(intent.to)} is done with the BARRY team${intent.to === "live" ? " once the launch checklist is complete" : ""} — I didn't change anything. You can pause BARRY yourself at any moment (say “pause BARRY”), and take over any conversation.`,
+          `BARRY במצב ${name(v.mode)}. מעבר למצב ${name(intent.to)} נעשה עם צוות BARRY${intent.to === "live" ? " אחרי שרשימת ההשקה מושלמת" : ""} — לא שיניתי כלום. אתה יכול להשהות את BARRY בעצמך בכל רגע (כתוב ״תעצור הכל״), ולקחת כל שיחה.`,
+        ),
+        intent: intent.kind,
+      };
     }
 
     case "approval_explain": {

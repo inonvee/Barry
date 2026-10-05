@@ -1,3 +1,4 @@
+import { recordPaymentHealthEvent } from "./health";
 import { getBackend } from "@/lib/store";
 import { withConversationLock } from "@/lib/state/lock";
 import { getConversationStore } from "@/lib/state";
@@ -181,17 +182,16 @@ export async function processPaymentWebhook(
     verified.providerPaymentId
   );
   if (!payment) throw new Error("Unknown payment request");
-  if (verified.businessId && verified.businessId !== payment.businessId) {
-    throw new Error("Payment webhook business mismatch");
-  }
-  if (verified.conversationId && verified.conversationId !== payment.conversationId) {
-    throw new Error("Payment webhook conversation mismatch");
-  }
-  if (verified.amount !== undefined && verified.amount !== payment.amount) {
-    throw new Error("Payment webhook amount mismatch");
-  }
-  if (verified.currency && verified.currency.toUpperCase() !== payment.currency.toUpperCase()) {
-    throw new Error("Payment webhook currency mismatch");
+  // A verified provider event that doesn't match BARRY's record is never applied — and the owner / founder see it.
+  const mismatch =
+    verified.businessId && verified.businessId !== payment.businessId ? "Payment webhook business mismatch"
+    : verified.conversationId && verified.conversationId !== payment.conversationId ? "Payment webhook conversation mismatch"
+    : verified.amount !== undefined && verified.amount !== payment.amount ? "Payment webhook amount mismatch"
+    : verified.currency && verified.currency.toUpperCase() !== payment.currency.toUpperCase() ? "Payment webhook currency mismatch"
+    : undefined;
+  if (mismatch) {
+    await recordPaymentHealthEvent(payment.businessId, { at: new Date().toISOString(), provider: verified.provider, paymentId: payment.id, reason: mismatch.replace(/^Payment webhook /, "") }).catch(() => undefined);
+    throw new Error(mismatch);
   }
   // Everything below changes the conversation: one writer at a time (the same lock as customer turns).
   return withConversationLock(payment.conversationId, () => applyVerifiedPaymentEvent(verified, payment));
@@ -266,4 +266,5 @@ export async function markPaymentWebhookFailed(result: PaymentWebhookResult, err
   if (!result.payment || !result.provider || !result.providerEventId) return;
   const message = error instanceof Error ? error.message : String(error);
   await getBackend().markPaymentWebhookEventFailed(result.provider, result.providerEventId, result.payment.id, message);
+  await recordPaymentHealthEvent(result.payment.businessId, { at: new Date().toISOString(), provider: result.provider, paymentId: result.payment.id, reason: `verified event could not complete the sale: ${message}` }).catch(() => undefined);
 }

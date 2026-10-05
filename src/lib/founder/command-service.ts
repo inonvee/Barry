@@ -625,7 +625,7 @@ async function readinessRead(r: FounderCommandRecord, b: DirectoryEntry, ctx: Ct
   const unknown = required.filter((i) => i.status === "unknown");
   r.items = [...blocked, ...unknown].map((i) => ({ title: `${i.title}: ${i.status}`, detail: `${i.evidence}${i.nextAction ? ` → ${i.nextAction} (${i.responsibility.replace("_", " ")})` : ""}`, href: bizHref(b.id, "launch"), severity: i.status === "blocked" ? ("high" as const) : ("info" as const) }));
   r.answer = [
-    `${b.name} is ${LEVEL_WORDS[gate.level]} (launch gate: ${required.length - blocked.length - unknown.length} of ${required.length} required items ready).`,
+    `${b.name}: ${gate.verdict === "READY_FOR_SUPERVISED" ? "READY FOR SUPERVISED" : "BLOCKED"} — ${LEVEL_WORDS[gate.level]} (launch gate: ${required.length - blocked.length - unknown.length} of ${required.length} required items ready).`,
     ...blocked.slice(0, 6).map((i) => `• Blocked — ${i.title}: ${i.blocker ?? i.evidence}${i.nextAction ? ` → ${i.nextAction}` : ""}`),
     ...unknown.slice(0, 4).map((i) => `• Unknown (needs proof) — ${i.title}: ${i.evidence}`),
   ].join("\n");
@@ -740,7 +740,7 @@ async function valueRead(r: FounderCommandRecord, ctx: Ctx): Promise<void> {
   ].filter(Boolean).join("\n");
 }
 
-const INTEGRATION_KINDS = new Set(["connection_unhealthy", "reverification_due", "undelivered_reply"]);
+const INTEGRATION_KINDS = new Set(["connection_unhealthy", "reverification_due", "undelivered_reply", "owner_channel_failing", "customer_delivery_failing", "payment_unverified"]);
 
 async function incidentRead(r: FounderCommandRecord, topic: "integrations" | "incidents", ctx: Ctx): Promise<void> {
   const view = await loadFounderFleet({ now: ctx.now });

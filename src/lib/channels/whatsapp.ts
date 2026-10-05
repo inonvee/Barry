@@ -19,6 +19,7 @@ import { mediaPlaceholder } from "./media";
  *                             owner command channel, never to a customer conversation. A number that is
  *                             also routed to a business (customer line) is never treated as an owner line.
  *   BARRY_WHATSAPP_OWNER_DISPLAY  optional E.164 of the owner line, for "Open BARRY in WhatsApp" links
+ *   BARRY_WHATSAPP_DISPLAY    optional E.164 of the shared BARRY number (identity role routing), for the same links
  * Nothing here is faked: without these, the channel reports exactly what's missing and receives nothing.
  */
 
@@ -76,6 +77,24 @@ export function whatsappFounderConfig(): { configured: boolean; numbers: string[
  */
 export function whatsappRoleRouting(): "identity" | "off" {
   return process.env.BARRY_WHATSAPP_ROLE_ROUTING?.trim() === "identity" ? "identity" : "off";
+}
+
+/**
+ * How an owner of `businessId` reaches Owner BARRY on WhatsApp right now:
+ *   owner_line   a dedicated owner number (BARRY_WHATSAPP_OWNER_NUMBERS), or
+ *   shared_line  the business's own routed number with identity role routing (BARRY_WHATSAPP_ROLE_ROUTING=identity) —
+ *                the verified sender decides the role, so no separate owner phone_number_id is needed.
+ * `lineId` is the phone_number_id replies / notices go out from by default. The send mode is the OWNER role's mode
+ * (BARRY_WHATSAPP_SEND) either way. `display` (E.164 digits) is shown for "Open WhatsApp" links when configured.
+ */
+export function whatsappOwnerReach(businessId: string): { configured: boolean; via: "owner_line" | "shared_line" | "none"; lineId?: string; sendMode: "live" | "dry_run"; display?: string } {
+  const owner = whatsappOwnerConfig();
+  const tokens = ["WHATSAPP_APP_SECRET", "WHATSAPP_ACCESS_TOKEN"].every((k) => process.env[k]?.trim());
+  const shared = whatsappRoleRouting() === "identity" && tokens ? whatsappNumbersFor(businessId)[0] : undefined;
+  const display = (shared && !owner.configured ? process.env.BARRY_WHATSAPP_DISPLAY?.replace(/[^\d]/g, "") : undefined) || owner.display;
+  if (owner.configured) return { configured: true, via: "owner_line", lineId: owner.numbers[0], sendMode: owner.sendMode, ...(display ? { display } : {}) };
+  if (shared) return { configured: true, via: "shared_line", lineId: shared, sendMode: owner.sendMode, ...(display ? { display } : {}) };
+  return { configured: false, via: "none", sendMode: owner.sendMode };
 }
 
 /** The three outbound send modes, separately (startup / preflight status; never a secret). */

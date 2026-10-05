@@ -40,4 +40,4 @@ export async function saveSession(s: OwnerSession, now = new Date()): Promise<vo
 }
 
 /** Records that are not commands (the owner session, a pending business choice). */
-export const isContextRecordKey = (key: string) => key.startsWith("session:") || key.startsWith("pending:");
+export const isContextRecordKey = (key: string) => key.startsWith("session:") || key.startsWith("pending:") || key.startsWith("link:");

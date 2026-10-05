@@ -6,6 +6,9 @@ import type { BusinessControls } from "./controls";
 import { currentRelease, type ReleaseState } from "@/lib/release/manifest";
 import { listSources } from "@/lib/learn-business/sources";
 import { listLearningChanges } from "@/lib/learn-business/relearn";
+import { whatsappOwnerReach } from "@/lib/channels/whatsapp";
+import { linkActive, listOwnerIdentities, maskedIdentity } from "@/lib/owner-channel/identity";
+import { loadBusinessProblems } from "@/lib/owner/problems";
 
 /**
  * DESIGN-PARTNER LAUNCH CHECKLIST + GO-LIVE GATE — founder supervision of one business before broad
@@ -32,6 +35,8 @@ export type LaunchItem = {
 
 export type LaunchGate = {
   level: "READY_FOR_SUPERVISED_DESIGN_PARTNER" | "NOT_READY" | "UNKNOWN_NEEDS_PROOF";
+  /** The Design Partner verdict — no percentages, no partial credit: unknown is BLOCKED until it is proven. */
+  verdict: "READY_FOR_SUPERVISED" | "BLOCKED";
   reason: string;
   items: LaunchItem[];
   requiredRemaining: string[];
@@ -61,6 +66,12 @@ export async function launchChecklist(graph: BusinessGraph, input: { controls: B
   items.push(fromCheck("knowledge.policies", "Business understanding: policies & FAQs", "owner", true));
   items.push(fromCheck("platform.owner_access", "Owner access (own token, limited to this business)", "barry_team", true));
   items.push(fromCheck("channel.configured", "Customer channel (WhatsApp) routed", "barry_team", true));
+  // Owner WhatsApp: a line reaches the owner (dedicated, or the shared number with identity role routing) and the
+  // owner has linked their own number (a verified, active link — never a synthetic QA number).
+  const reach = whatsappOwnerReach(graph.business.id);
+  items.push({ id: "channel.owner_whatsapp_reach", title: "Owner BARRY reachable on WhatsApp", status: reach.configured ? "ready" : "blocked", evidence: reach.configured ? (reach.via === "shared_line" ? "the business's WhatsApp number routes verified owners to Owner BARRY (identity role routing)" : "a dedicated owner WhatsApp line is configured") : "no WhatsApp line reaches Owner BARRY for this business", ...(reach.configured ? {} : { blocker: "Owner BARRY can't be reached on WhatsApp.", nextAction: "The BARRY team routes the business's WhatsApp number and turns on identity role routing." }), responsibility: "barry_team", requiredForSupervised: true });
+  const ownerLinks = (await listOwnerIdentities(graph.business.id).catch(() => [])).filter((l) => linkActive(l).ok && !l.channelUserId.startsWith("999"));
+  items.push({ id: "channel.owner_whatsapp_linked", title: "Owner linked their WhatsApp", status: ownerLinks.length ? "ready" : "blocked", evidence: ownerLinks.length ? `${ownerLinks.length} verified owner number${ownerLinks.length === 1 ? "" : "s"} linked (${ownerLinks.map(maskedIdentity).join(", ")})` : "no owner number is linked", ...(ownerLinks.length ? {} : { blocker: "The owner hasn't linked their WhatsApp yet.", nextAction: "The owner opens Settings → Link my WhatsApp and sends the code from their phone." }), responsibility: "owner", requiredForSupervised: true });
   // Commerce / provider: real provider connected for what the business uses.
   const sell = capabilities.needs.filter((n) => n.area === "sell" || n.area === "book");
   const realSell = sell.length === 0 ? "unknown" : sell.every((n) => n.status === "ready") ? "ready" : sell.some((n) => n.status === "ready_simulated") ? "blocked" : "blocked";
@@ -80,6 +91,11 @@ export async function launchChecklist(graph: BusinessGraph, input: { controls: B
   items.push({ id: "qa.live_proof", title: "QA / live proof for this build", status: verdictForThis ? (verdictForThis.verdict === "passed" ? "ready" : "blocked") : "unknown", evidence: verdictForThis ? `Work verdict ${verdictForThis.verdict} on ${verdictForThis.sha.slice(0, 7)} at ${verdictForThis.at}` : release.sha ? `no Work verdict recorded for ${release.sha.slice(0, 7)} (${release.nextProofRequired.length} live checks required)` : "no build sha in this environment", ...(verdictForThis?.verdict === "passed" ? {} : { nextAction: "Work runs the manifest's live checks; the founder records the verdict in HQ." }), responsibility: "founder", requiredForSupervised: true });
   items.push({ id: "founder.supervision", title: "Founder supervision mode set", status: input.controls.mode === "supervised" || input.controls.mode === "live" ? "ready" : "blocked", evidence: `mode ${input.controls.mode}${input.controls.updatedAt ? ` · set ${input.controls.updatedAt} by ${input.controls.updatedBy ?? "founder"} — ${input.controls.reason}` : " (default)"}`, ...(input.controls.mode === "simulator" ? { blocker: "Still in SIMULATOR mode.", nextAction: "Set the mode to SUPERVISED in Founder controls (with a reason)." } : {}), responsibility: "founder", requiredForSupervised: true });
 
+  // No unresolved critical problem (a real system down, WhatsApp refusing messages, an unverifiable payment event).
+  const problems = await loadBusinessProblems(graph.business.id, { ...(input.conversations ? { conversations: input.conversations } : {}) }).catch(() => null);
+  const criticalProblems = (problems ?? []).filter((p) => p.severity === "high");
+  items.push({ id: "incidents.critical", title: "No unresolved critical problem", status: problems === null ? "unknown" : criticalProblems.length ? "blocked" : "ready", evidence: problems === null ? "the business's problems could not be read" : criticalProblems.length ? criticalProblems.map((p) => p.what.en).join(" ") : "no critical problem in the records", ...(criticalProblems.length ? { blocker: criticalProblems[0].what.en, nextAction: criticalProblems[0].nextStep.en } : {}), responsibility: "barry_team", requiredForSupervised: true });
+
   // Blockers must be explicitly zero (or accepted): any OPEN blocker from the readiness assessment counts.
   const openBlockers = readiness.next?.blockers.length ?? 0;
   items.push({ id: "blockers.zero", title: "Readiness blockers explicitly zero or accepted", status: openBlockers === 0 ? "ready" : "blocked", evidence: openBlockers === 0 ? "no open readiness blocker" : `${openBlockers} open blocker${openBlockers === 1 ? "" : "s"}: ${readiness.next?.blockers.slice(0, 3).map((b) => b.label).join("; ")}`, ...(openBlockers ? { blocker: "Open readiness blockers.", nextAction: "Clear them, or the founder accepts them explicitly in the launch review." } : {}), responsibility: "founder", requiredForSupervised: false });
@@ -90,6 +106,7 @@ export async function launchChecklist(graph: BusinessGraph, input: { controls: B
   const level: LaunchGate["level"] = blocked.length ? "NOT_READY" : unknown.length ? "UNKNOWN_NEEDS_PROOF" : "READY_FOR_SUPERVISED_DESIGN_PARTNER";
   return {
     level,
+    verdict: level === "READY_FOR_SUPERVISED_DESIGN_PARTNER" ? "READY_FOR_SUPERVISED" : "BLOCKED",
     reason: level === "READY_FOR_SUPERVISED_DESIGN_PARTNER" ? "Every required item has evidence." : level === "NOT_READY" ? `${blocked.length} required item${blocked.length === 1 ? "" : "s"} blocked: ${blocked.slice(0, 3).join("; ")}${blocked.length > 3 ? "…" : ""}` : `Needs proof: ${unknown.join("; ")}`,
     items,
     requiredRemaining: blocked,
@@ -107,7 +124,7 @@ const GROUP_TITLES: Record<LaunchGroupId, string> = { understanding: "Business u
 
 export function launchGroupOf(itemId: string): LaunchGroupId {
   if (itemId.startsWith("knowledge.")) return "understanding";
-  if (itemId === "blockers.zero") return "supervision";
+  if (itemId === "blockers.zero" || itemId === "incidents.critical") return "supervision";
   if (itemId === "platform.owner_access" || itemId === "platform.persistence" || itemId === "capabilities.critical") return "connections";
   if (itemId.startsWith("authority.") || itemId === "handoff.path") return "authority";
   if (itemId.startsWith("channel.")) return "channel";
@@ -130,4 +147,16 @@ export function groupLaunch(gate: LaunchGate): GroupedLaunch {
   const required = gate.items.filter((i) => i.requiredForSupervised);
   const first = required.find((i) => i.status === "blocked") ?? required.find((i) => i.status === "unknown") ?? null;
   return { groups, primary: first ? { item: first, group: GROUP_TITLES[launchGroupOf(first.id)] } : null, ready: gate.items.filter((i) => i.status === "ready").length, blocked: gate.items.filter((i) => i.status === "blocked").length, unknown: gate.items.filter((i) => i.status === "unknown").length };
+}
+
+/**
+ * The Design Partner verdict for the OWNER: READY FOR SUPERVISED or BLOCKED, and each blocker in plain words with who
+ * acts on it ("you" or "the BARRY team"). Unknown is a blocker until proven. Pure.
+ */
+export type OwnerDesignPartnerView = { verdict: "READY_FOR_SUPERVISED" | "BLOCKED"; label: string; blockers: { id: string; title: string; why: string; next: string; who: "you" | "the BARRY team" }[] };
+export function ownerDesignPartnerView(gate: LaunchGate): OwnerDesignPartnerView {
+  const blockers = gate.items
+    .filter((i) => i.requiredForSupervised && i.status !== "ready")
+    .map((i) => ({ id: i.id, title: i.title, why: i.status === "unknown" ? `Not proven yet — ${i.evidence}.` : (i.blocker ?? i.evidence), next: i.nextAction ?? (i.status === "unknown" ? "The BARRY team proves it." : "The BARRY team fixes it."), who: i.responsibility === "owner" ? ("you" as const) : ("the BARRY team" as const) }));
+  return { verdict: gate.verdict, label: gate.verdict === "READY_FOR_SUPERVISED" ? "Ready for a supervised start" : "Blocked", blockers };
 }

@@ -41,7 +41,7 @@ type Watch = { businessId: string; health: FounderHealthState; launch: LaunchGat
 
 const h = (s: string) => crypto.createHash("sha256").update(s).digest("hex").slice(0, 12);
 const PROVIDER_KINDS = new Set(["connection_unhealthy", "reverification_due"]);
-const REPEAT_KINDS = new Set(["repeated_not_understood", "failed_write", "undelivered_reply", "unverified_effect", "blocked_write"]);
+const REPEAT_KINDS = new Set(["repeated_not_understood", "failed_write", "undelivered_reply", "unverified_effect", "blocked_write", "owner_channel_failing", "background_job_failed"]);
 
 export async function listFounderNotices(): Promise<FounderNotice[]> {
   return (await getBackend().listOperatorRecords(FLEET_SCOPE, KIND)).filter((r) => r.key.startsWith(NOTICE)).map((r) => r.data as unknown as FounderNotice).sort((a, b) => b.at.localeCompare(a.at));

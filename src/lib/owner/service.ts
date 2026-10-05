@@ -25,7 +25,10 @@ import { actionWords } from "./interventions";
 import type { OwnerLang } from "./lang";
 import { listOperations, operationView } from "./operations";
 import type { OwnerOperationView } from "./operation-model";
-import { whatsappOwnerConfig } from "@/lib/channels/whatsapp";
+import { whatsappOwnerReach } from "@/lib/channels/whatsapp";
+import { listJobRuns, type JobRecord } from "@/lib/background/runner";
+import type { PaymentHealthEvent } from "@/lib/payments/health";
+import { businessProblems, listOwnerDeliveries, listPaymentHealthEvents, type BusinessProblem, type OwnerDeliveryEvidence } from "./problems";
 import { linkActive, listOwnerIdentities, maskedIdentity } from "@/lib/owner-channel/identity";
 import { listInitiatives } from "@/lib/initiative/store";
 import { toView, type Initiative, type InitiativeView } from "@/lib/initiative/model";
@@ -123,7 +126,7 @@ export type OwnerChannels = {
 
 export function ownerChannels(businessId: string, activeOwnerLinks: string[] = []): OwnerChannels {
   const wa = whatsappConfig();
-  const owner = whatsappOwnerConfig();
+  const owner = whatsappOwnerReach(businessId);
   const routed = whatsappNumbersFor(businessId).length > 0;
   const ownerCommands = !owner.configured ? "not_connected" : activeOwnerLinks.length ? "connected" : "not_linked";
   return {
@@ -200,6 +203,9 @@ export type OwnerWorkspace = {
   outcomes: OutcomeEvent[];
   handoffs: (HandoffRecord & { customer: string })[];
   health: { ai: AiHealth; systems: SystemHealth[] };
+  /** What is broken for the whole business right now (a system down, a failed scheduled run, WhatsApp refusing
+   *  messages, an unverifiable payment event) — each with the six owner answers. Records only. */
+  problems: BusinessProblem[];
   /** What BARRY can do for this business right now, what works only on a simulator, and the setup steps with what they unlock. */
   capabilities: ReturnType<typeof capabilitySummary>;
   /** The plan (owner-safe): its name and whether BARRY Margins is included. Never economics. */
@@ -412,6 +418,14 @@ export async function getOwnerWorkspace(staticGraph: BusinessGraph, opts: { sinc
   const profiles = await safe("capability profiles", () => resolveCapabilityProfiles(graph), undefined);
   const connections = await safe("connections", () => describeBusinessConnections(businessId, profiles), [] as ConnectionView[]);
   const allInitiatives = await safe("initiatives", () => listInitiatives(businessId), [] as Initiative[]);
+  const problems = businessProblems({
+    connections,
+    jobs: await safe("background jobs", () => listJobRuns(businessId), [] as JobRecord[]),
+    ownerDeliveries: await safe("owner deliveries", () => listOwnerDeliveries(businessId), [] as OwnerDeliveryEvidence[]),
+    conversations,
+    payments: await safe("payment health", () => listPaymentHealthEvents(businessId), [] as PaymentHealthEvent[]),
+    now,
+  });
   const capabilities = capabilitySummary(await safe("capabilities", () => assessCapabilities(graph, { profiles, connections }), { needs: [], steps: [], now: [], nowSimulated: [], afterSetup: [] }));
 
   return {
@@ -439,6 +453,7 @@ export async function getOwnerWorkspace(staticGraph: BusinessGraph, opts: { sinc
     outcomes,
     handoffs,
     health: { ai: aiHealth(conversations, now), systems: connections.map(systemHealth) },
+    problems,
     capabilities,
     plan: { name: entitlement?.plan ? PLAN_CATALOG[entitlement.plan].name : null, marginsIncluded: entitlement ? hasFeature(entitlement, "margins") : false },
     channels: ownerChannels(businessId, (await safe("owner links", () => listOwnerIdentities(businessId), [])).filter((l) => linkActive(l).ok).map(maskedIdentity)),

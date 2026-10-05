@@ -12,7 +12,7 @@ type State = { line: { configured: boolean; sendMode: "live" | "dry_run"; displa
 
 /**
  * YOUR WHATSAPP — link the owner's own number to this business. The owner (signed in here) gets a
- * one-time code and sends it FROM their WhatsApp to BARRY's owner line; that proves the number is
+ * one-time code and sends it FROM their WhatsApp to BARRY (its owner line, or the shared BARRY number); that proves the number is
  * theirs. One business per link; revoking (or a change of owner access) stops it immediately.
  */
 export function WhatsAppLink({ api }: { api: Api }) {

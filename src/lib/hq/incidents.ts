@@ -7,6 +7,7 @@ import { readLedger } from "@/lib/runtime/ledger";
 import { readDeliveries } from "@/lib/channels/gateway";
 import type { AiHealth } from "@/lib/owner/service";
 import { getBackend } from "@/lib/store";
+import type { BusinessProblem } from "@/lib/owner/problems";
 
 /**
  * FLEET INCIDENTS — one read model of what is broken or stuck in a business, derived from records only
@@ -29,7 +30,15 @@ export type IncidentKind =
   | "blocked_write"
   | "stale_unpaid_link"
   /** A real, active connection has not been verified for too long, its manifest drifted or its credential expires. */
-  | "reverification_due";
+  | "reverification_due"
+  /** BARRY's WhatsApp replies / notices to the OWNER are refused by the provider (e.g. 401 / 190). */
+  | "owner_channel_failing"
+  /** Replies to several customers refused by the channel (business-wide, not one conversation). */
+  | "customer_delivery_failing"
+  /** A scheduled background run (follow-ups, owner brief / alerts) failed and nothing later succeeded. */
+  | "background_job_failed"
+  /** A payment provider event could not be verified against BARRY's records (never counted as paid). */
+  | "payment_unverified";
 
 export type IncidentStatus = "current" | "acknowledged" | "resolved";
 
@@ -65,6 +74,8 @@ export type IncidentInput = {
   now: Date;
   /** Founder acknowledgements / resolutions (operator records of kind "incident"). */
   states?: IncidentState[];
+  /** Business-level problems (lib/owner/problems) — the same records the owner is told about. */
+  problems?: BusinessProblem[];
 };
 
 export type IncidentState = { key: string; acknowledged?: { by: string; at: string; note?: string }; resolved?: { by: string; at: string; note?: string } };
@@ -78,7 +89,13 @@ export function incidentSeverity(kind: IncidentKind, ageMs: number): IncidentSev
     case "ai_unavailable":
     case "undelivered_reply":
     case "connection_unhealthy":
+    case "customer_delivery_failing":
+    case "payment_unverified":
       return "high";
+    case "owner_channel_failing":
+      return ageMs > 6 * H ? "high" : "medium";
+    case "background_job_failed":
+      return "medium";
     case "held_approval_stuck":
       return ageMs > D ? "high" : "medium";
     case "failed_write":
@@ -280,6 +297,25 @@ export function deriveIncidents(input: IncidentInput): Incident[] {
       impact: "Money the customer intended to pay is at risk.",
       nextAction: "Owner: follow up with the customer.",
       links: { conversationId: p.conversationId },
+    });
+  }
+
+  // Business-level problems the owner is told about (connections are already covered above).
+  const PROBLEM_KIND: Partial<Record<BusinessProblem["kind"], IncidentKind>> = { owner_channel: "owner_channel_failing", customer_delivery: "customer_delivery_failing", background_job: "background_job_failed", payment_verification: "payment_unverified" };
+  for (const p of input.problems ?? []) {
+    const kind = PROBLEM_KIND[p.kind];
+    if (!kind) continue;
+    add({
+      key: `${kind}:${p.key}`,
+      kind,
+      title: p.what.en,
+      firstSeen: p.since,
+      lastSeen: p.lastSeen,
+      evidence: p.evidence,
+      impact: `${p.affected.en}${p.customerBlocked === true ? " Customers are blocked." : ""}`,
+      nextAction: p.nextStep.en,
+      links: { ...(kind === "owner_channel_failing" || kind === "customer_delivery_failing" ? { capability: "channel.whatsapp" } : kind === "payment_unverified" ? { capability: "payments" } : {}) },
+      occurrences: p.occurrences,
     });
   }
 

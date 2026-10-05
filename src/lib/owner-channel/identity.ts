@@ -38,6 +38,9 @@ export type OwnerIdentity = {
   linkedVia: "owner_session_code";
   accessFingerprint: string;
   lastInboundAt?: string;
+  /** The WhatsApp line (phone_number_id) the owner last wrote to — WhatsApp's 24-hour window is per line, so proactive
+   *  notices go back from it (a dedicated owner line, or the business's shared number under identity role routing). */
+  lineId?: string;
   revokedAt?: string;
   revokedBy?: string;
 };
@@ -126,8 +129,8 @@ export async function revokeOwnerIdentity(businessId: string, id: string, by: st
   return true;
 }
 
-export async function touchInbound(link: OwnerIdentity, at: string): Promise<void> {
-  await saveIdentity({ ...link, lastInboundAt: at });
+export async function touchInbound(link: OwnerIdentity, at: string, lineId?: string): Promise<void> {
+  await saveIdentity({ ...link, lastInboundAt: at, ...(lineId ? { lineId } : {}) });
 }
 
 export type IdentityResolution =

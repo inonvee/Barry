@@ -22,6 +22,9 @@ import { PROACTIVE, workflowState, workflows } from "./control-room";
  *   policy_change_request a rule or limit ("don't offer more than 5% today") → the reviewed Train BARRY path
  *   mode_change           pause BARRY for this business / lift the owner's own pause
  *   mode_query            which mode BARRY is in (and who paused it)
+ *   mode_switch_request   "switch to supervised" / "go live" — answered truthfully: the operating mode (practice /
+ *                         supervised / live) is set by the BARRY team through the launch checklist; the owner's own
+ *                         control is pause / resume. Nothing changes.
  *   approval_explain      what a waiting request is for, before deciding
  *   affirm / negate       a bare "yes" / "no" — resolved ONLY against the owner's current, fresh context
  *   conversation_takeover the owner takes a customer conversation (BARRY stops replying in it)
@@ -45,6 +48,7 @@ export type CommandIntent =
   | { kind: "policy_change_request"; text: string }
   | { kind: "mode_change"; to: "paused" | "resumed" }
   | { kind: "mode_query" }
+  | { kind: "mode_switch_request"; to: "supervised" | "live" | "simulator" }
   | { kind: "approval_explain"; subject?: string }
   | { kind: "affirm" }
   | { kind: "negate" }
@@ -86,16 +90,26 @@ const REPLY_EN = /^(?:please\s+)?(?:tell|reply to|answer|text|message|write to|s
 const REPLY_HE = /^(?:תענה|תגיד|תכתוב|תשלח|תעני|תגידי)\s+(?:ל(ה|ו|הם|הן|\p{L}[\p{L}'-]{1,30}))\s*(?::\s*(.+)|ש(.+)|(.+))$/u;
 const PAUSE_ALL = /^(?:please\s+|barry,?\s+)*(?:pause|stop|freeze|halt)\s+(?:barry|yourself|the business|all (?:of )?barry|all activity|everything you(?:'re| are)? doing)\b|^(?:please\s+)?(?:barry,?\s+)?(?:go quiet|take a break)\b|^(?:תשהה|השהה|תעצור|עצור) את (?:בארי|ברי|barry|העסק)|^(?:תעצור|עצור) (?:הכל|הכול)[.!]*$|^(?:תשהה|השהה) (?:הכל|הכול)/i;
 const RESUME_ALL = /^(?:please\s+|barry,?\s+)*(?:resume|unpause|un-pause|start again|back to work|you can (?:continue|resume|start again))\b|^(?:תחזור לעבוד|תמשיך לעבוד|בטל השהיה|תחזיר אותו לעבוד|תחזיר את (?:ברי|בארי|barry) לעבוד|ברי יכול לחזור לעבוד)/i;
+// "Switch to supervised", "go live", "תעבור למצב פיקוח" — a request to change the operating mode (not pause / resume).
+const MODE_SWITCH = /^(?:please\s+|barry,?\s+)*(?:(?:switch|change|move|set|put)\b.{0,30}\b(?:to|into|in)\s+(?:the\s+)?(live|supervised|practice|test|simulator)(?:\s+mode)?\b|go(?:ing)?\s+(live)\b|(?:turn on|enable)\s+(live|supervised)\s+mode\b)|^(?:תעבור|תעביר|תחליף|להעביר|לעבור)(?: את (?:ברי|בארי|barry))?\s+(?:ל)?מצב\s+(פיקוח|מפוקח|חי|פעיל|לייב|תרגול|בדיקה|סימולטור)|^(?:תעלה|להעלות|לעלות)(?: את (?:ברי|בארי|barry))?\s+(?:לאוויר|ללייב)/i;
+const MODE_WORD: Record<string, "supervised" | "live" | "simulator"> = { live: "live", supervised: "supervised", practice: "simulator", test: "simulator", simulator: "simulator", פיקוח: "supervised", מפוקח: "supervised", חי: "live", פעיל: "live", לייב: "live", תרגול: "simulator", בדיקה: "simulator", סימולטור: "simulator" };
+// "Is anything stuck?" / "יש משהו תקוע?" — what is stuck or pending (not a money question unless it says money).
+const STUCK = /\b(?:anything|something|what(?:'s| is)?)\s+(?:stuck|blocked)\b|\bstuck\b\??$|תקוע|תקועים|נתקע/i;
+const MONEY_WORDS = /\b(money|payments?|paid|pay|revenue|sales)\b|כסף|תשלומ|שולם|שילמ/i;
+// "Why is this customer waiting?" / "למה הלקוח הזה מחכה?" — the customer in the owner's current context.
+const THIS_CUSTOMER = /\b(?:this|that) customer\b|הלקוח הזה|הלקוחה הזאת|הלקוח הזאת/i;
 const SCOPE_TODAY = /\btoday\b|\bthis morning\b|היום/i;
 
 const TOPICS: { topic: QueryTopic; about: RegExp }[] = [
+  // Customers BARRY is waiting to hear back from ("who is waiting on the customer?", "מי מחכה ללקוח?").
+  { topic: "waiting_customers", about: /\bwaiting (?:on|for) (?:the |a |our )?customers?\b|מחכה ל(?:ה)?לקוח|מחכים ל(?:ה)?לקוח/i },
   // What BARRY noticed on his own (answered only from persisted initiatives).
   { topic: "initiatives", about: /\b(notice[d]?|would you improve|should i (?:look at|improve|change|fix)|losing money|leak\w*|what can i improve|any (?:ideas|suggestions)|spot(?:ted)? anything)\b|מה שמת לב|איפה אני מפסיד/i },
-  { topic: "needs_you", about: /\b(needs? me|need(?:s)? my|waiting (?:on|for) me|my (?:approval|decision)|for me to decide|approvals?|anything urgent|urgent|what should i (?:do|look at))\b|צריך אותי|צריכים אותי|דחוף|מה עליי|מה אני צריך לעשות/i },
+  { topic: "needs_you", about: /\b(needs? me|need(?:s)? my|waiting (?:on|for) me|my (?:approval|decision)|for me to decide|approvals?|anything urgent|urgent|what should i (?:do|look at))\b|צריך אותי|צריכים אותי|דחוף|מה עליי|מה אני צריך לעשות|מי מחכה לי|מה מחכה לי|צריך אישור|צריכים אישור|מחכה לאישור|מחכים לאישור/i },
   { topic: "waiting", about: /\b(what are we waiting (?:on|for)|waiting on|waiting for|what'?s pending|what is pending|outstanding|unresolved)\b|על מה אנחנו מחכים|למה אנחנו מחכים|מה תקוע|מה פתוח|מה ממתין/i },
   { topic: "operation", about: /\b(recovery|operation|campaign|follow[\s-]?ups?) (?:i|you) (?:started|ran|asked)|\bhappened with the (?:recovery|follow[\s-]?ups?|carts?|abandoned)|\bhow (?:is|did) the (?:recovery|follow[\s-]?ups?)\b/i },
-  { topic: "working", about: /\b(working on|are you doing|busy with|in progress|status|what'?s happening|what'?s going on|handling|is barry doing)\b|על מה אתה עובד|מה (?:ברי|בארי|barry|אתה) עושה|במה (?:ברי|אתה) מטפל|מה (?:ברי|אתה) מטפל/i },
   { topic: "money", about: /\b(make|made|earn\w*|revenue|sales|money|collect\w*|paid today|how much|came in|payments?|stuck|awaiting payment|unpaid)\b|כמה (?:הרווחנו|מכרנו|נכנס|כסף)|הכנסות|כסף|תשלומ|שילמו|נכנס היום/i },
+  { topic: "working", about: /\b(working on|are you doing|busy with|in progress|status|what'?s happening|what'?s going on|handling|is barry doing)\b|על מה אתה עובד|מה (?:ברי|בארי|barry|אתה) עושה|במה (?:ברי|אתה) מטפל|מה (?:ברי|אתה) מטפל|^מה קורה(?: היום| עכשיו)?\s*\??$|מה המצב היום/i },
   { topic: "waiting_customers", about: /\b(customers? (?:are )?waiting|who(?:'s| is) waiting|waiting customers|waiting (?:more|longer) than)\b|מחכים/i },
   { topic: "capabilities", about: /\b(what can you do|can you do|capabilit\w+)\b/i },
 ];
@@ -137,6 +151,11 @@ export function interpretCommand(text: string, source: CommandSource = "web"): O
     if (TAKEOVER.test(t)) return { kind: "conversation_takeover", ...(customerHint(t) ? { subject: customerHint(t)! } : {}) };
     if (EXPLAIN.test(t)) return { kind: "approval_explain", ...(customerHint(t) ? { subject: customerHint(t)! } : {}) };
     if (MODE_Q.test(t)) return { kind: "mode_query" };
+    const sw = t.match(MODE_SWITCH);
+    if (sw) {
+      const word = (sw[1] ?? sw[2] ?? sw[3] ?? sw[4] ?? (sw[0].match(/לאוויר|ללייב/) ? "live" : "")).toLowerCase();
+      if (MODE_WORD[word]) return { kind: "mode_switch_request", to: MODE_WORD[word] };
+    }
     if (PAUSE_ALL.test(t) && !QUESTION.test(t)) return { kind: "mode_change", to: "paused" };
     if (RESUME_ALL.test(t) && !QUESTION.test(t)) return { kind: "mode_change", to: "resumed" };
     if (DECLINE_PHRASE.test(t)) return { kind: "approval_response", decision: "decline", ...(customerHint(t) ? { subject: customerHint(t)! } : {}) };
@@ -147,6 +166,8 @@ export function interpretCommand(text: string, source: CommandSource = "web"): O
     if (work && START.test(t) && !QUESTION.test(t)) return { kind: "operation_request", workflow: work, scope: SCOPE_TODAY.test(t) ? "today" : "open" };
     // "What's going on with her?" — the customer in the owner's current context (resolved by the service).
     if (/\b(?:with|about) (?:her|him|them)\b|\b(?:what did|what does) (?:she|he|they) (?:say|want|need)\b|מה קורה (?:איתה|איתו|איתם)|מה (?:היא|הוא) (?:רצתה|רצה|כתבה|כתב|צריכה|צריך)|תן לי (?:הקשר|רקע)|give me (?:the )?context/i.test(t)) return { kind: "query", topic: "customer", ...(customerHint(t) ? { subject: customerHint(t)! } : {}) };
+    if (THIS_CUSTOMER.test(t) && !customerHint(t)) return { kind: "query", topic: "customer" };
+    if (STUCK.test(t) && !MONEY_WORDS.test(t)) return { kind: "query", topic: "waiting" };
     const topic = TOPICS.find((x) => x.about.test(t))?.topic;
     const subject = customerHint(t);
     if (topic === "operation" || (work && (QUESTION.test(t) || /\bhappened\b|\bstatus\b/i.test(t)) && topic !== "money" && topic !== "needs_you")) return { kind: "query", topic: "operation", ...(work ? { workflow: work } : {}) };

@@ -4,7 +4,8 @@ import type { BusinessGraph } from "@/lib/business-graph";
 import { getBackend } from "@/lib/store";
 import { getConversationStore } from "@/lib/state";
 import { hasMoney, moneyWords } from "@/lib/format/money";
-import { whatsappOwnerConfig, whatsappOwnerSender } from "@/lib/channels/whatsapp";
+import { whatsappOwnerReach } from "@/lib/channels/whatsapp";
+import { roleSenders } from "@/lib/channels/role-routing";
 import { linkActive, listOwnerIdentities, maskedIdentity, type OwnerIdentity } from "@/lib/owner-channel/identity";
 import { deliverOwner, type OwnerOutbound, type OwnerSender } from "@/lib/owner-channel/transport";
 import { getOwnerWorkspace } from "./service";
@@ -31,8 +32,16 @@ async function briefs(businessId: string): Promise<BriefRecord[]> {
   return (await getBackend().listOperatorRecords(businessId, "owner_brief")).map((r) => r.data as unknown as BriefRecord);
 }
 
-export function ownerSenderOrUndefined(): OwnerSender | undefined {
-  return whatsappOwnerConfig().configured ? whatsappOwnerSender() : undefined;
+/**
+ * The sender for proactive notices to ONE owner link: from the WhatsApp line that owner last wrote to (WhatsApp's
+ * 24-hour window is per line) — a dedicated owner line or, under identity role routing, the business's shared number.
+ * No separate owner phone_number_id is required. Undefined = no line can reach this owner (recorded as blocked).
+ * The owner ROLE's send mode applies (BARRY_WHATSAPP_SEND), never the founder's.
+ */
+export function ownerSenderFor(businessId: string, link?: Pick<OwnerIdentity, "lineId">): OwnerSender | undefined {
+  const reach = whatsappOwnerReach(businessId);
+  if (!reach.configured) return undefined;
+  return roleSenders.owner(link?.lineId ?? reach.lineId);
 }
 
 /** Deliver one brief to one owner, once per key, only where the channel allows it. */
@@ -40,7 +49,7 @@ async function deliverOnce(businessId: string, link: OwnerIdentity, key: string,
   if ((await briefs(businessId)).some((b) => b.key === key)) return undefined;
   const base = { key, businessId, kind, to: maskedIdentity(link), at: now.toISOString(), text: message.text.slice(0, 600), ...(items ? { items } : {}) };
   let rec: BriefRecord;
-  if (!sender) rec = { ...base, status: "blocked", reason: "BARRY's owner WhatsApp line isn't configured" };
+  if (!sender) rec = { ...base, status: "blocked", reason: "no WhatsApp line reaches this owner (no owner line, and the shared number isn't routed to this business with identity role routing)" };
   else if (!link.lastInboundAt || now.getTime() - Date.parse(link.lastInboundAt) > WINDOW_MS) rec = { ...base, status: "blocked", reason: "outside WhatsApp's 24-hour window — needs an approved message template (not configured)" };
   else {
     const d = await deliverOwner(sender, link.channelUserId, message, now);
@@ -69,7 +78,7 @@ export async function notifyOwnerDecisions(graph: BusinessGraph, opts: { sender?
       if ((await briefs(graph.business.id)).some((b) => b.key === key)) continue;
       const prompt = await approvalPrompt(ws, item.id, link.id, "whatsapp", now);
       if (!prompt) continue;
-      const rec = await deliverOnce(graph.business.id, link, key, "decision", prompt, opts.sender ?? ownerSenderOrUndefined(), now);
+      const rec = await deliverOnce(graph.business.id, link, key, "decision", prompt, opts.sender ?? ownerSenderFor(graph.business.id, link), now);
       if (rec) out.push(rec);
       // The owner just saw this exact request: a short "approve" / "yes" may refer to it (unless they're mid-way through something else).
       if (rec && (rec.status === "sent" || rec.status === "dry_run")) await focusFromNotification(graph.business.id, link.id, ws, item.id, prompt, now).catch(() => undefined);
@@ -91,7 +100,7 @@ export async function notifyFinishedOperations(graph: BusinessGraph, opts: { sen
     if (v.derivedState !== "completed" || !op.startedAt) continue;
     const link = ownerLink(`/owner?tab=today&operation=${encodeURIComponent(op.id)}`, "whatsapp");
     for (const l of to) {
-      const rec = await deliverOnce(graph.business.id, l, `operation_done:${op.id}:${l.id}`, "operation_done", { text: `BARRY finished the ${op.title.toLowerCase()} you started.\n\n${operationSummary(v)}`, ...(link ? { links: [{ label: "See it", href: link }] } : {}) }, opts.sender ?? ownerSenderOrUndefined(), now);
+      const rec = await deliverOnce(graph.business.id, l, `operation_done:${op.id}:${l.id}`, "operation_done", { text: `BARRY finished the ${op.title.toLowerCase()} you started.\n\n${operationSummary(v)}`, ...(link ? { links: [{ label: "See it", href: link }] } : {}) }, opts.sender ?? ownerSenderFor(graph.business.id, l), now);
       if (rec) out.push(rec);
     }
   }
@@ -134,7 +143,7 @@ export async function sendDailyBrief(graph: BusinessGraph, opts: { sender?: Owne
   for (const l of to) {
     const lang = await ownerLang(graph.business.id, l.id, now);
     const text = dailyBriefText(ws, failed, lang)!;
-    const rec = await deliverOnce(graph.business.id, l, `daily:${day}:${l.id}`, "daily", { text, ...(link ? { links: [{ label: L(lang, "Today", "היום"), href: link }] } : {}) }, opts.sender ?? ownerSenderOrUndefined(), now);
+    const rec = await deliverOnce(graph.business.id, l, `daily:${day}:${l.id}`, "daily", { text, ...(link ? { links: [{ label: L(lang, "Today", "היום"), href: link }] } : {}) }, opts.sender ?? ownerSenderFor(graph.business.id, l), now);
     if (rec) out.push(rec);
   }
   return out;
@@ -152,7 +161,7 @@ export async function notifyOwnerAlert(graph: BusinessGraph, key: string, text: 
   const link = opts.conversationId ? ownerLink(`/owner?tab=customers&conversation=${encodeURIComponent(opts.conversationId)}`, "whatsapp") : undefined;
   const out: BriefRecord[] = [];
   for (const l of to) {
-    const rec = await deliverOnce(graph.business.id, l, `alert:${key}:${l.id}`, "alert", { text, ...(link ? { links: [{ label: "Conversation", href: link }] } : {}) }, opts.sender ?? ownerSenderOrUndefined(), now);
+    const rec = await deliverOnce(graph.business.id, l, `alert:${key}:${l.id}`, "alert", { text, ...(link ? { links: [{ label: "Conversation", href: link }] } : {}) }, opts.sender ?? ownerSenderFor(graph.business.id, l), now);
     if (rec) out.push(rec);
   }
   return out;
@@ -163,7 +172,7 @@ async function ownerLang(businessId: string, identityId: string, now: Date): Pro
   return (await loadSession(businessId, identityId, now).catch(() => undefined))?.lang ?? "en";
 }
 
-export type AttentionItem = { key: string; category: "customer_needs_human" | "important_failure" | "money_issue"; customer: string; conversationId: string; en: string; he: string };
+export type AttentionItem = { key: string; category: "customer_needs_human" | "important_failure" | "money_issue" | "system_problem"; customer: string; conversationId: string; en: string; he: string };
 
 /** What the owner should hear about now (V1): a customer needs a person, something important broke, a payment failed. Records only. */
 export function attentionItems(ws: Awaited<ReturnType<typeof getOwnerWorkspace>>): AttentionItem[] {
@@ -177,6 +186,12 @@ export function attentionItems(ws: Awaited<ReturnType<typeof getOwnerWorkspace>>
     if (o.kind !== "payment_failed" || o.simulated) continue;
     const amount = o.amount !== undefined && o.currency ? ` (${moneyWords({ [o.currency]: o.amount })})` : "";
     out.push({ key: `money:${o.id}`, category: "money_issue", customer: o.customer, conversationId: o.conversationId, en: `${o.customer}'s payment failed${amount}`, he: `התשלום של ${o.customer} נכשל${amount}` });
+  }
+  // Something broken for the whole business (once per episode). A failing OWNER channel is not announced over that
+  // same channel (it would fail too) — it stays in "what needs me" on the web and in the founder's incidents.
+  for (const p of ws.problems ?? []) {
+    if (p.kind === "owner_channel") continue;
+    out.push({ key: `problem:${p.key}`, category: "system_problem", customer: "", conversationId: "", en: `${p.what.en} ${p.nextStep.en}`, he: `${p.what.he} ${p.nextStep.he}` });
   }
   return out;
 }
@@ -208,11 +223,11 @@ export async function notifyOwnerAttention(graph: BusinessGraph, opts: { sender?
     const more = fresh.length > 5 ? L(lang, `\n…and ${fresh.length - 5} more.`, `\n…ועוד ${fresh.length - 5}.`) : "";
     const head = fresh.length === 1 ? L(lang, "Heads up:", "לתשומת לבך:") : L(lang, `${fresh.length} things need your attention:`, `${fresh.length} דברים צריכים את תשומת הלב שלך:`);
     const tail = fresh.some((i) => i.category === "customer_needs_human") ? L(lang, "\n\nSay “I'll take it” to take the conversation, or “what needs me?” for everything.", "\n\nכתוב ״אני לוקח את השיחה״ כדי לקחת אותה, או ״מה צריך אותי?״ לכל השאר.") : "";
-    const one = fresh.length === 1 ? fresh[0] : undefined;
+    const one = fresh.length === 1 && fresh[0].conversationId ? fresh[0] : undefined;
     const link = ownerLink(one ? `/owner?tab=customers&conversation=${encodeURIComponent(one.conversationId)}` : "/owner?tab=work", "whatsapp");
     const keys = fresh.map((i) => i.key);
     const key = `attention:${crypto.createHash("sha256").update(keys.join("|")).digest("hex").slice(0, 16)}:${l.id}`;
-    const rec = await deliverOnce(graph.business.id, l, key, "attention", { text: `${head}\n${lines.join("\n")}${more}${tail}`, ...(link ? { links: [{ label: L(lang, one ? "Conversation" : "Work", one ? "שיחה" : "עבודה"), href: link }] } : {}) }, opts.sender ?? ownerSenderOrUndefined(), now, keys);
+    const rec = await deliverOnce(graph.business.id, l, key, "attention", { text: `${head}\n${lines.join("\n")}${more}${tail}`, ...(link ? { links: [{ label: L(lang, one ? "Conversation" : "Work", one ? "שיחה" : "עבודה"), href: link }] } : {}) }, opts.sender ?? ownerSenderFor(graph.business.id, l), now, keys);
     if (rec) out.push(rec);
     // A single customer who needs a person becomes the owner's context ("I'll take it" → that conversation).
     if (rec && one?.category === "customer_needs_human" && (rec.status === "sent" || rec.status === "dry_run")) {

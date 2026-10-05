@@ -326,6 +326,8 @@ export function describeRequest(action: string, input: unknown): string {
     const lines = Array.isArray(raw.lines) ? (raw.lines as { item: string; quantity: number }[]).map((l) => `${l.quantity} × ${l.item}`).join(", ") : "";
     return `a payment link for ${lines ? `${lines}${pct}, ` : ""}${money(raw.amount, raw.currency)} in total${lines ? "" : pct}`;
   }
+  // A cart checkout is priced by the store at the moment it runs: in plain words, never the tool's internal description.
+  if (action === "createCommerceCheckout") return "a payment link for the cart in this conversation";
   return getTool(action)?.description ?? "a request";
 }
 

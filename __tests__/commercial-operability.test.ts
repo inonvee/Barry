@@ -41,7 +41,7 @@ const DAY = 24 * 3600_000;
 const meta = (reason = "test", now = NOW) => ({ by: "founder-test", reason, now });
 let n = 0;
 const bid = () => `t-commercial-${Date.now().toString(36)}-${n++}`;
-const READY_LAUNCH: LaunchGate = { level: "READY_FOR_SUPERVISED_DESIGN_PARTNER", reason: "Every required item has evidence.", items: [{ id: "qa.live_proof", title: "QA / live proof", status: "ready", evidence: "Work verdict passed", responsibility: "founder", requiredForSupervised: true }], requiredRemaining: [], unknown: [] };
+const READY_LAUNCH: LaunchGate = { level: "READY_FOR_SUPERVISED_DESIGN_PARTNER", verdict: "READY_FOR_SUPERVISED", reason: "Every required item has evidence.", items: [{ id: "qa.live_proof", title: "QA / live proof", status: "ready", evidence: "Work verdict passed", responsibility: "founder", requiredForSupervised: true }], requiredRemaining: [], unknown: [] };
 
 describe("CHECKPOINT 2 — plan entitlement vs authority (both must pass; the plan only removes)", () => {
   it("plan denied + authority allowed = UNAVAILABLE; plan allowed + authority denied = DENIED; both allowed = EXECUTABLE", async () => {
