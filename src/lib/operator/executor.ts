@@ -1,3 +1,5 @@
+import { takeoverPending } from "@/lib/channels/human-takeover";
+import { customerSendGate } from "@/lib/channels/business-numbers";
 import { loadEntitlement } from "@/lib/commercial/account";
 import { hasFeature } from "@/lib/commercial/entitlements";
 import type { BusinessGraph } from "@/lib/business-graph";
@@ -147,6 +149,13 @@ export async function runObligationExecutor(graph: BusinessGraph, opts: { now?: 
     if (!conversation) return { key: o.key, kind: o.kind, outcome: "cancelled", why: "the conversation no longer exists" };
     const channel = channelOf(conversation.id);
     if (humanHolds(conversation) && o.kind !== "unresolved_handoff") return { key: o.key, kind: o.kind, outcome: "skipped", why: "a person holds this conversation; BARRY stays quiet" };
+    // A team member's takeover waiting to be applied (e.g. they just replied from the WhatsApp Business app) wins too,
+    // and so does a business number that isn't safe to send on. Fails safe: unreadable → skipped.
+    if (o.kind !== "unresolved_handoff" && (await takeoverPending(conversation).catch(() => true))) return { key: o.key, kind: o.kind, outcome: "skipped", why: "a team member just took this conversation; BARRY stays quiet" };
+    if (channel === "whatsapp") {
+      const gate = await customerSendGate(businessId).catch(() => ({ allowed: false as const, reason: "the WhatsApp number state couldn't be read" }));
+      if (!gate.allowed) return { key: o.key, kind: o.kind, outcome: "skipped", why: `not sent: ${gate.reason}` };
+    }
     const lang = resolveReplyLanguage({ customerMessages: conversation.messages.filter((m) => m.role === "customer").map((m) => m.content), stored: conversation.knownFields[SCRATCH_KEYS.conversationLanguage], businessLocale: graph.business.locale }).code;
     const text = followUpText(o.kind, o, lang);
     if (!text) return { key: o.key, kind: o.kind, outcome: "skipped", why: "no customer-facing follow-up exists for this kind; it stays on the owner's list" };

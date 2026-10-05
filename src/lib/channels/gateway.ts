@@ -1,3 +1,5 @@
+import { applyPendingTakeovers, takeoverBlocksSend } from "./human-takeover";
+import { customerSendGate, markTokenExpired } from "./business-numbers";
 import { channelDisabled, loadControls } from "@/lib/hq/controls";
 import { replyGate } from "@/lib/runtime/operating-mode";
 import { recordUnsupportedMedia } from "./media";
@@ -230,6 +232,9 @@ async function processInboxRow(start: InboxRow, businessId: string, sender: Outb
         });
       }
       row = await inbox.update(row.id, { status: "processing", attempts: row.attempts + 1 }, row.status);
+      // A person's takeover that arrived first (e.g. an employee's WhatsApp reply) is applied BEFORE BARRY reasons.
+      if (row.channel === "whatsapp") await applyPendingTakeovers(businessId, row.conversationId, row.customerId);
+      await gatewayHook("beforeReasoning", row.conversationId);
       // Media BARRY can't read: no model call — the message is kept and answered honestly (or held for a person).
       if (typeof row.meta.mediaType === "string") {
         const media = await recordUnsupportedMedia(graph, { conversationId: row.conversationId, customerId: row.customerId, inboundId: row.providerMessageId, type: row.meta.mediaType, caption: typeof row.meta.caption === "string" ? row.meta.caption : undefined, receivedAt: row.receivedAt });
@@ -265,6 +270,17 @@ async function processInboxRow(start: InboxRow, businessId: string, sender: Outb
     }
   }
 
+  // The employee wins: right before anything leaves, re-check who holds the conversation (a person may have taken it
+  // while BARRY was thinking — e.g. a team member replied from the WhatsApp Business app) and whether the business's
+  // number is safe to send on. If not, the prepared reply is SUPPRESSED: recorded truthfully, never sent, never retried.
+  await gatewayHook("beforeSend", row.conversationId);
+  const block = await sendBlockedReason(row, businessId);
+  if (block) {
+    await applyPendingTakeovers(businessId, row.conversationId, row.customerId).catch(() => undefined);
+    await recordDelivery(row.conversationId, { at: new Date().toISOString(), channel: sender.channel, inboundId: row.providerMessageId, status: "suppressed", ...(row.replyAt ? { messageAt: row.replyAt } : {}), error: block });
+    await inbox.update(row.id, { status: "skipped", error: `not sent: ${block}` }, "reply_ready");
+    return;
+  }
   // Send — at most once. "sending" is persisted BEFORE the provider call.
   const text = row.reply ?? "";
   await inbox.update(row.id, { status: "sending" }, "reply_ready");
@@ -275,6 +291,9 @@ async function processInboxRow(start: InboxRow, businessId: string, sender: Outb
   } catch (err) {
     delivery = { at: new Date().toISOString(), channel: sender.channel, inboundId: row.providerMessageId, status: "failed", ...(row.replyAt ? { messageAt: row.replyAt } : {}), error: err instanceof Error ? err.message.slice(0, 200) : "send failed" };
   }
+  // Meta refused BARRY's access for this business's own number (401 / 190): mark the number so nothing else is tried
+  // until it's reconnected (the owner and founder see it), instead of failing customer after customer.
+  if (delivery.status === "failed" && /\(401\b|\/ 190\)/.test(delivery.error ?? "")) await markTokenExpired(businessId, delivery.error ?? "").catch(() => undefined);
   // The conversation's record first (what the owner sees), then the inbox stage. If either write fails,
   // the row stays "sending": a retry finishes from the conversation's record or says "unknown" — never re-sends.
   try {
@@ -283,6 +302,35 @@ async function processInboxRow(start: InboxRow, businessId: string, sender: Outb
   } catch (err) {
     console.error("[barry:channel] delivery bookkeeping failed after the send; it will be reconciled, never re-sent", { conversationId: row.conversationId, error: err instanceof Error ? err.message : err });
   }
+}
+
+/** Why BARRY must not send this reply right now (undefined = it may). Fails safe: an unreadable state blocks. */
+async function sendBlockedReason(row: InboxRow, businessId: string): Promise<string | undefined> {
+  const t = await takeoverBlocksSend(row.conversationId).catch(() => ({ blocked: true, reason: "who holds this conversation couldn't be confirmed" }));
+  if (t.blocked) return t.reason;
+  if (row.channel === "whatsapp") {
+    const gate = await customerSendGate(businessId).catch(() => ({ allowed: false as const, reason: "the business's WhatsApp number state couldn't be read" }));
+    if (!gate.allowed) return gate.reason;
+  }
+  return undefined;
+}
+
+// ── QA / test hooks: deterministic race points (scoped to ONE conversation; no effect on any other) ──────────
+type GatewayHookPoint = "beforeReasoning" | "beforeSend";
+const hooks = new Map<string, Partial<Record<GatewayHookPoint, () => Promise<void>>>>();
+/** Run a function at a race point of ONE conversation's turn (tests and the Preview acceptance only). Returns the remover. */
+export function setGatewayHookForConversation(conversationId: string, point: GatewayHookPoint, fn: () => Promise<void>): () => void {
+  hooks.set(conversationId, { ...(hooks.get(conversationId) ?? {}), [point]: fn });
+  return () => {
+    const h = { ...(hooks.get(conversationId) ?? {}) };
+    delete h[point];
+    if (Object.keys(h).length) hooks.set(conversationId, h);
+    else hooks.delete(conversationId);
+  };
+}
+async function gatewayHook(point: GatewayHookPoint, conversationId: string): Promise<void> {
+  const fn = hooks.get(conversationId)?.[point];
+  if (fn) await fn();
 }
 
 async function recordDelivery(conversationId: string, d: DeliveryRecord): Promise<void> {

@@ -7,6 +7,7 @@ import { currentRelease, type ReleaseState } from "@/lib/release/manifest";
 import { listSources } from "@/lib/learn-business/sources";
 import { listLearningChanges } from "@/lib/learn-business/relearn";
 import { whatsappOwnerReach } from "@/lib/channels/whatsapp";
+import { customerWhatsappState } from "@/lib/channels/business-numbers";
 import { linkActive, listOwnerIdentities, maskedIdentity } from "@/lib/owner-channel/identity";
 import { loadBusinessProblems } from "@/lib/owner/problems";
 
@@ -66,6 +67,14 @@ export async function launchChecklist(graph: BusinessGraph, input: { controls: B
   items.push(fromCheck("knowledge.policies", "Business understanding: policies & FAQs", "owner", true));
   items.push(fromCheck("platform.owner_access", "Owner access (own token, limited to this business)", "barry_team", true));
   items.push(fromCheck("channel.configured", "Customer channel (WhatsApp) routed", "barry_team", true));
+  // The business's CUSTOMER WhatsApp number and how it coexists with the team's own WhatsApp use.
+  const cw = await customerWhatsappState(graph.business.id).catch(() => null);
+  const cwWords: Record<string, string> = { CONNECTED_WITH_HUMAN_COEXISTENCE: "connected — BARRY sees the team's own WhatsApp replies (coexistence verified)", CONNECTED_API_ONLY: "connected through BARRY only — replies sent from the WhatsApp Business app are NOT visible to BARRY", CONNECTED: "routed by the deployment (coexistence not set up)", BLOCKED_DISCONNECTED: cw?.number ? `not usable: ${cw.number.status.replace(/_/g, " ")}${cw.number.statusReason ? ` — ${cw.number.statusReason}` : ""}` : "no customer WhatsApp number is connected" };
+  items.push({ id: "channel.customer_whatsapp", title: `Customer WhatsApp number: ${cw?.state ?? "UNKNOWN"}`, status: !cw ? "unknown" : cw.state === "BLOCKED_DISCONNECTED" ? "blocked" : "ready", evidence: cw ? cwWords[cw.state] : "the number's state couldn't be read", ...(cw?.state === "BLOCKED_DISCONNECTED" ? { blocker: cwWords[cw.state], nextAction: "Connect (or reconnect) the business's WhatsApp number through Meta onboarding." } : {}), responsibility: "barry_team", requiredForSupervised: true });
+  // Safe human takeover: if the team keeps replying from the WhatsApp Business app, BARRY must be able to SEE it.
+  const team = cw?.number?.teamRepliesInApp;
+  const takeover: LaunchItem["status"] = team === false ? "ready" : team === true ? (cw?.state === "CONNECTED_WITH_HUMAN_COEXISTENCE" ? "ready" : "blocked") : "unknown";
+  items.push({ id: "channel.team_takeover", title: "BARRY steps out when the team replies from WhatsApp", status: takeover, evidence: team === false ? "the owner confirmed the team doesn't reply to customers from the WhatsApp Business app" : team === true ? (takeover === "ready" ? "the team replies from the WhatsApp Business app, and BARRY sees those replies (verified)" : "the team replies from the WhatsApp Business app, but BARRY can't see those replies — it would talk over them") : "the owner hasn't said whether the team also replies from the WhatsApp Business app", ...(takeover !== "ready" ? { blocker: team === true ? "Team replies from the app are invisible to BARRY." : "Unknown whether the team replies from the app.", nextAction: team === true ? "Onboard the number with WhatsApp coexistence and send one message from the app to verify — or agree that the team stops replying from the app." : "The owner answers in Settings: does the team keep replying from the WhatsApp Business app?" } : {}), responsibility: team === true ? "barry_team" : "owner", requiredForSupervised: true });
   // Owner WhatsApp: a line reaches the owner (dedicated, or the shared number with identity role routing) and the
   // owner has linked their own number (a verified, active link — never a synthetic QA number).
   const reach = whatsappOwnerReach(graph.business.id);

@@ -9,6 +9,7 @@ import { OwnerControlError, ownerReply, ownerReturnToBarry, ownerTakeOver } from
 import { isContextRecordKey, loadSession, saveSession, type OwnerSession } from "./session";
 import { draftCustomerReply, interpretWithModel } from "./command-llm";
 import { problemText } from "./problems";
+import { TEAM_MEMBER } from "@/lib/channels/human-takeover";
 import { isSyntheticNumber } from "@/lib/qa/synthetic";
 import { readControl } from "@/lib/runtime/control";
 import { listJobRuns } from "@/lib/background/runner";
@@ -217,14 +218,30 @@ async function answerQuery(intent: Extract<CommandIntent, { kind: "query" }>, ws
       const state = await getConversationStore().get(c.id);
       const story = state ? (await import("./story")).conversationStory(state, lang) : undefined;
       const lastSaid = state ? [...state.messages].reverse().find((x) => x.role === "customer") : undefined;
-      const holder = state ? readControl(state).holder : "barry";
-      const lines = [`${c.customer} — ${(lang === "he" ? STATUS_WORDS_HE : STATUS_WORDS)[c.status]}${holder === "human" ? T(" (you hold this conversation)", " (השיחה אצלך)") : ""}`, ...(story?.standing.slice(0, 2) ?? []), ...(lastSaid ? [T(`Last from them: “${lastSaid.content.slice(0, 160)}”`, `ההודעה האחרונה שלהם: “${lastSaid.content.slice(0, 160)}”`)] : []), payment, ...needs];
+      const control = state ? readControl(state) : undefined;
+      const holder = control?.holder ?? "barry";
+      const why = control && holder === "human" ? whoHolds(control, ctx.graph.business.timezone, lang) : "";
+      const lines = [`${c.customer} — ${(lang === "he" ? STATUS_WORDS_HE : STATUS_WORDS)[c.status]}`, ...(why ? [why] : []), ...(story?.standing.slice(0, 2) ?? []), ...(lastSaid ? [T(`Last from them: “${lastSaid.content.slice(0, 160)}”`, `ההודעה האחרונה שלהם: “${lastSaid.content.slice(0, 160)}”`)] : []), payment, ...needs];
       return { text: lines.join("\n"), links: links(ctx.source, [{ label: T("Open conversation", "לפתוח את השיחה"), path: `/owner?tab=customers&conversation=${encodeURIComponent(c.id)}` }]) };
     }
     case "operation": {
       const op = ops.find((o) => !intent.workflow || o.workflow === intent.workflow);
       if (!op) return { text: intent.workflow ? T(`You haven't started ${operationTitle(intent.workflow).command.toLowerCase()} yet. Tell me to, and I'll show you exactly who it would reach first.`, `עוד לא התחלת ${proactiveWords(intent.workflow, "he").command}. תגיד לי, ואראה לך קודם בדיוק למי זה יגיע.`) : T("You haven't started anything from a command yet.", "עוד לא התחלת שום דבר מפקודה.") };
       return { text: operationSummary(op, lang), links: links(ctx.source, [{ label: T("See it live", "לראות בזמן אמת"), path: `/owner?tab=work&operation=${encodeURIComponent(op.id)}` }]) };
+    }
+    case "with_team": {
+      // Conversations a person holds right now (a team member who replied from WhatsApp, the owner, or a handoff).
+      const rows = ws.conversations.filter((c) => c.attention.includes("handoff_open"));
+      const held: string[] = [];
+      for (const c of rows.slice(0, 8)) {
+        const st = await getConversationStore().get(c.id);
+        if (!st) continue;
+        const control = readControl(st);
+        if (control.holder !== "human") continue;
+        held.push(`• ${c.customer} — ${whoHolds(control, ctx.graph.business.timezone, lang)}`);
+      }
+      if (!held.length) return { text: T("No conversation is with you or your team right now — BARRY is handling every one.", "אין כרגע שיחה אצלך או אצל הצוות — BARRY מטפל בכולן.") };
+      return { text: `${T(`With you or your team (${held.length}) — BARRY stays quiet there:`, `אצלך או אצל הצוות (${held.length}) — שם BARRY לא עונה:`)}\n${held.join("\n")}\n\n${T("Say “give the conversation with <name> back to BARRY” when it should continue.", "כתוב ״תחזיר את השיחה עם <שם> לברי״ כשהוא צריך להמשיך.")}`, links: links(ctx.source, [{ label: T("Customers", "לקוחות"), path: "/owner?tab=customers" }]) };
     }
     case "capabilities": {
       if (lang === "he") {
@@ -242,6 +259,15 @@ async function answerQuery(intent: Extract<CommandIntent, { kind: "query" }>, ws
       return { text: ctx.source === "web" ? a.answer : a.answer.slice(0, 1500), links: a.links.interventions[0] ? links(ctx.source, [{ label: T(`Decide: ${a.links.interventions[0].customer}`, `להחליט: ${a.links.interventions[0].customer}`), path: `/owner?tab=work&intervention=${encodeURIComponent(a.links.interventions[0].id)}` }]) : undefined };
     }
   }
+}
+
+/** Who holds a conversation and why, in plain words (never internal terms). */
+function whoHolds(control: ReturnType<typeof readControl>, timezone: string, lang: OwnerLang): string {
+  const T = (en: string, he: string) => L(lang, en, he);
+  const at = control.since ? new Intl.DateTimeFormat(lang === "he" ? "he-IL" : "en-GB", { timeZone: timezone, hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" }).format(new Date(control.since)) : "";
+  if (control.by === TEAM_MEMBER) return T(`a team member replied from your WhatsApp${at ? ` (${at})` : ""}, so BARRY stepped out and isn't answering. Their messages are kept.`, `מישהו מהצוות ענה מהוואטסאפ של העסק${at ? ` (${at})` : ""}, אז BARRY יצא מהשיחה ולא עונה. ההודעות נשמרות.`);
+  if (/^(?:the )?owner\b/i.test(control.by)) return T(`you took this conversation${at ? ` (${at})` : ""} — BARRY isn't answering until you give it back.`, `לקחת את השיחה הזאת${at ? ` (${at})` : ""} — BARRY לא עונה עד שתחזיר אותה.`);
+  return T(`BARRY handed this to a person${at ? ` (${at})` : ""}: ${control.reason || "the customer needed a person"} — BARRY isn't answering until it's given back.`, `BARRY העביר את השיחה לאדם${at ? ` (${at})` : ""} — הוא לא עונה עד שיחזירו לו אותה.`);
 }
 
 // ── The owner's context (what "yes" / "send it" / "give it back" refer to) ───────────────────────

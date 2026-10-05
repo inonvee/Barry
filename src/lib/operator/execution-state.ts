@@ -48,7 +48,8 @@ export function executionStateOf(status: string | undefined): ExecutionState | u
 /** Where a conversation keeps the delivery result of each outbound message (replies and follow-ups). */
 export const CHANNEL_DELIVERY_KEY = "__channelDelivery";
 
-export type DeliveryStatus = "sent" | "dry_run" | "failed";
+/** suppressed: BARRY prepared a reply but did NOT send it — a person took the conversation first (or the channel was not safe to send on). */
+export type DeliveryStatus = "sent" | "dry_run" | "failed" | "suppressed";
 
 /** The minimal shape every delivery record has (see channels/gateway DeliveryRecord). */
 type DeliveryLike = { at: string; inboundId: string; status: DeliveryStatus; messageAt?: string };
@@ -78,8 +79,8 @@ const instant = (iso: string) => {
  *    attempt's time, so an attempt-id delivery's own `at` identifies its message.
  * Legacy channel replies without `messageAt` can't be matched to a message and are left as they were.
  */
-export function undeliveredMessages(knownFields: Record<string, string>): Map<string, "dry_run" | "failed"> {
-  const out = new Map<string, "dry_run" | "failed">();
+export function undeliveredMessages(knownFields: Record<string, string>): Map<string, "dry_run" | "failed" | "suppressed"> {
+  const out = new Map<string, "dry_run" | "failed" | "suppressed">();
   for (const d of readDeliveryList(knownFields)) {
     if (d.status === "sent") continue;
     const at = d.messageAt ?? (isAttemptId(d.inboundId) ? d.at : undefined);
@@ -88,7 +89,7 @@ export function undeliveredMessages(knownFields: Record<string, string>): Map<st
   return out;
 }
 
-export type TranscriptMessage = ConversationState["messages"][number] & { notSent?: "dry_run" | "failed" };
+export type TranscriptMessage = ConversationState["messages"][number] & { notSent?: "dry_run" | "failed" | "suppressed" };
 
 /** The transcript as it truly happened: every message, with BARRY's undelivered ones marked (never presented as said). */
 export function truthfulTranscript(state: Pick<ConversationState, "messages" | "knownFields">): TranscriptMessage[] {

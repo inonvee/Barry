@@ -35,7 +35,7 @@ import { PROACTIVE, workflowState, workflows } from "./control-room";
 
 export type CommandSource = "web" | "whatsapp" | "voice";
 
-export type QueryTopic = "initiatives" | "needs_you" | "working" | "money" | "waiting_customers" | "waiting" | "customer" | "operation" | "capabilities" | "general";
+export type QueryTopic = "initiatives" | "needs_you" | "working" | "money" | "waiting_customers" | "waiting" | "customer" | "operation" | "capabilities" | "with_team" | "general";
 /** A money question's focus: totals (default), money stuck / at risk, links awaiting payment, what failed. */
 export type MoneyFocus = "stuck" | "awaiting" | "failed";
 
@@ -84,6 +84,10 @@ const DECLINE_PHRASE = /^(?:please\s+)?(?:don'?t (?:do it|approve(?: it)?|do tha
 const EXPLAIN = /\b(what(?:'s| is) (?:this|that|it|the (?:approval|request)) (?:approval |request )?for|why (?:does|do) (?:it|this|that|they) need (?:me|my approval)|explain (?:it|this|that|the request)|what am i approving|what (?:would|will) (?:happen|it do) if i approve)\b|^(?:מה זה|למה (?:צריך אותי|זה צריך אישור)|על מה (?:האישור|הבקשה)|מה יקרה אם אאשר|תסביר)/i;
 const MODE_Q = /\b(what mode|which mode|are you (?:paused|running|live|on)|is barry (?:paused|running|live|on)|(?:current|operating) mode)\b|באיזה מצב|מה המצב של (?:ברי|barry)|(?:ברי|barry) (?:מושהה|עובד)\?/i;
 const TAKEOVER = /\b(i'?ll (?:take|handle|answer) (?:it|this|her|him|them|the conversation|over)|let me (?:take|handle|answer) (?:it|this|her|him|them|the conversation|over)|take over|i(?:'m| am) taking (?:it|this|over|the conversation))\b|אני לוקח|אני לוקחת|אקח את השיחה|אני אענה|תן לי (?:את השיחה|לענות)/i;
+// "Give it back to BARRY" in Hebrew, with "this conversation" or "the conversation with <name>" in between.
+const GIVEBACK_HE = /^(?:תחזיר|תחזירי|להחזיר)\s+(?:את\s+)?(?:השיחה\s+)?(?:הזאת\s+|הזו\s+|עם\s+(\S+)\s+)?ל(?:ברי|בארי|barry)(?:$|[\s.!?])/i;
+// Conversations a person (the owner or a team member) holds right now.
+const WITH_TEAM = /אצל\s+(?:עובד|עובדת|העובד|הצוות|צוות)|ויתר\s+ל(?:עובד|עובדת|צוות)|(?:עובד|עובדת)\s+(?:לקח|לקחה|ענה|ענתה)|\bwith (?:the |my |a )?(?:team|staff|employee)s?\b|\b(?:handed|gave) (?:over )?to (?:the |a )?(?:team|staff|employee)s?\b|\bwho(?:'s| is) (?:handling|holding) (?:which|what) conversations?\b|\bwhich conversations (?:are|is) (?:with|held by) (?:a |the )?(?:person|people|team|staff)\b/i;
 const GIVEBACK = /\b(give (?:it|this|her|him|them|the conversation)? ?back to barry|hand (?:it|this|her|him|them)? ?back(?: to barry)?|barry can (?:take it|continue|take over)|return (?:it|this|the conversation) to barry|back to barry)\b|תחזיר (?:את השיחה )?ל(?:ברי|barry)|ברי (?:ימשיך|יכול להמשיך)|תחזיר לו את השיחה/i;
 // "tell her that…", "reply to Dana: …", "תענה לה ש…", "תגיד לדנה ש…"
 const REPLY_EN = /^(?:please\s+)?(?:tell|reply to|answer|text|message|write to|send)\s+(her|him|them|[A-Z\u0590-\u05FF][\p{L}'-]{1,30})\s*(?::\s*(.+)|(?:that\s+)?(.+))$/iu;
@@ -97,7 +101,7 @@ const MODE_WORD: Record<string, "supervised" | "live" | "simulator"> = { live: "
 const STUCK = /\b(?:anything|something|what(?:'s| is)?)\s+(?:stuck|blocked)\b|\bstuck\b\??$|תקוע|תקועים|נתקע/i;
 const MONEY_WORDS = /\b(money|payments?|paid|pay|revenue|sales)\b|כסף|תשלומ|שולם|שילמ/i;
 // "Why is this customer waiting?" / "למה הלקוח הזה מחכה?" — the customer in the owner's current context.
-const THIS_CUSTOMER = /\b(?:this|that) customer\b|הלקוח הזה|הלקוחה הזאת|הלקוח הזאת/i;
+const THIS_CUSTOMER = /\b(?:this|that) customer\b|(?:ה|ל|ל?ה)לקוח הזה|(?:ה|ל|ל?ה)לקוחה הזאת/i;
 const SCOPE_TODAY = /\btoday\b|\bthis morning\b|היום/i;
 
 const TOPICS: { topic: QueryTopic; about: RegExp }[] = [
@@ -147,7 +151,10 @@ export function interpretCommand(text: string, source: CommandSource = "web"): O
       const body = (replyHe[2] ?? replyHe[3] ?? replyHe[4] ?? "").trim();
       if (body) return { kind: "conversation_reply", ...(/^(ה|ו|הם|הן)$/.test(who) ? {} : { subject: who }), text: body.slice(0, 1000), exact: Boolean(replyHe[2]) };
     }
+    const heBack = t.match(GIVEBACK_HE);
+    if (heBack) return { kind: "conversation_giveback", ...(heBack[1] ? { subject: heBack[1] } : {}) };
     if (GIVEBACK.test(t)) return { kind: "conversation_giveback", ...(customerHint(t) ? { subject: customerHint(t)! } : {}) };
+    if (WITH_TEAM.test(t)) return { kind: "query", topic: "with_team" };
     if (TAKEOVER.test(t)) return { kind: "conversation_takeover", ...(customerHint(t) ? { subject: customerHint(t)! } : {}) };
     if (EXPLAIN.test(t)) return { kind: "approval_explain", ...(customerHint(t) ? { subject: customerHint(t)! } : {}) };
     if (MODE_Q.test(t)) return { kind: "mode_query" };

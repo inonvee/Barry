@@ -9,6 +9,8 @@ import { processOwnerInbound } from "@/lib/owner-channel/gateway";
 import { notifyOwnerAlert, notifyOwnerAttention, notifyOwnerDecisions } from "@/lib/owner/briefs";
 import { mediaAlertText } from "@/lib/channels/media";
 import { resolveBusinessGraph } from "@/lib/business-graph-repository";
+import { customerRoutes } from "@/lib/channels/business-numbers";
+import { handleEchoes } from "@/lib/channels/human-takeover";
 
 /**
  * WhatsApp Cloud API webhook. GET = Meta's subscription handshake; POST = signed events.
@@ -37,7 +39,12 @@ export async function POST(req: NextRequest) {
   } catch {
     return Response.json({ error: "Invalid payload" }, { status: 400 });
   }
-  const parsed = parseWebhook(body, cfg.routes);
+  // The deployment's routes plus every durable business customer number (no redeploy per business; conflicts dropped).
+  const routes = await customerRoutes().catch(() => cfg.routes);
+  const parsed = parseWebhook(body, routes);
+  // Coexistence echoes FIRST: a team member's reply from the WhatsApp Business app takes the conversation before any
+  // BARRY reply in this (or a concurrent) delivery can leave. The signal is durable before anything else runs.
+  const echoes = parsed.echoes.length ? await handleEchoes(parsed.echoes) : { results: [], retry: false };
   // SINGLE-NUMBER ROLE ROUTING (BARRY_WHATSAPP_ROLE_ROUTING=identity): the VERIFIED SENDER decides — founder link →
   // Founder BARRY, owner link of this line's business → Owner BARRY, everyone else → the customer flow. Each role
   // replies with its OWN sender (founder: BARRY_WHATSAPP_FOUNDER_SEND; owner: BARRY_WHATSAPP_OWNER_SEND; customer:
@@ -97,10 +104,10 @@ export async function POST(req: NextRequest) {
   if (parsed.unrouted.length) console.warn("[barry:whatsapp] message for an unrouted number", { count: parsed.unrouted.length });
   if (parsed.unsupported.length) console.warn("[barry:whatsapp] unsupported message types", parsed.unsupported.map((u) => u.type));
   for (const s of parsed.statuses) if (s.status === "failed") console.warn("[barry:whatsapp] delivery failed", { error: s.error });
-  const summary = { roles: roleResults, received: parsed.messages.length, processed: results.filter((r) => r.status === "processed").length, duplicates: results.filter((r) => r.status === "duplicate").length, queued: results.filter((r) => r.status === "queued").length, owner: [...ownerResults.map((r) => r.status), ...roleResults.filter((r) => r.role === "owner").map((r) => r.status)], founder: [...founderResults.map((r) => r.status), ...roleResults.filter((r) => r.role === "founder").map((r) => r.status)] };
+  const summary = { echoes: echoes.results.map((r) => ({ status: r.status, applied: Boolean(r.applied) })), roles: roleResults, received: parsed.messages.length, processed: results.filter((r) => r.status === "processed").length, duplicates: results.filter((r) => r.status === "duplicate").length, queued: results.filter((r) => r.status === "queued").length, owner: [...ownerResults.map((r) => r.status), ...roleResults.filter((r) => r.role === "owner").map((r) => r.status)], founder: [...founderResults.map((r) => r.status), ...roleResults.filter((r) => r.role === "founder").map((r) => r.status)] };
   // A message that couldn't be processed yet (its conversation was busy, or a retryable failure with
   // nothing sent) asks Meta to deliver again: the inbox deduplicates every retry, so nothing runs twice
   // and nothing is sent twice. Everything else is acknowledged (failures are recorded per conversation).
-  if (results.some((r) => (r.status === "queued" || r.status === "failed") && "retry" in r && r.retry)) return Response.json({ ...summary, retry: true }, { status: 500 });
+  if (echoes.retry || results.some((r) => (r.status === "queued" || r.status === "failed") && "retry" in r && r.retry)) return Response.json({ ...summary, retry: true }, { status: 500 });
   return Response.json(summary);
 }

@@ -147,6 +147,9 @@ type WaPayload = {
         contacts?: { wa_id?: string; profile?: { name?: string } }[];
         messages?: { id?: string; from?: string; timestamp?: string; type?: string; text?: { body?: string }; image?: { caption?: string }; video?: { caption?: string }; document?: { caption?: string; filename?: string }; interactive?: { type?: string; button_reply?: { id?: string; title?: string }; list_reply?: { id?: string; title?: string } }; button?: { payload?: string; text?: string } }[];
         statuses?: { id?: string; status?: string; recipient_id?: string; errors?: { code?: number; title?: string }[] }[];
+        /** Coexistence (field "smb_message_echoes"): messages the BUSINESS sent from the WhatsApp Business app or a
+         *  supported linked device. Cloud API sends are not echoed. `from` = the business number, `to` = the customer. */
+        message_echoes?: { from?: string; to?: string; id?: string; timestamp?: string; type?: string; text?: { body?: string }; image?: { caption?: string }; video?: { caption?: string }; document?: { caption?: string } }[];
       };
     }[];
   }[];
@@ -173,15 +176,37 @@ export type ParsedWebhook = {
   owner: OwnerInbound[];
   /** Messages to BARRY's FOUNDER line — the founder command channel only (never a customer or owner path). */
   founder: OwnerInbound[];
+  /** Coexistence echoes: a message the business itself sent to a customer from the WhatsApp Business app (a person). */
+  echoes: BusinessEcho[];
 };
+
+/** A message the business sent from the WhatsApp Business app / a supported linked device, observed via smb_message_echoes. */
+export type BusinessEcho = { lineId: string; businessId: string; messageId: string; customer: string; at: string; type: string; text?: string };
 
 /** Normalize a verified webhook payload. Pure: no I/O. */
 export function parseWebhook(body: unknown, routes = whatsappConfig().routes, ownerNumbers: string[] = whatsappOwnerConfig().numbers, founderNumbers: string[] = whatsappFounderConfig().numbers): ParsedWebhook {
-  const out: ParsedWebhook = { messages: [], unrouted: [], unsupported: [], statuses: [], owner: [], founder: [] };
+  const out: ParsedWebhook = { messages: [], unrouted: [], unsupported: [], statuses: [], owner: [], founder: [], echoes: [] };
   const payload = body as WaPayload;
   if (payload?.object !== "whatsapp_business_account") return out;
   for (const entry of payload.entry ?? []) {
     for (const change of entry.changes ?? []) {
+      // Coexistence echoes (documented field "smb_message_echoes"): only on a ROUTED customer number — the business is
+      // the line's business, never inferred from the message. Anything incomplete is ignored (never guessed).
+      if (change.field === "smb_message_echoes" && change.value) {
+        const lineId = change.value.metadata?.phone_number_id ?? "";
+        const businessId = routes[lineId];
+        if (!businessId) {
+          if (lineId) out.unrouted.push(lineId);
+          continue;
+        }
+        for (const e of change.value.message_echoes ?? []) {
+          const customer = e.to?.replace(/\D/g, "");
+          if (!e.id || !customer || !e.timestamp || !Number.isFinite(Number(e.timestamp))) continue;
+          const text = e.type === "text" ? e.text?.body?.trim() : (e.image?.caption ?? e.video?.caption ?? e.document?.caption)?.trim();
+          out.echoes.push({ lineId, businessId, messageId: e.id, customer, at: new Date(Number(e.timestamp) * 1000).toISOString(), type: e.type ?? "unknown", ...(text ? { text: text.slice(0, 2000) } : {}) });
+        }
+        continue;
+      }
       if (change.field !== "messages" || !change.value) continue;
       const phoneNumberId = change.value.metadata?.phone_number_id ?? "";
       const businessId = routes[phoneNumberId];
@@ -269,6 +294,12 @@ function graphSendAttempt(role: GraphSendAttempt["role"], to: string): void {
   if (blocked) throw new Error("WhatsApp send blocked by an acceptance guard (synthetic recipient) — nothing was sent");
 }
 
+let durableCustomerRoutes: Record<string, string> = {};
+/** Set by lib/channels/business-numbers whenever durable customer numbers are loaded (phone_number_id → business). */
+export function setDurableCustomerRoutes(routes: Record<string, string>): void {
+  durableCustomerRoutes = routes;
+}
+
 /** Sends a text reply through the Graph API — only in live mode, only with a routed number. */
 export function whatsappSender(fetchImpl: typeof fetch = fetch, opts: { mode?: "live" | "dry_run"; role?: "customer" | "owner" } = {}): OutboundSender {
   const cfg = whatsappConfig();
@@ -276,7 +307,8 @@ export function whatsappSender(fetchImpl: typeof fetch = fetch, opts: { mode?: "
     channel: "whatsapp",
     mode: opts.mode ?? cfg.sendMode,
     async send(to, text, context) {
-      const phoneNumberId = Object.entries(cfg.routes).find(([, b]) => b === context.businessId)?.[0];
+      // The business's own customer number (durable connection) first, else the deployment's route.
+      const phoneNumberId = Object.entries(durableCustomerRoutes).find(([, b]) => b === context.businessId)?.[0] ?? Object.entries(cfg.routes).find(([, b]) => b === context.businessId)?.[0];
       const token = process.env.WHATSAPP_ACCESS_TOKEN;
       if (!phoneNumberId || !token) throw new Error("WhatsApp sending is not configured for this business");
       graphSendAttempt(opts.role ?? "customer", to);
