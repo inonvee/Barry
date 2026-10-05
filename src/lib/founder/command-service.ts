@@ -352,6 +352,23 @@ export async function executeFounderCommand(input: FounderCommandInput): Promise
     }
     if (usedContext) record.followUpOf = previous.key;
   }
+
+  // A read-only follow-up may refer to the one business BARRY just surfaced in a fleet answer.
+  // Only structured HQ item links are trusted, and implicit focus is never carried into controls or proposals.
+  if (!resolution.matched.length && !resolution.ambiguous.length && previous?.scope.kind === "fleet" && intent.family === "unsupported") {
+    const ids = [...new Set(previous.items.map((item) => item.href?.split("?")[0]?.split("/").filter(Boolean).at(-1)).filter((id): id is string => Boolean(id) && directory.some((d) => d.id === id)))];
+    if (ids.length === 1) {
+      const ctx = directory.find((d) => d.id === ids[0]);
+      const contextual = interpretFounder(text, { hasBusiness: true });
+      if (ctx && contextual.family === "business_inspect") {
+        resolution = { matched: [ctx], ambiguous: [] };
+        intent = contextual;
+        usedContext = true;
+        record.followUpOf = previous.key;
+      }
+    }
+  }
+
   if (intent.family === "unsupported" && intent.reason === UNSUPPORTED_HELP && input.interpreter) {
     const raw = await input.interpreter(text).catch(() => undefined);
     const fromModel = intentFromModel(raw);
