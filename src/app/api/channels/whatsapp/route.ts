@@ -45,7 +45,11 @@ export async function POST(req: NextRequest) {
   const roleResults: { role: "founder" | "owner"; status: string }[] = [];
   for (const m of parsed.messages) {
     const role = whatsappRoleRouting() === "identity" ? await classifySender(m).catch(() => "customer" as const) : "customer";
-    if (role === "founder") roleResults.push({ role, status: (await processFounderInbound(asCommandInbound(m), roleSenders.founder(m.lineId), { lineId: m.lineId }).catch((err) => ({ status: `failed: ${err instanceof Error ? err.message.slice(0, 80) : "error"}` }))).status });
+    if (role === "founder") {
+      const result = await processFounderInbound(asCommandInbound(m), roleSenders.founder(m.lineId), { lineId: m.lineId }).catch((err) => ({ status: `failed: ${err instanceof Error ? err.message.slice(0, 80) : "error"}` }));
+      if ("delivery" in result && result.delivery?.status === "failed") console.warn("[barry:whatsapp] founder reply delivery failed", { error: result.delivery.error });
+      roleResults.push({ role, status: result.status });
+    }
     else if (role === "owner") roleResults.push({ role, status: (await processOwnerInbound(asCommandInbound(m), roleSenders.owner(m.lineId), { businessIds: [m.businessId] }).catch((err) => ({ status: `failed: ${err instanceof Error ? err.message.slice(0, 80) : "error"}` }))).status });
     else {
       const { lineId: _l, command: _c, ...customerOnly } = m;
