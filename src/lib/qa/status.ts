@@ -58,8 +58,13 @@ export async function buildQaStatus(businessId?: string) {
     databaseProject: databaseProject(),
     cron: process.env.CRON_SECRET && process.env.CRON_SECRET.trim().length >= 16 ? "secret configured" : "missing",
     ownerAccess: ownerAccessConfigured() ? { configured: true, businesses: businessesWithOwnerAccess() } : { configured: false, businesses: [] },
-    /** The three outbound send modes, separately: customer / owner (BARRY_WHATSAPP_SEND) and founder (BARRY_WHATSAPP_FOUNDER_SEND). */
+    /** The three outbound send modes, each from its OWN variable (unset / anything but "live" = dry_run). */
     whatsappSendModes: whatsappSendModes(),
+    sendModes: {
+      customer: { mode: whatsappSendModes().customer, variable: "BARRY_WHATSAPP_SEND" },
+      owner: { mode: whatsappSendModes().owner, variable: "BARRY_WHATSAPP_OWNER_SEND" },
+      founder: { mode: whatsappSendModes().founder, variable: "BARRY_WHATSAPP_FOUNDER_SEND" },
+    },
     whatsapp: wa.configured ? { state: wa.sendMode === "live" ? "live sending" : "configured, dry run", routedBusinesses: [...new Set(Object.values(wa.routes))] } : { state: "missing", missing: wa.missing, qaDryRunAvailable: qaEnabled() },
     ...(business ? { business } : {}),
   };

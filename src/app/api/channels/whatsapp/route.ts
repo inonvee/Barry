@@ -40,7 +40,8 @@ export async function POST(req: NextRequest) {
   const parsed = parseWebhook(body, cfg.routes);
   // SINGLE-NUMBER ROLE ROUTING (BARRY_WHATSAPP_ROLE_ROUTING=identity): the VERIFIED SENDER decides — founder link →
   // Founder BARRY, owner link of this line's business → Owner BARRY, everyone else → the customer flow. Each role
-  // replies with its OWN sender (founder: BARRY_WHATSAPP_FOUNDER_SEND; owner / customer: BARRY_WHATSAPP_SEND).
+  // replies with its OWN sender (founder: BARRY_WHATSAPP_FOUNDER_SEND; owner: BARRY_WHATSAPP_OWNER_SEND; customer:
+  // BARRY_WHATSAPP_SEND) — the mode follows the authenticated ROLE, never the receiving phone_number_id.
   const customerMessages: ParsedInbound[] = [];
   const roleResults: { role: "founder" | "owner"; status: string }[] = [];
   for (const m of parsed.messages) {

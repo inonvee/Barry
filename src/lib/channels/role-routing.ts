@@ -1,7 +1,7 @@
 import type { OwnerInbound, OwnerSender } from "@/lib/owner-channel/transport";
 import { ownerLinkCodeUsable, resolveOwnerIdentity } from "@/lib/owner-channel/identity";
 import { founderLinkCodeUsable, resolveFounderIdentity } from "@/lib/founder-channel/identity";
-import { whatsappFounderSender, whatsappOwnerSender, whatsappSender, type ParsedInbound } from "./whatsapp";
+import { ownerSendMode, whatsappFounderSender, whatsappOwnerSender, whatsappSender, type ParsedInbound } from "./whatsapp";
 import type { OutboundSender } from "./gateway";
 
 /**
@@ -39,7 +39,13 @@ export function asCommandInbound(m: ParsedInbound): OwnerInbound {
 
 // ── Role senders: the send mode follows the ROLE (gateway), never the receiving number ─────────────────────────
 
-export type RoleSenders = { customer: () => OutboundSender; owner: (lineId?: string) => OwnerSender; founder: (lineId?: string) => OwnerSender };
+export type RoleSenders = {
+  customer: () => OutboundSender;
+  owner: (lineId?: string) => OwnerSender;
+  founder: (lineId?: string) => OwnerSender;
+  /** The OWNER's own words to a customer (a handoff reply): sent to the customer's chat, in the OWNER's send mode. */
+  ownerToCustomer?: () => OutboundSender;
+};
 let override: RoleSenders | undefined;
 /** QA / tests: replace every role's sender (QA only ever makes them DRY — recording, never sending). */
 export function setRoleSendersOverride(o: RoleSenders | undefined): void {
@@ -49,4 +55,5 @@ export const roleSenders: RoleSenders = {
   customer: () => override?.customer() ?? whatsappSender(),
   owner: (lineId) => override?.owner(lineId) ?? whatsappOwnerSender(fetch, lineId),
   founder: (lineId) => override?.founder(lineId) ?? whatsappFounderSender(fetch, lineId),
+  ownerToCustomer: () => override?.ownerToCustomer?.() ?? (ownerSendMode() === "live" ? whatsappSender(fetch, { mode: "live", role: "owner" }) : { channel: "whatsapp", mode: "dry_run", send: async () => ({}) }),
 };

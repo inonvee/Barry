@@ -6,6 +6,7 @@ import { getConversationStore } from "@/lib/state";
 import { hasMoney, moneyWords } from "@/lib/format/money";
 import { whatsappOwnerReach } from "@/lib/channels/whatsapp";
 import { roleSenders } from "@/lib/channels/role-routing";
+import { isSyntheticNumber } from "@/lib/qa/synthetic";
 import { linkActive, listOwnerIdentities, maskedIdentity, type OwnerIdentity } from "@/lib/owner-channel/identity";
 import { deliverOwner, type OwnerOutbound, type OwnerSender } from "@/lib/owner-channel/transport";
 import { getOwnerWorkspace } from "./service";
@@ -24,7 +25,7 @@ import { listOperations, operationView } from "./operations";
  * BARRY fails closed and records the blocker instead of sending.
  */
 
-export type BriefRecord = { key: string; businessId: string; kind: "decision" | "operation_done" | "daily" | "alert" | "attention"; to: string; at: string; status: "sent" | "dry_run" | "failed" | "blocked"; reason?: string; text: string; /** attention: the exact items this message covered (each is announced once, ever). */ items?: string[] };
+export type BriefRecord = { key: string; businessId: string; kind: "decision" | "operation_done" | "daily" | "alert" | "attention"; to: string; at: string; status: "sent" | "dry_run" | "failed" | "blocked"; reason?: string; text: string; /** attention: the exact items this message covered (each is announced once, ever). */ items?: string[]; /** To a synthetic QA owner (999…). */ synthetic?: true };
 
 const WINDOW_MS = 24 * 3600_000;
 
@@ -36,7 +37,7 @@ async function briefs(businessId: string): Promise<BriefRecord[]> {
  * The sender for proactive notices to ONE owner link: from the WhatsApp line that owner last wrote to (WhatsApp's
  * 24-hour window is per line) — a dedicated owner line or, under identity role routing, the business's shared number.
  * No separate owner phone_number_id is required. Undefined = no line can reach this owner (recorded as blocked).
- * The owner ROLE's send mode applies (BARRY_WHATSAPP_SEND), never the founder's.
+ * The owner ROLE's send mode applies (BARRY_WHATSAPP_OWNER_SEND), never the customer's or the founder's.
  */
 export function ownerSenderFor(businessId: string, link?: Pick<OwnerIdentity, "lineId">): OwnerSender | undefined {
   const reach = whatsappOwnerReach(businessId);
@@ -47,7 +48,7 @@ export function ownerSenderFor(businessId: string, link?: Pick<OwnerIdentity, "l
 /** Deliver one brief to one owner, once per key, only where the channel allows it. */
 async function deliverOnce(businessId: string, link: OwnerIdentity, key: string, kind: BriefRecord["kind"], message: OwnerOutbound, sender: OwnerSender | undefined, now: Date, items?: string[]): Promise<BriefRecord | undefined> {
   if ((await briefs(businessId)).some((b) => b.key === key)) return undefined;
-  const base = { key, businessId, kind, to: maskedIdentity(link), at: now.toISOString(), text: message.text.slice(0, 600), ...(items ? { items } : {}) };
+  const base = { key, businessId, kind, to: maskedIdentity(link), at: now.toISOString(), text: message.text.slice(0, 600), ...(items ? { items } : {}), ...(isSyntheticNumber(link.channelUserId) ? { synthetic: true as const } : {}) };
   let rec: BriefRecord;
   if (!sender) rec = { ...base, status: "blocked", reason: "no WhatsApp line reaches this owner (no owner line, and the shared number isn't routed to this business with identity role routing)" };
   else if (!link.lastInboundAt || now.getTime() - Date.parse(link.lastInboundAt) > WINDOW_MS) rec = { ...base, status: "blocked", reason: "outside WhatsApp's 24-hour window — needs an approved message template (not configured)" };
@@ -190,7 +191,8 @@ export function attentionItems(ws: Awaited<ReturnType<typeof getOwnerWorkspace>>
   // Something broken for the whole business (once per episode). A failing OWNER channel is not announced over that
   // same channel (it would fail too) — it stays in "what needs me" on the web and in the founder's incidents.
   for (const p of ws.problems ?? []) {
-    if (p.kind === "owner_channel") continue;
+    // QA-owned problems (synthetic acceptance artifacts) are never announced.
+    if (p.kind === "owner_channel" || p.qa) continue;
     out.push({ key: `problem:${p.key}`, category: "system_problem", customer: "", conversationId: "", en: `${p.what.en} ${p.nextStep.en}`, he: `${p.what.he} ${p.nextStep.he}` });
   }
   return out;

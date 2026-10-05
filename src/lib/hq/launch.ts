@@ -93,7 +93,7 @@ export async function launchChecklist(graph: BusinessGraph, input: { controls: B
 
   // No unresolved critical problem (a real system down, WhatsApp refusing messages, an unverifiable payment event).
   const problems = await loadBusinessProblems(graph.business.id, { ...(input.conversations ? { conversations: input.conversations } : {}) }).catch(() => null);
-  const criticalProblems = (problems ?? []).filter((p) => p.severity === "high");
+  const criticalProblems = (problems ?? []).filter((p) => p.severity === "high" && !p.qa);
   items.push({ id: "incidents.critical", title: "No unresolved critical problem", status: problems === null ? "unknown" : criticalProblems.length ? "blocked" : "ready", evidence: problems === null ? "the business's problems could not be read" : criticalProblems.length ? criticalProblems.map((p) => p.what.en).join(" ") : "no critical problem in the records", ...(criticalProblems.length ? { blocker: criticalProblems[0].what.en, nextAction: criticalProblems[0].nextStep.en } : {}), responsibility: "barry_team", requiredForSupervised: true });
 
   // Blockers must be explicitly zero (or accepted): any OPEN blocker from the readiness assessment counts.

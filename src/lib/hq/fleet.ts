@@ -1,3 +1,4 @@
+import { isQaConversation } from "@/lib/qa/synthetic";
 import { businessProblems, listOwnerDeliveries, listPaymentHealthEvents, type OwnerDeliveryEvidence } from "@/lib/owner/problems";
 import type { PaymentHealthEvent } from "@/lib/payments/health";
 import { listJobRuns, type JobRecord } from "@/lib/background/runner";
@@ -149,18 +150,23 @@ export async function getBusinessStatus(graph: BusinessGraph, opts: { now?: Date
   const obligations = await safe("obligations", () => reconcileObligations({ graph, conversations, approvals, payments, bookings, carts, policy: followUpPolicyFor(graph), attempts: attemptCounts(attempts), now }), [] as Obligation[]);
   const readiness = await safe("readiness", () => assessPilotReadiness(graph, { conversations }), undefined);
   const audit = await safe("founder audit", () => listControlAudit(id), [] as ControlAudit[]);
-  const open = incidents.filter((i) => i.status !== "resolved");
+  // QA-owned synthetic incidents never count as open for the founder (health, attention, alerts) — real ones always do.
+  const open = incidents.filter((i) => i.status !== "resolved" && !i.qa);
+  // The same for the counts that drive founder health (and so founder alerts): QA-owned conversations never move them.
+  const qaIds = new Set(conversations.filter((c) => isQaConversation(c)).map((c) => c.id));
+  const real = <T extends { conversationId?: string }>(list: T[]): T[] => list.filter((x) => !x.conversationId || !qaIds.has(x.conversationId));
+  const realInterventions = real(interventions);
   const high = open.filter((i) => i.severity === "high").length;
   const medium = open.filter((i) => i.severity === "medium").length;
   const low = open.filter((i) => i.severity === "low").length;
-  const health: BusinessHealth = high > 0 || ai.status === "unavailable" ? "unhealthy" : medium > 0 || interventions.length > 0 ? "attention" : "healthy";
+  const health: BusinessHealth = high > 0 || ai.status === "unavailable" ? "unhealthy" : medium > 0 || realInterventions.length > 0 ? "attention" : "healthy";
   const wa = whatsappConfig();
   const channelsHealth = channelHealth({ businessId: id, conversations, disabledChannels: controls.disabledChannels, now });
   const channel = whatsappNumbersFor(id).length ? (wa.sendMode === "live" ? "live" : "dry_run") : wa.configured ? "not_routed" : "missing";
   const anyReal = (["commerce", "payments", "scheduling"] as const).some((d) => profiles?.[d]?.used && profiles[d].status === "connected" && !profiles[d].simulated);
   const stage: OperatingStage = controls.mode === "live" && readiness?.level === "READY_FOR_CUSTOMER_TRAFFIC" ? "live_ready" : controls.mode === "supervised" || anyReal ? "supervised" : "simulator_only";
   const latest = conversations.map((c) => c.updatedAt).sort().at(-1) ?? null;
-  const openObligations = obligations.filter((o) => !["completed", "cancelled", "superseded"].includes(o.status));
+  const openObligations = real(obligations.filter((o) => !["completed", "cancelled", "superseded"].includes(o.status)) as (Obligation & { conversationId?: string })[]);
   return {
     id,
     name: graph.business.name,
@@ -176,9 +182,9 @@ export async function getBusinessStatus(graph: BusinessGraph, opts: { now?: Date
     customerChannel: customerChannelState(channelsHealth),
     providers: { commerce: providerWords(profiles, "commerce"), payments: providerWords(profiles, "payments"), scheduling: providerWords(profiles, "scheduling") },
     readiness: readiness ? { level: readiness.level, label: readiness.label, blockers: readiness.next?.blockers.map((b) => b.label) ?? [] } : { level: "NOT_READY", label: "Readiness unavailable", blockers: [] },
-    interventions: interventions.length,
-    approvalsActive: approvals.filter((a) => a.lifecycle === "active").length,
-    approvalsHeld: approvals.filter((a) => a.lifecycle === "held").length,
+    interventions: realInterventions.length,
+    approvalsActive: real(approvals).filter((a) => a.lifecycle === "active").length,
+    approvalsHeld: real(approvals).filter((a) => a.lifecycle === "held").length,
     handoffsOpen: conversations.reduce((n, c) => n + readHandoffs(c).filter((h) => h.status !== "resolved").length, 0),
     incidents: { high, medium, low, open },
     obligations: {

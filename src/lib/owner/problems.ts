@@ -5,6 +5,7 @@ import { readDeliveries } from "@/lib/channels/gateway";
 import { getBackend } from "@/lib/store";
 import { L, type OwnerLang } from "./lang";
 import type { PaymentHealthEvent } from "@/lib/payments/health";
+import { isQaConversation } from "@/lib/qa/synthetic";
 export { listPaymentHealthEvents } from "@/lib/payments/health";
 
 /**
@@ -42,9 +43,12 @@ export type BusinessProblem = {
   nextStep: Words;
   /** Founder / BARRY-team evidence (provider error codes, record ids) — never a secret. */
   evidence: string[];
+  /** Made ONLY of synthetic QA artifacts (999… identities / stamped QA conversations): shown for acceptance evidence,
+   *  never announced to a real owner and never part of the founder's real incidents / alerts. */
+  qa?: true;
 };
 
-export type OwnerDeliveryEvidence = { at: string; to: "owner"; status: string; reason?: string; via: "reply" | "notice" };
+export type OwnerDeliveryEvidence = { at: string; to: "owner"; status: string; reason?: string; via: "reply" | "notice"; /** To a synthetic QA owner (999…). */ synthetic?: boolean };
 
 const H = 3600_000;
 
@@ -52,8 +56,8 @@ const H = 3600_000;
 export async function listOwnerDeliveries(businessId: string): Promise<OwnerDeliveryEvidence[]> {
   const records = await getBackend().listOperatorRecords(businessId, "owner_command").catch(() => []);
   const briefs = await getBackend().listOperatorRecords(businessId, "owner_brief").catch(() => []);
-  const replies = records.map((r) => r.data as { delivery?: { status: string; at: string; reason?: string } }).filter((c) => c?.delivery?.at).map((c) => ({ at: c.delivery!.at, to: "owner" as const, status: c.delivery!.status, ...(c.delivery!.reason ? { reason: c.delivery!.reason } : {}), via: "reply" as const }));
-  const notices = briefs.map((r) => r.data as { at?: string; status?: string; reason?: string }).filter((b) => b?.at && b.status).map((b) => ({ at: b.at!, to: "owner" as const, status: b.status!, ...(b.reason ? { reason: b.reason } : {}), via: "notice" as const }));
+  const replies = records.map((r) => r.data as { delivery?: { status: string; at: string; reason?: string }; synthetic?: boolean }).filter((c) => c?.delivery?.at).map((c) => ({ at: c.delivery!.at, to: "owner" as const, status: c.delivery!.status, ...(c.delivery!.reason ? { reason: c.delivery!.reason } : {}), via: "reply" as const, synthetic: Boolean(c.synthetic) }));
+  const notices = briefs.map((r) => r.data as { at?: string; status?: string; reason?: string; synthetic?: boolean }).filter((b) => b?.at && b.status).map((b) => ({ at: b.at!, to: "owner" as const, status: b.status!, ...(b.reason ? { reason: b.reason } : {}), via: "notice" as const, synthetic: Boolean(b.synthetic) }));
   return [...replies, ...notices];
 }
 
@@ -133,49 +137,58 @@ export function businessProblems(input: ProblemInput): BusinessProblem[] {
   }
 
   // 3) BARRY's WhatsApp messages to the OWNER are being refused by the provider (replies or notices, last 24h).
-  const ownerFailed = input.ownerDeliveries.filter((d) => d.status === "failed" && t - Date.parse(d.at) <= 24 * H).sort((a, b) => a.at.localeCompare(b.at));
-  if (ownerFailed.length) {
-    const last = ownerFailed[ownerFailed.length - 1];
-    const err = providerError(last.reason);
-    out.push({
-      key: `owner_channel:${ownerFailed[0].at.slice(0, 13)}`,
-      kind: "owner_channel",
-      severity: ownerFailed.length >= 2 ? "high" : "medium",
-      since: ownerFailed[0].at,
-      lastSeen: last.at,
-      occurrences: ownerFailed.length,
-      what: { en: `BARRY's WhatsApp messages to you aren't being delivered — ${err.plain.en}.`, he: `ההודעות של BARRY אליך בוואטסאפ לא נמסרות — ${err.plain.he}.` },
-      affected: { en: "Answers to your WhatsApp questions and BARRY's alerts to you. Customers are not affected by this one.", he: "תשובות לשאלות שלך בוואטסאפ וההתראות של BARRY אליך. הלקוחות לא מושפעים מזה." },
-      customerBlocked: false,
-      alreadyHappened: { en: `${ownerFailed.length} message${ownerFailed.length === 1 ? "" : "s"} to you didn't arrive. Nothing was marked as sent, and nothing will be re-sent by itself.`, he: `${ownerFailed.length === 1 ? "הודעה אחת" : `${ownerFailed.length} הודעות`} אליך לא הגיעו. שום דבר לא סומן כנשלח, ושום דבר לא יישלח שוב מעצמו.` },
-      ownerAction: { en: "Check what needs you here in BARRY (web) until it's fixed.", he: "בדוק מה מחכה לך כאן ב־BARRY (באתר) עד שזה יתוקן." },
-      nextStep: { en: "The BARRY team fixes the WhatsApp connection; everything waiting is still in “What needs me”.", he: "צוות BARRY מתקן את החיבור לוואטסאפ; כל מה שמחכה עדיין מופיע ב״מה מחכה לי״." },
-      evidence: ownerFailed.slice(-3).map((d) => `owner ${d.via} ${d.status} at ${d.at}${err.code ? ` · provider error ${err.code}` : ""}${d.reason ? ` · ${d.reason.slice(0, 80)}` : ""}`),
-    });
+  //    Real owners and synthetic QA owners are separate problems: QA evidence never makes (or hides) a real one.
+  for (const qa of [false, true]) {
+    const ownerFailed = input.ownerDeliveries.filter((d) => Boolean(d.synthetic) === qa && d.status === "failed" && t - Date.parse(d.at) <= 24 * H).sort((a, b) => a.at.localeCompare(b.at));
+    if (ownerFailed.length) {
+      const last = ownerFailed[ownerFailed.length - 1];
+      const err = providerError(last.reason);
+      out.push({
+        key: `${qa ? "qa:" : ""}owner_channel:${ownerFailed[0].at.slice(0, 13)}`,
+        kind: "owner_channel",
+        severity: ownerFailed.length >= 2 ? "high" : "medium",
+        since: ownerFailed[0].at,
+        lastSeen: last.at,
+        occurrences: ownerFailed.length,
+        what: { en: `BARRY's WhatsApp messages to you aren't being delivered — ${err.plain.en}.`, he: `ההודעות של BARRY אליך בוואטסאפ לא נמסרות — ${err.plain.he}.` },
+        affected: { en: "Answers to your WhatsApp questions and BARRY's alerts to you. Customers are not affected by this one.", he: "תשובות לשאלות שלך בוואטסאפ וההתראות של BARRY אליך. הלקוחות לא מושפעים מזה." },
+        customerBlocked: false,
+        alreadyHappened: { en: `${ownerFailed.length} message${ownerFailed.length === 1 ? "" : "s"} to you didn't arrive. Nothing was marked as sent, and nothing will be re-sent by itself.`, he: `${ownerFailed.length === 1 ? "הודעה אחת" : `${ownerFailed.length} הודעות`} אליך לא הגיעו. שום דבר לא סומן כנשלח, ושום דבר לא יישלח שוב מעצמו.` },
+        ownerAction: { en: "Check what needs you here in BARRY (web) until it's fixed.", he: "בדוק מה מחכה לך כאן ב־BARRY (באתר) עד שזה יתוקן." },
+        nextStep: { en: "The BARRY team fixes the WhatsApp connection; everything waiting is still in “What needs me”.", he: "צוות BARRY מתקן את החיבור לוואטסאפ; כל מה שמחכה עדיין מופיע ב״מה מחכה לי״." },
+        evidence: ownerFailed.slice(-3).map((d) => `owner ${d.via} ${d.status} at ${d.at}${err.code ? ` · provider error ${err.code}` : ""}${d.reason ? ` · ${d.reason.slice(0, 80)}` : ""}`),
+        ...(qa ? { qa: true as const } : {}),
+      });
+    }
   }
 
   // 4) Replies to SEVERAL customers refused by the channel (one customer's failure is that conversation's item).
-  const failedConvos = input.conversations
-    .map((c) => ({ c, last: readDeliveries(c.knownFields).at(-1) }))
-    .filter((x) => x.last?.status === "failed" && t - Date.parse(x.last.at) <= 24 * H && !/not processed|interrupted/.test(x.last.error ?? ""));
-  if (failedConvos.length >= 2) {
-    const sorted = failedConvos.sort((a, b) => a.last!.at.localeCompare(b.last!.at));
-    const err = providerError(sorted.at(-1)!.last!.error);
-    out.push({
-      key: `customer_delivery:${sorted[0].last!.at.slice(0, 13)}`,
-      kind: "customer_delivery",
-      severity: "high",
-      since: sorted[0].last!.at,
-      lastSeen: sorted.at(-1)!.last!.at,
-      occurrences: failedConvos.length,
-      what: { en: `BARRY's replies to customers aren't being delivered — ${err.plain.en}.`, he: `התשובות של BARRY ללקוחות לא נמסרות — ${err.plain.he}.` },
-      affected: { en: `${failedConvos.length} customers didn't receive BARRY's last reply.`, he: `${failedConvos.length} לקוחות לא קיבלו את התשובה האחרונה של BARRY.` },
-      customerBlocked: true,
-      alreadyHappened: { en: "Those replies were NOT delivered and are not shown as sent. BARRY does not re-send them by itself.", he: "התשובות האלה לא נמסרו ולא מוצגות כנשלחו. BARRY לא שולח אותן שוב מעצמו." },
-      ownerAction: { en: "Reply to those customers yourself from your own phone if it's urgent.", he: "אם זה דחוף, ענה ללקוחות האלה בעצמך מהטלפון שלך." },
-      nextStep: { en: "The BARRY team fixes the WhatsApp connection; you can pause BARRY meanwhile (say “pause BARRY”).", he: "צוות BARRY מתקן את החיבור לוואטסאפ; בינתיים אפשר להשהות את BARRY (כתוב ״תעצור הכל״)." },
-      evidence: sorted.slice(-3).map((x) => `${x.c.id} · delivery failed at ${x.last!.at}${x.last!.error ? ` · ${x.last!.error.slice(0, 80)}` : ""}`),
-    });
+  //    Synthetic QA conversations are judged separately (never counted toward a real problem).
+  for (const qa of [false, true]) {
+    const failedConvos = input.conversations
+      .filter((c) => isQaConversation(c) === qa)
+      .map((c) => ({ c, last: readDeliveries(c.knownFields).at(-1) }))
+      .filter((x) => x.last?.status === "failed" && t - Date.parse(x.last.at) <= 24 * H && !/not processed|interrupted/.test(x.last.error ?? ""));
+    if (failedConvos.length >= 2) {
+      const sorted = failedConvos.sort((a, b) => a.last!.at.localeCompare(b.last!.at));
+      const err = providerError(sorted.at(-1)!.last!.error);
+      out.push({
+        key: `${qa ? "qa:" : ""}customer_delivery:${sorted[0].last!.at.slice(0, 13)}`,
+        kind: "customer_delivery",
+        severity: "high",
+        since: sorted[0].last!.at,
+        lastSeen: sorted.at(-1)!.last!.at,
+        occurrences: failedConvos.length,
+        what: { en: `BARRY's replies to customers aren't being delivered — ${err.plain.en}.`, he: `התשובות של BARRY ללקוחות לא נמסרות — ${err.plain.he}.` },
+        affected: { en: `${failedConvos.length} customers didn't receive BARRY's last reply.`, he: `${failedConvos.length} לקוחות לא קיבלו את התשובה האחרונה של BARRY.` },
+        customerBlocked: true,
+        alreadyHappened: { en: "Those replies were NOT delivered and are not shown as sent. BARRY does not re-send them by itself.", he: "התשובות האלה לא נמסרו ולא מוצגות כנשלחו. BARRY לא שולח אותן שוב מעצמו." },
+        ownerAction: { en: "Reply to those customers yourself from your own phone if it's urgent.", he: "אם זה דחוף, ענה ללקוחות האלה בעצמך מהטלפון שלך." },
+        nextStep: { en: "The BARRY team fixes the WhatsApp connection; you can pause BARRY meanwhile (say “pause BARRY”).", he: "צוות BARRY מתקן את החיבור לוואטסאפ; בינתיים אפשר להשהות את BARRY (כתוב ״תעצור הכל״)." },
+        evidence: sorted.slice(-3).map((x) => `${x.c.id} · delivery failed at ${x.last!.at}${x.last!.error ? ` · ${x.last!.error.slice(0, 80)}` : ""}`),
+        ...(qa ? { qa: true as const } : {}),
+      });
+    }
   }
 
   // 5) Payment provider events BARRY could not verify against its records (last 48h).

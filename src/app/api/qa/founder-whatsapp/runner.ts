@@ -306,11 +306,11 @@ export async function runFounderWhatsappAcceptance(creds: { appSecret: string },
       check("shared_line", "single-number role routing is enabled (BARRY_WHATSAPP_ROLE_ROUTING=identity)", routing === "identity", { roleRouting: routing, sendModes: whatsappSendModes() });
       if (routing === "identity") {
         // Every role's sender is a RECORDING DRY sender for this stage: it notes which role answered and the mode that
-        // role WOULD use (founder: BARRY_WHATSAPP_FOUNDER_SEND; owner / customer: BARRY_WHATSAPP_SEND) — nothing is sent.
+        // role WOULD use (founder: BARRY_WHATSAPP_FOUNDER_SEND; owner: BARRY_WHATSAPP_OWNER_SEND; customer: BARRY_WHATSAPP_SEND) — nothing is sent.
         const sends: { role: string; wouldBe: string }[] = [];
         const dry = (role: string, wouldBe: string): OwnerSender & { mode: "dry_run" } => (sends.push({ role, wouldBe }), { channel: "whatsapp", mode: "dry_run", send: async () => ({}) });
         const modes = whatsappSendModes();
-        setRoleSendersOverride({ customer: () => dry("customer", modes.customer) as never, owner: () => dry("owner", modes.owner), founder: () => dry("founder", modes.founder) });
+        setRoleSendersOverride({ customer: () => dry("customer", modes.customer) as never, owner: () => dry("owner", modes.owner), founder: () => dry("founder", modes.founder), ownerToCustomer: () => dry("owner", modes.owner) as never });
         try {
           const SO = `99985${d6}2`;
           const SU = `99986${d6}3`;

@@ -233,3 +233,59 @@ describe("the Design Partner gate: READY FOR SUPERVISED or BLOCKED", () => {
     expect(view.blockers.find((b) => b.id === "channel.owner_whatsapp_linked")).toMatchObject({ who: "you" });
   });
 });
+
+describe("QA can never notify the real founder (QA-owned synthetic artifacts, decided from the records — no timing)", () => {
+  const post = async (from: string, text: string, id: string) => {
+    const { NextRequest } = await import("next/server");
+    const crypto = await import("node:crypto");
+    const { POST } = await import("@/app/api/channels/whatsapp/route");
+    const raw = JSON.stringify({ object: "whatsapp_business_account", entry: [{ changes: [{ field: "messages", value: { metadata: { phone_number_id: "PNID-SHARED" }, contacts: [{ wa_id: from, profile: { name: "Dana" } }], messages: [{ id, from, timestamp: String(Math.floor(Date.now() / 1000)), type: "text", text: { body: text } }] } }] }] });
+    const sig = `sha256=${crypto.createHmac("sha256", "s").update(raw, "utf8").digest("hex")}`;
+    return POST(new NextRequest("https://x/api/channels/whatsapp", { method: "POST", headers: { "content-type": "application/json", "x-hub-signature-256": sig }, body: raw }));
+  };
+  it("the SAME refused reply raises a founder alert for a real customer, and never for a synthetic QA customer", async () => {
+    const { setReasonerForTests } = await import("@/lib/reasoner");
+    const { ScriptedModel } = await import("./support/scripted-model");
+    const { MemoryLockStore, setLockStoreForTests } = await import("@/lib/state/lock");
+    const { MemoryInboxStore, setInboxStoreForTests } = await import("@/lib/channels/inbox");
+    const { founderAlertItems } = await import("@/lib/founder-channel/alerts");
+    const { getBusinessStatus } = await import("@/lib/hq/fleet");
+    setLockStoreForTests(new MemoryLockStore());
+    setInboxStoreForTests(new MemoryInboxStore());
+    setReasonerForTests(new ScriptedModel(() => undefined));
+    const refused: OutboundSenderLike = { channel: "whatsapp", mode: "live", send: async () => Promise.reject(new Error("WhatsApp send failed (401 / 190)")) };
+    setRoleSendersOverride({ customer: () => refused as never, owner: () => dry, founder: () => dry });
+    try {
+      const realPhone = "972500000123";
+      const qaPhone = "999550000123";
+      await post(realPhone, "Hi, are you open on Friday?", "wamid.dp.real.1");
+      await post(qaPhone, "Hi, are you open on Friday?", "wamid.dp.qa.1");
+      const status = await getBusinessStatus(resolveBusinessGraph(BIZ), { detail: true });
+      expect(status.incidents.open.some((i) => i.key === `undelivered_reply:wa:${BIZ}:${realPhone}`)).toBe(true);
+      expect(status.incidents.open.some((i) => i.key.includes(qaPhone))).toBe(false);
+      const items = await founderAlertItems({ launch: false });
+      // Positive control: the real customer's failure IS a founder alert item …
+      expect(items.some((i) => i.key.includes(`wa:${BIZ}:${realPhone}`))).toBe(true);
+      // … the identical synthetic one never is.
+      expect(items.some((i) => i.key.includes(qaPhone) || i.text.includes(qaPhone))).toBe(false);
+    } finally {
+      setReasonerForTests(undefined);
+      setLockStoreForTests(undefined);
+      setInboxStoreForTests(undefined);
+    }
+  }, 60_000);
+
+  it("QA-owned problems and incidents are explicitly marked; real ones never are; QA problems are never announced to an owner", () => {
+    const qa = convoWithDelivery(`wa:${BIZ}:999550000001`, "failed", "2026-10-05T11:00:00Z", "x (401 / 190)");
+    const qa2 = convoWithDelivery(`wa:${BIZ}:999550000002`, "failed", "2026-10-05T11:01:00Z", "x (401 / 190)");
+    const problems = businessProblems({ ...empty, conversations: [qa, qa2], ownerDeliveries: [{ at: "2026-10-05T11:00:00Z", to: "owner", status: "failed", reason: "WhatsApp send failed (401 / 190)", via: "reply", synthetic: true }] });
+    expect(problems.map((p) => `${p.kind}:${p.qa}`).sort()).toEqual(["customer_delivery:true", "owner_channel:true"]);
+    expect(attentionItems({ interventions: [], opportunities: { items: [] }, problems } as never)).toEqual([]);
+    const incidents = deriveIncidents({ graph: resolveBusinessGraph(BIZ), conversations: [qa, qa2], approvals: [], payments: [], connections: [], ai: { status: "healthy" } as never, now, problems });
+    expect(incidents.length).toBeGreaterThan(0);
+    expect(incidents.every((i) => i.qa === true)).toBe(true);
+    const real = businessProblems({ ...empty, ownerDeliveries: [{ at: "2026-10-05T11:00:00Z", to: "owner", status: "failed", reason: "WhatsApp send failed (401 / 190)", via: "reply", synthetic: false }] });
+    expect(real[0].qa).toBeUndefined();
+  });
+});
+type OutboundSenderLike = { channel: "whatsapp"; mode: "live"; send: () => Promise<never> };

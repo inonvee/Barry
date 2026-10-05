@@ -4,7 +4,7 @@ import { withConversationLock } from "@/lib/state/lock";
 import { updateConversation } from "@/lib/state/update";
 import { giveToHuman, readControl, readOwnerReplies, returnToBarry, takeOverBy, writeOwnerReply, type ConversationControl, type OwnerReplyRecord } from "@/lib/runtime/control";
 import { CHANNEL_DELIVERY_KEY, type DeliveryRecord, type OutboundSender } from "@/lib/channels/gateway";
-import { whatsappConfig, whatsappSender } from "@/lib/channels/whatsapp";
+import { roleSenders } from "@/lib/channels/role-routing";
 import { WHATSAPP_WINDOW_MS } from "@/lib/operator/executor";
 
 /**
@@ -36,10 +36,8 @@ export function setOwnerReplySenderForTests(s: SenderFor | undefined): void {
 /** The customer's channel: WhatsApp (live or dry-run by configuration), or the web chat (the message is posted to it). */
 export function ownerSenderFor(conversation: ConversationState): OutboundSender {
   if (sendersForTests) return sendersForTests(conversation);
-  if (conversation.id.startsWith("wa:")) {
-    const wa = whatsappConfig();
-    return wa.sendMode === "live" ? whatsappSender() : { channel: "whatsapp", mode: "dry_run", send: async () => ({}) };
-  }
+  // The owner's words, sent by the OWNER role: BARRY_WHATSAPP_OWNER_SEND decides (never the customer's mode).
+  if (conversation.id.startsWith("wa:")) return roleSenders.ownerToCustomer!();
   // Web chat: the customer reads the conversation itself — posting the message IS delivering it.
   return { channel: "web", mode: "live", send: async () => ({}) };
 }

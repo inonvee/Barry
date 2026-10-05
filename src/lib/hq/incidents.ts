@@ -8,6 +8,7 @@ import { readDeliveries } from "@/lib/channels/gateway";
 import type { AiHealth } from "@/lib/owner/service";
 import { getBackend } from "@/lib/store";
 import type { BusinessProblem } from "@/lib/owner/problems";
+import { isQaConversation, isQaConversationId } from "@/lib/qa/synthetic";
 
 /**
  * FLEET INCIDENTS — one read model of what is broken or stuck in a business, derived from records only
@@ -62,6 +63,11 @@ export type Incident = {
   links: { conversationId?: string; interventionId?: string; capability?: string; provider?: string };
   acknowledged?: { by: string; at: string; note?: string };
   resolved?: { by: string; at: string; note?: string };
+  /**
+   * QA-owned: made only of synthetic acceptance artifacts (a 999… / QA-stamped conversation, or a QA-only problem).
+   * Kept for evidence, but never counted in health, never "open" for the founder, never in a founder notification.
+   */
+  qa?: true;
 };
 
 export type IncidentInput = {
@@ -316,7 +322,15 @@ export function deriveIncidents(input: IncidentInput): Incident[] {
       nextAction: p.nextStep.en,
       links: { ...(kind === "owner_channel_failing" || kind === "customer_delivery_failing" ? { capability: "channel.whatsapp" } : kind === "payment_unverified" ? { capability: "payments" } : {}) },
       occurrences: p.occurrences,
+      ...(p.qa ? { qa: true as const } : {}),
     });
+  }
+
+  // QA ownership is decided from the records themselves (synthetic number / QA stamp) — never from timing.
+  const qaConversations = new Set(conversations.filter((c) => isQaConversation(c)).map((c) => c.id));
+  for (const d of drafts.values()) {
+    const cid = d.links.conversationId;
+    if (cid && (qaConversations.has(cid) || isQaConversationId(cid))) d.qa = true;
   }
 
   const states = new Map((input.states ?? []).map((s) => [s.key, s]));

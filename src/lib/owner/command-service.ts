@@ -9,6 +9,7 @@ import { OwnerControlError, ownerReply, ownerReturnToBarry, ownerTakeOver } from
 import { isContextRecordKey, loadSession, saveSession, type OwnerSession } from "./session";
 import { draftCustomerReply, interpretWithModel } from "./command-llm";
 import { problemText } from "./problems";
+import { isSyntheticNumber } from "@/lib/qa/synthetic";
 import { readControl } from "@/lib/runtime/control";
 import { listJobRuns } from "@/lib/background/runner";
 import { moneyWords, hasMoney } from "@/lib/format/money";
@@ -60,6 +61,8 @@ export type OwnerCommandRecord = {
   createdAt: string;
   updatedAt: string;
   delivery?: { status: string; at: string; reason?: string };
+  /** The command came from a synthetic QA identity (999…): its evidence never reaches a real person. */
+  synthetic?: true;
 };
 
 export type OwnerPrompt = { key: string; businessId: string; kind: "approval"; approvalId: string; revision: number; interventionId: string; customer: string; to: string; createdAt: string; expiresAt: string; usedAt?: string; usedFor?: string };
@@ -435,7 +438,7 @@ export async function executeOwnerCommand(input: ExecuteInput): Promise<{ record
   // Idempotency: the same key (provider message id / web request id) never runs twice — the stored reply is returned.
   const existing = await getCommandRecord(businessId, input.key);
   if (existing) return { record: existing, reply: existing.reply ?? { text: "Already received — still working on it.", intent: existing.intent?.kind ?? "query" }, duplicate: true };
-  const record: OwnerCommandRecord = { id: `cmd_${crypto.randomBytes(6).toString("hex")}`, key: input.key, businessId, source: input.source, actor: actorLabel(input.actor), text: (input.text ?? input.actionId ?? "").slice(0, 1000), status: "received", trace: [...(input.trace ?? []), { step: "business", outcome: "ok", detail: `business ${businessId}`, at: at() }], createdAt: now.toISOString(), updatedAt: now.toISOString() };
+  const record: OwnerCommandRecord = { id: `cmd_${crypto.randomBytes(6).toString("hex")}`, key: input.key, businessId, source: input.source, actor: actorLabel(input.actor), text: (input.text ?? input.actionId ?? "").slice(0, 1000), status: "received", trace: [...(input.trace ?? []), { step: "business", outcome: "ok", detail: `business ${businessId}`, at: at() }], createdAt: now.toISOString(), updatedAt: now.toISOString(), ...(input.actor.kind === "whatsapp" && isSyntheticNumber(input.actor.identityId) ? { synthetic: true as const } : {}) };
   // Marked received BEFORE anything runs: at-most-once execution even if the process dies mid-way.
   await saveCommand(record);
   try {

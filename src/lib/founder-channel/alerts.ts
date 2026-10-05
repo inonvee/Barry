@@ -59,7 +59,8 @@ export async function founderAlertItems(opts: { now?: Date; observe?: boolean; l
   const items: FounderAlertItem[] = [];
   const add = (b: { id: string; name: string }, category: FounderAlertCategory, key: string, text: string) => items.push({ key, category, businessId: b.id, businessName: b.name, text });
   for (const b of real) {
-    for (const i of b.incidents.open) {
+    // Defense in depth: a QA-owned synthetic incident is never a founder notification, whatever produced the list.
+    for (const i of b.incidents.open.filter((x) => !x.qa)) {
       if (PROVIDER_KINDS.has(i.kind)) add(b, "provider", `provider:${b.id}:${i.key}:${i.firstSeen}`, `${b.name}: ${i.title} → ${i.nextAction}`);
       else if (i.severity === "high") add(b, "critical_incident", `incident:${b.id}:${i.key}:${i.firstSeen}`, `${b.name}: ${i.title} (high) → ${i.nextAction}`);
       else if (REPEAT_KINDS.has(i.kind) && i.occurrences >= 3) add(b, "repeated_failures", `repeat:${b.id}:${i.key}:${i.firstSeen}`, `${b.name}: ${i.title} — ${i.occurrences} times → ${i.nextAction}`);

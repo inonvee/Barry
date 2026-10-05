@@ -25,6 +25,8 @@ import { listBriefs, notifyOwnerAlert, notifyOwnerAttention } from "@/lib/owner/
 import { getOwnerWorkspace } from "@/lib/owner/service";
 import { loadBusinessProblems } from "@/lib/owner/problems";
 import { deriveIncidents } from "@/lib/hq/incidents";
+import { getBusinessStatus } from "@/lib/hq/fleet";
+import { founderAlertItems, listFounderNotices } from "@/lib/founder-channel/alerts";
 import { launchChecklist, ownerDesignPartnerView } from "@/lib/hq/launch";
 import { listBusinessSummaries } from "@/lib/fixtures";
 import { resolveBusinessGraph } from "@/lib/business-graph-repository";
@@ -145,6 +147,7 @@ export async function runOwnerDesignPartnerAcceptance(creds: { appSecret: string
     customer: () => (routed.push({ role: "customer" }), customerSender()),
     owner: (lineId) => (routed.push({ role: "owner", ...(lineId ? { lineId } : {}) }), ownerSender(lineId)),
     founder: (lineId) => (routed.push({ role: "founder", ...(lineId ? { lineId } : {}) }), dryFounder),
+    ownerToCustomer: () => (routed.push({ role: "owner_to_customer" }), { channel: "whatsapp", mode: "dry_run", send: async () => ({}) }),
   });
 
   // ── The shared line: the real signed webhook ───────────────────────────────────────────────────────────────
@@ -174,6 +177,8 @@ export async function runOwnerDesignPartnerAcceptance(creds: { appSecret: string
   };
   const ownerLinkOf = async (phone: string): Promise<OwnerIdentity | undefined> => (await listOwnerIdentities(BIZ)).find((l) => l.channelUserId === phone && l.status === "active");
   const count = async (phone: string, role: string) => ((await convo(phone))?.messages ?? []).filter((m) => m.role === role).length;
+  /** Does a key / text refer to a QA artifact of this business (a synthetic conversation, a QA-owned problem)? */
+  const refsQa = (x: string) => new RegExp(`wa:${BIZ}:999|(^|:)qa:`).test(x);
   const said = (x: { roles: { role: string; status: string }[]; kind?: string; topic?: string; reply?: string }) => ({ roles: x.roles, intent: x.kind, topic: x.topic, reply: short(x.reply) });
 
   // ── Preflight: recover, sweep stale synthetic identities, restore point, known start (SUPERVISED) ────────────
@@ -344,10 +349,10 @@ export async function runOwnerDesignPartnerAcceptance(creds: { appSecret: string
       ownerSender = () => ({ channel: "whatsapp", mode: "dry_run", send: async () => ({}) });
       check("delivery", "a refused owner reply (401 / 190) is recorded as FAILED with the provider code — never “sent”", ownerAttempts === 1 && refused.rec?.delivery?.status === "failed" && /401 \/ 190/.test(refused.rec?.delivery?.reason ?? ""), { delivery: refused.rec?.delivery });
       const problems = await loadBusinessProblems(BIZ);
-      const ownerProblem = problems.find((p) => p.kind === "owner_channel");
+      const ownerProblem = problems.find((p) => p.kind === "owner_channel" && p.qa);
       check("delivery", "the owner is told in plain words (what happened / affected / customer blocked / already happened / next step)", Boolean(ownerProblem) && /access/.test(ownerProblem!.what.en) && ownerProblem!.customerBlocked === false && ownerProblem!.evidence.some((e) => /401\/190/.test(e)), ownerProblem ? { what: ownerProblem.what.en, next: ownerProblem.nextStep.en, evidence: ownerProblem.evidence } : null);
       const incidents = deriveIncidents({ graph, conversations: [], approvals: [], payments: [], connections: [], ai: { status: "healthy" } as never, now: new Date(), problems });
-      check("delivery", "the founder sees it as an incident (owner WhatsApp failing, with the provider code)", incidents.some((i) => i.kind === "owner_channel_failing" && i.evidence.some((e) => /401\/190/.test(e))), incidents.map((i) => `${i.kind}:${i.severity}`));
+      check("delivery", "the founder's incident model sees it — explicitly marked QA-owned (owner WhatsApp failing, with the provider code)", incidents.some((i) => i.kind === "owner_channel_failing" && i.qa === true && i.evidence.some((e) => /401\/190/.test(e))) && ownerProblem?.qa === true, incidents.map((i) => `${i.kind}:${i.severity}${i.qa ? ":qa" : ""}`));
       const told = await owner("What needs me?");
       qaKeys.push(`whatsapp:${told.id}`);
       check("delivery", "“what needs me?” now includes the delivery problem (no silence)", /aren't being delivered/.test(told.reply), said(told));
@@ -363,6 +368,13 @@ export async function runOwnerDesignPartnerAcceptance(creds: { appSecret: string
       const ws = await getOwnerWorkspace(graph);
       check("delivery", "a refused customer reply is recorded as failed (with the code) and is a “needs you” item for the owner", last?.status === "failed" && /401/.test(last.error ?? "") && ws.interventions.some((i) => i.kind === "delivery_failed" && i.conversationId === `wa:${BIZ}:${phone}`), { delivery: last, items: ws.interventions.filter((i) => i.conversationId === `wa:${BIZ}:${phone}`).map((i) => i.kind) });
       check("delivery", "a retried webhook (same provider id) never sends twice", customerAttempts === 1 && retried.status === 200, { attempts: customerAttempts, retryStatus: retried.status });
+      // WHILE both injected failures exist (the worst moment for a concurrent founder alert job): the fleet status
+      // keeps them only as QA-owned, and the founder alert computation — exactly what the live job sends — has none.
+      const status = await getBusinessStatus(graph, { detail: true });
+      const qaFleet = status.incidents.open.filter((i) => refsQa(i.key) || i.qa);
+      const items = await founderAlertItems({ now: new Date(), launch: false });
+      const leaked = items.filter((i) => refsQa(i.key) || refsQa(i.text));
+      check("delivery", "concurrent founder alert job: QA-owned failures are NOT open founder incidents and NOT founder alert items (no timing involved)", qaFleet.length === 0 && leaked.length === 0, { openQaIncidents: qaFleet.map((i) => i.key), leakedAlertItems: leaked.map((i) => i.key), alertItems: items.length });
       // The injected failures are QA evidence only: removed so no real alert is ever raised from them.
       await getBackend().deleteOperatorRecords(BIZ, "owner_command", qaKeys);
       check("delivery", "the injected failure records are removed (no QA failure lingers for the founder)", !(await listCommandRecords(BIZ)).some((r) => qaKeys.includes(r.key)), { removed: qaKeys.length });
@@ -466,6 +478,9 @@ export async function runOwnerDesignPartnerAcceptance(creds: { appSecret: string
     for (const id of report.conversations) if (id.startsWith(`wa:${BIZ}:9995`)) deleted += await getConversationStore().deleteConversationsByPrefix(BIZ, id).catch(() => 0);
     const remaining = (await Promise.all(report.conversations.map((id) => getConversationStore().get(id).catch(() => undefined)))).filter(Boolean).length;
     check("restore", "every synthetic conversation of this stage is deleted", remaining === 0, { conversations: report.conversations.length, deleted, remaining });
+    // No founder notice created during this run refers to any QA artifact (the live founder job may run at any time).
+    const touched = (await listFounderNotices().catch(() => [])).filter((x) => x.at >= startedAt && ((x.items ?? []).some(refsQa) || refsQa(x.text)));
+    check("restore", "realFounderNoticesTouched === 0 (no founder notice refers to a QA artifact)", touched.length === 0, { realFounderNoticesTouched: touched.length });
     stopObserving();
     check("restore", "realGraphSendAttempts === 0 (nothing reached the real WhatsApp transport)", graphAttempts.length === 0, { realGraphSendAttempts: graphAttempts.length, blockedSynthetic: graphAttempts.filter((a) => a.to.startsWith("999")).length });
     report.finishedAt = new Date().toISOString();

@@ -13,7 +13,9 @@ import { mediaPlaceholder } from "./media";
  *   WHATSAPP_APP_SECRET       signs every webhook POST (X-Hub-Signature-256) — unsigned/invalid = rejected
  *   WHATSAPP_ACCESS_TOKEN     sends replies (Graph API)
  *   BARRY_WHATSAPP_ROUTES     "<phone_number_id>=<businessId>,…" — which business a number belongs to
- *   BARRY_WHATSAPP_SEND       "live" to really send; anything else = dry run (replies recorded, nothing sent)
+ *   BARRY_WHATSAPP_SEND       CUSTOMER replies: "live" to really send; anything else = dry run (recorded, nothing sent)
+ *   BARRY_WHATSAPP_OWNER_SEND OWNER replies / notices (and the owner's own messages to a customer in a handoff):
+ *                             exactly "live" sends; anything else (or unset) = dry run. Never widens customer sending.
  *   WHATSAPP_GRAPH_VERSION    optional, default v21.0
  *   BARRY_WHATSAPP_OWNER_NUMBERS  "<phone_number_id>,…" — BARRY's OWNER line(s): messages there go to the
  *                             owner command channel, never to a customer conversation. A number that is
@@ -41,6 +43,11 @@ export function whatsappConfig(): WhatsAppConfig {
   return { configured: missing.length === 0 && Object.keys(routes).length > 0, missing, sendMode: process.env.BARRY_WHATSAPP_SEND === "live" ? "live" : "dry_run", routes };
 }
 
+/** The OWNER role's outbound mode (BARRY_WHATSAPP_OWNER_SEND) — never derived from the customer's BARRY_WHATSAPP_SEND. */
+export function ownerSendMode(): "live" | "dry_run" {
+  return process.env.BARRY_WHATSAPP_OWNER_SEND?.trim() === "live" ? "live" : "dry_run";
+}
+
 /** BARRY's owner line(s) — distinct from every customer line (fail closed if configured as both). */
 export function whatsappOwnerConfig(): { configured: boolean; numbers: string[]; sendMode: "live" | "dry_run"; display?: string } {
   const base = whatsappConfig();
@@ -48,7 +55,8 @@ export function whatsappOwnerConfig(): { configured: boolean; numbers: string[];
   const numbers = (process.env.BARRY_WHATSAPP_OWNER_NUMBERS ?? "").split(",").map((s) => s.trim()).filter((n) => n && !routed.has(n));
   const tokens = ["WHATSAPP_APP_SECRET", "WHATSAPP_ACCESS_TOKEN"].every((k) => process.env[k]?.trim());
   const display = process.env.BARRY_WHATSAPP_OWNER_DISPLAY?.replace(/[^\d]/g, "") || undefined;
-  return { configured: tokens && numbers.length > 0, numbers, sendMode: base.sendMode, ...(display ? { display } : {}) };
+  // The OWNER role's own send mode — independent of the customer's (fail closed: only exactly "live" is live).
+  return { configured: tokens && numbers.length > 0, numbers, sendMode: ownerSendMode(), ...(display ? { display } : {}) };
 }
 
 /**
@@ -85,7 +93,7 @@ export function whatsappRoleRouting(): "identity" | "off" {
  *   shared_line  the business's own routed number with identity role routing (BARRY_WHATSAPP_ROLE_ROUTING=identity) —
  *                the verified sender decides the role, so no separate owner phone_number_id is needed.
  * `lineId` is the phone_number_id replies / notices go out from by default. The send mode is the OWNER role's mode
- * (BARRY_WHATSAPP_SEND) either way. `display` (E.164 digits) is shown for "Open WhatsApp" links when configured.
+ * (BARRY_WHATSAPP_OWNER_SEND) either way — never the customer's. `display` (E.164 digits) is shown for "Open WhatsApp" links when configured.
  */
 export function whatsappOwnerReach(businessId: string): { configured: boolean; via: "owner_line" | "shared_line" | "none"; lineId?: string; sendMode: "live" | "dry_run"; display?: string } {
   const owner = whatsappOwnerConfig();
@@ -262,16 +270,16 @@ function graphSendAttempt(role: GraphSendAttempt["role"], to: string): void {
 }
 
 /** Sends a text reply through the Graph API — only in live mode, only with a routed number. */
-export function whatsappSender(fetchImpl: typeof fetch = fetch): OutboundSender {
+export function whatsappSender(fetchImpl: typeof fetch = fetch, opts: { mode?: "live" | "dry_run"; role?: "customer" | "owner" } = {}): OutboundSender {
   const cfg = whatsappConfig();
   return {
     channel: "whatsapp",
-    mode: cfg.sendMode,
+    mode: opts.mode ?? cfg.sendMode,
     async send(to, text, context) {
       const phoneNumberId = Object.entries(cfg.routes).find(([, b]) => b === context.businessId)?.[0];
       const token = process.env.WHATSAPP_ACCESS_TOKEN;
       if (!phoneNumberId || !token) throw new Error("WhatsApp sending is not configured for this business");
-      graphSendAttempt("customer", to);
+      graphSendAttempt(opts.role ?? "customer", to);
       const version = process.env.WHATSAPP_GRAPH_VERSION || "v21.0";
       const res = await fetchImpl(`https://graph.facebook.com/${version}/${encodeURIComponent(phoneNumberId)}/messages`, {
         method: "POST",
@@ -287,7 +295,7 @@ export function whatsappSender(fetchImpl: typeof fetch = fetch): OutboundSender 
 
 /**
  * The owner line's sender: text, or interactive reply buttons (max 3, titles ≤ 20 chars) when the reply
- * carries actions. Live only in BARRY_WHATSAPP_SEND=live; otherwise a dry run (recorded, nothing sent).
+ * carries actions. Live only in BARRY_WHATSAPP_OWNER_SEND=live; otherwise a dry run (recorded, nothing sent).
  */
 export function whatsappOwnerSender(fetchImpl: typeof fetch = fetch, lineId?: string): OwnerSender {
   const cfg = whatsappOwnerConfig();
