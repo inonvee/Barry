@@ -169,6 +169,46 @@ export async function runCoexistenceAcceptance(creds: { appSecret: string }, opt
     return c ? readControlLog(c) : [];
   };
   const transcriptOf = (c: { messages: { role: string; author?: string; content: string; at: string }[] } | undefined) => (c?.messages ?? []).map((m) => ({ role: m.role, ...(m.author ? { author: m.author } : {}), at: m.at, text: short(m.content, 80) }));
+  /**
+   * Check J's invariant + evidence for an OLD echo (stamped before the last explicit return) delivered after the
+   * return: processed exactly once, outcome history_only, in the transcript as the person's message (read back from
+   * the store), holder stays BARRY, no new barry → human transition.
+   */
+  const delayedEcho = async (phone: string, text: string) => {
+    const conversationId = `wa:${BIZ}:${phone}`;
+    const before = (await convo(BIZ, phone))!;
+    const returnedToBarryAt = readControlLog(before).filter((x) => x.to === "barry").map((x) => x.at).sort().at(-1) ?? null;
+    const holderBefore = readControl(before).holder;
+    const transitionsBefore = readControlLog(before).filter((x) => x.to === "human").length;
+    const late = await echo(PN_A, BIZ, phone, text, { at: new Date(Date.now() - 120_000) });
+    const after = (await convo(BIZ, phone))!;
+    const signals = (await listTakeoverSignals(BIZ, conversationId)).filter((x) => x.messageId === late.id);
+    const signal = signals[0];
+    const entries = after.messages.filter((m) => m.content === text);
+    const inTranscriptAsPerson = entries.length === 1 && entries[0].role === "owner" && entries[0].author === TEAM_MEMBER;
+    const transitionsAfter = readControlLog(after).filter((x) => x.to === "human").length;
+    const ok = late.body.echoes?.[0]?.status === "recorded" && signals.length === 1 && signal?.applied?.outcome === "history_only" && inTranscriptAsPerson && readControl(after).holder === "barry" && transitionsAfter === transitionsBefore;
+    return {
+      ok,
+      detail: {
+        echoResponse: late.body.echoes ?? null,
+        durableSignals: signals.length,
+        durableSignal: signal ?? null,
+        appliedOutcome: signal?.applied?.outcome ?? "not applied",
+        signalAt: signal?.at ?? null,
+        signalReceivedAt: signal?.receivedAt ?? null,
+        returnedToBarryAt,
+        holderBefore,
+        holderAfter: readControl(after).holder,
+        transcriptEntries: entries.map((m) => ({ role: m.role, author: m.author ?? null, at: m.at, text: m.content })),
+        transcript: transcriptOf(after),
+        inTranscriptAsPerson,
+        barryToHumanTransitionsBefore: transitionsBefore,
+        barryToHumanTransitionsAfter: transitionsAfter,
+        controlLog: readControlLog(after),
+      },
+    };
+  };
   const lastDeliveryOf = async (businessId: string, phone: string) => {
     const c = await convo(businessId, phone);
     return c ? readDeliveries(c.knownFields).at(-1)?.status ?? "none" : "none";
@@ -269,9 +309,8 @@ export async function runCoexistenceAcceptance(creds: { appSecret: string }, opt
       check("takeover", "H: the same employee event again is idempotent (one transcript message, one takeover)", dup.body.echoes?.[0]?.status === "duplicate" && c3.messages.filter((m) => m.role === "owner").length === 1 && readControlLog(c3).filter((x) => x.to === "human").length === 1, { echo: dup.body.echoes, personMessages: c3.messages.filter((m) => m.role === "owner").length, takeoversInControlLog: readControlLog(c3).filter((x) => x.to === "human").length, holder: readControl(c3).holder });
       // J: give it back (the web's service), then an OLDER echo arrives late — history only, BARRY keeps it.
       await ownerReturnToBarry(resolveBusinessGraph(BIZ), `wa:${BIZ}:${P}`, "the owner (web)");
-      const late = await echo(PN_A, BIZ, P, "an older reply, delivered late", { at: new Date(Date.now() - 120_000) });
-      const c4 = (await convo(BIZ, P))!;
-      check("takeover", "J: a delayed / duplicate echo (written before the return) can't take the conversation back", late.body.echoes?.[0]?.status === "recorded" && readControl(c4).holder === "barry" && c4.messages.some((m) => m.content === "an older reply, delivered late" && m.role === "owner"), { echo: late.body.echoes, holder: readControl(c4).holder, controlLog: readControlLog(c4) });
+      const j = await delayedEcho(P, "an older reply, delivered late");
+      check("takeover", "J: a delayed / duplicate echo (written before the return) can't take the conversation back (history_only, kept as the person's message, holder BARRY, no new takeover)", j.ok, j.detail);
     }
 
     // ── race (N) ─────────────────────────────────────────────────────────────────────────────────────────
@@ -367,10 +406,8 @@ export async function runCoexistenceAcceptance(creds: { appSecret: string }, opt
       const webLog = await controlLogOf(BIZ, P);
       check("return", "K: the web handoff service returns it too", webAfter === "barry", { holderBefore: webBefore, holderAfter: webAfter, controlLog: webLog });
       // After that return: an OLD echo delivered late (written before the return) is history only — BARRY keeps it.
-      const lateBefore = await holder(BIZ, P);
-      const late = await echo(PN_A, BIZ, P, "an older reply from before the return, delivered late", { at: new Date(Date.now() - 120_000) });
-      const lateAfter = await holder(BIZ, P);
-      check("return", "J: an old delayed echo (written before the return) arriving after it doesn't take the conversation back", late.body.echoes?.[0]?.status === "recorded" && lateAfter === "barry", { holderBefore: lateBefore, echo: late.body.echoes, holderAfter: lateAfter, inTranscriptAsPerson: Boolean((await convo(BIZ, P))?.messages.some((m) => m.role === "owner" && m.content === "an older reply from before the return, delivered late")) });
+      const j = await delayedEcho(P, "an older reply from before the return, delivered late");
+      check("return", "J: an old delayed echo (written before the return) arriving after it doesn't take the conversation back (history_only, kept as the person's message, holder BARRY, no new takeover)", j.ok, j.detail);
       // Same-second ambiguity: an echo stamped in the SAME second as the return (Meta's timestamps are whole seconds, so
       // the order is unknowable) — the documented rule is that the person wins.
       const returnedAt = webLog.filter((x) => x.to === "barry").map((x) => x.at).sort().at(-1) ?? new Date().toISOString();

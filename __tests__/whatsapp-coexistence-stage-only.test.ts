@@ -160,6 +160,8 @@ describe("the stage reports expose the runner's evidence", () => {
     expect(detailOf(report, /^E: /)).toMatchObject({ sendsBefore: expect.any(Number), sendsAfter: expect.any(Number) });
     expect(detailOf(report, /^E: /).sendsAfter).toBe(detailOf(report, /^E: /).sendsBefore);
     expect(detailOf(report, /^H: /)).toMatchObject({ echo: [expect.objectContaining({ status: "duplicate" })], personMessages: 1, takeoversInControlLog: 1 });
+    expect(detailOf(report, /^J: /)).toMatchObject({ appliedOutcome: "history_only", durableSignals: 1, inTranscriptAsPerson: true, holderBefore: "barry", holderAfter: "barry", returnedToBarryAt: expect.any(String), signalAt: expect.any(String), signalReceivedAt: expect.any(String) });
+    expect(detailOf(report, /^J: /).barryToHumanTransitionsAfter).toBe(detailOf(report, /^J: /).barryToHumanTransitionsBefore);
     expect(detailOf(report, /^I: /)).toMatchObject({ echo: [expect.objectContaining({ status: "own_message" })], holderBefore: "barry", holderAfter: "barry", barryProviderMessageId: expect.stringMatching(/^wamid\.qa\.barry\./) });
   }, 180_000);
 
@@ -178,7 +180,12 @@ describe("the stage reports expose the runner's evidence", () => {
     const { report } = await postBody(stageRequestBodies(COEX_RETURN_ONLY)[0]);
     expect(detailOf(report, /^K: Owner BARRY WhatsApp/)).toMatchObject({ holderBefore: "human", holderAfter: "barry" });
     expect(detailOf(report, /^K: the web handoff/)).toMatchObject({ holderBefore: "human", holderAfter: "barry" });
-    expect(detailOf(report, /^J: an old delayed echo/)).toMatchObject({ holderBefore: "barry", holderAfter: "barry", echo: [expect.objectContaining({ status: "recorded" })], inTranscriptAsPerson: true });
+    const j = detailOf(report, /^J: an old delayed echo/);
+    expect(report.checks.find((c) => /^J: an old delayed echo/.test(c.name))?.ok).toBe(true);
+    expect(j).toMatchObject({ holderBefore: "barry", holderAfter: "barry", echoResponse: [expect.objectContaining({ status: "recorded", applied: true })], durableSignals: 1, appliedOutcome: "history_only", inTranscriptAsPerson: true, transcriptEntries: [expect.objectContaining({ role: "owner", author: expect.stringContaining("team member") })] });
+    expect(j.barryToHumanTransitionsAfter).toBe(j.barryToHumanTransitionsBefore);
+    expect(Date.parse(String(j.signalAt))).toBeLessThan(Date.parse(String(j.returnedToBarryAt)));
+    expect(j).toMatchObject({ signalReceivedAt: expect.any(String), durableSignal: expect.objectContaining({ applied: expect.objectContaining({ outcome: "history_only" }) }) });
     expect(detailOf(report, /^same-second ambiguity/)).toMatchObject({ holderBefore: "barry", holderAfter: "human", echo: [expect.objectContaining({ status: "recorded" })] });
     const same = detailOf(report, /^same-second ambiguity/);
     expect(same.echoTimestampSeconds).toBe(String(Math.floor(Date.parse(String(same.returnedAt)) / 1000)));

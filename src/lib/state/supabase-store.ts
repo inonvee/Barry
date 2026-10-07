@@ -3,12 +3,16 @@ import { ConversationConflictError, ConversationScopeError, createInitialConvers
 import { ConcurrencyGuardMissingError, guardMissing, isMissingFunction } from "./lock";
 import type { ConversationMessage, ConversationState, ConversationStore, ConversationSummary, TurnActivity, TurnLog } from "./types";
 
-// Tracks, per in-memory ConversationState object, how many messages/turns
+// Tracks, per in-memory ConversationState object, which messages (by object identity) and how many turns
 // have already been persisted — so save() only inserts what's new instead
 // of replaying the whole conversation on every turn. Relies on the runtime
 // threading the *same* object through getOrCreate()/get() -> mutate -> save()
 // within one request, which is how engine.ts uses this interface.
-const persistedCounts = new WeakMap<ConversationState, { messages: number; turns: number }>();
+// Messages by identity, not by count: a message inserted in time order INSIDE the transcript (a team member's
+// delayed WhatsApp echo, stamped before later messages) is new too — a count-based tail slice silently dropped it
+// and re-inserted the shifted last message instead. Rows are read back ordered by `at`, so position is kept.
+const persisted = new WeakMap<ConversationState, { messages: WeakSet<ConversationMessage>; turns: number }>();
+const markPersisted = (state: ConversationState) => persisted.set(state, { messages: new WeakSet(state.messages), turns: state.turns.length });
 
 function rowToState(
   row: Record<string, unknown>,
@@ -96,7 +100,7 @@ export class SupabaseConversationStore implements ConversationStore {
     }));
 
     const state = rowToState(convoRow, messages, turns);
-    persistedCounts.set(state, { messages: messages.length, turns: turns.length });
+    markPersisted(state);
     return state;
   }
 
@@ -129,7 +133,7 @@ export class SupabaseConversationStore implements ConversationStore {
       throw new Error(`Failed to create conversation ${id}: ${error.message}`);
     }
 
-    persistedCounts.set(fresh, { messages: 0, turns: 0 });
+    markPersisted(fresh);
     return { ...fresh, version: 0 };
   }
 
@@ -141,18 +145,18 @@ export class SupabaseConversationStore implements ConversationStore {
    */
   async save(state: ConversationState): Promise<void> {
     if (state.version === undefined) guardMissing("conversation read without a version column");
-    const prev = persistedCounts.get(state) ?? { messages: 0, turns: 0 };
+    const prev = persisted.get(state);
     const updatedAt = new Date().toISOString();
     const row = { stage: state.stage, detected_intent: state.detectedIntent ?? null, selected_offer_id: state.selectedOfferId ?? null, known_fields: state.knownFields, missing_fields: state.missingFields, objections: state.objections, pending_action: state.pendingAction ?? null, pending_approval_id: state.pendingApprovalId ?? null, outcome: state.outcome ?? null, updated_at: updatedAt };
-    const messages = state.messages.slice(prev.messages).map((m) => ({ role: m.role, content: m.content, at: m.at, ...(m.rich ? { rich: m.rich } : {}), ...(m.author ? { author: m.author } : {}) }));
-    const turns = state.turns.slice(prev.turns).map((t) => ({ id: t.id, at: t.at, customer_message: t.customerMessage, understood: t.understood, retrieved: t.retrieved, goal: t.goal ?? null, selected_action: t.selectedAction ?? null, policy_decision: t.policyDecision ?? null, tool_result: t.toolResult ?? null, response: t.response, state_after: t.stateAfter, reasoner: t.reasoner, trace: t.trace ?? null, verification: t.verification ?? null, compiled: t.compiled ?? null }));
+    const messages = state.messages.filter((m) => !prev?.messages.has(m)).map((m) => ({ role: m.role, content: m.content, at: m.at, ...(m.rich ? { rich: m.rich } : {}), ...(m.author ? { author: m.author } : {}) }));
+    const turns = state.turns.slice(prev?.turns ?? 0).map((t) => ({ id: t.id, at: t.at, customer_message: t.customerMessage, understood: t.understood, retrieved: t.retrieved, goal: t.goal ?? null, selected_action: t.selectedAction ?? null, policy_decision: t.policyDecision ?? null, tool_result: t.toolResult ?? null, response: t.response, state_after: t.stateAfter, reasoner: t.reasoner, trace: t.trace ?? null, verification: t.verification ?? null, compiled: t.compiled ?? null }));
     const { data, error } = await getSupabaseClient().rpc("barry_save_conversation", { p_id: state.id, p_expected_version: state.version, p_row: row, p_messages: messages, p_turns: turns });
     if (isMissingFunction(error)) guardMissing("atomic conversation save unavailable");
     if (error) throw new Error(`Failed to save conversation ${state.id}: ${error.message}`);
     if (data === null || data === undefined) throw new ConversationConflictError(state.id);
     state.updatedAt = updatedAt;
     state.version = Number(data);
-    persistedCounts.set(state, { messages: state.messages.length, turns: state.turns.length });
+    markPersisted(state);
   }
 
   async listByBusiness(businessId: string): Promise<ConversationState[]> {
