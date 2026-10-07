@@ -43,6 +43,8 @@ const BIZ = ACCEPTANCE_BUSINESS;
 
 export const COEX_STAGES = ["routing", "takeover", "race", "return", "isolation"] as const;
 export type CoexStage = (typeof COEX_STAGES)[number];
+/** The QA page's routing-only control: exactly this stage list, nothing else. */
+export const COEX_ROUTING_ONLY: readonly CoexStage[] = ["routing"];
 export type CoexCheck = { stage: CoexStage | "preflight" | "restore"; name: string; ok: boolean; detail?: unknown };
 export type CoexReport = {
   runId: string;

@@ -30,12 +30,17 @@ async function post(endpoint: string, body: Record<string, unknown>, signal?: Ab
   }
 }
 
+/** The exact request each stage sends: one POST per stage, carrying ONLY that stage (pure — tested). */
+export function stageRequestBodies(stages: readonly string[]): { stages: string[] }[] {
+  return stages.map((stage) => ({ stages: [stage] }));
+}
+
 /**
  * One click: every stage as its own POST, one after another (each fits Vercel's 300s limit), live progress, stop
  * at the first failure or timeout, then restore the test business (retrying while a killed stage's lock expires).
  * No logic of its own beyond sequencing — every check runs on the server; this page only sends the HQ cookie.
  */
-export function SequentialRunner({ stages, endpoint = DEFAULT_ENDPOINT, label = "Run full Owner WhatsApp acceptance" }: { stages: readonly string[]; endpoint?: string; label?: string }) {
+export function SequentialRunner({ stages, endpoint = DEFAULT_ENDPOINT, label = "Run full Owner WhatsApp acceptance", evidenceCheck }: { stages: readonly string[]; endpoint?: string; label?: string; /** Always show this check's evidence (by name prefix), pass or fail. */ evidenceCheck?: string }) {
   const [runs, setRuns] = useState<StageRun[]>(() => stages.map((stage) => ({ stage, status: "pending" })));
   const [active, setActive] = useState(false);
   const [restore, setRestore] = useState<RestoreState>({ status: "idle" });
@@ -82,14 +87,15 @@ export function SequentialRunner({ stages, endpoint = DEFAULT_ENDPOINT, label = 
     await restoreBusiness("before the run");
     setPreflight(null);
     let stopAt: number | null = null;
-    for (const [i, stage] of stages.entries()) {
+    const bodies = stageRequestBodies(stages);
+    for (const i of stages.keys()) {
       const startedAt = Date.now();
       update(i, { status: "running", startedAt });
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), CLIENT_TIMEOUT_MS);
       let patch: Partial<StageRun>;
       try {
-        const r = await post(endpoint, { stages: [stage] }, controller.signal);
+        const r = await post(endpoint, bodies[i], controller.signal);
         const ms = Date.now() - startedAt;
         if (r.status === 200 && r.json.verdict === "PASS") patch = { status: "pass", ms, httpStatus: r.status, runId: r.json.runId, report: r.json };
         else if (r.status === 504 || r.json.timedOut || /FUNCTION_INVOCATION_TIMEOUT|timed out/i.test(r.text ?? "")) patch = { status: "timeout", ms, httpStatus: r.status, runId: r.json.runId, report: r.json, why: r.json.error ?? "the function hit its time limit" };
@@ -177,6 +183,17 @@ export function SequentialRunner({ stages, endpoint = DEFAULT_ENDPOINT, label = 
             </div>
           ))}
           {!stopped.report?.checks && stopped.report && <pre style={{ fontSize: 11, whiteSpace: "pre-wrap" }}>{JSON.stringify(stopped.report, null, 1)}</pre>}
+        </section>
+      )}
+
+      {evidenceCheck && allChecks.some((c) => c.name.startsWith(evidenceCheck)) && (
+        <section style={{ border: "1px solid #8888", borderRadius: 6, padding: 10 }}>
+          {allChecks.filter((c) => c.name.startsWith(evidenceCheck)).map((c, i) => (
+            <div key={i}>
+              <div style={{ fontWeight: 600, color: c.ok ? "#15803d" : "#b91c1c" }}>{c.ok ? "PASS" : "FAIL"} — {c.name}</div>
+              <pre style={{ fontSize: 11, whiteSpace: "pre-wrap", margin: "4px 0 0" }}>{JSON.stringify(c.detail ?? "no evidence recorded", null, 1)}</pre>
+            </div>
+          ))}
         </section>
       )}
 
