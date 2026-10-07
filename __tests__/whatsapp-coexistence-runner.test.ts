@@ -68,4 +68,32 @@ describe("mechanics", () => {
       expect(report.checks.find((c) => /^realGraphSendAttempts === 0/.test(c.name))).toMatchObject({ ok: true });
     }
   }, 300_000);
+
+  it("REGRESSION (deployed coex-1791228135489): the first turn legitimately hands off → B still proves the INITIAL holder was BARRY, with full evidence", async () => {
+    setReasonerForTests(new ScriptedModel((ctx) => (/open on Friday/i.test(ctx.customerMessage ?? "") ? ({ handoff: { reason: "The customer asked something only the team can answer.", urgency: "normal" }, advancesTransaction: false } as never) : undefined)));
+    const report = await runCoexistenceAcceptance({ appSecret: "test-app-secret" }, { controlLine: "PNID-T", stages: ["routing"], runId: `coex-${Date.now()}` });
+    const b = report.checks.find((c) => /^B: /.test(c.name))!;
+    expect(b.ok).toBe(true);
+    expect(b.detail).toMatchObject({ initialHolder: "barry", finalHolder: "human", openHandoffAfterTurn: true });
+    expect((b.detail as { controlLog: { from: string; to: string }[] }).controlLog).toEqual([expect.objectContaining({ from: "barry", to: "human" })]);
+  }, 120_000);
+
+  it("B FAILS — with the observed holder — when the conversation did not start with BARRY (never evidence-less)", async () => {
+    const { getConversationStore: store } = await import("@/lib/state");
+    const { giveToHuman } = await import("@/lib/runtime/control");
+    const runId = `coex-${Date.now()}`;
+    const d6 = String(parseInt(runId.replace(/\D/g, "").slice(-7), 10)).padStart(7, "0").slice(1);
+    const phone = `99956${d6}1`;
+    const id = `wa:fashion-retailer:${phone}`;
+    // The conversation already exists, held by a person, before the stage's first customer message.
+    const st = await store().getOrCreate(id, "fashion-retailer", `wa:${phone}`);
+    giveToHuman(st, "the owner (web)", "test: already held");
+    await store().save(st);
+    const report = await runCoexistenceAcceptance({ appSecret: "test-app-secret" }, { controlLine: "PNID-T", stages: ["routing"], runId });
+    const b = report.checks.find((c) => /^B: /.test(c.name))!;
+    expect(b.ok).toBe(false);
+    expect(b.detail).toMatchObject({ initialHolder: "human", finalHolder: "human", openHandoffAfterTurn: false });
+    expect((b.detail as { initialControlLog: unknown[] }).initialControlLog).toEqual([expect.objectContaining({ to: "human", by: "the owner (web)" })]);
+    expect(await store().get(id)).toBeUndefined();
+  }, 120_000);
 });

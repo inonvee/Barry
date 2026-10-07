@@ -8,6 +8,7 @@ import { getReasoner } from "@/lib/reasoner";
 import { isSupabaseConfigured } from "@/lib/store/supabase-client";
 import { applyControlChange, loadControls } from "@/lib/hq/controls";
 import { readControl, readControlLog } from "@/lib/runtime/control";
+import { readHandoffs } from "@/lib/runtime/handoff";
 import { readDeliveries, setGatewayHookForConversation } from "@/lib/channels/gateway";
 import { observeGraphSends, whatsappRoleRouting, whatsappSendModes, type GraphSendAttempt } from "@/lib/channels/whatsapp";
 import { setRoleSendersOverride } from "@/lib/channels/role-routing";
@@ -187,12 +188,34 @@ export async function runCoexistenceAcceptance(creds: { appSecret: string }, opt
 
     // ── routing (A, B, C, M) ─────────────────────────────────────────────────────────────────────────────
     if (opts.stages.includes("routing")) {
-      const a = await customer(PN_A, BIZ, CUST(1), "Hi, are you open on Friday?");
+      // B is about the INITIAL holder: captured at the turn's beforeReasoning point — the conversation exists and pending
+      // takeovers were applied, but the reasoner has not run, so nothing in the turn (e.g. a legitimate handoff) can
+      // have changed it yet. The final holder is reported separately (the turn may hand off, which is not a failure of B).
+      let initialHolder = "not captured (the beforeReasoning point was never reached)";
+      let initialLog: unknown[] = [];
+      const removeHook = setGatewayHookForConversation(`wa:${BIZ}:${CUST(1)}`, "beforeReasoning", async () => {
+        const st = await getConversationStore().get(`wa:${BIZ}:${CUST(1)}`);
+        initialHolder = st ? readControl(st).holder : "none (the conversation did not exist yet)";
+        initialLog = st ? readControlLog(st) : [];
+      });
+      let a: Awaited<ReturnType<typeof customer>>;
+      try {
+        a = await customer(PN_A, BIZ, CUST(1), "Hi, are you open on Friday?");
+      } finally {
+        removeHook();
+      }
       const b = await customer(PN_B, OTHER, CUST(1), "Hi, are you open on Friday?");
       const x = await customer(PN_X, BIZ, CUST(2), "Hello?");
       check("routing", "A: each business number routes to ITS business only (same customer, two businesses, two conversations)", a.status === 200 && b.status === 200 && Boolean(await convo(BIZ, CUST(1))) && Boolean(await convo(OTHER, CUST(1))), { a: a.status, b: b.status });
       check("routing", "M: an unregistered number routes nowhere (no conversation in any business)", x.status === 200 && !(await convo(BIZ, CUST(2))) && !(await convo(OTHER, CUST(2))), { status: x.status });
-      check("routing", "B: BARRY owns a new conversation by default", (await holder(BIZ, CUST(1))) === "barry");
+      const after = await convo(BIZ, CUST(1));
+      check("routing", "B: BARRY owns a new conversation by default (holder captured before the first turn could change it)", initialHolder === "barry", {
+        initialHolder,
+        initialControlLog: initialLog,
+        finalHolder: after ? readControl(after).holder : "none",
+        controlLog: after ? readControlLog(after) : [],
+        openHandoffAfterTurn: after ? readHandoffs(after).some((h) => h.status !== "resolved") : false,
+      });
       const c = await convo(BIZ, CUST(1));
       check("routing", "C: the customer's message reached BARRY and BARRY answered (recorded stand-in, nothing sent)", c?.messages[0]?.role === "customer" && c.messages.some((m) => m.role === "barry") && sentTo(CUST(1)) >= 1, { messages: c?.messages.map((m) => m.role), sends: sentTo(CUST(1)) });
       let refused = "";
@@ -292,7 +315,8 @@ export async function runCoexistenceAcceptance(creds: { appSecret: string }, opt
       await echo(PN_A, BIZ, P, "Hi, it's the shop");
       await customer(PN_A, BIZ, P, "תחזיר לברי", { name });
       await customer(PN_A, BIZ, P, "give it back to BARRY", { name });
-      check("return", "L: the customer can't return the conversation to BARRY", (await holder(BIZ, P)) === "human");
+      const lHolder = await holder(BIZ, P);
+      check("return", "L: the customer can't return the conversation to BARRY", lHolder === "human", { observedHolder: lHolder });
       // K: the owner, from Owner BARRY on BARRY's control number (verified, linked for this run).
       const { code } = await createLinkCode(BIZ);
       const linked = await customer(opts.controlLine, BIZ, OWNER, `LINK ${code}`);
