@@ -35,12 +35,17 @@ export function stageRequestBodies(stages: readonly string[]): { stages: string[
   return stages.map((stage) => ({ stages: [stage] }));
 }
 
+/** The checks whose evidence is always shown, pass or fail: by name prefix and/or by stage (pure — tested). */
+export function evidenceChecks<C extends { stage: string; name: string }>(checks: C[], o: { evidenceCheck?: string; evidenceStage?: string }): C[] {
+  return checks.filter((c) => (o.evidenceCheck !== undefined && c.name.startsWith(o.evidenceCheck)) || (o.evidenceStage !== undefined && c.stage === o.evidenceStage));
+}
+
 /**
  * One click: every stage as its own POST, one after another (each fits Vercel's 300s limit), live progress, stop
  * at the first failure or timeout, then restore the test business (retrying while a killed stage's lock expires).
  * No logic of its own beyond sequencing — every check runs on the server; this page only sends the HQ cookie.
  */
-export function SequentialRunner({ stages, endpoint = DEFAULT_ENDPOINT, label = "Run full Owner WhatsApp acceptance", evidenceCheck }: { stages: readonly string[]; endpoint?: string; label?: string; /** Always show this check's evidence (by name prefix), pass or fail. */ evidenceCheck?: string }) {
+export function SequentialRunner({ stages, endpoint = DEFAULT_ENDPOINT, label = "Run full Owner WhatsApp acceptance", evidenceCheck, evidenceStage }: { stages: readonly string[]; endpoint?: string; label?: string; /** Always show this check's evidence (by name prefix), pass or fail. */ evidenceCheck?: string; /** Always show the evidence of EVERY check of this stage, pass or fail. */ evidenceStage?: string }) {
   const [runs, setRuns] = useState<StageRun[]>(() => stages.map((stage) => ({ stage, status: "pending" })));
   const [active, setActive] = useState(false);
   const [restore, setRestore] = useState<RestoreState>({ status: "idle" });
@@ -186,9 +191,9 @@ export function SequentialRunner({ stages, endpoint = DEFAULT_ENDPOINT, label = 
         </section>
       )}
 
-      {evidenceCheck && allChecks.some((c) => c.name.startsWith(evidenceCheck)) && (
+      {evidenceChecks(allChecks, { evidenceCheck, evidenceStage }).length > 0 && (
         <section style={{ border: "1px solid #8888", borderRadius: 6, padding: 10 }}>
-          {allChecks.filter((c) => c.name.startsWith(evidenceCheck)).map((c, i) => (
+          {evidenceChecks(allChecks, { evidenceCheck, evidenceStage }).map((c, i) => (
             <div key={i}>
               <div style={{ fontWeight: 600, color: c.ok ? "#15803d" : "#b91c1c" }}>{c.ok ? "PASS" : "FAIL"} — {c.name}</div>
               <pre style={{ fontSize: 11, whiteSpace: "pre-wrap", margin: "4px 0 0" }}>{JSON.stringify(c.detail ?? "no evidence recorded", null, 1)}</pre>

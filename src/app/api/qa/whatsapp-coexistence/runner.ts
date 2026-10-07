@@ -36,7 +36,8 @@ const BIZ = ACCEPTANCE_BUSINESS;
  *   takeover   D employee echo → HUMAN · E BARRY silent · F customer kept · G person-authored · H duplicate · I BARRY's own
  *              message ignored · J delayed echo can't take it back
  *   race       N the employee wins at every race point (before / during reasoning, before send, right after, reordered)
- *   return     K owner returns it (Owner BARRY WhatsApp + the web service) · L the customer can't
+ *   return     K owner returns it (Owner BARRY WhatsApp + the web service) · L the customer can't · J an old delayed
+ *              echo after the return stays history · same-second echo → the person wins
  *   isolation  M cross-tenant: another business's echo / number / owner can't touch this conversation
  *   (every stage) O realGraphSendAttempts = 0 · P full restore / cleanup
  */
@@ -45,6 +46,11 @@ export const COEX_STAGES = ["routing", "takeover", "race", "return", "isolation"
 export type CoexStage = (typeof COEX_STAGES)[number];
 /** The QA page's routing-only control: exactly this stage list, nothing else. */
 export const COEX_ROUTING_ONLY: readonly CoexStage[] = ["routing"];
+/** The QA page's other stage-only controls: each runs exactly ONE stage (same preflight, restore and cleanup). */
+export const COEX_TAKEOVER_ONLY: readonly CoexStage[] = ["takeover"];
+export const COEX_RACE_ONLY: readonly CoexStage[] = ["race"];
+export const COEX_RETURN_ONLY: readonly CoexStage[] = ["return"];
+export const COEX_ISOLATION_ONLY: readonly CoexStage[] = ["isolation"];
 export type CoexCheck = { stage: CoexStage | "preflight" | "restore"; name: string; ok: boolean; detail?: unknown };
 export type CoexReport = {
   runId: string;
@@ -157,6 +163,16 @@ export async function runCoexistenceAcceptance(creds: { appSecret: string }, opt
     return c ? readControl(c).holder : "none";
   };
   const sentTo = (phone: string) => barrySends.filter((s) => s.to === phone).length;
+  // Evidence only (reads; changes nothing).
+  const controlLogOf = async (businessId: string, phone: string) => {
+    const c = await convo(businessId, phone);
+    return c ? readControlLog(c) : [];
+  };
+  const transcriptOf = (c: { messages: { role: string; author?: string; content: string; at: string }[] } | undefined) => (c?.messages ?? []).map((m) => ({ role: m.role, ...(m.author ? { author: m.author } : {}), at: m.at, text: short(m.content, 80) }));
+  const lastDeliveryOf = async (businessId: string, phone: string) => {
+    const c = await convo(businessId, phone);
+    return c ? readDeliveries(c.knownFields).at(-1)?.status ?? "none" : "none";
+  };
 
   // ── Preflight: recover, sweep stale synthetic identities, restore point, known start; synthetic numbers ─────
   const by = `founder (qa whatsapp-coexistence ${runId})`;
@@ -235,24 +251,27 @@ export async function runCoexistenceAcceptance(creds: { appSecret: string }, opt
       await customer(PN_A, BIZ, P, "Can I book tomorrow?");
       const before = sentTo(P);
       const barryId = readDeliveries((await convo(BIZ, P))?.knownFields ?? {}).map((d) => d.providerMessageId).filter(Boolean).at(-1);
+      const holderBeforeOwn = await holder(BIZ, P);
       const own = barryId ? await echo(PN_A, BIZ, P, "(BARRY's own reply)", { id: barryId }) : undefined;
-      check("takeover", "I: BARRY's own API message is NOT an employee takeover (an echo with BARRY's provider id is ignored)", Boolean(barryId) && own?.body.echoes?.[0]?.status === "own_message" && (await holder(BIZ, P)) === "barry", { echo: own?.body.echoes });
+      const holderAfterOwn = await holder(BIZ, P);
+      check("takeover", "I: BARRY's own API message is NOT an employee takeover (an echo with BARRY's provider id is ignored)", Boolean(barryId) && own?.body.echoes?.[0]?.status === "own_message" && holderAfterOwn === "barry", { barryProviderMessageId: barryId ?? "none (BARRY sent nothing)", echo: own?.body.echoes ?? "not sent", holderBefore: holderBeforeOwn, holderAfter: holderAfterOwn, controlLog: await controlLogOf(BIZ, P) });
+      const holderBeforeTakeover = await holder(BIZ, P);
       const e = await echo(PN_A, BIZ, P, "Hi! I'll check tomorrow for you.", { id: `wamid.qa.echo.${runId}.takeover` });
       const c1 = (await convo(BIZ, P))!;
-      check("takeover", "D: a verified employee echo changes the holder to HUMAN (the existing handoff control, audited)", e.body.echoes?.[0]?.status === "recorded" && readControl(c1).holder === "human" && readControl(c1).by === TEAM_MEMBER && readControlLog(c1).some((x) => x.to === "human" && x.by === TEAM_MEMBER), { echo: e.body.echoes, control: readControl(c1) });
-      check("takeover", "G: the employee's message is in the transcript as a PERSON's (never BARRY's), in order", c1.messages.some((m) => m.role === "owner" && m.author === TEAM_MEMBER && m.content === "Hi! I'll check tomorrow for you.") && !c1.messages.some((m) => m.role === "barry" && m.content === "Hi! I'll check tomorrow for you."), c1.messages.map((m) => `${m.role}${m.author ? `(${m.author})` : ""}`));
+      check("takeover", "D: a verified employee echo changes the holder to HUMAN (the existing handoff control, audited)", e.body.echoes?.[0]?.status === "recorded" && readControl(c1).holder === "human" && readControl(c1).by === TEAM_MEMBER && readControlLog(c1).some((x) => x.to === "human" && x.by === TEAM_MEMBER), { holderBefore: holderBeforeTakeover, echo: e.body.echoes, holderAfter: readControl(c1).holder, control: readControl(c1), controlLog: readControlLog(c1) });
+      check("takeover", "G: the employee's message is in the transcript as a PERSON's (never BARRY's), in order", c1.messages.some((m) => m.role === "owner" && m.author === TEAM_MEMBER && m.content === "Hi! I'll check tomorrow for you.") && !c1.messages.some((m) => m.role === "barry" && m.content === "Hi! I'll check tomorrow for you."), { holder: readControl(c1).holder, transcript: transcriptOf(c1) });
       await customer(PN_A, BIZ, P, "Great, 3pm?");
       const c2 = (await convo(BIZ, P))!;
-      check("takeover", "E: BARRY is silent immediately (no reply after the takeover)", sentTo(P) === before && c2.messages.at(-1)?.role === "customer", { sendsBefore: before, sendsAfter: sentTo(P) });
-      check("takeover", "F: customer messages keep being stored while a person holds it", c2.messages.at(-1)?.content === "Great, 3pm?");
+      check("takeover", "E: BARRY is silent immediately (no reply after the takeover)", sentTo(P) === before && c2.messages.at(-1)?.role === "customer", { sendsBefore: before, sendsAfter: sentTo(P), holder: readControl(c2).holder, lastMessage: transcriptOf(c2).at(-1) });
+      check("takeover", "F: customer messages keep being stored while a person holds it", c2.messages.at(-1)?.content === "Great, 3pm?", { holder: readControl(c2).holder, lastMessage: transcriptOf(c2).at(-1) });
       const dup = await echo(PN_A, BIZ, P, "Hi! I'll check tomorrow for you.", { id: `wamid.qa.echo.${runId}.takeover` });
       const c3 = (await convo(BIZ, P))!;
-      check("takeover", "H: the same employee event again is idempotent (one transcript message, one takeover)", dup.body.echoes?.[0]?.status === "duplicate" && c3.messages.filter((m) => m.role === "owner").length === 1 && readControlLog(c3).filter((x) => x.to === "human").length === 1, { echo: dup.body.echoes });
+      check("takeover", "H: the same employee event again is idempotent (one transcript message, one takeover)", dup.body.echoes?.[0]?.status === "duplicate" && c3.messages.filter((m) => m.role === "owner").length === 1 && readControlLog(c3).filter((x) => x.to === "human").length === 1, { echo: dup.body.echoes, personMessages: c3.messages.filter((m) => m.role === "owner").length, takeoversInControlLog: readControlLog(c3).filter((x) => x.to === "human").length, holder: readControl(c3).holder });
       // J: give it back (the web's service), then an OLDER echo arrives late — history only, BARRY keeps it.
       await ownerReturnToBarry(resolveBusinessGraph(BIZ), `wa:${BIZ}:${P}`, "the owner (web)");
       const late = await echo(PN_A, BIZ, P, "an older reply, delivered late", { at: new Date(Date.now() - 120_000) });
       const c4 = (await convo(BIZ, P))!;
-      check("takeover", "J: a delayed / duplicate echo (written before the return) can't take the conversation back", late.body.echoes?.[0]?.status === "recorded" && readControl(c4).holder === "barry" && c4.messages.some((m) => m.content === "an older reply, delivered late" && m.role === "owner"), { holder: readControl(c4).holder });
+      check("takeover", "J: a delayed / duplicate echo (written before the return) can't take the conversation back", late.body.echoes?.[0]?.status === "recorded" && readControl(c4).holder === "barry" && c4.messages.some((m) => m.content === "an older reply, delivered late" && m.role === "owner"), { echo: late.body.echoes, holder: readControl(c4).holder, controlLog: readControlLog(c4) });
     }
 
     // ── race (N) ─────────────────────────────────────────────────────────────────────────────────────────
@@ -263,9 +282,11 @@ export async function runCoexistenceAcceptance(creds: { appSecret: string }, opt
         const P = CUST(4);
         await customer(PN_A, BIZ, P, "Hello");
         const before = sentTo(P);
+        const holderBeforeEcho = await holder(BIZ, P);
         await echo(PN_A, BIZ, P, "Got it");
+        const holderAfterEcho = await holder(BIZ, P);
         await customer(PN_A, BIZ, P, "Can I book tomorrow?");
-        results.beforeReasoning = { holder: await holder(BIZ, P), newSends: sentTo(P) - before };
+        results.beforeReasoning = { holderBeforeEcho, holderAfterEcho, holder: await holder(BIZ, P), sendsBefore: before, sendsAfter: sentTo(P), newSends: sentTo(P) - before, lastDelivery: await lastDeliveryOf(BIZ, P) };
         check("race", "N: employee replied BEFORE BARRY reasons → BARRY doesn't reply", (await holder(BIZ, P)) === "human" && sentTo(P) === before, results.beforeReasoning);
       }
       // N2 / N3: during reasoning, and after reasoning before the send (the deployment's own race points).
@@ -274,7 +295,10 @@ export async function runCoexistenceAcceptance(creds: { appSecret: string }, opt
         await customer(PN_A, BIZ, P, "Hello");
         const before = sentTo(P);
         const conversationId = `wa:${BIZ}:${P}`;
+        let holderAtRacePoint = "not captured (the race point was never reached)";
         const remove = setGatewayHookForConversation(conversationId, point, async () => {
+          const st = await getConversationStore().get(conversationId);
+          holderAtRacePoint = st ? readControl(st).holder : "none";
           // What the webhook does first when the employee's echo lands mid-turn: the durable signal, no lock.
           await recordEcho({ lineId: PN_A, businessId: BIZ, messageId: `wamid.qa.echo.${runId}.race.${point}`, customer: P, at: new Date().toISOString(), type: "text", text: "I'll take this one" });
         });
@@ -288,7 +312,7 @@ export async function runCoexistenceAcceptance(creds: { appSecret: string }, opt
         const last = readDeliveries(c.knownFields).at(-1);
         // A redelivery of the same customer message must never send the suppressed reply later.
         await customer(PN_A, BIZ, P, "Can I book tomorrow?", { id: inbound });
-        results[point] = { holder: readControl(c).holder, lastDelivery: last?.status, newSends: sentTo(P) - before };
+        results[point] = { holderAtRacePoint, holder: readControl(c).holder, lastDelivery: last?.status, sendsBefore: before, sendsAfter: sentTo(P), newSends: sentTo(P) - before };
         check("race", `N: employee replies ${point === "beforeReasoning" ? "WHILE BARRY reasons" : "after BARRY reasoned, before its reply leaves"} → BARRY's reply is SUPPRESSED (not sent, never retried); the person holds it`, readControl(c).holder === "human" && last?.status === "suppressed" && sentTo(P) === before && c.messages.some((m) => m.role === "owner" && m.content === "I'll take this one"), results[point]);
       }
       // N4: echo and customer message delivered concurrently, and the echo redelivered out of order.
@@ -296,6 +320,7 @@ export async function runCoexistenceAcceptance(creds: { appSecret: string }, opt
         const P = CUST(7);
         await customer(PN_A, BIZ, P, "Hello");
         const before = sentTo(P);
+        const holderBefore = await holder(BIZ, P);
         const id = `wamid.qa.echo.${runId}.race.concurrent`;
         await Promise.all([customer(PN_A, BIZ, P, "Is 3pm free?"), echo(PN_A, BIZ, P, "Let me check", { id })]);
         await echo(PN_A, BIZ, P, "Let me check", { id });
@@ -304,7 +329,7 @@ export async function runCoexistenceAcceptance(creds: { appSecret: string }, opt
         // before it is the only possible earlier send — and then BARRY still steps out).
         const recordedAt = (await listTakeoverSignals(BIZ, `wa:${BIZ}:${P}`)).find((x) => x.messageId === id)?.receivedAt ?? new Date(0).toISOString();
         const sendsAfterEcho = barrySends.filter((s) => s.to === P && Date.parse(s.at) > Date.parse(recordedAt));
-        results.concurrent = { holder: readControl(c).holder, newSends: sentTo(P) - before, sendsAfterEcho: sendsAfterEcho.length, takeovers: readControlLog(c).filter((x) => x.to === "human").length };
+        results.concurrent = { holderBefore, holder: readControl(c).holder, sendsBefore: before, sendsAfter: sentTo(P), newSends: sentTo(P) - before, sendsAfterEcho: sendsAfterEcho.length, lastDelivery: readDeliveries(c.knownFields).at(-1)?.status ?? "none", takeovers: readControlLog(c).filter((x) => x.to === "human").length };
         check("race", "N: concurrent + reordered delivery → the person holds it, one takeover, and nothing of BARRY's leaves after the employee's reply", readControl(c).holder === "human" && sendsAfterEcho.length === 0 && readControlLog(c).filter((x) => x.to === "human").length === 1, results.concurrent);
       }
     }
@@ -315,26 +340,44 @@ export async function runCoexistenceAcceptance(creds: { appSecret: string }, opt
       const name = qaName(runId, 8);
       await customer(PN_A, BIZ, P, "Hello", { name });
       await echo(PN_A, BIZ, P, "Hi, it's the shop");
+      const lBefore = await holder(BIZ, P);
       await customer(PN_A, BIZ, P, "תחזיר לברי", { name });
       await customer(PN_A, BIZ, P, "give it back to BARRY", { name });
       const lHolder = await holder(BIZ, P);
-      check("return", "L: the customer can't return the conversation to BARRY", lHolder === "human", { observedHolder: lHolder });
+      check("return", "L: the customer can't return the conversation to BARRY", lHolder === "human", { holderBefore: lBefore, observedHolder: lHolder, controlLog: await controlLogOf(BIZ, P) });
       // K: the owner, from Owner BARRY on BARRY's control number (verified, linked for this run).
       const { code } = await createLinkCode(BIZ);
       const linked = await customer(opts.controlLine, BIZ, OWNER, `LINK ${code}`);
       const ask = await customer(opts.controlLine, BIZ, OWNER, "מי נמצא כרגע אצל עובד?");
       const askRec = (await listCommandRecords(BIZ)).find((r) => r.key === `whatsapp:${ask.id}`);
       check("return", "the owner asks “who's with an employee?” and hears it in plain words", linked.body.roles?.[0]?.role === "owner" && askRec?.intent?.kind === "query" && new RegExp(name).test(askRec.reply?.text ?? "") && !/echo|webhook|holder|lease|Cloud API/i.test(askRec?.reply?.text ?? ""), { reply: short(askRec?.reply?.text, 400) });
+      const kBefore = await holder(BIZ, P);
       const back = await customer(opts.controlLine, BIZ, OWNER, `תחזיר את השיחה עם ${name} לברי`);
       const backRec = (await listCommandRecords(BIZ)).find((r) => r.key === `whatsapp:${back.id}`);
-      check("return", "K: Owner BARRY WhatsApp “תחזיר את השיחה עם X לברי” returns it to BARRY (same handoff service)", backRec?.intent?.kind === "conversation_giveback" && (await holder(BIZ, P)) === "barry", { reply: short(backRec?.reply?.text) });
+      const kAfter = await holder(BIZ, P);
+      check("return", "K: Owner BARRY WhatsApp “תחזיר את השיחה עם X לברי” returns it to BARRY (same handoff service)", backRec?.intent?.kind === "conversation_giveback" && kAfter === "barry", { holderBefore: kBefore, holderAfter: kAfter, intent: backRec?.intent?.kind ?? "none", reply: short(backRec?.reply?.text), controlLog: await controlLogOf(BIZ, P) });
       const before = sentTo(P);
       await customer(PN_A, BIZ, P, "So, are you open Friday?", { name });
-      check("return", "BARRY continues from the current state with the NEXT message (nothing replayed)", sentTo(P) === before + 1, { newSends: sentTo(P) - before });
+      check("return", "BARRY continues from the current state with the NEXT message (nothing replayed)", sentTo(P) === before + 1, { sendsBefore: before, sendsAfter: sentTo(P), newSends: sentTo(P) - before, holder: await holder(BIZ, P) });
       // The web path (same service) after another employee takeover.
       await echo(PN_A, BIZ, P, "Actually I'll answer that");
+      const webBefore = await holder(BIZ, P);
       await ownerReturnToBarry(resolveBusinessGraph(BIZ), `wa:${BIZ}:${P}`, "the owner (web)");
-      check("return", "K: the web handoff service returns it too", (await holder(BIZ, P)) === "barry");
+      const webAfter = await holder(BIZ, P);
+      const webLog = await controlLogOf(BIZ, P);
+      check("return", "K: the web handoff service returns it too", webAfter === "barry", { holderBefore: webBefore, holderAfter: webAfter, controlLog: webLog });
+      // After that return: an OLD echo delivered late (written before the return) is history only — BARRY keeps it.
+      const lateBefore = await holder(BIZ, P);
+      const late = await echo(PN_A, BIZ, P, "an older reply from before the return, delivered late", { at: new Date(Date.now() - 120_000) });
+      const lateAfter = await holder(BIZ, P);
+      check("return", "J: an old delayed echo (written before the return) arriving after it doesn't take the conversation back", late.body.echoes?.[0]?.status === "recorded" && lateAfter === "barry", { holderBefore: lateBefore, echo: late.body.echoes, holderAfter: lateAfter, inTranscriptAsPerson: Boolean((await convo(BIZ, P))?.messages.some((m) => m.role === "owner" && m.content === "an older reply from before the return, delivered late")) });
+      // Same-second ambiguity: an echo stamped in the SAME second as the return (Meta's timestamps are whole seconds, so
+      // the order is unknowable) — the documented rule is that the person wins.
+      const returnedAt = webLog.filter((x) => x.to === "barry").map((x) => x.at).sort().at(-1) ?? new Date().toISOString();
+      const sameBefore = await holder(BIZ, P);
+      const same = await echo(PN_A, BIZ, P, "a reply in the same second as the return", { at: new Date(returnedAt) });
+      const sameAfter = await holder(BIZ, P);
+      check("return", "same-second ambiguity: an echo in the same second as the return → the person wins (holder HUMAN)", same.body.echoes?.[0]?.status === "recorded" && sameAfter === "human", { returnedAt, echoTimestampSeconds: ts(new Date(returnedAt)), holderBefore: sameBefore, echo: same.body.echoes, holderAfter: sameAfter });
     }
 
     // ── isolation (M) ───────────────────────────────────────────────────────────────────────────────────
@@ -342,15 +385,39 @@ export async function runCoexistenceAcceptance(creds: { appSecret: string }, opt
       const P = CUST(1);
       await customer(PN_A, BIZ, P, "Hello A");
       await customer(PN_B, OTHER, P, "Hello B");
-      await echo(PN_B, OTHER, P, "B's team here");
-      check("isolation", "M: another business's employee echo (same customer number) takes only THAT business's conversation", (await holder(OTHER, P)) === "human" && (await holder(BIZ, P)) === "barry" && !(await convo(BIZ, P))?.messages.some((m) => m.role === "owner"), { a: await holder(BIZ, P), b: await holder(OTHER, P) });
+      const tenants = async () => ({
+        [BIZ]: { holder: await holder(BIZ, P), personMessages: ((await convo(BIZ, P))?.messages ?? []).filter((m) => m.role === "owner").length, controlLog: await controlLogOf(BIZ, P) },
+        [OTHER]: { holder: await holder(OTHER, P), personMessages: ((await convo(OTHER, P))?.messages ?? []).filter((m) => m.role === "owner").length, controlLog: await controlLogOf(OTHER, P) },
+      });
+      const echoBefore = await tenants();
+      const crossEcho = await echo(PN_B, OTHER, P, "B's team here");
+      const echoAfter = await tenants();
+      check("isolation", "M: another business's employee echo (same customer number) takes only THAT business's conversation", (await holder(OTHER, P)) === "human" && (await holder(BIZ, P)) === "barry" && !(await convo(BIZ, P))?.messages.some((m) => m.role === "owner"), {
+        sourceBusiness: OTHER,
+        targetBusiness: BIZ,
+        attemptedAction: `an employee echo on ${OTHER}'s number to the same customer number that ${BIZ} also talks to`,
+        echo: crossEcho.body.echoes,
+        before: echoBefore,
+        after: echoAfter,
+        a: echoAfter[BIZ].holder,
+        b: echoAfter[OTHER].holder,
+      });
       let err = "";
+      const returnBefore = await tenants();
       try {
         await ownerReturnToBarry(resolveBusinessGraph(BIZ), `wa:${OTHER}:${P}`, "the owner (web)");
       } catch (e) {
         err = e instanceof Error ? e.name : "error";
       }
-      check("isolation", "M: this business's owner can't return another business's conversation", Boolean(err) && (await holder(OTHER, P)) === "human", { error: err });
+      const returnAfter = await tenants();
+      check("isolation", "M: this business's owner can't return another business's conversation", Boolean(err) && (await holder(OTHER, P)) === "human", {
+        sourceBusiness: BIZ,
+        targetBusiness: OTHER,
+        attemptedAction: `${BIZ}'s owner returns ${OTHER}'s conversation to BARRY (web handoff service)`,
+        error: err || "none (the action was NOT refused)",
+        before: returnBefore,
+        after: returnAfter,
+      });
     }
   } catch (err) {
     if (err instanceof StageBudgetExceeded) check("restore", `stage stopped: it exceeded its ${Math.round((opts.budgetMs ?? COEX_STAGE_BUDGET_MS) / 1000)}s time budget — restored below`, false);
